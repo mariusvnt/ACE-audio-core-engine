@@ -11,34 +11,67 @@ from typing import Any
 _preview_collections = {}
 _logo_icon_id = None
 _DEBUG_LOG_ENABLED = False
+_DEBUG_STRICT = False  # When True, assert_main_thread() raises instead of logging (development only).
 _module_presence_cache = {}
 
+
 # --- Log and environment helpers ---
-def assert_main_thread(context: str = "") -> None:
+def set_debug_strict(enabled: bool) -> None:
+    """Enable strict guardrail mode.
+
+    When enabled, assert_main_thread() raises RuntimeError on violations instead
+    of logging an ERROR.  Use in test / development builds only — a raised
+    exception from inside a Blender timer or depsgraph handler will crash the
+    host process in production.
+
+    Default: False.
     """
-    Assert that the current call is on the Blender main thread.
-    Logs an ERROR if violated — does NOT raise, to avoid crashing the host.
+    global _DEBUG_STRICT
+    _DEBUG_STRICT = bool(enabled)
+
+
+def assert_main_thread(context: str = "") -> None:
+    """Assert that the current call is on the Blender main thread.
+
+    In strict mode (_DEBUG_STRICT=True): raises RuntimeError so test runs catch
+    violations immediately rather than silently producing undefined behaviour.
+    In production mode (default): logs an ERROR only, to avoid crashing the host.
     Call this at the entry points of any function that writes bpy state.
     """
     if threading.current_thread() is not threading.main_thread():
         caller = context or "unknown"
-        log(
+        msg = (
             f"assert_main_thread: bpy write attempted off main thread in '{caller}'. "
-            "This is a guardrail violation — results are undefined.",
-            "ERROR",
+            "This is a guardrail violation — results are undefined."
         )
+        if _DEBUG_STRICT:
+            raise RuntimeError(msg)
+        log(msg, "ERROR")
 
 
 def set_debug_logging(enabled: bool):
-    """
-    Enable or disable the add-on debug logging mode.
+    """Enable or disable add-on debug logging.
+
+    When disabled, only ERROR messages are printed.  When enabled, INFO,
+    WARNING, and DEBUG messages are also printed.
+
+    Args:
+        enabled: True to enable debug output, False to suppress it.
     """
     global _DEBUG_LOG_ENABLED
     _DEBUG_LOG_ENABLED = bool(enabled)
 
 def log(message, type='INFO', debug_active: bool | None = None):
-    """
-    Prints to console if debug is enabled or type is ERROR.
+    """Print *message* to the console subject to the current debug mode.
+
+    ERROR messages are always printed regardless of debug state.  All other
+    types (INFO, WARNING, DEBUG) are printed only when debug logging is active.
+
+    Args:
+        message: The message string to print.
+        type: Severity level string — "INFO", "WARNING", "DEBUG", or "ERROR".
+        debug_active: Override the global _DEBUG_LOG_ENABLED flag for this call.
+            Pass None (default) to use the global flag.
     """
     # ERROR always prints
     if type == 'ERROR':
@@ -51,13 +84,23 @@ def log(message, type='INFO', debug_active: bool | None = None):
         print(f"[ACE {type}] {message}")
 
 def get_python_executable():
-    """
-    Return the path to the Python executable used by Blender.
+    """Return the path to the Python executable used by Blender.
+
+    Returns:
+        Absolute path string from sys.executable.
     """
     return sys.executable
 
 
 def dependency_vendor_path(create: bool = False) -> str:
+    """Return the path to the add-on's local _vendor directory.
+
+    Args:
+        create: When True, create the directory if it does not exist.
+
+    Returns:
+        Absolute path to the _vendor directory alongside this module.
+    """
     path = os.path.join(os.path.dirname(__file__), "_vendor")
     if create:
         try:
@@ -68,6 +111,18 @@ def dependency_vendor_path(create: bool = False) -> str:
 
 
 def ensure_dependency_vendor_path(create: bool = False) -> str:
+    """Ensure the _vendor directory is on sys.path and return its path.
+
+    Inserts the directory at the front of sys.path so add-on-local packages
+    take precedence over system-wide or Blender-bundled packages with the same
+    name.
+
+    Args:
+        create: When True, create the directory if it does not exist.
+
+    Returns:
+        Absolute path to the _vendor directory.
+    """
     path = dependency_vendor_path(create=create)
     if path and os.path.isdir(path) and path not in sys.path:
         # Keep add-on-local dependencies ahead of ambient interpreter paths.
@@ -76,8 +131,13 @@ def ensure_dependency_vendor_path(create: bool = False) -> str:
 
 def is_module_installed(module_name):
     """
-    Check whether a module exists without importing it (avoids cascading
-    ImportError when optional deps are missing).
+    Check whether a module is importable in Blender's Python environment.
+
+    find_spec() alone is not sufficient — it only locates the module files but
+    does NOT verify that native extensions (e.g. sounddevice's _portaudio*.pyd)
+    can actually be loaded. We therefore do a real import test when find_spec
+    succeeds, catching all Exception subclasses (not just ImportError) to also
+    catch OSError / DLL-load failures on Windows.
     """
     key = str(module_name or "").strip()
     if not key:
@@ -85,17 +145,46 @@ def is_module_installed(module_name):
     cached = _module_presence_cache.get(key)
     if cached is not None:
         return bool(cached)
+
     spec = importlib.util.find_spec(module_name)
-    if spec is not None:
-        _module_presence_cache[key] = True
-        return True
+    if spec is None:
+        # Module files are not on sys.path at all.
+        _module_presence_cache[key] = False
+        return False
+
+    # Module files were found — verify they actually load (native extensions,
+    # DLL dependencies, etc.).
     try:
         __import__(module_name)
         _module_presence_cache[key] = True
         return True
-    except ImportError:
+    except Exception:
+        # Native extension failed to initialise (missing DLL, ABI mismatch …).
         _module_presence_cache[key] = False
         return False
+
+def is_module_in_vendor(module_name: str) -> bool:
+    """
+    Return True if the module can be found inside ACE's local _vendor directory.
+    Used by the uninstall operator to distinguish between modules installed via
+    AudioCore's installer and those installed by other means (system pip,
+    Blender Extensions, etc.).
+    """
+    vendor_dir = dependency_vendor_path(create=False)
+    if not vendor_dir or not os.path.isdir(vendor_dir):
+        return False
+    token = str(module_name or "").strip().lower().replace("-", "_")
+    if not token:
+        return False
+    try:
+        for entry in os.listdir(vendor_dir):
+            normalized = entry.lower().replace("-", "_")
+            if normalized == token or normalized.startswith(token + "-") or normalized.startswith(token + "."):
+                return True
+    except Exception:
+        pass
+    return False
+
 
 def refresh_import_caches():
     """
@@ -110,9 +199,20 @@ def refresh_import_caches():
 
 
 def compose_live_flow_identifier(source_like: Any) -> str:
-    """
-    Build the internal live routing token from structured source settings.
-    Falls back to legacy `flow_identifier` data for backward compatibility.
+    """Build the internal live routing token from structured source settings.
+
+    Constructs a canonical token string from the live_transport,
+    live_device_selector, and UDP parameter attributes on *source_like*.
+    Falls back to the legacy flow_identifier string for backward compatibility
+    with older .blend files that stored only the raw token.
+
+    Args:
+        source_like: An ACEAudioSource property-group instance, or any object
+            that exposes the relevant attributes.  None produces "sd:".
+
+    Returns:
+        A routing token string such as "sd:", "sd:<device>", or
+        "udp:<port>:<channels>:<sample_rate>".
     """
     if source_like is None:
         return "sd:"
@@ -154,6 +254,14 @@ def compose_live_flow_identifier(source_like: Any) -> str:
 
 # --- Logo Helper ---
 def _ensure_logo_icon():
+    """Load the ACE logo image into a preview collection and return its icon ID.
+
+    Uses a module-level cache so the preview is loaded only once.  Returns
+    None if the logo file is missing or bpy.utils.previews is unavailable.
+
+    Returns:
+        Integer Blender icon ID, or None.
+    """
     import os
     from .vars import ACE_LOGO_FILENAME
 
@@ -191,6 +299,17 @@ def unregister():
 
 # --- UI Helper ---
 def _get_active_source(context):
+    """Return the (ace_settings, active_source) pair for the current context.
+
+    Args:
+        context: The current Blender context.
+
+    Returns:
+        A (ACEProjectSettings, ACEAudioSource) tuple.  The source element is
+        None when there are no audio sources or the active index is out of
+        range.  The ace_settings element is None when the scene has no
+        audiocore property.
+    """
     ace = getattr(context.scene, "audiocore", None)
     if not ace or not ace.audio_sources: return ace, None
     idx = getattr(ace, "active_audio_source_index", 0)

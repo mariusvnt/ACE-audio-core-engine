@@ -1,9 +1,30 @@
+"""
+DSP task registry for the AudioCore Engine Blender add-on.
+
+Defines every audio processing node (tasks) used by the engine pipeline:
+
+  - **Infrastructure**: ``ACEAudioTask``, ``ACEAudioGraph``, ``AudioChunk``,
+    ``TaskConnection``, and the ``AudioFluxAnalyzer`` pool-managed BFT wrapper.
+  - **Source nodes**: ``SourceTask``, ``SourceSpecsTask``, ``SourceScannerTask``.
+  - **Splitter nodes**: ``FrequencySplitterTask``, ``MidsideSplitterTask``,
+    ``AttackReleaseSplitterTask``, ``ChromagramTask``,
+    ``AutoComponentSplitterTask``.
+  - **Stream operators**: ``RMSTask``, ``PitchTask``, ``SpectralCentroidTask``,
+    ``SpectralFluxTask``, ``OnsetTask``, ``ZeroCrossTask``, ``StereoWidthTask``,
+    ``StereoBalanceTask``, ``StereoVectorTask``.
+  - **Layer-3 preview**: ``PreviewSinkTask`` — time-domain-only biquad filter
+    chain; strictly no iFFT/iBFT.
+  - **Utility**: ``AudioMathTask``, ``SourceFrontendProcessor``.
+
+All bpy access is forbidden in this module: tasks are evaluated on Stage-B
+worker processes (via ``parallel_dsp``) that are intentionally bpy-free.
+"""
 import math
 import os
 import hashlib
 import threading
 import time
-from collections import deque
+from collections import deque, OrderedDict
 from queue import Queue, Empty, Full
 from typing import Dict, List, Any, Optional, Tuple, NamedTuple
 
@@ -22,6 +43,31 @@ try:
 except Exception:
     NUMBA_AVAILABLE = False
 
+try:
+    from scipy.signal import lfilter as scipy_lfilter  # type: ignore
+    SCIPY_AVAILABLE = True
+except ImportError:
+    scipy_lfilter = None
+    SCIPY_AVAILABLE = False
+
+# One-time warning flag: emitted the first time the Tier-3 Python biquad loop
+# is entered (Numba absent AND scipy absent).  Suppresses log spam while still
+# surfacing the dropout risk once per engine session.
+# Reset by reset_biquad_fallback_warned(), called from ACEAudioEngine.shutdown_all_instances().
+_BIQUAD_PYTHON_FALLBACK_WARNED: bool = False
+
+
+def reset_biquad_fallback_warned() -> None:
+    """Reset the one-time Tier-3 biquad fallback warning flag.
+
+    Called by ``ACEAudioEngine.shutdown_all_instances()`` so the warning fires
+    once per engine session rather than once per Python interpreter lifetime.
+    This ensures users are re-warned on a fresh session if Numba and scipy are
+    still absent.
+    """
+    global _BIQUAD_PYTHON_FALLBACK_WARNED
+    _BIQUAD_PYTHON_FALLBACK_WARNED = False
+
 from .audio_influx import AudioReception, build_live_flow_identifier
 from . import utils
 
@@ -39,16 +85,34 @@ _LAYER3_THREAD_LOCAL: threading.local = threading.local()
 # which on Windows can hit exclusive-lock failures.
 _FILE_OPEN_LOCKS: Dict[str, threading.Lock] = {}
 _FILE_OPEN_LOCKS_MUTEX = threading.Lock()
+_FILE_OPEN_LOCKS_MAX = 128  # Max dict entries before evicting idle (unlocked) entries.
 
 
 def _get_file_open_lock(filepath: str) -> threading.Lock:
-    """Return (creating if needed) a per-filepath Lock to serialize open() calls."""
+    """Return (creating if needed) a per-filepath Lock to serialize open() calls.
+
+    When the dict exceeds _FILE_OPEN_LOCKS_MAX entries, idle (unlocked) locks are
+    evicted to prevent unbounded growth in long sessions with many different files.
+    """
     with _FILE_OPEN_LOCKS_MUTEX:
         lock = _FILE_OPEN_LOCKS.get(filepath)
         if lock is None:
             lock = threading.Lock()
             _FILE_OPEN_LOCKS[filepath] = lock
+        if len(_FILE_OPEN_LOCKS) > _FILE_OPEN_LOCKS_MAX:
+            # Evict only locks not currently held to avoid disrupting active I/O.
+            stale = [k for k, v in _FILE_OPEN_LOCKS.items() if k != filepath and not v.locked()]
+            for k in stale[: max(len(stale) // 2, 1)]:
+                _FILE_OPEN_LOCKS.pop(k, None)
         return lock
+
+
+def _clear_file_open_locks():
+    """Remove all idle filepath locks. Called on engine shutdown to reclaim memory."""
+    with _FILE_OPEN_LOCKS_MUTEX:
+        idle = [k for k, v in _FILE_OPEN_LOCKS.items() if not v.locked()]
+        for k in idle:
+            _FILE_OPEN_LOCKS.pop(k, None)
 
 _ADAPTIVE_FILE_BLOCK_BUCKETS = (
     512,
@@ -134,13 +198,16 @@ _KEEP = object()
 
 
 class SourceFrontendProcessor:
-    """
-    Stateful source-side preprocessing shared by the main-thread source reader and
-    the worker-side source bridge.
+    """Stateful source-side preprocessing for analysis-domain audio.
 
-    Output is analysis-domain audio:
-    - optional HPF/LPF band-limiting
-    - optional signed attack/release smoothing
+    Shared by the main-thread source reader and the worker-side source bridge.
+    Applies, in order:
+      1. Optional 1st-order Butterworth high-pass filter (``freq_min``).
+      2. Optional 1st-order Butterworth low-pass filter (``freq_max``).
+      3. Optional signed attack/release envelope smoother.
+
+    Filter coefficients are recomputed only when the configuration signature
+    (sample_rate, frontend_config, channel_count) changes.
     """
 
     def __init__(self):
@@ -155,6 +222,7 @@ class SourceFrontendProcessor:
         }
 
     def reset(self):
+        """Clear all filter states and force coefficient recomputation on the next call."""
         self._iir_states.clear()
         self._env_states.clear()
         self._config_sig = None
@@ -167,6 +235,16 @@ class SourceFrontendProcessor:
 
     @staticmethod
     def _butterworth_coeffs(cutoff_hz: float, sample_rate: float, mode: str):
+        """Compute 1st-order Butterworth IIR coefficients (b0, b1, a1).
+
+        Returns None when the cutoff would be outside the valid frequency range
+        (DC or Nyquist boundary), in which case the caller skips filtering.
+
+        Args:
+            cutoff_hz: Filter corner frequency in Hz.
+            sample_rate: Signal sample rate in Hz.
+            mode: ``"low"`` for low-pass, any other string for high-pass.
+        """
         if cutoff_hz <= 0.0 or sample_rate <= 0.0 or cutoff_hz >= (sample_rate * 0.49):
             return None
         omega = math.tan(math.pi * cutoff_hz / sample_rate)
@@ -187,6 +265,13 @@ class SourceFrontendProcessor:
         frontend_config: Optional[Tuple[float, float, float, float]],
         channel_count: int,
     ):
+        """Recompute filter coefficients when the configuration has changed.
+
+        Args:
+            sample_rate: Signal sample rate in Hz.
+            frontend_config: (freq_min, freq_max, attack_ms, release_ms) or None.
+            channel_count: Number of audio channels (used in the config signature).
+        """
         sig = (
             int(max(sample_rate, 1)),
             tuple(frontend_config) if frontend_config is not None else None,
@@ -308,6 +393,22 @@ class SourceFrontendProcessor:
         sample_rate: int,
         frontend_config: Optional[Tuple[float, float, float, float]],
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Apply the full frontend processing chain and return (analysis_mono, analysis_stereo).
+
+        When ``frontend_config`` is None the input is returned unchanged.  When
+        stereo is present each channel is processed independently and
+        ``analysis_mono`` is computed as the channel mean.
+
+        Args:
+            mono: Raw mono signal (1-D float32).
+            stereo: Optional stereo signal (2-D float32, shape (channels, samples)).
+            sample_rate: Signal sample rate in Hz.
+            frontend_config: (freq_min_hz, freq_max_hz, attack_ms, release_ms) tuple,
+                             or None to bypass all processing.
+
+        Returns:
+            Tuple of (analysis_mono, analysis_stereo) arrays.
+        """
         mono_arr = np.asarray(mono, dtype=np.float32).reshape(-1).astype(np.float32, copy=False)
         stereo_arr: Optional[np.ndarray] = None
         if isinstance(stereo, np.ndarray):
@@ -337,10 +438,19 @@ class SourceFrontendProcessor:
 
 
 class AudioChunk:
-    """
-    Lightweight wrapper around a mono block (and optional stereo block).
-    Carries a back-reference to the producing SourceTask so downstream nodes
-    can request derived features without recomputing transforms.
+    """Lightweight wrapper around one audio block passed between DSP task nodes.
+
+    Carries the raw mono/stereo signal, an optional preprocessed analysis track,
+    spectral metadata (band-mask indices, Hz bounds, lineage token), and a lazy
+    feature cache so derived quantities (RMS, centroid, …) are computed at most
+    once per frame per chunk.
+
+    The ``provider`` back-reference to the owning ``SourceTask`` allows downstream
+    analysis nodes to delegate to the source's long-lived ``AudioFluxAnalyzer``
+    rather than allocating a new BFT object on every call.
+
+    Slot layout is fixed (``__slots__``) to minimize per-instance memory overhead
+    in multi-source sessions where hundreds of chunks may be alive simultaneously.
     """
     __slots__ = (
         "mono",
@@ -412,6 +522,17 @@ class AudioChunk:
         return self.mono
 
     def get_feature(self, key: str, compute_fn=None):
+        """Return a cached feature, optionally computing it on the first call.
+
+        Args:
+            key: Unique string key identifying the feature.
+            compute_fn: Zero-argument callable that computes the feature value.
+                        Called once and cached when the key is not already present.
+
+        Returns:
+            The cached (or freshly computed) feature value, or None if absent
+            and no ``compute_fn`` was supplied.
+        """
         if key in self.features:
             return self.features[key]
         if compute_fn:
@@ -439,6 +560,16 @@ def _spawn_audio_chunk(
     analysis_ops: Any = _KEEP,
     latency_ms: Any = _KEEP,
 ) -> AudioChunk:
+    """Create a new AudioChunk by overriding selected fields from *source*.
+
+    Unspecified keyword arguments default to the sentinel ``_KEEP``, which
+    causes the corresponding field to be copied verbatim from *source*.  This
+    avoids boilerplate in splitter tasks that only mutate the lineage or
+    band-mask fields while keeping all other metadata unchanged.
+
+    Returns:
+        A new AudioChunk with the merged field values.
+    """
     return AudioChunk(
         mono=(source.mono if mono is _KEEP else mono),
         stereo=(source.stereo if stereo is _KEEP else stereo),
@@ -459,6 +590,11 @@ def _spawn_audio_chunk(
 
 
 def _normalized_analysis_ops(chunk: AudioChunk) -> Tuple[Tuple[str, str], ...]:
+    """Return the chunk's ``analysis_ops`` as a normalised immutable tuple.
+
+    Each element is a ``(kind, mode)`` pair of lower-cased strings.  Malformed
+    entries (wrong type, missing fields, empty strings) are silently dropped.
+    """
     raw_ops = getattr(chunk, "analysis_ops", ()) or ()
     if isinstance(raw_ops, tuple):
         items = raw_ops
@@ -480,6 +616,7 @@ def _normalized_analysis_ops(chunk: AudioChunk) -> Tuple[Tuple[str, str], ...]:
 
 
 def _append_analysis_op(chunk: AudioChunk, kind: str, mode: str) -> Tuple[Tuple[str, str], ...]:
+    """Return the chunk's existing analysis ops with a new (kind, mode) entry appended."""
     ops = _normalized_analysis_ops(chunk)
     return ops + ((str(kind).strip().lower(), str(mode).strip().lower()),)
 
@@ -490,6 +627,24 @@ def _signal_for_chunk(
     prefer_analysis_track: bool = True,
     apply_analysis_ops: bool = True,
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Resolve the effective (mono, stereo) signal arrays for a chunk.
+
+    Applies any recorded ``analysis_ops`` (mid/side matrix, attack/release gate)
+    in sequence.  Results are memoised in ``chunk.features`` keyed by
+    ``("analysis_signal", prefer_analysis_track, ops_tuple)`` to avoid redundant
+    computation when the same chunk is consumed by multiple downstream tasks.
+
+    Args:
+        chunk: Source AudioChunk.
+        prefer_analysis_track: When True, uses the preprocessed ``analysis_mono``
+            / ``analysis_stereo`` arrays if present; falls back to raw ``mono``/``stereo``.
+        apply_analysis_ops: When False, ops are skipped and the base signal is
+            returned directly (used by PreviewSinkTask to separate band-limiting
+            from temporal ops).
+
+    Returns:
+        Tuple of (mono_1d, stereo_2d_or_None).
+    """
     ops = _normalized_analysis_ops(chunk)
     if not apply_analysis_ops:
         ops = ()
@@ -557,25 +712,43 @@ def _signal_for_chunk(
 
 
 def _analysis_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Return analysis-domain (mono, stereo) with ops applied.  Prefers preprocessed track."""
     return _signal_for_chunk(chunk, prefer_analysis_track=True, apply_analysis_ops=True)
 
 
 def _preview_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Return raw-domain (mono, stereo) with ops applied.  Prefers unprocessed track."""
     return _signal_for_chunk(chunk, prefer_analysis_track=False, apply_analysis_ops=True)
 
 
 class AudioFluxAnalyzer:
-    """
-    Wrapper that keeps long-lived audioflux objects (BFT, Spectral, Pitch)
-    to avoid rebuilding them every frame.
+    """Pool-managed wrapper around long-lived audioflux BFT / Spectral / Pitch objects.
+
+    Creating a BFT object is expensive (~few ms) so instances are never thrown
+    away: ``borrow()`` retrieves a ready-to-use analyzer from the pool (keyed by
+    sample_rate × block_size) and ``release()`` returns it after each DSP frame.
+
+    A class-level ``_GLOBAL_SPECTRUM_CACHE`` is shared across all instances so
+    that multi-band sources (FrequencySplitter with N outputs) pay exactly one
+    BFT call per audio frame instead of N.  The cache is keyed by
+    ``(chunk_token, "full_spectrum", frame_index)`` to prevent spectra from
+    bleeding across frames.
+
+    When ``audioflux`` is not installed the analyzer degrades gracefully:
+    ``compute_feature()`` returns None for spectrum-dependent features (centroid,
+    flux, pitch) and falls back to a pure-numpy ZCR and RMS path.
     """
     _POOL: Dict[Tuple[int, int], list['AudioFluxAnalyzer']] = {}
     _MAX_POOL_PER_KEY = 4
     _MAX_POOL_KEYS = 16
     _MAX_PREV_MASK_ENTRIES = 128
-    # Cross-instance BFT cache: keyed by (chunk_token, "full_spectrum").
+    # Cross-instance BFT cache: keyed by (chunk_token, "full_spectrum", frame_index).
     # Shared across all AudioFluxAnalyzer instances so multi-band FrequencySplitter
     # sources pay exactly 1 BFT call per chunk instead of N (one per band).
+    # THREAD-SAFETY NOTE: Each Stage-B worker process is single-threaded (no
+    # internal BLAS thread-pool enabled), so this class-level dict is safe without
+    # a Lock under the current architecture. If worker-internal threading is ever
+    # introduced, protect all mutations with a threading.Lock here.
     _GLOBAL_SPECTRUM_CACHE: Dict[Any, np.ndarray] = {}
     _GLOBAL_SPECTRUM_CACHE_MAX = 16
 
@@ -640,6 +813,11 @@ class AudioFluxAnalyzer:
 
     @classmethod
     def borrow(cls, sample_rate: int, block_size: int) -> 'AudioFluxAnalyzer':
+        """Retrieve an analyzer from the pool or create a new one.
+
+        The returned instance has its per-frame state cleared via ``reset_state()``
+        so it is safe to use immediately.
+        """
         key = (int(sample_rate), int(block_size))
         pool = cls._POOL.get(key)
         if pool:
@@ -650,6 +828,7 @@ class AudioFluxAnalyzer:
 
     @classmethod
     def release(cls, analyzer: 'AudioFluxAnalyzer'):
+        """Return an analyzer to the pool, evicting overflow entries for other keys."""
         key = (int(analyzer.sample_rate), int(analyzer.block_size))
         analyzer.reset_state()
         pool = cls._POOL.setdefault(key, [])
@@ -663,17 +842,20 @@ class AudioFluxAnalyzer:
                 cls._POOL.pop(stale_key, None)
 
     def reset_state(self):
+        """Clear all per-frame caches and flux-history state."""
         self.prev_masked_mag.clear()
         self.cache_frame = -1
         self.cache.clear()
 
     def _prepare_frame_cache(self, frame_index: int):
+        """Invalidate the feature cache when a new frame begins."""
         if self.cache_frame != frame_index:
             self.cache_frame = frame_index
             self.cache.clear()
 
     @staticmethod
     def _chunk_token(chunk: AudioChunk):
+        """Return a hashable cache key for the chunk's audio content and ops."""
         token = getattr(chunk, "spectrum_token", None)
         if token is None:
             if getattr(chunk, "lineage", None):
@@ -687,6 +869,14 @@ class AudioFluxAnalyzer:
         return token
 
     def _resolve_chunk_mask_indices(self, chunk: AudioChunk) -> Optional[np.ndarray]:
+        """Resolve the effective FFT-bin mask for this analyzer's FFT domain.
+
+        Remaps any ``band_indices`` from the chunk's source FFT domain to this
+        analyzer's domain, then intersects with indices derived from
+        ``band_hz_bounds`` when both are present.
+
+        Returns None when no mask constraints are set on the chunk.
+        """
         indices = getattr(chunk, "band_indices", None)
         if indices is not None:
             if not isinstance(indices, np.ndarray):
@@ -786,6 +976,11 @@ class AudioFluxAnalyzer:
         return mag
 
     def _get_mask_key(self, indices: Optional[np.ndarray]) -> Optional[Tuple[int, int]]:
+        """Return a compact (count, digest) cache key for a bin-index array.
+
+        Uses a blake2b-8 digest so per-frame feature cache keys remain small
+        even for large masks with many bin entries.
+        """
         if indices is None:
             return None
         if not isinstance(indices, np.ndarray):
@@ -849,14 +1044,23 @@ class AudioFluxAnalyzer:
                 self.prev_masked_mag.pop(next(iter(self.prev_masked_mag)), None)
             return 0.0
 
-        pair = np.stack([prev_store, current_frame], axis=-1)
+        # Compute positive spectral flux directly from magnitude arrays.
+        # The audioFlux spectral.flux() API requires set_time_length() to match
+        # the input's time dimension; when called after _ensure_spectrum() has
+        # already set a different time_length the library can return a per-bin
+        # array (not a scalar), causing float() to raise and the except to return
+        # 0.0 every frame.  Computing from first principles avoids the API contract
+        # entirely while producing the identical mathematical result:
+        #   positive_flux = sum(max(current - previous, 0)) / sum(previous + ε)
+        # This is consistent with the fallback path in SpectralFluxTask._fallback_flux.
         try:
-            self.spectral.set_time_length(pair.shape[-1])
-            self._apply_spectral_mask(mask_indices)
-            flux_arr = self.spectral.flux(pair, step=1, p=2, is_positive=True)
-            val = float(flux_arr[..., -1])
+            prev_f = prev_store.astype(np.float64)
+            curr_f = current_frame.astype(np.float64)
+            flux_raw = float(np.sum(np.maximum(curr_f - prev_f, 0.0), dtype=np.float64))
+            denom = float(np.sum(np.abs(prev_f), dtype=np.float64)) + 1e-9
+            val = float(np.clip(flux_raw / denom, 0.0, 10.0))
         except Exception as e:
-            self._log_error("flux", f"AudioFlux flux failed: {e}")
+            self._log_error("flux", f"flux computation failed: {e}")
             val = 0.0
 
         self.prev_masked_mag[store_key] = current_frame
@@ -885,7 +1089,7 @@ class AudioFluxAnalyzer:
         if not AUDIOFLUX_AVAILABLE:
             return None
 
-        if name in ("rms", "centroid", "flux", "onset"):
+        if name in ("rms", "centroid", "flux"):
             mag = self._ensure_spectrum(chunk)
             if mag is None:
                 return None
@@ -934,11 +1138,11 @@ class AudioFluxAnalyzer:
                 val = self._compute_flux(mag, chunk_token, mask_indices)
                 self.cache[cache_key] = val
                 return val
-            elif name == "onset":
-                flux_val = self._compute_flux(mag, chunk_token, mask_indices)
-                onset_val = float(max(flux_val, 0.0))
-                self.cache[cache_key] = onset_val
-                return onset_val
+            # "onset" intentionally not handled here: the adaptive envelope-based
+            # detection in OnsetTask._fallback_onset() is the correct implementation.
+            # Returning raw flux here would produce a [0, 10] value contradicting the
+            # node description "0 = smooth, 1 = sharp transient". Returning None causes
+            # OnsetTask.process() to fall through to _fallback_onset().
 
         if name == "pitch":
             if not self.pitch or self.pitch_buffer is None:
@@ -1046,9 +1250,15 @@ class TaskConnection(NamedTuple):
 
 
 class ACEAudioTask:
-    """
-    Base class for all DSP nodes.
-    Maintains state and handles buffer reuse optimization.
+    """Base class for all DSP processing nodes in the ACE pipeline.
+
+    Subclasses implement ``process(inputs)`` to transform one or more
+    ``AudioChunk`` inputs into output values.  Each task owns its internal
+    filter state, silence buffer, and block-size configuration so that
+    state is preserved across frames without external management.
+
+    Subclasses should NOT import or call bpy — tasks are evaluated on
+    Stage-B worker processes that are intentionally bpy-free.
     """
     def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
         self.node_id = node_id
@@ -1200,8 +1410,12 @@ class ACEAudioTask:
 
 
 class SourceTask(ACEAudioTask):
-    """
-    Generates or Reads Audio from disk/memory.
+    """Audio source bridge task — supplies raw audio chunks to downstream nodes.
+
+    Holds a reference to an ``AudioReception`` instance that owns the actual
+    I/O (file prefetch or live ring buffer).  Each ``process()`` call returns
+    the current audio chunk together with lightweight metadata (sample rate,
+    latency estimate) for downstream tasks.
     """
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -2008,10 +2222,11 @@ class SourceTask(ACEAudioTask):
                             self.sample_rate = int(sr)
                             self.read_cursor = int(live_target)
                             self.live_ready = True
-                        else:
-                            self.live_ready = False
-                    else:
-                        self.live_ready = False
+                        # If selected is None, retain current live_ready so the engine
+                        # keeps calling process() and the buffer can fill on the next frame.
+                    # If buffer is empty (stream just opened, first callback not yet fired),
+                    # retain live_ready = True so the engine does not deadlock by skipping
+                    # process() indefinitely before any audio arrives.
                 else:
                     desired_sample = self._file_sample_clock_target(frame_request)
                     file_force_seek = False
@@ -3387,6 +3602,13 @@ class AutoComponentSplitterTask(ACEAudioTask):
 
 
 class RMSTask(ACEAudioTask):
+    """Compute Root-Mean-Square energy of the audio chunk.
+
+    Output range: [0.0, 1.0] (float).
+    Uses a fast Parseval-theorem frequency-domain approach when a cached
+    spectrum is available; falls back to a time-domain RMS on silence blocks.
+    """
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         if not hasattr(chunk, "mono") or chunk.mono.size == 0:
@@ -3424,6 +3646,14 @@ class RMSTask(ACEAudioTask):
 
 
 class PitchTask(ACEAudioTask):
+    """Estimate the fundamental frequency (pitch) of the audio chunk.
+
+    Output: fundamental frequency in Hz (float).  Returns 0.0 when the signal
+    is silent or no reliable pitch is detectable.  Prefers the audioflux
+    pitch estimator when available; falls back to a time-domain autocorrelation
+    estimate.
+    """
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         val = None
@@ -3442,6 +3672,14 @@ class PitchTask(ACEAudioTask):
 
 
 class SpectralCentroidTask(ACEAudioTask):
+    """Compute the spectral centroid (brightness) of the audio chunk.
+
+    Output: centroid frequency in Hz (float).  The centroid is the
+    amplitude-weighted mean frequency of the power spectrum — perceptually
+    related to perceived brightness.  Prefers the audioflux centroid estimate;
+    falls back to a direct FFT magnitude centroid calculation.
+    """
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         val = None
@@ -3464,6 +3702,14 @@ class SpectralCentroidTask(ACEAudioTask):
 
 
 class SpectralFluxTask(ACEAudioTask):
+    """Measure frame-to-frame change in the power spectrum (spectral flux).
+
+    Output range: [0.0, 10.0] (float, clipped).  A high value indicates rapid
+    timbral change — useful for transient detection, beat tracking, and gate
+    triggers.  Computed as the normalised half-wave-rectified spectral
+    difference relative to the previous frame's magnitude spectrum.
+    """
+
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
         self._prev_mag: Optional[np.ndarray] = None
@@ -3513,6 +3759,15 @@ class SpectralFluxTask(ACEAudioTask):
 
 
 class OnsetTask(ACEAudioTask):
+    """Detect audio onsets (transient events) in the audio chunk.
+
+    Output range: [0.0, 1.0] (float).  Values near 1.0 indicate a strong onset
+    (note attack, drum hit, etc.) within the current frame.  Uses an adaptive
+    spectral flux envelope detector: the raw flux is smoothed with an
+    attack/release envelope and thresholded so intermittent transients produce
+    clean pulses rather than sustained high values.
+    """
+
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
         self._prev_mag: Optional[np.ndarray] = None
@@ -3568,6 +3823,14 @@ class OnsetTask(ACEAudioTask):
 
 
 class ZeroCrossTask(ACEAudioTask):
+    """Measure the Zero-Crossing Rate (ZCR) of the audio chunk.
+
+    Output range: [0.0, 1.0] (float, normalised to Nyquist).  High ZCR values
+    indicate noisy or high-frequency content; low values correlate with tonal
+    or bass-heavy material.  Prefers the audioflux ZCR implementation; falls
+    back to a direct sample-sign-change count.
+    """
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         val = None
@@ -3585,6 +3848,15 @@ class ZeroCrossTask(ACEAudioTask):
 
 
 class StereoWidthTask(ACEAudioTask):
+    """Measure the stereo width of the audio chunk.
+
+    Output range: [0.0, 1.0] (float).
+    0.0 = perfectly mono (side energy is zero).
+    1.0 = maximally wide (all energy in the side channel, no mid).
+    Computed as ``side_energy / (mid_energy + side_energy)`` to give a
+    naturally bounded result without the overrun of a raw side/mid ratio.
+    """
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         _, stereo = _analysis_signals_normalized(chunk)
@@ -3594,12 +3866,26 @@ class StereoWidthTask(ACEAudioTask):
         right = stereo[1]
         mid = 0.5 * (left + right)
         side = 0.5 * (left - right)
-        mid_energy = np.mean(mid * mid) + 1e-9
-        side_energy = np.mean(side * side)
-        return float(np.clip(side_energy / mid_energy, 0.0, 10.0))
+        mid_energy = float(np.mean(mid * mid))
+        side_energy = float(np.mean(side * side))
+        total_energy = mid_energy + side_energy
+        # Normalize to [0, 1]: 0 = perfectly mono, 1 = pure side (maximum stereo width).
+        # side / (mid + side) is always in [0, 1] by construction and matches the
+        # node description "0 = mono, 1 = very wide" without the [0, 10] overrun.
+        if total_energy < 1e-20:
+            return 0.0
+        return float(np.clip(side_energy / total_energy, 0.0, 1.0))
 
 
 class StereoBalanceTask(ACEAudioTask):
+    """Measure the left/right energy balance of the audio chunk.
+
+    Output range: [-1.0, 1.0] (float).
+    -1.0 = all energy on the left channel.
+    0.0 = equal energy on both channels (centre-panned).
+    +1.0 = all energy on the right channel.
+    """
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         _, stereo = _analysis_signals_normalized(chunk)
@@ -3614,9 +3900,13 @@ class StereoBalanceTask(ACEAudioTask):
 
 
 class StereoVectorTask(ACEAudioTask):
-    """
-    Time-domain vector summary of stereo energy and balance:
-    (left_rms, right_rms, balance).
+    """Time-domain vector summary of stereo energy and balance.
+
+    Output: 3-component FLOAT_VECTOR ``(left_rms, right_rms, balance)``.
+    ``left_rms`` and ``right_rms`` are in [0.0, 1.0].
+    ``balance`` mirrors ``StereoBalanceTask``: -1.0 = full left, +1.0 = full right.
+    Falls back to a mono-derived vector (equal L/R, centre balance) when the
+    input has no stereo data.
     """
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -3635,12 +3925,110 @@ class StereoVectorTask(ACEAudioTask):
         return (l_rms, r_rms, balance)
 
 
-class PreviewSinkTask(ACEAudioTask):
+def _run_biquad(
+    signal: np.ndarray,
+    coeffs: Tuple[float, float, float, float, float],
+    state: List[float],
+    use_numba: bool = True,
+) -> np.ndarray:
+    """Apply a single Direct-Form-II biquad section to *signal* in-place on the state.
+
+    Three-tier implementation:
+
+    * **Tier 1** — Numba JIT kernel: zero Python overhead, preferred when available.
+    * **Tier 2** — ``scipy.signal.lfilter``: vectorized C, ~100× faster than the
+      Python loop.  Used when Numba is absent.  Reports a WARNING on unexpected
+      failure so the user is not left debugging silent audio dropouts.
+    * **Tier 3** — Pure-Python sample loop: last resort.  Emits a one-time WARNING
+      because at 512 samples/block this path takes ~10 ms on the preview thread and
+      will cause audible dropouts.
+
+    Args:
+        signal:    1-D float32 input samples (length N).
+        coeffs:    Normalised biquad coefficients (b0, b1, b2, a1, a2) — a0 already
+                   divided out.
+        state:     Two-element list [z1, z2] carrying the filter state between calls.
+                   Updated in-place.
+        use_numba: Allow Tier-1 (Numba JIT).  Pass ``False`` to force Tier-2/3.
+
+    Returns:
+        Filtered float32 array of the same length as *signal*.
     """
-    Terminal monitor sink for branch-audio preview.
-    Strict time-domain path only:
-    - contiguous masks -> cascaded highpass/lowpass biquads
-    - sparse/non-contiguous masks -> summed bandpass section approximation
+    global _BIQUAD_PYTHON_FALLBACK_WARNED
+    b0, b1, b2, a1, a2 = coeffs
+    z1, z2 = float(state[0]), float(state[1])
+    src = signal.astype(np.float32, copy=False)
+
+    # ── Tier 1: Numba JIT ────────────────────────────────────────────────────
+    if use_numba and NUMBA_AVAILABLE:
+        try:
+            out, z1_new, z2_new = _biquad_filter_block(
+                src,
+                float(b0), float(b1), float(b2),
+                float(a1), float(a2),
+                float(z1), float(z2),
+            )
+            state[0] = float(z1_new)
+            state[1] = float(z2_new)
+            return out
+        except Exception:
+            pass  # Fall through to Tier 2.
+
+    # ── Tier 2: scipy.signal.lfilter ─────────────────────────────────────────
+    # Converts Direct Form I coefficients to the [b0,b1,b2] / [1,a1,a2] vectors
+    # scipy expects, and passes the DF-II state as initial conditions.
+    if SCIPY_AVAILABLE:
+        try:
+            b_vec = np.array([b0, b1, b2], dtype=np.float64)
+            a_vec = np.array([1.0, a1, a2], dtype=np.float64)
+            zi = np.array([z1, z2], dtype=np.float64)  # zi shape must be (2,)
+            out_64, zf = scipy_lfilter(b_vec, a_vec, src.astype(np.float64), zi=zi)
+            state[0] = float(zf[0])
+            state[1] = float(zf[1])
+            return out_64.astype(np.float32, copy=False)
+        except Exception as _exc:
+            utils.log(
+                f"[ACE-Preview] scipy biquad Tier-2 failed (falling to Python loop): {_exc!r}",
+                "WARNING",
+            )
+
+    # ── Tier 3: Pure-Python sample loop ──────────────────────────────────────
+    # Last resort.  At 512 samples/block this path takes ~10 ms on the preview
+    # thread and will cause audible dropouts.  Emit a one-time WARNING.
+    if not _BIQUAD_PYTHON_FALLBACK_WARNED:
+        _BIQUAD_PYTHON_FALLBACK_WARNED = True
+        utils.log(
+            "ACE Layer-3 preview: Numba and scipy.signal are both unavailable. "
+            "Using a slow Python biquad fallback that may cause audio dropouts. "
+            "Install Numba or scipy to restore full preview performance.",
+            "WARNING",
+        )
+
+    out = np.empty_like(src, dtype=np.float32)
+    for i in range(src.shape[0]):
+        x = float(src[i])
+        y = (b0 * x) + z1
+        z1 = (b1 * x) - (a1 * y) + z2
+        z2 = (b2 * x) - (a2 * y)
+        out[i] = y
+    state[0] = z1
+    state[1] = z2
+    return out
+
+
+class PreviewSinkTask(ACEAudioTask):
+    """Terminal monitor sink for branch-audio preview.
+
+    Implements strict Layer-3 time-domain filtering: no iFFT/iBFT is performed.
+    Frequency-band selection is translated to equivalent time-domain filter chains:
+
+    * **Contiguous bounds** (``band_hz_bounds``): cascaded 2×2nd-order Butterworth
+      highpass + lowpass sections (4th-order equivalent slope).
+    * **Sparse/non-contiguous masks** (``band_indices``): the mask is converted to
+      contiguous Hz ranges which are individually band-limited and summed.
+    * **No mask**: raw signal is passed through unchanged.
+
+    Numba JIT acceleration is used whenever available (see ``_numba_turbo_enabled``).
     """
 
     _MAX_SPARSE_SECTIONS = 16
@@ -3652,7 +4040,8 @@ class PreviewSinkTask(ACEAudioTask):
         self._lp_coeffs: List[Tuple[float, float, float, float, float]] = []
         self._iir_state: Dict[str, List[float]] = {}
         self._sparse_iir_key: Optional[Tuple[int, int, Tuple[Tuple[float, float], ...]]] = None
-        self._section_coeff_cache: Dict[Tuple[int, float, float], Tuple[List[Any], List[Any]]] = {}
+        # OrderedDict enables O(1) LRU eviction: move_to_end() on hit, pop FIFO on overflow.
+        self._section_coeff_cache: OrderedDict[Tuple[int, float, float], Tuple[List[Any], List[Any]]] = OrderedDict()
 
     def _numba_turbo_enabled(self) -> bool:
         # Runtime policy: force Numba acceleration for preview filtering whenever
@@ -3753,46 +4142,6 @@ class PreviewSinkTask(ACEAudioTask):
             a2 * inv_a0,
         )
 
-    @staticmethod
-    def _run_biquad(
-        signal: np.ndarray,
-        coeffs: Tuple[float, float, float, float, float],
-        state: List[float],
-        use_numba: bool = True,
-    ) -> np.ndarray:
-        b0, b1, b2, a1, a2 = coeffs
-        z1, z2 = float(state[0]), float(state[1])
-        src = signal.astype(np.float32, copy=False)
-
-        if use_numba and NUMBA_AVAILABLE:
-            try:
-                out, z1_new, z2_new = _biquad_filter_block(
-                    src,
-                    float(b0),
-                    float(b1),
-                    float(b2),
-                    float(a1),
-                    float(a2),
-                    float(z1),
-                    float(z2),
-                )
-                state[0] = float(z1_new)
-                state[1] = float(z2_new)
-                return out
-            except Exception:
-                pass
-
-        out = np.empty_like(src, dtype=np.float32)
-        for i in range(src.shape[0]):
-            x = float(src[i])
-            y = (b0 * x) + z1
-            z1 = (b1 * x) - (a1 * y) + z2
-            z2 = (b2 * x) - (a2 * y)
-            out[i] = y
-        state[0] = z1
-        state[1] = z2
-        return out
-
     def _ensure_iir_setup(self, sample_rate: float, low_hz: float, high_hz: float, channels: int):
         key = (int(sample_rate), round(float(low_hz), 3), round(float(high_hz), 3), int(channels))
         if key == self._iir_key:
@@ -3815,10 +4164,10 @@ class PreviewSinkTask(ACEAudioTask):
         out = signal.astype(np.float32, copy=False)
         for stage_idx, coeffs in enumerate(self._hp_coeffs):
             hp_state = self._iir_state.setdefault(f"{channel_key}:hp{stage_idx}", [0.0, 0.0])
-            out = self._run_biquad(out, coeffs, hp_state, use_numba=use_numba)
+            out = _run_biquad(out, coeffs, hp_state, use_numba=use_numba)
         for stage_idx, coeffs in enumerate(self._lp_coeffs):
             lp_state = self._iir_state.setdefault(f"{channel_key}:lp{stage_idx}", [0.0, 0.0])
-            out = self._run_biquad(out, coeffs, lp_state, use_numba=use_numba)
+            out = _run_biquad(out, coeffs, lp_state, use_numba=use_numba)
         return out
 
     def _section_coeffs(
@@ -3830,6 +4179,8 @@ class PreviewSinkTask(ACEAudioTask):
         key = (int(sample_rate), round(float(low_hz), 3), round(float(high_hz), 3))
         cached = self._section_coeff_cache.get(key)
         if cached is not None:
+            # LRU: move accessed entry to the end so it is evicted last.
+            self._section_coeff_cache.move_to_end(key)
             return cached
         nyquist = 0.5 * float(sample_rate)
         hp_coeffs: List[Tuple[float, float, float, float, float]] = []
@@ -3842,8 +4193,8 @@ class PreviewSinkTask(ACEAudioTask):
             lp_coeffs = [stage, stage]
         self._section_coeff_cache[key] = (hp_coeffs, lp_coeffs)
         if len(self._section_coeff_cache) > 64:
-            first_key = next(iter(self._section_coeff_cache.keys()))
-            self._section_coeff_cache.pop(first_key, None)
+            # LRU eviction: the first item is the least recently used.
+            self._section_coeff_cache.popitem(last=False)
         return self._section_coeff_cache[key]
 
     def _filter_section_channel(
@@ -3859,10 +4210,10 @@ class PreviewSinkTask(ACEAudioTask):
         hp_coeffs, lp_coeffs = self._section_coeffs(sample_rate, low_hz, high_hz)
         for stage_idx, coeffs in enumerate(hp_coeffs):
             state = self._iir_state.setdefault(f"{section_key}:hp{stage_idx}", [0.0, 0.0])
-            out = self._run_biquad(out, coeffs, state, use_numba=use_numba)
+            out = _run_biquad(out, coeffs, state, use_numba=use_numba)
         for stage_idx, coeffs in enumerate(lp_coeffs):
             state = self._iir_state.setdefault(f"{section_key}:lp{stage_idx}", [0.0, 0.0])
-            out = self._run_biquad(out, coeffs, state, use_numba=use_numba)
+            out = _run_biquad(out, coeffs, state, use_numba=use_numba)
         return out
 
     @staticmethod
@@ -3948,6 +4299,11 @@ class PreviewSinkTask(ACEAudioTask):
             return
         self._sparse_iir_key = key
         self._iir_state.clear()
+        # Clear the coefficient cache on layout change: stale entries for the old
+        # section layout (e.g. a previous chromagram frame) waste memory and can
+        # pollute cache hits if the same (sr, low, high) key reappears later with
+        # different surrounding context.
+        self._section_coeff_cache.clear()
 
     @staticmethod
     def _apply_preview_gain(
@@ -3959,17 +4315,52 @@ class PreviewSinkTask(ACEAudioTask):
         # Keep branch previews audible without aggressive clipping distortion.
         gain = min(1.6, max(1.0, 1.0 / max(math.sqrt(frac), 0.65)))
         mono_scaled = (mono.astype(np.float32, copy=False) * gain).astype(np.float32, copy=False)
-        stereo_scaled = None
+        stereo_scaled: Optional[np.ndarray] = None
         if stereo is not None:
-            stereo_scaled = (stereo.astype(np.float32, copy=False) * gain).astype(np.float32, copy=False)
+            _s = stereo.astype(np.float32, copy=False)
+            if _s.ndim == 2:
+                # Normalise to channels-first layout (shape: [channels, samples]).
+                # Incoming stereo from Stage-B workers is always (2, N); guard
+                # against any caller that passes (N, 2) by transposing when the
+                # second axis is the shorter one.
+                if _s.shape[0] > _s.shape[1] and _s.shape[1] in (1, 2):
+                    _s = _s.T
+                stereo_scaled = (_s * gain).astype(np.float32, copy=False)
+            # Non-2D stereo is silently dropped; caller is responsible for shape.
 
-        peak = float(np.max(np.abs(mono_scaled))) if mono_scaled.size > 0 else 0.0
-        if stereo_scaled is not None and stereo_scaled.size > 0:
-            peak = max(peak, float(np.max(np.abs(stereo_scaled))))
-        limiter = (0.98 / peak) if peak > 0.98 else 1.0
+        if mono_scaled.size == 0:
+            return mono_scaled, stereo_scaled
 
-        mono_out = (mono_scaled * limiter).astype(np.float32, copy=False)
-        stereo_out = (stereo_scaled * limiter).astype(np.float32, copy=False) if stereo_scaled is not None else None
+        # Per-sample look-ahead limiter using instant-attack vectorized numpy.
+        # Replaces the previous single-block peak divider (0.98/peak) which
+        # produced audible level-pumping: a single loud transient made the
+        # entire block quiet even when most samples were at a normal level.
+        ceiling = np.float32(0.98)
+        abs_mono = np.abs(mono_scaled)
+        if stereo_scaled is not None and stereo_scaled.ndim == 2 and stereo_scaled.size > 0:
+            abs_envelope = np.maximum(abs_mono, np.max(np.abs(stereo_scaled), axis=0))
+        else:
+            abs_envelope = abs_mono
+
+        # desired_gain[i] = min(1.0, ceiling / |signal[i]|)
+        desired = np.where(
+            abs_envelope > ceiling,
+            ceiling / np.maximum(abs_envelope, np.float32(1e-9)),
+            np.float32(1.0),
+        ).astype(np.float32, copy=False)
+
+        # Instant-attack via running minimum: gain is only allowed to fall,
+        # never rise within a block.  This prevents inter-sample pumping while
+        # keeping quiet regions at full gain.
+        gain_arr = np.minimum.accumulate(desired)
+
+        mono_out = (mono_scaled * gain_arr).astype(np.float32, copy=False)
+        stereo_out: Optional[np.ndarray] = None
+        if stereo_scaled is not None:
+            if stereo_scaled.ndim == 2:
+                stereo_out = (stereo_scaled * gain_arr[np.newaxis, :]).astype(np.float32, copy=False)
+            else:
+                stereo_out = (stereo_scaled * gain_arr).astype(np.float32, copy=False)
         return mono_out, stereo_out
 
     def process(self, inputs):
@@ -4123,10 +4514,14 @@ class PreviewSinkTask(ACEAudioTask):
 
 
 class AudioMathTask(ACEAudioTask):
-    """
-    Simple multi-input audio math over mono/stereo streams.
-    Supported operations: add, subtract, multiply.
-    Acts as a pass-through for a single input.
+    """Element-wise arithmetic over multiple audio streams.
+
+    Combines 1–8 mono/stereo ``AudioChunk`` inputs using a single configurable
+    operation (``add``, ``subtract``, ``multiply``).  Streams are resampled
+    to the length of the first (reference) input before the operation is
+    applied so mismatched block sizes are handled gracefully.
+
+    Acts as a transparent pass-through when only one input is present.
     """
     @staticmethod
     def _signal_for_math(
@@ -4360,9 +4755,17 @@ class AudioMathTask(ACEAudioTask):
 
 
 class ACEAudioGraph:
-    """
-    Represents the complete processing chain for a single Audio Source.
-    Isolated state for filters/buffers.
+    """Complete DSP processing chain for a single audio source.
+
+    Each graph owns a dictionary of ``ACEAudioTask`` nodes keyed by their
+    node ID, plus the serialized parallel IR used to dispatch Stage-B worker
+    jobs.  Graphs are compiled from the abstract tree IR by
+    ``ACEAudioEngine.compile()`` and evaluated each frame in
+    ``ACEAudioEngine.execute_next_frame()``.
+
+    Filter state, block-size buffers, and parallel bookkeeping are isolated
+    per-graph so that multiple simultaneous sources never share mutable DSP
+    state.
     """
     def __init__(self, source_context: Any, proxy_name: str):
         self.source_context = source_context

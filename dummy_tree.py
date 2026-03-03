@@ -1,3 +1,15 @@
+"""
+Blender Geometry Node group management for the AudioCore Engine add-on.
+
+``ACEDummyNodeFactory`` creates and maintains the hidden ``.ACE_*`` node
+groups that appear in the GN editor as the user-facing ACE nodes.  It uses a
+content hash of the ``ACE_NODES`` registry to skip the expensive O(N) scan
+on frames where the registry has not changed.
+
+``ACEDummyTreeReader`` parses an active Blender NodeTree into the engine's
+``ACEAbstractTree`` IR, performing an O(1) group-name → (category, type) reverse
+lookup via a hash-invalidated class-level dictionary.
+"""
 import bpy  # type: ignore
 import hashlib
 import json
@@ -16,13 +28,29 @@ from .id_management import ACEIdManager
 from . import utils
 
 class ACEDummyNodeFactory:
+    """Creates and manages Blender node groups based on the ACE_NODES registry.
+
+    All groups are GeometryNodeTree datablocks with a leading "." in their
+    name so they are hidden from the default user-facing Add menu but remain
+    accessible for programmatic use.  Internal wiring uses Blender 5.0+
+    Bundle/Separate-Bundle nodes for audio passing.
     """
-    Creates and Manages Blender Node Groups based on ACE_NODES configuration.
-    Uses Blender 5.0+ Bundle nodes for internal logic.
-    """
-    
+
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
+        """Return the canonical hidden datablock name for an ACE node group.
+
+        The leading "." prefix keeps the datablock out of the user-visible
+        Group list so it does not duplicate entries in the curated ACE add
+        menu.
+
+        Args:
+            category: ACE node category key (e.g. "stream", "delta").
+            node_type: ACE node type key within that category (e.g. "rms").
+
+        Returns:
+            The dot-prefixed name string, e.g. ".ACE_stream_rms".
+        """
         # Internal datablocks are hidden (leading ".") so the default Group list
         # does not duplicate the curated ACE add menu entries.
         return f".ACE_{category}_{node_type}"
@@ -78,12 +106,25 @@ class ACEDummyNodeFactory:
             pass
 
         # Cache the hash so subsequent calls with an unchanged registry skip the scan.
+        # Also invalidate the ACEDummyTreeReader reverse-lookup so it is rebuilt on
+        # next compilation — prevents stale entries after a registry hot-reload.
         if current_hash:
             ACEDummyNodeFactory._NODES_CONTENT_HASH = current_hash
+            ACEDummyTreeReader._GROUP_NAME_LOOKUP.clear()
+            ACEDummyTreeReader._ACE_NODES_LOOKUP_HASH = ""
 
     @staticmethod
     def rebuild_node_group(cat_key: str, type_key: str):
-        """Force-updates a specific Node Group definition."""
+        """Force-rebuild a single node group from the current ACE_NODES definition.
+
+        Clears the existing group interface and internal wiring before
+        rebuilding, so stale sockets are removed even if the group already
+        exists in bpy.data.node_groups.
+
+        Args:
+            cat_key: ACE node category key (e.g. "stream").
+            type_key: ACE node type key within that category (e.g. "rms").
+        """
         group_name = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
         
         try:
@@ -166,10 +207,46 @@ class ACEDummyNodeFactory:
             has_audio_in = any(n == "Audio" or n.startswith("Audio ") for n in inputs)
             has_audio_out = any(n == "Audio" or n.startswith("Audio ") for n in outputs)
             return not has_audio_in or not has_audio_out
+
+        # ── Delta nodes ──────────────────────────────────────────────────────
+        # All delta nodes share a single "Audio" input; outputs are fixed named
+        # bundles specific to each type.  Without these branches, socket-schema
+        # changes to delta nodes were silently ignored at startup, leaving stale
+        # sockets until the user forced a manual reload.
+        if node_type == "midside_splitter":
+            return "Audio" not in inputs or not {"Mid", "Side"}.issubset(outputs)
+        if node_type == "attackrelease_splitter":
+            return "Audio" not in inputs or not {"Attack", "Release"}.issubset(outputs)
+        if node_type == "auto_component_splitter":
+            return "Audio" not in inputs or not {"Percussive", "Harmonics", "Residual"}.issubset(outputs)
+        if node_type == "chromagram":
+            # 12 chroma outputs; verify at least the first (C) is present and
+            # the input is wired correctly.
+            return "Audio" not in inputs or "C" not in outputs
+        if node_type == "frequency_splitter":
+            # Dynamic output count; require at least the template "Audio" output.
+            return "Audio" not in inputs or not any(
+                n == "Audio" or n.startswith("Audio ") for n in outputs
+            )
+
         return False
 
     @staticmethod
     def _attr_socket_names(category: str, node_type: str) -> tuple[str, ...]:
+        """Return the Attribute-ID socket names that must remain visible for a node.
+
+        The Attribute ID sockets are string inputs that let GN expressions read
+        named mesh attributes written by the ACE runtime.  They must not be
+        hidden (hide_value=False) so users can set them in the node properties.
+
+        Args:
+            category: ACE node category key.
+            node_type: ACE node type key.
+
+        Returns:
+            A tuple of socket name strings.  Empty tuple for node types that
+            carry no attribute-ID sockets.
+        """
         if category == "stream":
             return ("Attribute ID",)
         if category == "utilities" and node_type == "src_specs":
@@ -180,6 +257,16 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def _ensure_attr_interface_visible(ng, category: str, node_type: str):
+        """Set hide_value=False on all Attribute-ID interface sockets of *ng*.
+
+        Blender may silently re-hide sockets after certain node group edits, so
+        this is called both during initial build and on refresh checks.
+
+        Args:
+            ng: The Blender GeometryNodeTree node group to patch.
+            category: ACE node category key.
+            node_type: ACE node type key.
+        """
         for attr_name in ACEDummyNodeFactory._attr_socket_names(category, node_type):
             item = next(
                 (
@@ -196,6 +283,17 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def _build_group_content(ng, node_def, category, node_type):
+        """Populate the interface sockets and internal wiring of a node group.
+
+        Delegates internal wiring to _create_dummy_internals() after building
+        the socket interface from *node_def*.
+
+        Args:
+            ng: The target GeometryNodeTree to populate.
+            node_def: The ACE_NODES node definition dict for this node type.
+            category: ACE node category key.
+            node_type: ACE node type key.
+        """
         # --- 1. INTERFACE ---
         inputs = node_def.get('inputs', [])
         for sock_type_str, sock_name in inputs:
@@ -378,10 +476,44 @@ class ACEDummyNodeFactory:
 
 
 class ACEDummyTreeReader:
+    """Parse an active Blender GeometryNodeTree into an ACEAbstractTree.
+
+    Performs a breadth-first traversal from all managed source nodes,
+    assigning or verifying ACE IDs for each ACE node group encountered,
+    wiring abstract links, and capturing socket-level parameters.
+
+    The resulting ACEAbstractTree is consumed by ACEAudioEngine.compile()
+    to build the parallel DSP graph IR.
     """
-    Parses the active Blender Node Tree into an ACEAbstractTree.
-    """
-    
+
+    # Reverse lookup: group_name (and its stripped variant) → (cat_key, type_key).
+    # Rebuilt automatically when ACE_NODES content hash changes so add-on reloads
+    # and registry extensions are reflected without a full Blender restart.
+    _GROUP_NAME_LOOKUP: dict[str, tuple[str, str]] = {}
+    _ACE_NODES_LOOKUP_HASH: str = ""
+
+    @classmethod
+    def _ensure_group_name_lookup(cls):
+        """Populate (or invalidate and rebuild) _GROUP_NAME_LOOKUP from ACE_NODES.
+
+        Uses the same blake2b hash as ACEDummyNodeFactory to detect registry
+        changes.  The lookup is rebuilt on first use and whenever the registry
+        hash differs from the cached value.
+        """
+        current_hash = ACEDummyNodeFactory._ace_nodes_hash()
+        if cls._GROUP_NAME_LOOKUP and current_hash and current_hash == cls._ACE_NODES_LOOKUP_HASH:
+            return
+        cls._GROUP_NAME_LOOKUP.clear()
+        for cat_key, category in ACE_NODES.items():
+            for type_key in category.get("nodes", {}).keys():
+                canonical = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
+                cls._GROUP_NAME_LOOKUP[canonical] = (cat_key, type_key)
+                norm = canonical.lstrip(".")
+                if norm != canonical:
+                    cls._GROUP_NAME_LOOKUP[norm] = (cat_key, type_key)
+        if current_hash:
+            cls._ACE_NODES_LOOKUP_HASH = current_hash
+
     def __init__(self, blender_node_tree):
         self.bl_tree = blender_node_tree
         self.abstract_tree = ACEAbstractTree()
@@ -394,6 +526,12 @@ class ACEDummyTreeReader:
 
     @staticmethod
     def _node_pointer(node) -> int:
+        """Return a stable integer identity for a Blender node.
+
+        Uses as_pointer() when available (Blender C-level pointer) and falls
+        back to Python id() so the result is always an int regardless of node
+        type.
+        """
         try:
             return int(node.as_pointer())
         except Exception:
@@ -407,6 +545,23 @@ class ACEDummyTreeReader:
         node_type: str,
         deterministic_seed: str = "",
     ) -> str:
+        """Guarantee that *ace_id* is used by at most one Blender node per read pass.
+
+        If the ID is already claimed by a different node pointer (i.e. the user
+        duplicated a node with Shift+D), a fresh deterministic ID is generated
+        and persisted back into bl_node["ace_id"] so the duplicate gets a
+        stable unique identity on subsequent sessions.
+
+        Args:
+            bl_node: The Blender node whose ace_id is being resolved.
+            ace_id: Candidate ID string from the node's custom property.
+            category: ACE node category key.
+            node_type: ACE node type key.
+            deterministic_seed: Optional seed payload for collision resolution.
+
+        Returns:
+            A unique ACE ID string assigned to *bl_node* for this read pass.
+        """
         if not ace_id:
             return ""
         node_ptr = self._node_pointer(bl_node)
@@ -450,23 +605,27 @@ class ACEDummyTreeReader:
         if not group_name:
             return "", ""
 
+        # O(1) exact lookup via pre-built reverse dict — avoids O(categories×types)
+        # scan on every node during compilation of large GN trees.
+        self._ensure_group_name_lookup()
+        result = self._GROUP_NAME_LOOKUP.get(group_name)
+        if result:
+            return result
+        norm_group_name = group_name.lstrip(".")
+        result = self._GROUP_NAME_LOOKUP.get(norm_group_name)
+        if result:
+            return result
+
+        # Fallback: prefix-based scan for dynamic variants (e.g. frequency_splitter_3bands,
+        # audio_math_3).  Only reached for group names not in the exact lookup.
         resolved_cat = ""
         resolved_type = ""
-        norm_group_name = group_name.lstrip(".")
         clean_group_name = ACEIdManager._clean_string(norm_group_name).lower()
         for cat_key, category in ACE_NODES.items():
             for type_key in category.get("nodes", {}).keys():
                 canonical = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
                 norm_canonical = canonical.lstrip(".")
                 clean_canonical = ACEIdManager._clean_string(norm_canonical).lower()
-                if (
-                    group_name == canonical
-                    or norm_group_name == norm_canonical
-                    or (clean_group_name and clean_group_name == clean_canonical)
-                ):
-                    resolved_cat = cat_key
-                    resolved_type = type_key
-                    break
                 if (
                     cat_key == "delta"
                     and type_key == "frequency_splitter"
@@ -592,6 +751,12 @@ class ACEDummyTreeReader:
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     def build(self) -> ACEAbstractTree:
+        """Execute the full parse pass and return the populated ACEAbstractTree.
+
+        Returns:
+            The ACEAbstractTree built from the Blender node tree supplied at
+            construction time.  Returns an empty tree if bl_tree is None.
+        """
         if not self.bl_tree: return self.abstract_tree
         sources = self._find_source_nodes()
         if sources:
@@ -628,6 +793,21 @@ class ACEDummyTreeReader:
             )
 
     def _ensure_ace_id(self, bl_node, root_id: str = "") -> str:
+        """Return the ACE ID for *bl_node*, generating one deterministically if absent.
+
+        Source management nodes use the ace_source_id property as the ID
+        (stable across renames).  All other nodes derive their ID from a
+        content hash of their socket signature and topology context so that the
+        same physical wiring always yields the same ID without persisting state.
+
+        Args:
+            bl_node: The Blender node to identify.
+            root_id: The source root identifier for deterministic seed scoping.
+
+        Returns:
+            A non-empty ACE ID string, or an empty string if the node is not an
+            ACE node group.
+        """
         node_ptr = self._node_pointer(bl_node)
         cached = self._node_id_by_ptr.get(node_ptr)
         if cached:
@@ -675,6 +855,17 @@ class ACEDummyTreeReader:
         )
 
     def _find_source_nodes(self):
+        """Return all managed source placeholder nodes in the Blender tree.
+
+        Only nodes that carry a valid ace_source_id (written by
+        ACEProxyManager._sync_sonar_tree) are included.  Ad-hoc group nodes
+        that look like source nodes but lack a bound source are excluded so
+        unlinked placeholder copies do not generate phantom graph sources.
+
+        Returns:
+            A list of Blender node objects of type 'GROUP' with category
+            "source_mngmt" and type "src".
+        """
         sources = []
         for node in self.bl_tree.nodes:
             root_id = self._resolve_root_id(node)

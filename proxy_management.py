@@ -7,9 +7,15 @@ from .abstract_tree import ACEAbstractTree
 from .dummy_tree import ACEDummyNodeFactory
 
 class ACEProxyManager:
-    """
-    Manages proxy objects (creation, placement) and acts as the attribute writer.
-    A single class keeps lifecycle and write-path coherent.
+    """Manage proxy objects and write DSP results as Blender mesh attributes.
+
+    A proxy object is a single-vertex mesh stored in the hidden ACE_Internals
+    collection.  Stream analysis results (floats, vectors, colors) are written
+    to named point-domain attributes on the proxy mesh each frame so Geometry
+    Nodes can read them via Named Attribute nodes.
+
+    The manager caches attribute RNA handles and last-written values to avoid
+    redundant Blender API calls on frames where values have not changed.
     """
 
     # "Pro" name for the invisible collection
@@ -33,6 +39,15 @@ class ACEProxyManager:
 
     @staticmethod
     def _resolve_scene(scene=None):
+        """Return a valid Blender scene, falling back to bpy.context then bpy.data.
+
+        Args:
+            scene: A Blender scene to return directly when provided.
+
+        Returns:
+            The first available Blender scene, or None if Blender data is not
+            accessible in the current context.
+        """
         if scene is not None:
             return scene
         active_scene = getattr(getattr(bpy, "context", None), "scene", None)
@@ -43,9 +58,18 @@ class ACEProxyManager:
 
     @staticmethod
     def _ensure_internal_collection(scene=None) -> bpy.types.Collection:
-        """
-        Creates or retrieves the hidden collection for proxy objects.
-        Configures it to be blue and invisible.
+        """Create or retrieve the hidden ACE_Internals collection.
+
+        Links the collection into the target scene if not already present, marks
+        it blue (COLOR_05) for visual distinction, and hides it from both viewport
+        and render so proxy objects never appear in the user's scene.
+
+        Args:
+            scene: Optional Blender scene to link the collection into.  Resolved
+                via _resolve_scene() when None.
+
+        Returns:
+            The ACE_Internals bpy.types.Collection.
         """
         if ACEProxyManager.COLLECTION_NAME in bpy.data.collections:
             col = bpy.data.collections[ACEProxyManager.COLLECTION_NAME]
@@ -73,9 +97,19 @@ class ACEProxyManager:
 
     @staticmethod
     def ensure_proxy_for_source(source_prop, scene=None) -> bpy.types.Object:
-        """
-        Creates or Retrieves the single-vertex proxy mesh for an Audio Source.
-        Updates the source_prop.proxy_object_name reference.
+        """Create or retrieve the single-vertex proxy mesh for an audio source.
+
+        Derives the proxy name deterministically from the source name and
+        stable_id so the same proxy is found across sessions without relying
+        on Python object identity.  Moves the proxy into the hidden
+        ACE_Internals collection if it is not there already.
+
+        Args:
+            source_prop: An ACEAudioSource property-group instance.
+            scene: Optional Blender scene; resolved via _resolve_scene() when None.
+
+        Returns:
+            The proxy Blender Object.  Also writes source_prop.proxy_object_name.
         """
         try:
             ACEIdManager.ensure_source_uid(source_prop)
@@ -125,7 +159,12 @@ class ACEProxyManager:
 
     @staticmethod
     def _move_to_internal_collection(obj, scene=None):
-        """Helper to ensure existing proxies are moved to the hidden collection."""
+        """Move an object into ACE_Internals, unlinking it from all other collections.
+
+        Args:
+            obj: The bpy.types.Object to relocate.
+            scene: Optional Blender scene; forwarded to _ensure_internal_collection().
+        """
         target_col = ACEProxyManager._ensure_internal_collection(scene=scene)
         if obj.name in target_col.objects:
             return
@@ -137,8 +176,14 @@ class ACEProxyManager:
 
     @staticmethod
     def delete_proxy_for_source(source_prop):
-        """
-        Removes the proxy object and its mesh data.
+        """Remove the proxy object and its orphaned mesh data block from Blender.
+
+        Clears source_prop.proxy_object_name on completion so subsequent calls
+        are no-ops.  Safe to call when no proxy has been created yet.
+
+        Args:
+            source_prop: An ACEAudioSource property-group instance whose
+                proxy_object_name identifies the object to delete.
         """
         if not source_prop.proxy_object_name:
             return
@@ -157,12 +202,29 @@ class ACEProxyManager:
     # =========================================================================
 
     def set_abstract_tree(self, abstract_tree: ACEAbstractTree):
+        """Replace the active abstract tree and rebuild the output definition cache.
+
+        Clears all previously cached output definitions before re-running
+        _cache_output_defs() so stale attribute slugs from the old tree are not
+        carried forward.
+
+        Args:
+            abstract_tree: The new ACEAbstractTree to use for output definitions.
+        """
         self.abstract_tree = abstract_tree
         self.output_defs.clear()
         self._cache_output_defs()
 
     def _cache_output_defs(self):
-        """Precompute attribute slugs and data types for all stream/spec outputs."""
+        """Precompute attribute slugs and Blender data types for all writeable outputs.
+
+        Iterates over stream, source_specs, and scanner nodes in the abstract tree.
+        For each non-bundle output socket, builds a dict entry keyed by
+        ``"<node_id>:<socket_idx>"`` containing the derived attribute name slug,
+        Blender attribute type, and any user-supplied Attribute ID overrides.
+        Results are stored in self.output_defs and consumed by _select_attr_name()
+        and ensure_attributes_exist().
+        """
         if not self.abstract_tree:
             return
 
@@ -198,7 +260,15 @@ class ACEProxyManager:
 
     @staticmethod
     def _resolve_attr_type(sock_type: str) -> str:
-        """Map socket data type to a Blender attribute type."""
+        """Map a GN socket data type string to a Blender mesh attribute type.
+
+        Args:
+            sock_type: A socket type string such as ``'VECTOR'``, ``'RGBA'``, or
+                a NodeSocket class name like ``'NodeSocketVector'``.
+
+        Returns:
+            One of ``'FLOAT'``, ``'FLOAT_VECTOR'``, or ``'FLOAT_COLOR'``.
+        """
         attr_type = 'FLOAT'
         if sock_type in ('VECTOR', 'NodeSocketVector'):
             attr_type = 'FLOAT_VECTOR'
@@ -207,8 +277,22 @@ class ACEProxyManager:
         return attr_type
 
     def _select_attr_name(self, proxy_name: str, info: Dict[str, Any]) -> str:
-        """
-        Choose the attribute name for a given output, respecting user-provided Attribute ID.
+        """Choose the mesh attribute name for a given output definition.
+
+        When the user has explicitly set a custom Attribute ID on the node socket,
+        that string is sanitised and returned (with the ACE prefix prepended if
+        absent).  Otherwise a compact auto-generated name is derived via
+        ACEIdManager.generate_compact_attr_name().
+
+        Args:
+            proxy_name: The proxy object name; used as the source hint in the
+                auto-generated name.
+            info: An output definition dict from self.output_defs containing
+                at minimum ``node_id``, ``socket_idx``, ``output_name``,
+                ``attr_id``, and ``attr_custom``.
+
+        Returns:
+            A Blender-compatible attribute name string (max 63 characters).
         """
         custom = info.get("attr_id")
         custom_is_explicit = bool(info.get("attr_custom", False))
@@ -231,7 +315,30 @@ class ACEProxyManager:
         active_keys: Set[str] | None = None,
         prune_existing: bool = False,
     ):
-        """Create (or fix type of) attributes on the proxy mesh for every output node."""
+        """Create or repair named point-domain attributes on the proxy mesh.
+
+        Iterates over the output definitions produced by _cache_output_defs() and
+        ensures that each required attribute exists with the correct Blender data
+        type.  Attributes with a mismatched type are removed and re-created.
+
+        When active_keys is an empty set and prune_existing is True all ACE
+        attributes on the mesh are removed (compile-time cleanup path).  When
+        active_keys is None a full sync is performed, which also prunes any ACE
+        attributes not in the current required set.
+
+        Flushes the per-mesh RNA handle cache and last-written value cache
+        whenever the attribute layout changes so stale handles are not used.
+
+        Args:
+            proxy: The proxy bpy.types.Object whose mesh attributes to manage.
+            abstract_tree: Optional replacement abstract tree; triggers a call to
+                set_abstract_tree() when different from the current one.
+            active_keys: Subset of output_defs keys to sync.  None means all keys
+                (full sync with pruning).  Empty set with prune_existing=True
+                removes all ACE attributes.
+            prune_existing: When True, also remove ACE attributes not in the
+                required set even for a scoped (non-None active_keys) sync.
+        """
         mesh = getattr(proxy, "data", None)
         if not mesh:
             return
@@ -285,6 +392,21 @@ class ACEProxyManager:
             self._write_buffer_cache.pop(mesh.name, None)
 
     def _get_write_buffer(self, mesh_name: str, attr_name: str, length: int) -> np.ndarray:
+        """Return a reusable float32 NumPy buffer for bulk attribute writes.
+
+        Caches one buffer per (mesh_name, attr_name, length) combination.
+        A new array is allocated only when the cache entry is missing or the
+        stored array's length does not match, avoiding per-frame allocations on
+        steady-state writes.
+
+        Args:
+            mesh_name: Blender mesh data-block name used as the cache namespace.
+            attr_name: Attribute name used as the secondary cache key.
+            length: Required number of float32 elements in the buffer.
+
+        Returns:
+            A float32 NumPy array of shape (length,).
+        """
         mesh_buffers = self._write_buffer_cache.setdefault(mesh_name, {})
         key = f"{attr_name}:{int(length)}"
         arr = mesh_buffers.get(key)
@@ -294,12 +416,39 @@ class ACEProxyManager:
         return arr
 
     def clear_runtime_caches(self):
+        """Discard all cached RNA handles, last-written values, and write buffers.
+
+        Call this after the proxy object is replaced or after the attribute layout
+        is known to have changed outside the manager's control (e.g., manual
+        attribute deletion in the Properties editor) to force a full cold-path
+        read on the next update_proxy_object() call.
+        """
         self._attr_cache.clear()
         self._last_values.clear()
         self._write_buffer_cache.clear()
 
     def update_proxy_object(self, proxy: bpy.types.Object, results: Dict[str, Any], active_keys: Set[str] | None = None):
-        """Write current results dict into the proxy's attributes."""
+        """Write DSP result values into the proxy mesh's named attributes.
+
+        Skips writes for float attributes whose value has not changed by more than
+        1e-6 since the last call (delta suppression) to reduce Blender depsgraph
+        dirtying overhead.  Transient pulse attributes (onset, flux) are exempt
+        from delta suppression because their peak value and a subsequent 0.0 reset
+        can arrive on consecutive frames with identical ``prev`` state.
+
+        Falls back to writing zero values when the primary write raises an
+        exception, to keep downstream GN graphs in a defined state.
+
+        Uses foreach_set() with a reusable write buffer for multi-element meshes,
+        and direct index assignment for the common single-vertex proxy case.
+
+        Args:
+            proxy: The proxy bpy.types.Object to write attribute values into.
+            results: Mapping of ``"<node_id>:<socket_idx>"`` keys to result values
+                (float, list, tuple, or ndarray depending on attribute type).
+            active_keys: Optional subset of keys to process.  None means all keys
+                present in results.
+        """
         mesh = getattr(proxy, "data", None)
         if not mesh:
             return
@@ -422,6 +571,16 @@ class ACEProxyManager:
     # =========================================================================
     @staticmethod
     def _cube_vertices_faces(size: float = 2.0):
+        """Return vertex and face lists for an axis-aligned cube.
+
+        Args:
+            size: Full edge length of the cube.  Default is 2.0 (unit cube
+                spanning -1 to +1 on each axis).
+
+        Returns:
+            A (verts, faces) tuple where verts is a list of 8 (x, y, z) triples
+            and faces is a list of 6 quad index tuples.
+        """
         h = size * 0.5
         verts = [
             (-h, -h, -h),

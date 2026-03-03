@@ -32,6 +32,7 @@ class ACE_UL_dependencies(bpy.types.UIList):
             return
 
         is_installed = utils.is_module_installed(item.library_id)
+        in_vendor = utils.is_module_in_vendor(item.library_id)
         row = layout.row(align=True)
         row.label(text=item.display_name, icon="CHECKMARK" if is_installed else "ERROR")
 
@@ -39,13 +40,17 @@ class ACE_UL_dependencies(bpy.types.UIList):
         desc.enabled = False
         desc.label(text=item.description)
 
-        op_icon = "TRASH" if is_installed else "IMPORT"
-        op_text = ""  # icon-only button to keep the list compact
-        if is_installed:
-            op = row.operator("audiocore.uninstall_library", text=op_text, icon=op_icon)
+        if in_vendor:
+            # ACE-managed install: allow uninstall
+            op = row.operator("audiocore.uninstall_library", text="", icon="TRASH")
+            op.library_name = item.library_id
+        elif is_installed:
+            # Installed externally (system pip, Blender Extensions, etc.): read-only
+            row.label(text="External", icon="LINKED")
         else:
-            op = row.operator("audiocore.install_library", text=op_text, icon=op_icon)
-        op.library_name = item.library_id
+            # Not installed: offer install
+            op = row.operator("audiocore.install_library", text="", icon="IMPORT")
+            op.library_name = item.library_id
 
 
 # --- Add-on preferences ---

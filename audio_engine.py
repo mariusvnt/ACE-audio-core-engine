@@ -1,3 +1,19 @@
+"""
+Core orchestration layer for the AudioCore Engine Blender add-on.
+
+Responsibilities:
+  - ``ACEAudioEngine``: singleton-per-scene orchestrator that owns the
+    compile/execute lifecycle, the parallel DSP worker pool, all
+    ``ACEAudioGraph`` instances, and the shared preview monitor.
+  - Stage-A (main thread): frame-change handler calls ``execute_next_frame``,
+    which dispatches parallel jobs and writes results back to proxy attributes.
+  - Stage-B (subprocess workers): bpy-free evaluation delegated via
+    ``evaluate_parallel_job`` from ``parallel_dsp``.
+  - Stage-C (main thread): ``ACEProxyManager`` commits Stage-B results to
+    Blender mesh attributes.
+  - Layer-3 preview: ``_ACEPreviewAudioMonitor`` / ``_ACEPreviewFeeder``
+    drive a real-time sounddevice output stream fed from the DSP pipeline.
+"""
 import json
 import hashlib
 import math
@@ -56,6 +72,8 @@ from .audio_tasks_registry import (
     StereoVectorTask,
     PreviewSinkTask,
     AudioMathTask,
+    _clear_file_open_locks,
+    reset_biquad_fallback_warned,
 )
 from . import utils
 
@@ -142,7 +160,13 @@ class _ACEPreviewFeeder:
     _MIN_PUSH_FRAMES: int = 64
 
     def __init__(self):
-        self._buf: np.ndarray = np.zeros((0, 2), dtype=np.float32)
+        """Initialise the feeder with empty buffers and a stopped thread."""
+        # Internal audio store: deque of (n, 2) float32 blocks + total frame count.
+        # Using a deque avoids the per-push np.concatenate allocation of the old
+        # single-ndarray approach; blocks are appended without copying and consumed
+        # from the front in _loop via _pop_frames_locked().
+        self._deque: deque = deque()
+        self._deque_frames: int = 0
         self._lock = threading.Lock()
         self._work_event = threading.Event()
         self._stop_flag: bool = True
@@ -168,7 +192,8 @@ class _ACEPreviewFeeder:
     ):
         """(Re-)configure the feeder. Flushes the internal buffer on change."""
         with self._lock:
-            self._buf = np.zeros((0, 2), dtype=np.float32)
+            self._deque.clear()
+            self._deque_frames = 0
             self._sample_rate = max(int(sample_rate), 1)
             self._fps = max(float(fps), 1.0)
             self._drain_block = max(int(drain_block), 64)
@@ -178,38 +203,46 @@ class _ACEPreviewFeeder:
         self._work_event.clear()
 
     def update_fps(self, fps: float):
+        """Update the playback frame rate used by the drift-correction cap."""
         with self._lock:
             self._fps = max(float(fps), 1.0)
 
     def push_frames(self, frames: np.ndarray):
-        """Accept stereo float32 audio from the prepare thread."""
+        """Accept stereo float32 audio from the prepare thread.
+
+        Appends *frames* as a new block in the internal deque without copying or
+        allocating a merged array.  The soft drift-correction cap evicts the oldest
+        block(s) when the total frame count exceeds the real-time window ceiling.
+        """
         arr = np.asarray(frames, dtype=np.float32)
         if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] == 0:
             return
         with self._lock:
-            self._buf = (
-                np.concatenate((self._buf, arr), axis=0)
-                if self._buf.shape[0] > 0
-                else arr.copy()
-            )
-            # Soft drift-correction cap: keep at most N real-time frames.
-            # Trims oldest audio when analysis overshoots the real-time rate.
+            self._deque.append(arr)
+            self._deque_frames += int(arr.shape[0])
+            # Soft drift-correction cap: drop oldest blocks when total stored audio
+            # exceeds N real-time frames to prevent A/V sync drift.
             rt = max(int(round(self._sample_rate / max(self._fps, 1.0))), 1)
             cap = max(rt * self._RT_FRAMES_CAP_MULTIPLIER, self._drain_block * 8)
-            if self._buf.shape[0] > cap:
-                self._buf = self._buf[-cap:]   # Keep newest; drop oldest for A/V sync
+            while self._deque_frames > cap and self._deque:
+                dropped = self._deque.popleft()
+                self._deque_frames -= int(dropped.shape[0])
+            if self._deque_frames < 0:
+                self._deque_frames = 0
         self._work_event.set()
 
     def flush(self):
         """Discard all buffered audio (call on seek / scrub)."""
         with self._lock:
-            self._buf = np.zeros((0, 2), dtype=np.float32)
+            self._deque.clear()
+            self._deque_frames = 0
             self._prefilled = False
         self._work_event.clear()
 
     def buffered_frame_count(self) -> int:
+        """Return the total number of stereo frames currently held in the buffer."""
         with self._lock:
-            return int(self._buf.shape[0] or 0)
+            return int(self._deque_frames)
 
     def notify_ring_low(self):
         """Wake the feeder when the hardware callback drained the ring."""
@@ -243,6 +276,37 @@ class _ACEPreviewFeeder:
     # Feed loop
     # ------------------------------------------------------------------
 
+    def _pop_frames_locked(self, n: int) -> np.ndarray:
+        """Pop exactly *n* stereo frames from the front of the deque.
+
+        Must be called while holding self._lock.  Handles partial head-block
+        reads without copying the entire buffer — only the head slice is
+        materialised when a block spans the take boundary.  For the common case
+        where *n* == block size the head block is returned directly (zero copy).
+        """
+        out: list = []
+        remaining = n
+        while remaining > 0 and self._deque:
+            head = self._deque[0]
+            head_n = int(head.shape[0])
+            if head_n <= remaining:
+                self._deque.popleft()
+                self._deque_frames -= head_n
+                out.append(head)
+                remaining -= head_n
+            else:
+                out.append(head[:remaining])
+                self._deque[0] = head[remaining:]
+                self._deque_frames -= remaining
+                remaining = 0
+        if self._deque_frames < 0:
+            self._deque_frames = 0
+        if not out:
+            return np.zeros((0, 2), dtype=np.float32)
+        if len(out) == 1:
+            return out[0]
+        return np.concatenate(out, axis=0)
+
     def _loop(self):
         while True:
             if not self._work_event.wait(timeout=0.25):
@@ -266,6 +330,12 @@ class _ACEPreviewFeeder:
                 if ring_append_fn is None:
                     break
 
+                # ring_pressure_fn reads _ACEPreviewAudioMonitor._ring_frames without
+                # holding the monitor's lock.  On CPython the GIL makes integer reads
+                # atomic, so the worst case is a momentarily stale fill estimate that
+                # causes at most one extra block pushed into the ring — acceptable.
+                # Adding the monitor lock here would create a cross-lock dependency and
+                # is not warranted for a soft pressure signal.
                 pressure = (
                     float(ring_pressure_fn())
                     if ring_pressure_fn is not None
@@ -284,12 +354,12 @@ class _ACEPreviewFeeder:
                 with self._lock:
                     if self._stop_flag:
                         return
-                    available = int(self._buf.shape[0] or 0)
+                    available = int(self._deque_frames)
                     if not self._prefilled:
                         if available < prefill_frames:
                             break
                         self._prefilled = True
-                        available = int(self._buf.shape[0] or 0)
+                        available = int(self._deque_frames)
                     if available >= drain_block:
                         take_n = drain_block
                     elif available >= min_push or (available > 0 and pressure <= 0.0):
@@ -297,20 +367,48 @@ class _ACEPreviewFeeder:
                         partial = True
                     else:
                         break
-                    block = self._buf[:take_n].copy()
-                    self._buf = self._buf[take_n:]
+                    block = self._pop_frames_locked(take_n)
 
                 try:
                     ring_append_fn(block)
-                except Exception:
-                    pass
+                except Exception as _ring_exc:
+                    # Log the first ring-append failure only to avoid flooding the
+                    # console in the audio-callback hot path.  Subsequent failures are
+                    # silent because the feeder continues running and will retry on the
+                    # next loop iteration.
+                    if not getattr(self, "_ring_append_error_logged", False):
+                        self._ring_append_error_logged = True
+                        try:
+                            utils.log(
+                                f"[ACE-Feeder] ring_append_fn failed (audio may drop): {_ring_exc!r}",
+                                "WARNING",
+                            )
+                        except Exception:
+                            pass
 
                 if partial:
                     break
 
 
 class _ACEPreviewAudioMonitor:
-    """Optional sounddevice-backed monitor for branch preview output."""
+    """sounddevice-backed real-time audio monitor for branch preview output.
+
+    Manages a hardware output stream at a fixed block size and feeds it from a
+    small ring buffer.  Audio is prepared (limiter, resampling, stereo layout)
+    on a dedicated ``ACEPreviewMonitor`` daemon thread and then handed to an
+    ``_ACEPreviewFeeder`` instance that paces delivery to the ring at the
+    hardware drain rate.
+
+    Lifecycle:
+      - ``push_chunk()`` enqueues an ``AudioChunk`` from the main thread.
+      - The prepare thread calls ``_prepare_preview_payload()`` which runs the
+        safety limiter and routes the result through the feeder.
+      - The sounddevice callback drains the ring in real time.
+      - ``close()`` stops the prepare thread and the hardware stream.
+
+    Thread safety: all ring and statistic fields are protected by ``self._lock``.
+    The prepare thread is coordinated via ``self._prepare_condition``.
+    """
 
     def __init__(self):
         self._backend = None
@@ -346,6 +444,9 @@ class _ACEPreviewAudioMonitor:
         self._preview_prepare_drop_frames = 0
         self._last_callback_ts = 0.0
         self._last_push_ts = 0.0
+        self._preview_consecutive_errors: int = 0
+        self._preview_error_threshold: int = 5
+        self._analysis_block_size_hint: int = 0
 
     @staticmethod
     def _diag_percentile(values, q: float) -> float:
@@ -407,6 +508,15 @@ class _ACEPreviewAudioMonitor:
             return 1024
         return 512
 
+    def hint_block_size(self, block_size: int) -> None:
+        """Inform the monitor of the current analysis block size.
+
+        When non-zero, this value is used instead of _preferred_block_size() as
+        the hardware stream block size, aligning the hardware drain cadence with
+        the DSP chunk cadence and reducing preview latency by up to 2×.
+        """
+        self._analysis_block_size_hint = max(int(block_size), 0)
+
     @staticmethod
     def _chunk_frame_count(chunk) -> int:
         try:
@@ -459,11 +569,14 @@ class _ACEPreviewAudioMonitor:
                 continue
             try:
                 self._prepare_preview_payload(payload)
+                self._preview_consecutive_errors = 0
             except Exception as _exc:
+                self._preview_consecutive_errors += 1
                 try:
                     import traceback as _tb
                     utils.log(
-                        f"[ACE-Preview] _prepare_preview_payload error: {_exc!r}\n{_tb.format_exc()}",
+                        f"[ACE-Preview] _prepare_preview_payload error "
+                        f"(#{self._preview_consecutive_errors}): {_exc!r}\n{_tb.format_exc()}",
                         "WARNING",
                     )
                 except Exception:
@@ -537,7 +650,12 @@ class _ACEPreviewAudioMonitor:
             return False
 
         sample_rate = max(int(sample_rate), 1)
-        block_size = max(int(self._preferred_block_size(sample_rate)), 64)
+        # Prefer the analysis block size (set by hint_block_size) so the hardware
+        # drain cadence matches the DSP chunk cadence, halving preview latency.
+        if self._analysis_block_size_hint >= 64:
+            block_size = max(int(self._analysis_block_size_hint), 64)
+        else:
+            block_size = max(int(self._preferred_block_size(sample_rate)), 64)
         if self._stream and self._sample_rate == sample_rate and self._block_size == block_size:
             return True
 
@@ -571,7 +689,7 @@ class _ACEPreviewAudioMonitor:
             utils.log(f"Preview monitor stream init failed: {e}", "WARNING")
             self._stream = None
             self._sample_rate = 0
-            self._block_size = max(int(self._preferred_block_size(sample_rate)), 64)
+            self._block_size = block_size  # already resolved above (hint or heuristic)
             self._max_ring_frames = max(self._block_size * 16, sample_rate // 4)
             return False
 
@@ -644,6 +762,13 @@ class _ACEPreviewAudioMonitor:
         self._feeder.update_fps(self._scene_fps)
 
     def _prepare_preview_payload(self, payload: Dict[str, Any]):
+        """Apply the safety limiter to a queued payload and route it through the feeder.
+
+        Called from the prepare thread.  Extracts stereo frames from the chunk,
+        ensures the hardware stream exists at the correct sample rate, runs the
+        limiter, then hands the result to the autonomous feeder rather than writing
+        directly to the ring so that hardware drain pacing is preserved.
+        """
         chunk = payload.get("chunk")
         sample_rate = int(payload.get("sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
         frames = self._chunk_to_stereo_frames(chunk)
@@ -666,6 +791,12 @@ class _ACEPreviewAudioMonitor:
         self._feeder.push_frames(arr)
 
     def push_chunk(self, chunk) -> bool:
+        """Enqueue an AudioChunk for asynchronous prepare and playback.
+
+        Called from the main thread.  Returns True if the chunk was accepted
+        into the prepare queue; False if the backend is unavailable, the
+        sample rate is invalid, or the worker is stopped.
+        """
         sample_rate = int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
         if sample_rate <= 0:
             return False
@@ -682,6 +813,18 @@ class _ACEPreviewAudioMonitor:
         return True
 
     def diagnostics_snapshot(self, reset: bool = False) -> Dict[str, float]:
+        """Return accumulated playback diagnostics as a flat float dict.
+
+        Args:
+            reset: When True, clear all counters and history after sampling.
+
+        Returns:
+            Dict with keys: preview_pushes, preview_pushed_frames,
+            preview_underruns, preview_underrun_frames, preview_queue_drops,
+            preview_queue_pressure, preview_callback_p95_ms,
+            preview_latency_p95_ms, preview_prepare_drops,
+            preview_prepare_drop_frames, preview_prepare_queue_pressure.
+        """
         with self._prepare_condition:
             prepare_depth = int(len(self._prepare_queue))
             prepare_capacity = max(int(self._prepare_queue_limit), 1)
@@ -718,6 +861,16 @@ class _ACEPreviewAudioMonitor:
             return snapshot
 
     def current_snapshot(self) -> Dict[str, float]:
+        """Return a real-time latency snapshot for the N-panel live display.
+
+        Unlike ``diagnostics_snapshot``, this method computes instantaneous
+        values (current buffer backlog, latest callback interval) rather than
+        accumulating history, and does not support a reset flag.
+
+        Returns:
+            Dict with keys: preview_branch_latency_ms, preview_output_buffer_ms,
+            preview_callback_ms.  All values are 0.0 when preview is inactive.
+        """
         now_ts = time.perf_counter()
         feeder_frames = int(self._feeder.buffered_frame_count())
         with self._prepare_condition:
@@ -771,6 +924,7 @@ class _ACEPreviewAudioMonitor:
         }
 
     def clear(self):
+        """Discard all queued and buffered audio (called on seek or scrub)."""
         with self._prepare_condition:
             self._prepare_queue.clear()
         self._feeder.flush()
@@ -781,6 +935,12 @@ class _ACEPreviewAudioMonitor:
             self._last_push_ts = 0.0
 
     def _close_stream_only(self):
+        """Stop the feeder and hardware stream without touching the prepare thread.
+
+        Stops the autonomous feeder first so it cannot append frames to the ring
+        concurrently with teardown, then stops and closes the sounddevice stream.
+        Resets stream-related state but leaves the prepare thread running.
+        """
         # Stop the feeder before clearing the ring so it cannot push new frames
         # concurrently with the ring teardown.
         self._feeder.stop()
@@ -805,6 +965,7 @@ class _ACEPreviewAudioMonitor:
         self._limiter_gain = 1.0
 
     def close(self):
+        """Fully shut down the monitor: stop the prepare thread and hardware stream."""
         worker = None
         with self._prepare_condition:
             self._prepare_queue.clear()
@@ -825,6 +986,36 @@ class _ACEPreviewAudioMonitor:
 # ==============================================================================
 
 class ACEAudioEngine:
+    """Central orchestrator for the AudioCore Engine DSP pipeline.
+
+    One instance exists per Blender scene (keyed by ``scene.as_pointer()``).
+    It owns the compile/execute lifecycle, the parallel worker pool, all
+    ``ACEAudioGraph`` instances, and the shared ``_ACEPreviewAudioMonitor``.
+
+    Architecture overview:
+      - Stage A (main thread): ``compile_from_blender_tree()`` parses the GN
+        tree via ``ACEDummyTreeReader``, builds ``ACEAudioGraph`` objects, and
+        prepares a serialisable parallel IR for each graph.
+      - Stage B (worker processes): numeric DSP (RMS, pitch, centroid, etc.) is
+        offloaded via ``evaluate_parallel_job()`` in a
+        ``ProcessPoolExecutor``; results flow back through
+        ``_parallel_poll_futures()`` into ``_parallel_last_valid``.
+      - Stage C (main thread): ``execute_next_frame()`` merges Stage-B values
+        with any locally-evaluated outputs and writes them into Blender geometry
+        node proxy attributes via ``ACEProxyManager``.
+
+    Instance management:
+      ``ensure_instance(scene)`` returns or creates the engine for *scene*.
+      ``shutdown_all_instances()`` shuts everything down cleanly on addon
+      unregister or file load.
+
+    Parallel pool constants:
+      - ``_PARALLEL_MAX_INFLIGHT_PER_SOURCE``: max 2 concurrent jobs per source.
+      - ``_PARALLEL_STALE_REUSE_MS``: last-valid values reused within this window.
+      - ``_PARALLEL_RESTART_LIMIT``: maximum pool restart attempts per session.
+      - ``_PARALLEL_RESTART_BACKOFF_S``: per-attempt exponential backoff delays.
+    """
+
     _instances: Dict[int, "ACEAudioEngine"] = {}
     _preview_monitor = _ACEPreviewAudioMonitor()
     # Attribute schema is synced via a dirty flag set on compile, not by frame polling.
@@ -856,16 +1047,26 @@ class ACEAudioEngine:
     _PARALLEL_ATTRS_PER_JOB = 8
     _PARALLEL_WORKER_HEADROOM_CORES = 1
     _PARALLEL_FUTURE_TIMEOUT_S = 3.0
-    _PARALLEL_RESTART_LIMIT = 1
+    _PARALLEL_RESTART_LIMIT = 3  # Allow up to 3 restarts before disabling; exponential backoff between attempts.
+    # Backoff delays (seconds) indexed by restart attempt number (0-based).
+    # Attempt 0 → 0.5 s, attempt 1 → 1.0 s, attempt 2 → 2.0 s.
+    _PARALLEL_RESTART_BACKOFF_S: tuple = (0.5, 1.0, 2.0)
     _PARALLEL_STALE_FRAME_GRACE = 2
-    # Time-based stale-reuse window (FPS-invariant). At 12 fps this is 1 frame;
-    # at 60 fps it is 4 frames — spec stays within the ≤2-frame intent at common rates.
-    _PARALLEL_STALE_REUSE_MS = 66
+    # Time-based stale-reuse window (FPS-invariant). At 24 fps this is 1 frame;
+    # at 30 fps it is 1 frame; at 60 fps it is 3 frames — reduced from 66 ms (4 frames
+    # at 60 fps) to tighten the stale-result contract closer to the ≤2-frame spec.
+    _PARALLEL_STALE_REUSE_MS = 50
     _PARALLEL_CANCEL_STALE_FRAME_DELTA = 4
     _PREVIEW_MIN_INTERVAL_S = 0.003
     _FILE_WORKING_SAMPLE_RATE_CAP = 48_000
 
     def __init__(self, scene_key: int):
+        """Initialise a new engine instance for a Blender scene.
+
+        Args:
+            scene_key: Integer scene pointer (``scene.as_pointer()``).  Used
+                as the lookup key in ``ACEAudioEngine._instances``.
+        """
         self.scene_key = int(scene_key)
         self.scene_name: str = ""
         self.graphs: Dict[str, ACEAudioGraph] = {}
@@ -918,6 +1119,7 @@ class ACEAudioEngine:
         self._parallel_disabled_sources: set[str] = set()
         self._parallel_graph_ir_required: set[str] = set()
         self._parallel_restart_count: int = 0
+        self._parallel_restart_backoff_until: float = 0.0
         self._parallel_pool_failed: bool = False
         self._parallel_payload_slots: Dict[str, Dict[str, Any]] = {}
         self._parallel_payload_slot_refs: Dict[str, int] = {}
@@ -949,6 +1151,7 @@ class ACEAudioEngine:
 
     @staticmethod
     def _scene_key(scene) -> int:
+        """Return ``scene.as_pointer()`` as an int, or 0 if unavailable."""
         if scene is not None and hasattr(scene, "as_pointer"):
             try:
                 return int(scene.as_pointer())
@@ -958,6 +1161,7 @@ class ACEAudioEngine:
 
     @staticmethod
     def _scene_name(scene) -> str:
+        """Return the scene name string, preferring ``name_full`` over ``name``."""
         if scene is None:
             return ""
         try:
@@ -967,6 +1171,7 @@ class ACEAudioEngine:
 
     @classmethod
     def _instance_for_scene_name(cls, scene_name: str):
+        """Find an existing instance whose ``scene_name`` matches the given string."""
         token = str(scene_name or "").strip()
         if not token:
             return None
@@ -977,6 +1182,7 @@ class ACEAudioEngine:
 
     @staticmethod
     def _node_tree_pointer(tree) -> int:
+        """Return a stable integer identity for a node tree (pointer or id())."""
         if tree is None:
             return 0
         if hasattr(tree, "as_pointer"):
@@ -988,6 +1194,7 @@ class ACEAudioEngine:
 
     @staticmethod
     def _prune_timestamp_map(mapping: Dict[str, float], max_entries: int):
+        """Evict the oldest entries from a ``{key: timestamp}`` dict in-place."""
         if max_entries <= 0 or len(mapping) <= max_entries:
             return
         overflow = len(mapping) - max_entries
@@ -998,6 +1205,12 @@ class ACEAudioEngine:
 
     @classmethod
     def get_instance(cls, scene=None):
+        """Return the existing engine for *scene*, or None if none exists.
+
+        Falls back to a name-based lookup, then to the active context scene,
+        then to the first registered instance.  Returns None only when no
+        instance has been created yet.
+        """
         key = cls._scene_key(scene)
         inst = cls._instances.get(key)
         if inst:
@@ -1018,6 +1231,7 @@ class ACEAudioEngine:
 
     @classmethod
     def ensure_instance(cls, scene=None):
+        """Return the engine for *scene*, creating one if it does not yet exist."""
         resolved_scene = scene if scene is not None else getattr(getattr(bpy, "context", None), "scene", None)
         key = cls._scene_key(resolved_scene)
         inst = cls._instances.get(key)
@@ -1032,10 +1246,17 @@ class ACEAudioEngine:
 
     @classmethod
     def iter_instances(cls):
+        """Return a snapshot list of all active engine instances."""
         return list(cls._instances.values())
 
     @classmethod
     def shutdown_all_instances(cls):
+        """Shut down every engine instance, the preview monitor, and background workers.
+
+        Called from ``unregister_handlers()`` and the ``load_post`` handler.
+        Also resets the one-time biquad-fallback warning so it fires again on
+        the next session if Numba and scipy are still absent.
+        """
         for inst in list(cls._instances.values()):
             try:
                 inst._shutdown_graphs(wait_parallel_pool=True, clear_bake_cache=True)
@@ -1050,13 +1271,30 @@ class ACEAudioEngine:
             SourceSpecsTask.shutdown_background_worker()
         except Exception:
             pass
+        try:
+            _clear_file_open_locks()
+        except Exception:
+            pass
+        try:
+            reset_biquad_fallback_warned()
+        except Exception:
+            pass
 
     @classmethod
     def preview_monitor_available(cls) -> bool:
+        """Return True if the sounddevice backend loaded successfully."""
         try:
             return bool(cls._preview_monitor._resolve_backend())
         except Exception:
             return False
+
+    @classmethod
+    def preview_monitor_consecutive_errors(cls) -> int:
+        """Return the current consecutive DSP error count from the prepare worker."""
+        try:
+            return int(cls._preview_monitor._preview_consecutive_errors)
+        except Exception:
+            return 0
 
     @staticmethod
     def _engine_settings(scene_or_engine_settings=None):
@@ -1616,6 +1854,12 @@ class ACEAudioEngine:
         return key if key else f"graph:{id(graph)}"
 
     def _parallel_worker_count(self, scene) -> int:
+        """Return the target process-pool worker count for the current machine.
+
+        Respects the ``ACE_PARALLEL_WORKERS`` environment variable override.
+        Otherwise uses ``os.cpu_count() - _PARALLEL_WORKER_HEADROOM_CORES`` so
+        one core stays free for Blender's main thread and render pipeline.
+        """
         try:
             override = int(os.environ.get("ACE_PARALLEL_WORKERS", "0") or 0)
         except Exception:
@@ -1700,6 +1944,13 @@ class ACEAudioEngine:
         self._parallel_clear_runtime_state(keep_last_valid=False)
 
     def _ensure_parallel_pool(self, scene) -> bool:
+        """Ensure the ProcessPoolExecutor is running; create it if needed.
+
+        Returns True when the pool is ready for job submission.  Returns False
+        when parallel mode is disabled, the pool has permanently failed, or a
+        new spawn attempt raises an exception (in which case
+        ``_parallel_pool_failed`` is set to prevent repeated failures).
+        """
         if self._parallel_mode(scene) != "processes_dsp":
             self._shutdown_parallel_pool(wait=False)
             return False
@@ -1733,10 +1984,21 @@ class ACEAudioEngine:
             if source_key:
                 self._parallel_disabled_sources.add(source_key)
             return False
+        # Enforce exponential backoff between restart attempts to absorb transient OS
+        # errors (OOM spikes, process spawn latency) without burning the restart budget.
+        now = time.monotonic()
+        if now < self._parallel_restart_backoff_until:
+            # Still in the backoff window — defer this attempt; reuse last-valid values.
+            return False
         self._parallel_restart_count += 1
+        backoff_idx = min(self._parallel_restart_count - 1, len(self._PARALLEL_RESTART_BACKOFF_S) - 1)
+        delay_s = float(self._PARALLEL_RESTART_BACKOFF_S[backoff_idx])
+        self._parallel_restart_backoff_until = now + delay_s
         self._log_runtime(
             "parallel_restart",
-            f"Restarting Processes-DSP pool ({reason}).",
+            f"Restarting Processes-DSP pool ({reason}), "
+            f"attempt {self._parallel_restart_count}/{self._PARALLEL_RESTART_LIMIT}, "
+            f"backoff {delay_s:.1f}s.",
             "WARNING",
             min_interval=0.0,
         )
@@ -1808,10 +2070,21 @@ class ACEAudioEngine:
             # Inject live scene BPM/FPS into SourceSpecs IR params so the
             # worker replica (_WorkerSourceSpecsPassthroughTask) computes
             # correct beat-phase and BPF values instead of using hardcoded defaults.
+            # Use the graph's own source context so multi-source setups each get
+            # their individual BPM, not the engine-wide active-source snapshot.
             if node.category == "utilities" and node.type == "src_specs":
-                params["scene_bpm"]           = float(getattr(self, "_current_scene_bpm", 120.0) or 120.0)
+                _specs_ctx = getattr(graph, "source_context", None)
+                params["scene_bpm"] = (
+                    float(getattr(_specs_ctx, "bpm", 120.0) or 120.0)
+                    if _specs_ctx is not None
+                    else float(getattr(self, "_current_scene_bpm", 120.0) or 120.0)
+                )
                 params["scene_fps"]           = float(getattr(self, "_current_scene_fps", 24.0) or 24.0)
-                params["scene_beats_per_bar"] = float(getattr(self, "_current_scene_beats_per_bar", 4.0) or 4.0)
+                params["scene_beats_per_bar"] = (
+                    float(getattr(_specs_ctx, "beats_per_bar", 4.0) or 4.0)
+                    if _specs_ctx is not None
+                    else float(getattr(self, "_current_scene_beats_per_bar", 4.0) or 4.0)
+                )
             nodes_ir[node_id] = {
                 "category": str(getattr(node, "category", "") or ""),
                 "type": str(getattr(node, "type", "") or ""),
@@ -1918,7 +2191,65 @@ class ACEAudioEngine:
         if graph.parallel_graph_uid:
             self._parallel_graph_ir_required.add(str(graph.parallel_graph_uid))
 
+    def _refresh_specs_ir_bpm(self) -> None:
+        """Patch scene_bpm / scene_beats_per_bar / scene_fps in each graph's
+        parallel IR so _WorkerSourceSpecsPassthroughTask always sees the current
+        per-source BPM without requiring a full graph recompile.
+
+        Called each frame from execute_next_frame() after _current_scene_fps is
+        updated but before _maybe_compile_dirty() so any compile triggered this
+        frame starts with correct values already in place.
+        """
+        fps = float(getattr(self, "_current_scene_fps", 24.0) or 24.0)
+        for graph in self.graphs.values():
+            parallel_ir = getattr(graph, "parallel_ir", None)
+            if not parallel_ir:
+                continue
+            src_ctx = getattr(graph, "source_context", None)
+            if src_ctx is None:
+                continue
+            bpm = float(getattr(src_ctx, "bpm", 120.0) or 120.0)
+            bpb = float(getattr(src_ctx, "beats_per_bar", 4.0) or 4.0)
+            changed = False
+            nodes_ir = parallel_ir.get("nodes", {})
+            for node_info in nodes_ir.values():
+                if (
+                    node_info.get("category") != "utilities"
+                    or node_info.get("type") != "src_specs"
+                ):
+                    continue
+                params = node_info.get("parameters")
+                if not isinstance(params, dict):
+                    continue
+                old_bpm = float(params.get("scene_bpm", 120.0) or 120.0)
+                old_bpb = float(params.get("scene_beats_per_bar", 4.0) or 4.0)
+                old_fps = float(params.get("scene_fps", 24.0) or 24.0)
+                if abs(old_bpm - bpm) > 1e-6 or abs(old_bpb - bpb) > 1e-6 or abs(old_fps - fps) > 1e-6:
+                    params["scene_bpm"] = bpm
+                    params["scene_fps"] = fps
+                    params["scene_beats_per_bar"] = bpb
+                    changed = True
+            if changed:
+                graph_key = str(getattr(graph, "parallel_graph_uid", "") or "")
+                if graph_key:
+                    self._parallel_graph_ir_required.add(graph_key)
+
     def _build_parallel_source_payload(self, chunk, block_size: int, sample_rate: int) -> Dict[str, Any]:
+        """Serialise an AudioChunk into a picklable worker payload dict.
+
+        Pads or trims the mono signal to exactly *block_size* samples.  Stereo
+        is normalised to channels-first layout (shape ``(C, N)``).  Optional
+        fields (``frontend_config``, ``band_indices``, ``band_hz_bounds``) are
+        included only when present on the chunk.
+
+        Args:
+            chunk: Source AudioChunk to serialise.
+            block_size: Expected number of mono samples in the worker.
+            sample_rate: Sample rate to record in the payload.
+
+        Returns:
+            Dict suitable for passing to ``evaluate_parallel_job``.
+        """
         bs = max(int(block_size), 1)
         sr = max(int(sample_rate), 1)
         mono_raw = getattr(chunk, "mono", chunk)
@@ -2280,6 +2611,15 @@ class ACEAudioEngine:
         return True
 
     def _parallel_values_for_graph_frame(self, graph: ACEAudioGraph, graph_key: str, frame_index: int) -> Dict[str, Any]:
+        """Retrieve the best available parallel worker results for *frame_index*.
+
+        Priority: exact frame match > stale-reuse window > zero values.
+        The stale window is derived from ``_PARALLEL_STALE_REUSE_MS`` converted
+        to frames at the current scene FPS so behaviour is FPS-invariant.
+
+        Returns:
+            Dict mapping each offload attr_key to its normalised output value.
+        """
         offload_keys = list(getattr(graph, "parallel_offload_attr_keys", []) or [])
         if not offload_keys:
             return {}
@@ -2310,7 +2650,22 @@ class ACEAudioEngine:
         return resolved
 
     def compile(self, abstract_tree: ACEAbstractTree, blender_scene):
-        """Compiles one graph per audio source."""
+        """Build one ACEAudioGraph per audio source from the abstract tree.
+
+        Shuts down any existing graphs, resets the parallel generation counter,
+        resolves sample rates and block sizes for each source, creates all task
+        objects (SourceTask, stream tasks, PreviewSinkTask, etc.), wires their
+        inputs according to the abstract tree links, prepares the parallel IR for
+        worker offload, and ensures Blender proxy attributes exist.
+
+        Should only be called from the main thread.  For tree-change-triggered
+        recompiles, prefer ``compile_from_blender_tree()`` which also parses the
+        GN node tree and syncs attribute IDs.
+
+        Args:
+            abstract_tree: Parsed representation of the Geometry Nodes tree.
+            blender_scene: The active ``bpy.types.Scene`` object.
+        """
         self.scene_key = self._scene_key(blender_scene)
         self.scene_name = self._scene_name(blender_scene)
         self._pending_tree = None
@@ -2553,6 +2908,12 @@ class ACEAudioEngine:
             graph.source_task_ids = source_task_ids
             graph.live_source_task_ids = live_source_task_ids
             graph.file_source_task_ids = file_source_task_ids
+            # Expose the per-graph source context so _prepare_parallel_graph_ir()
+            # reads the correct BPM/beats-per-bar from the first compile frame
+            # instead of falling back to _current_scene_bpm (the engine-wide active-
+            # source snapshot, which may be from a different source or not yet set).
+            # This closes the one-frame LIVE source cold-start BPM lag.
+            graph.source_context = source
             self._prepare_parallel_graph_ir(graph, abstract_tree)
             self.graphs[src_uid] = graph
             self._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
@@ -2575,6 +2936,11 @@ class ACEAudioEngine:
         self._last_compile_time = time.time()
 
     def _log_runtime(self, key: str, message: str, level: str = "ERROR", min_interval: float = 2.0):
+        """Emit a log message at most once per *min_interval* seconds per *key*.
+
+        Prevents log spam from hot paths (frame handlers, parallel pollers) where
+        the same error condition can recur every frame.
+        """
         import time
         now = time.time()
         last = self._runtime_log_last.get(key, 0.0)
@@ -2586,6 +2952,17 @@ class ACEAudioEngine:
         utils.log(message, level)
 
     def _probe_source_metadata(self, source: ACEAudioSource, allow_io: bool = True):
+        """Populate ``source.sample_rate``, ``native_sample_rate``, and ``duration``.
+
+        Uses the in-memory meta cache when available and not stale.  On a cache
+        miss, dispatches ``_dispatch_async_probe()`` so the main thread is never
+        blocked.  Results are applied on the next frame via ``_flush_probe_updates()``.
+
+        Args:
+            source: The ACEAudioSource property group to probe.
+            allow_io: Kept for interface compatibility; blocking I/O is no longer
+                performed directly here regardless of this flag.
+        """
         if getattr(source, "source_type", "") != "FILE":
             return
         fp = getattr(source, "filepath", "")
@@ -2722,7 +3099,6 @@ class ACEAudioEngine:
                     sr = 0
             else:
                 sr = int(getattr(source, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
-            rec = None
             cache_key = ""
             mtime = None
             try:
@@ -2785,12 +3161,6 @@ class ACEAudioEngine:
                 # Use current sr as fallback; updated on recompile after probe completes.
             except Exception:
                 pass
-            finally:
-                if rec:
-                    try:
-                        rec.close()
-                    except Exception:
-                        pass
             working_sr = self._cap_source_sample_rate(source_type, sr, engine_settings)
             if min_sr is None or working_sr < min_sr:
                 min_sr = working_sr
@@ -3985,6 +4355,21 @@ class ACEAudioEngine:
         bl_tree: bpy.types.NodeTree,
         scene,
     ):
+        """Parse the Geometry Nodes tree and rebuild all DSP graphs.
+
+        Runs the full Stage-A pipeline:
+          1. Prune orphaned ACE source nodes from the tree.
+          2. Build an ``ACEAbstractTree`` via ``ACEDummyTreeReader``.
+          3. Sync auto-generated attribute IDs onto node inputs.
+          4. Refresh abstract node parameters from the updated socket values.
+          5. Call ``compile()`` to instantiate all graphs and tasks.
+
+        Must be called from the main thread (asserted via ``utils.assert_main_thread``).
+
+        Args:
+            bl_tree: The Blender ``GeometryNodeTree`` to compile.
+            scene: The active ``bpy.types.Scene``.
+        """
         utils.assert_main_thread("compile_from_blender_tree")
         if not bl_tree or not scene:
             return
@@ -4012,6 +4397,13 @@ class ACEAudioEngine:
         self._compiled_tree_ptr = self._node_tree_pointer(bl_tree)
 
     def adjust_graph_block_size_for_task(self, task: ACEAudioTask, new_block_size: int):
+        """Update the block size for all tasks in the graph that owns *task*.
+
+        SourceTask instances are updated via ``_set_block_size_from_engine``
+        (which handles prefetch buffer resize).  All other tasks have their
+        ``block_size``, ``silence_buffer``, and cached array attributes reset
+        directly so stale workspace allocations are not reused.
+        """
         target_graph = None
         for graph in self.graphs.values():
             if task in graph.tasks.values():
@@ -4077,6 +4469,23 @@ class ACEAudioEngine:
         proposed_size: int,
         mode: str = "fixed",
     ) -> int:
+        """Apply hysteresis to block-size changes in adaptive timeslice mode.
+
+        In ``fixed`` mode the proposed size is returned immediately.  In
+        ``adaptive`` mode small changes must persist for
+        ``_BLOCK_SIZE_HYSTERESIS_FRAMES`` consecutive frames before being
+        accepted; large changes (≥ ``_BLOCK_SIZE_IMMEDIATE_DELTA`` samples)
+        are always applied immediately to handle timeline scrubs.
+
+        Args:
+            graph_key: Stable key used to track per-graph hysteresis state.
+            current_size: Currently active block size for this graph.
+            proposed_size: Block size calculated from the current frame delta.
+            mode: ``"fixed"`` or ``"adaptive"``.
+
+        Returns:
+            The block size to use for this frame.
+        """
         curr = int(max(current_size or 0, 0))
         prop = int(max(proposed_size or 0, 0))
         timeslice_mode = str(mode or "fixed").strip().lower()
@@ -4145,6 +4554,7 @@ class ACEAudioEngine:
 
     @staticmethod
     def _is_animation_playing() -> bool:
+        """Return True if any Blender window is currently playing back animation."""
         try:
             wm = getattr(getattr(bpy, "context", None), "window_manager", None)
             windows = getattr(wm, "windows", []) if wm else []
@@ -4158,6 +4568,7 @@ class ACEAudioEngine:
 
     @staticmethod
     def _resample_signal_1d(signal: np.ndarray, target_len: int) -> np.ndarray:
+        """Linear-interpolation resample of a 1-D float32 signal to *target_len* samples."""
         src = np.asarray(signal, dtype=np.float32).reshape(-1)
         n = int(src.shape[0] or 0)
         t_len = int(max(target_len, 1))
@@ -4174,6 +4585,10 @@ class ACEAudioEngine:
 
     @classmethod
     def _fit_preview_chunk_block(cls, chunk: AudioChunk, preview_block_size: int) -> AudioChunk:
+        """Resample a chunk's mono and stereo signals to *preview_block_size* samples.
+
+        Returns the original chunk unchanged if it already has the correct size.
+        """
         target = int(max(preview_block_size, 1))
         mono = np.asarray(getattr(chunk, "mono", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
         if mono.shape[0] == target:
@@ -4215,6 +4630,12 @@ class ACEAudioEngine:
 
     @staticmethod
     def _mix_preview_chunks(chunks: list[AudioChunk]) -> Optional[AudioChunk]:
+        """Average-mix a list of stereo AudioChunks into one.
+
+        Returns None for an empty list, the single chunk unchanged for a list of
+        one, or a new AudioChunk with the equal-power average mix for multiple.
+        A final peak limiter is applied to the mixed result to prevent clipping.
+        """
         if not chunks:
             return None
         if len(chunks) == 1:
@@ -4264,6 +4685,12 @@ class ACEAudioEngine:
 
     @staticmethod
     def _chunk_is_unmasked_audio(chunk: Any) -> bool:
+        """Return True if *chunk* is a plain, unprocessed audio block.
+
+        Returns False for frequency-masked, band-limited, or analysis-ops-tagged
+        chunks because these should not be played back directly through the
+        preview monitor.
+        """
         if not hasattr(chunk, "mono") or not hasattr(chunk, "sample_rate"):
             return False
         if getattr(chunk, "band_hz_bounds", None) is not None:
@@ -4284,6 +4711,11 @@ class ACEAudioEngine:
 
     @staticmethod
     def _task_current_chunk_for_frame(task: Any, frame_index: int):
+        """Return the task's cached current chunk if it was produced for *frame_index*.
+
+        Returns None if the task has no cached chunk or the chunk belongs to a
+        different frame.
+        """
         try:
             chunk_frame = int(getattr(task, "_current_chunk_frame", -1) or -1)
         except Exception:
@@ -4296,6 +4728,13 @@ class ACEAudioEngine:
         return None
 
     def _collect_preview_chunk(self, graph: ACEAudioGraph, frame_index: int, preview_block_size: int):
+        """Collect and resample preview audio for *graph* at *frame_index*.
+
+        Prefers direct SourceTask passthrough (zero DSP overhead) when no manual
+        Preview Sink nodes are present.  Falls back to evaluating PreviewSinkTask
+        outputs when biquad processing is needed.  Returns the mixed/resampled
+        chunk, or None if no preview audio is available.
+        """
         manual_ids = getattr(graph, "manual_preview_task_ids", []) or []
         auto_ids = getattr(graph, "auto_preview_task_ids", []) or []
         passthrough_specs = getattr(graph, "auto_preview_passthrough_specs", []) or []
@@ -4416,6 +4855,16 @@ class ACEAudioEngine:
         return True
 
     def _maybe_compile_dirty(self, scene) -> bool:
+        """Recompile the dirty tree if the quiet window and minimum spacing are met.
+
+        Requires ``_last_dirty_time`` to have been stable for 350 ms AND
+        ``_last_compile_time`` to be at least 350 ms ago.  Both guards are
+        bypassed when the dirty state has persisted for more than 2 s (rapid
+        link-editing bursts that keep resetting the quiet timer).
+
+        Returns:
+            True if a recompile was performed, False otherwise.
+        """
         import time
         now = time.time()
         if not self._dirty_trees and not self._pending_tree:
@@ -4447,6 +4896,15 @@ class ACEAudioEngine:
         return compiled
 
     def request_recompile(self, bl_tree: bpy.types.NodeTree | None):
+        """Mark a tree as needing recompilation on the next ``_maybe_compile_dirty`` call.
+
+        Rate-limited: multiple calls within 150 ms of each other update only
+        ``_last_dirty_time`` without re-triggering the cooldown so rapid source
+        property edits do not spam recompiles.
+
+        Args:
+            bl_tree: Tree to mark dirty, or None to reuse ``_compiled_tree_ref``.
+        """
         import time
         now = time.time()
         if bl_tree is None:
@@ -4470,6 +4928,25 @@ class ACEAudioEngine:
         self._last_request_time = now
 
     def execute_next_frame(self, scene, force: bool = False):
+        """Evaluate all graphs for the current scene frame and write results to proxies.
+
+        Called every frame from ``frame_change_handler`` (and during render).
+        The method:
+          1. Updates FPS, BPM, and beat-signature snapshots.
+          2. Patches per-source parallel IRs with any BPM changes
+             (``_refresh_specs_ir_bpm``).
+          3. Flushes background probe results (``_flush_probe_updates``).
+          4. Triggers a recompile if the tree is dirty (``_maybe_compile_dirty``).
+          5. For each graph: resolves block size, runs Stage B parallel
+             submission/polling, evaluates local DSP, pushes preview audio, and
+             writes numeric attribute values to the Blender proxy object.
+
+        Args:
+            scene: Active ``bpy.types.Scene``.
+            force: When True, skip the same-frame deduplication guard.  Used by
+                render handlers that need a guaranteed write even when the frame
+                number has not changed.
+        """
         utils.assert_main_thread("execute_next_frame")
         self.scene_key = self._scene_key(scene)
         if scene is not None:
@@ -4515,6 +4992,16 @@ class ACEAudioEngine:
         except Exception:
             self._current_scene_bpm = 120.0
             self._current_scene_beats_per_bar = 4.0
+
+        # Keep per-source BPM / beats-per-bar in each graph's parallel IR fresh
+        # so _WorkerSourceSpecsPassthroughTask always uses the current values.
+        # This is especially important for LIVE sources that have no auto-BPM
+        # detection: the user sets BPM manually and the worker must see the update
+        # on the very next frame rather than waiting for the next full recompile.
+        try:
+            self._refresh_specs_ir_bpm()
+        except Exception:
+            pass
 
         # Flush background probe results before the compile so native_sample_rate
         # is populated for any sources whose probe thread has just completed.
@@ -4566,11 +5053,19 @@ class ACEAudioEngine:
         preview_allowed = self._is_animation_playing()
         preview_block_size = int(self._preview_block_size(scene))
         preview_sample_rate = int(max(self.effective_sample_rate, SAMPLE_RATE, 1))
+        _min_analysis_bs = 0
         for graph in self.graphs.values():
             source_ctx = getattr(graph, "source_context", None)
             source_sr = int(getattr(source_ctx, "sample_rate", 0) or 0)
             if source_sr > 0:
                 preview_sample_rate = max(preview_sample_rate, source_sr)
+            _gbs = int(getattr(graph, "block_size", 0) or 0)
+            if _gbs >= 64:
+                _min_analysis_bs = _gbs if _min_analysis_bs == 0 else min(_min_analysis_bs, _gbs)
+        try:
+            self.__class__._preview_monitor.hint_block_size(_min_analysis_bs)
+        except Exception:
+            pass
         preview_interval_s = max(
             float(preview_block_size) / float(max(preview_sample_rate, 1)),
             float(self._PREVIEW_MIN_INTERVAL_S),
@@ -4944,9 +5439,23 @@ class ACEAudioEngine:
             self._perf_finalize_frame()
 
     def bake_source_to_cache(self, source, tree=None, scene=None):
-        """
-        Precompute stream/spec outputs for a file source over the scene frame range
-        and store them in memory for deterministic playback.
+        """Precompute stream/spec outputs for a file source and cache them in memory.
+
+        Iterates over every frame in the scene range, runs the full DSP graph
+        offline, and stores the results.  Large payloads (≥ 16 MB) are spilled to
+        a compressed ``.npz`` file in the system temp directory to cap RAM usage.
+
+        During bake, ``source["ace_bake_status"]`` is set to ``"baking"``.  On
+        completion it becomes ``"ready"``; on failure it is set to ``"failed"``
+        with an error message in ``source["ace_bake_error"]``.
+
+        Args:
+            source: An ACEAudioSource property group for a FILE source.
+            tree: Optional Blender NodeTree; auto-detected from the scene if None.
+            scene: Optional ``bpy.types.Scene``; uses ``bpy.context.scene`` if None.
+
+        Returns:
+            True on success, False if the source, graph, or file is unavailable.
         """
         if not source or getattr(source, "source_type", "") != "FILE":
             return False
@@ -5089,12 +5598,18 @@ class ACEAudioEngine:
 
 @persistent
 def _load_post_reset_engine(_dummy):
+    """bpy.app.handlers.load_post: reset all engine instances after a file load."""
     ACEAudioEngine.shutdown_all_instances()
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
 
 
 @persistent
 def _undo_redo_invalidate_engine_caches(_dummy):
+    """bpy.app.handlers.undo_post / redo_post: clear caches and request recompile.
+
+    Drops in-flight parallel futures so SHM handles cannot write into attributes
+    that may have been removed or remapped by the undo/redo operation.
+    """
     for engine in ACEAudioEngine.iter_instances():
         try:
             engine.invalidate_runtime_caches()
@@ -5116,6 +5631,13 @@ def _undo_redo_invalidate_engine_caches(_dummy):
 
 @persistent
 def frame_change_handler(scene):
+    """bpy.app.handlers.frame_change_pre: run one DSP frame for the current scene.
+
+    Bootstraps a compile on the first call if no graphs are loaded yet (with
+    exponential back-off on repeated failures).  Skips evaluation when a render
+    job is running without ``Lock Interface`` to avoid unsafe concurrent bpy
+    attribute writes.
+    """
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -5156,6 +5678,12 @@ def frame_change_handler(scene):
 
 @persistent
 def frame_change_post_handler(scene):
+    """bpy.app.handlers.frame_change_post: secondary frame evaluation during rendering.
+
+    Only fires ``frame_change_handler`` when an active render job is in progress,
+    ensuring that every rendered frame receives up-to-date DSP values even when
+    ``frame_change_pre`` alone is insufficient (e.g. Cycles tile rendering).
+    """
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -5168,6 +5696,12 @@ def frame_change_post_handler(scene):
 
 @persistent
 def render_pre_handler(scene):
+    """bpy.app.handlers.render_pre: compile and warm the DSP graph before rendering.
+
+    Compiles the ACE tree when no graphs are loaded, forces one evaluation on
+    frame 1 to pre-fill caches, then marks the engine as being in a render job
+    via ``_mark_render_start()``.
+    """
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -5200,6 +5734,12 @@ def render_pre_handler(scene):
 
 @persistent
 def render_post_handler(scene):
+    """bpy.app.handlers.render_post: finalise engine state after a successful render.
+
+    Clears the render-in-progress flag via ``_mark_render_complete()`` and
+    silences the preview monitor so audio does not start playing back after the
+    render completes.
+    """
     engine = ACEAudioEngine.get_instance(scene)
     if engine is None:
         return
@@ -5212,6 +5752,12 @@ def render_post_handler(scene):
 
 @persistent
 def render_cancel_handler(scene):
+    """bpy.app.handlers.render_cancel: clean up engine state after a cancelled render.
+
+    Marks the render job as cancelled (``_mark_render_complete(cancelled=True)``)
+    then delegates to ``render_post_handler`` to clear the preview monitor and
+    do common post-render teardown.
+    """
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None:
         engine._mark_render_complete(scene, cancelled=True)
@@ -5220,6 +5766,15 @@ def render_cancel_handler(scene):
 
 @persistent
 def depsgraph_update_handler(scene, depsgraph):
+    """bpy.app.handlers.depsgraph_update_post: react to node-tree edits in real time.
+
+    Consumes any pending geometry-eval updates (proxy attribute schema changes).
+    Pre-warms file metadata for FILE sources whose sample-rate or duration are
+    not yet known, eliminating the cold-start sample-rate race on the first compile.
+    When ``auto_compile`` is enabled, detects edits to ACE geometry node trees and
+    calls ``request_recompile()`` so changes are picked up within the next timer
+    interval.
+    """
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None:
         engine._consume_geometry_eval_updates(scene, depsgraph)
@@ -5227,7 +5782,7 @@ def depsgraph_update_handler(scene, depsgraph):
         # that _flush_probe_updates() can populate native_sample_rate before the next
         # compile cycle reads it — eliminating the cold-start sample-rate race.
         _ace_data = getattr(scene, "audiocore", None)
-        for _src in getattr(_ace_data, "sources", []):
+        for _src in getattr(_ace_data, "audio_sources", []):
             if getattr(_src, "source_type", "") == "FILE":
                 _fp = getattr(_src, "filepath", "")
                 if _fp and (
@@ -5255,6 +5810,15 @@ def depsgraph_update_handler(scene, depsgraph):
 
 
 def auto_compile_timer():
+    """bpy.app.timers callback (0.25 s): compile dirty trees when auto_compile is on.
+
+    Runs ``_maybe_compile_dirty()`` and, if a recompile was triggered, forces
+    one execution of ``execute_next_frame()`` so attribute values are refreshed
+    immediately rather than waiting for the next frame-change event.
+
+    Returns:
+        0.25 — reschedule interval in seconds (always).
+    """
     try:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         if scene is None:
@@ -5273,50 +5837,131 @@ def auto_compile_timer():
     return 0.25
 
 
+def _shm_drain_timer():
+    """
+    Periodic SHM drain called by bpy.app.timers every 2 seconds.
+
+    _parallel_poll_futures() is normally called inside execute_next_frame(), but
+    when the scene is paused indefinitely (no frame change events), completed
+    futures hold their SHM handles until the next frame event.  On platforms
+    with a small /dev/shm limit (Linux default 64 MB) this can exhaust shared
+    memory for multi-source sessions.  This timer fires unconditionally so SHM
+    is reclaimed within ~2 s of job completion even during playback pause.
+    """
+    try:
+        scene = getattr(getattr(bpy, "context", None), "scene", None)
+        engine = ACEAudioEngine.get_instance(scene) if scene is not None else None
+        if engine is not None and engine._parallel_future_meta:
+            engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
+    except Exception as _exc:
+        try:
+            utils.log(
+                f"[ACE-SHM] Drain timer error — completed futures may not be released "
+                f"and shared memory may leak: {_exc!r}",
+                "WARNING",
+            )
+        except Exception:
+            pass
+    return 2.0
+
+
+def _ace_handler_registered(handler_list, func) -> bool:
+    """
+    Check if a handler with the same __qualname__ is already in handler_list.
+
+    Blender's `in` operator uses object identity, which fails under
+    'Reload Scripts' because the module is re-imported and each function
+    gets a new memory address.  Checking by __qualname__ (a stable string
+    tied to the function's definition site) survives reloads correctly.
+    """
+    target_name = getattr(func, "__qualname__", None)
+    if target_name is None:
+        return func in handler_list
+    return any(getattr(h, "__qualname__", None) == target_name for h in handler_list)
+
+
+def _ace_handler_remove_all(handler_list, func):
+    """
+    Remove all entries in handler_list whose __qualname__ matches func.
+
+    On 'Reload Scripts' the old function object is still registered (different
+    identity, same qualname), so a plain `remove(func)` silently fails and
+    leaves a ghost handler.  This helper removes every matching entry.
+    """
+    target_name = getattr(func, "__qualname__", None)
+    if target_name is None:
+        to_remove = [h for h in handler_list if h is func]
+    else:
+        to_remove = [h for h in handler_list if getattr(h, "__qualname__", None) == target_name]
+    for h in to_remove:
+        try:
+            handler_list.remove(h)
+        except Exception:
+            pass
+
+
 def register_handlers():
-    if _load_post_reset_engine not in bpy.app.handlers.load_post:
+    """Register all ACE ``bpy.app.handlers`` and ``bpy.app.timers``.
+
+    Called from ``__init__.register()``.  Uses ``_ace_handler_registered()``
+    guards so that repeated Reload-Scripts calls do not accumulate duplicate
+    handler entries.  Also triggers Numba JIT warm-up and creates the initial
+    engine instance for the current scene.
+    """
+    # Trigger Numba JIT compilation at addon load time so the first preview frame
+    # does not pay the cold-start compilation penalty (~50–200 ms).
+    if _NUMBA_AVAILABLE:
+        try:
+            _dummy = np.zeros((4, 2), dtype=np.float32)
+            _preview_limiter_block_numba(_dummy, 0.891, 0.0001, 1.0)
+        except Exception:
+            pass
+
+    if not _ace_handler_registered(bpy.app.handlers.load_post, _load_post_reset_engine):
         bpy.app.handlers.load_post.append(_load_post_reset_engine)
-    if _undo_redo_invalidate_engine_caches not in bpy.app.handlers.undo_post:
+    if not _ace_handler_registered(bpy.app.handlers.undo_post, _undo_redo_invalidate_engine_caches):
         bpy.app.handlers.undo_post.append(_undo_redo_invalidate_engine_caches)
-    if _undo_redo_invalidate_engine_caches not in bpy.app.handlers.redo_post:
+    if not _ace_handler_registered(bpy.app.handlers.redo_post, _undo_redo_invalidate_engine_caches):
         bpy.app.handlers.redo_post.append(_undo_redo_invalidate_engine_caches)
-    if frame_change_handler not in bpy.app.handlers.frame_change_pre:
+    if not _ace_handler_registered(bpy.app.handlers.frame_change_pre, frame_change_handler):
         bpy.app.handlers.frame_change_pre.append(frame_change_handler)
-    if frame_change_post_handler not in bpy.app.handlers.frame_change_post:
+    if not _ace_handler_registered(bpy.app.handlers.frame_change_post, frame_change_post_handler):
         bpy.app.handlers.frame_change_post.append(frame_change_post_handler)
-    if render_pre_handler not in bpy.app.handlers.render_pre:
+    if not _ace_handler_registered(bpy.app.handlers.render_pre, render_pre_handler):
         bpy.app.handlers.render_pre.append(render_pre_handler)
-    if render_post_handler not in bpy.app.handlers.render_post:
+    if not _ace_handler_registered(bpy.app.handlers.render_post, render_post_handler):
         bpy.app.handlers.render_post.append(render_post_handler)
-    if render_cancel_handler not in bpy.app.handlers.render_cancel:
+    if not _ace_handler_registered(bpy.app.handlers.render_cancel, render_cancel_handler):
         bpy.app.handlers.render_cancel.append(render_cancel_handler)
-    if depsgraph_update_handler not in bpy.app.handlers.depsgraph_update_post:
+    if not _ace_handler_registered(bpy.app.handlers.depsgraph_update_post, depsgraph_update_handler):
         bpy.app.handlers.depsgraph_update_post.append(depsgraph_update_handler)
     if not bpy.app.timers.is_registered(auto_compile_timer):
         bpy.app.timers.register(auto_compile_timer, first_interval=0.25, persistent=True)
+    if not bpy.app.timers.is_registered(_shm_drain_timer):
+        bpy.app.timers.register(_shm_drain_timer, first_interval=2.0, persistent=True)
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
 
 
 def unregister_handlers():
-    if _load_post_reset_engine in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.remove(_load_post_reset_engine)
-    if _undo_redo_invalidate_engine_caches in bpy.app.handlers.undo_post:
-        bpy.app.handlers.undo_post.remove(_undo_redo_invalidate_engine_caches)
-    if _undo_redo_invalidate_engine_caches in bpy.app.handlers.redo_post:
-        bpy.app.handlers.redo_post.remove(_undo_redo_invalidate_engine_caches)
-    if frame_change_handler in bpy.app.handlers.frame_change_pre:
-        bpy.app.handlers.frame_change_pre.remove(frame_change_handler)
-    if frame_change_post_handler in bpy.app.handlers.frame_change_post:
-        bpy.app.handlers.frame_change_post.remove(frame_change_post_handler)
-    if render_pre_handler in bpy.app.handlers.render_pre:
-        bpy.app.handlers.render_pre.remove(render_pre_handler)
-    if render_post_handler in bpy.app.handlers.render_post:
-        bpy.app.handlers.render_post.remove(render_post_handler)
-    if render_cancel_handler in bpy.app.handlers.render_cancel:
-        bpy.app.handlers.render_cancel.remove(render_cancel_handler)
-    if depsgraph_update_handler in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.remove(depsgraph_update_handler)
+    """Unregister all ACE ``bpy.app.handlers`` and ``bpy.app.timers``.
+
+    Called from ``__init__.unregister()``.  Uses ``_ace_handler_remove_all()``
+    so that ghost entries left over from a previous Reload-Scripts cycle are also
+    removed.  Shuts down all engine instances to release parallel workers and
+    shared memory before the addon is unloaded.
+    """
+    _ace_handler_remove_all(bpy.app.handlers.load_post, _load_post_reset_engine)
+    _ace_handler_remove_all(bpy.app.handlers.undo_post, _undo_redo_invalidate_engine_caches)
+    _ace_handler_remove_all(bpy.app.handlers.redo_post, _undo_redo_invalidate_engine_caches)
+    _ace_handler_remove_all(bpy.app.handlers.frame_change_pre, frame_change_handler)
+    _ace_handler_remove_all(bpy.app.handlers.frame_change_post, frame_change_post_handler)
+    _ace_handler_remove_all(bpy.app.handlers.render_pre, render_pre_handler)
+    _ace_handler_remove_all(bpy.app.handlers.render_post, render_post_handler)
+    _ace_handler_remove_all(bpy.app.handlers.render_cancel, render_cancel_handler)
+    _ace_handler_remove_all(bpy.app.handlers.depsgraph_update_post, depsgraph_update_handler)
     if bpy.app.timers.is_registered(auto_compile_timer):
         bpy.app.timers.unregister(auto_compile_timer)
+    if bpy.app.timers.is_registered(_shm_drain_timer):
+        bpy.app.timers.unregister(_shm_drain_timer)
 
     ACEAudioEngine.shutdown_all_instances()
