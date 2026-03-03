@@ -69,7 +69,7 @@ def reset_biquad_fallback_warned() -> None:
     _BIQUAD_PYTHON_FALLBACK_WARNED = False
 
 from .audio_influx import AudioReception, build_live_flow_identifier
-from . import utils
+from .. import utils
 
 SAMPLE_RATE = 44100
 MIN_BLOCK_SIZE = 512

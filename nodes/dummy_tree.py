@@ -16,16 +16,16 @@ import json
 from collections import deque
 from typing import Optional, Any
 
-from .vars import ACE_NODES
-from .abstract_tree import (
+from ..vars import ACE_NODES
+from ..core.abstract_tree import (
     ACEAbstractTree,
     ACEAbstractNode,
     ACEAbstractSocket,
     ACEAbstractLink,
     ACEAbstractOutputLink,
 )
-from .id_management import ACEIdManager
-from . import utils
+from ..core.id_management import ACEIdManager
+from .. import utils
 
 class ACEDummyNodeFactory:
     """Creates and manages Blender node groups based on the ACE_NODES registry.
@@ -167,7 +167,7 @@ class ACEDummyNodeFactory:
                 if not ace_id:
                     continue
                 # Source management nodes carry the source stable_id as their ace_id.
-                from .id_management import ACEIdManager
+                from ..core.id_management import ACEIdManager
                 parsed = ACEIdManager.parse_node_id(ace_id)
                 if parsed and parsed.get("category") == "source_mngmt" and parsed.get("type") == "src":
                     if ace_id not in live_source_ids:

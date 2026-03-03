@@ -5,9 +5,29 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Map legacy flat filenames to their new sub-package paths so every
+# _read("foo.py") call in this file keeps working without modification.
+_SUBPACKAGE_PATHS = {
+    "audio_engine.py":            "core/audio_engine.py",
+    "audio_influx.py":            "core/audio_influx.py",
+    "audio_tasks_registry.py":    "core/audio_tasks_registry.py",
+    "abstract_tree.py":           "core/abstract_tree.py",
+    "id_management.py":           "core/id_management.py",
+    "parallel_dsp.py":            "core/parallel_dsp.py",
+    "proxy_management.py":        "core/proxy_management.py",
+    "dummy_tree.py":              "nodes/dummy_tree.py",
+    "dynamic_audio_operators.py": "nodes/dynamic_audio_operators.py",
+    "gn_menu.py":                 "ui/gn_menu.py",
+    "n_panel_operators.py":       "ui/n_panel_operators.py",
+    "n_panel_ui.py":              "ui/n_panel_ui.py",
+    "prefs_library_manager.py":   "ui/prefs_library_manager.py",
+    "prefs_panel_ui.py":          "ui/prefs_panel_ui.py",
+}
+
 
 def _read(name: str) -> str:
-    return (ROOT / name).read_text(encoding="utf-8")
+    resolved = _SUBPACKAGE_PATHS.get(name, name)
+    return (ROOT / resolved).read_text(encoding="utf-8")
 
 
 def _slice_between(src: str, start_marker: str, end_marker: str, *, label: str = "") -> str:

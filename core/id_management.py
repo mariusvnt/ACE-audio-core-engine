@@ -2,7 +2,7 @@ import hashlib
 import re
 from typing import Dict, Optional
 
-from .vars import ACE_PROXY_PREFIX
+from ..vars import ACE_PROXY_PREFIX
 
 
 class ACEIdManager:
@@ -54,7 +54,7 @@ class ACEIdManager:
                 the allowed attempt count.
         """
         # 1. Importing the node registry
-        from .vars import ACE_NODES
+        from ..vars import ACE_NODES
 
         # 2. Validation against ACE_NODES structure
         if category_key not in ACE_NODES:
@@ -104,7 +104,7 @@ class ACEIdManager:
 
         # Robust parsing against category/type keys that themselves contain "_".
         try:
-            from .vars import ACE_NODES
+            from ..vars import ACE_NODES
         except Exception:
             ACE_NODES = {}
 

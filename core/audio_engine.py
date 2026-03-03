@@ -41,9 +41,9 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
 
 from .abstract_tree import ACEAbstractTree, ACEAbstractNode
 from .audio_influx import AudioReception, build_live_flow_identifier
-from .dummy_tree import ACEDummyTreeReader
+from ..nodes.dummy_tree import ACEDummyTreeReader
 from .id_management import ACEIdManager
-from .properties import ACEAudioSource
+from ..properties import ACEAudioSource
 from .proxy_management import ACEProxyManager
 from .parallel_dsp import evaluate_parallel_job
 from .audio_tasks_registry import (
@@ -75,7 +75,7 @@ from .audio_tasks_registry import (
     _clear_file_open_locks,
     reset_biquad_fallback_warned,
 )
-from . import utils
+from .. import utils
 
 try:
     from concurrent.futures.process import BrokenProcessPool
@@ -4375,7 +4375,7 @@ class ACEAudioEngine:
             return
         # Stage A (main thread): prune orphaned source nodes, then parse dummy GN tree.
         try:
-            from .dummy_tree import ACEDummyNodeFactory
+            from ..nodes.dummy_tree import ACEDummyNodeFactory
             removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(bl_tree, scene)
             if removed:
                 utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{bl_tree.name}'", "INFO")

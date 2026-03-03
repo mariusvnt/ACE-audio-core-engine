@@ -7,12 +7,12 @@ import math
 import os
 from bpy_extras.io_utils import ImportHelper                                                                                            # type: ignore
 
-from .id_management import ACEIdManager
-from .dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
-from . import utils
-from .audio_engine import ACEAudioEngine
-from .audio_influx import AudioReception, build_live_flow_identifier
-from .proxy_management import ACEProxyManager
+from ..core.id_management import ACEIdManager
+from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from .. import utils
+from ..core.audio_engine import ACEAudioEngine
+from ..core.audio_influx import AudioReception, build_live_flow_identifier
+from ..core.proxy_management import ACEProxyManager
 def _supported_audio_filter_glob() -> str:
     try:
         glob = AudioReception.supported_file_filter_glob()
@@ -52,7 +52,7 @@ def _resolve_panel_selected_node(context):
         return None, None
 
     try:
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
         _, active_source = _get_active_source(context)
     except Exception:
         active_source = None
@@ -760,7 +760,7 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             self.report({'ERROR'}, "AudioCore settings unavailable.")
             return {'CANCELLED'}
 
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
         _, active_source = _get_active_source(context)
         if not active_source:
             self.report({'ERROR'}, "No active source.")

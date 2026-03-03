@@ -1,8 +1,8 @@
 import bpy # type: ignore
-from .vars import ACE_NODES
-from .dummy_tree import ACEDummyNodeFactory
-from .id_management import ACEIdManager
-from .dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from ..vars import ACE_NODES
+from ..nodes.dummy_tree import ACEDummyNodeFactory
+from ..core.id_management import ACEIdManager
+from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 
 # ==============================================================================
 # 1. THE OPERATOR (Logic)

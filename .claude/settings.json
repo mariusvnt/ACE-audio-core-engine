@@ -8,7 +8,9 @@
       "Read(//c/Users/mariu/AppData/Roaming/Blender/ Foundation/Blender/5.0/scripts/addons/AudioCore/ Engine/**)",
       "Bash(wc -l \"c:/Users/mariu/AppData/Roaming/Blender Foundation/Blender/5.0/scripts/addons/AudioCore Engine\"/*.py)",
       "Bash(wc -l *.py)",
-      "Bash(python -m pytest tests/test_regression_findings.py -x -q)"
+      "Bash(python -m pytest tests/test_regression_findings.py -x -q)",
+      "Bash(ls -la *.py)",
+      "Bash(python3:*)"
     ],
     "additionalDirectories": [
       "c:\\Users\\mariu\\.claude\\projects\\c--Users-mariu-AppData-Roaming-Blender-Foundation-Blender-5-0-scripts-addons-AudioCore-Engine"
