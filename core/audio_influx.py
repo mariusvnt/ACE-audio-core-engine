@@ -12,7 +12,7 @@ from queue import Queue, Empty, Full
 from typing import Any, Optional, Tuple
 
 import numpy as np
-from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
+from ..utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 try:
     import soundfile as sf  # type: ignore

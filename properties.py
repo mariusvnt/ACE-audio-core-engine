@@ -75,7 +75,7 @@ def _on_engine_runtime_setting_change(self, context):  # noqa: ARG001
     if scene is None:
         return
     try:
-        from .audio_engine import ACEAudioEngine
+        from .core.audio_engine import ACEAudioEngine
         engine = ACEAudioEngine.ensure_instance(scene)
         engine.request_recompile(None)
     except Exception:

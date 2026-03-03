@@ -4,7 +4,7 @@ from typing import Dict, Set, Any
 
 from .id_management import ACEIdManager
 from .abstract_tree import ACEAbstractTree
-from .dummy_tree import ACEDummyNodeFactory
+from ..nodes.dummy_tree import ACEDummyNodeFactory
 
 class ACEProxyManager:
     """Manage proxy objects and write DSP results as Blender mesh attributes.

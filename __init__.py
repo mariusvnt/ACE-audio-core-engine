@@ -34,24 +34,34 @@ def _ensure_dependency_paths():
 _ensure_dependency_paths()
 
 # --- MODULE REGISTRY ---
-# Order matters: Primitives -> Logic -> UI -> Orchestration
+# Order matters: Primitives -> Core DSP -> Nodes -> UI -> Orchestration
+# Sub-package __init__ modules are listed first so they are in sys.modules
+# before their children are imported/reloaded (required for correct hot-reload).
 MODULE_NAMES = [
-    "vars",                     # 1. Definitions / Constants
-    "utils",                    # 2. Global Helpers
-    "id_management",            # 2. ID Utilities
-    "abstract_tree",            # 3. Data Structures
-    "properties",               # 4. Blender Properties (Scene Data)
-    "proxy_management",         # 5. Bridge to Blender Data
-    "audio_influx",             # 6. Audio IO helpers
-    "parallel_dsp",             # 6b. Process-worker DSP helpers
-    "dynamic_audio_operators",  # 7. Dynamic Variant Logic (modular splitters)
-    "dummy_tree",               # 8. Node Factory & Tree Reader
-    "audio_engine",             # 9. DSP Orchestration
-    "gn_menu",                  # 10. Geometry Node Editor Menus
-    "n_panel_operators",        # 11. N-Panel Operators
-    "n_panel_ui",               # 11. N-Panel UI
-    "prefs_library_manager",    # 12. Dependency Installer
-    "prefs_panel_ui",           # 13. Add-on Preferences UI
+    # ── Root ────────────────────────────────────────────────────────────────
+    "vars",                          # 1.  Constants / definitions
+    "utils",                         # 2.  Global helpers
+    "properties",                    # 3.  Blender property groups (Scene data)
+    # ── core/ sub-package ───────────────────────────────────────────────────
+    "core",                          # 4.  Package marker (core/__init__.py)
+    "core.abstract_tree",            # 5.  Abstract IR data structures
+    "core.id_management",            # 6.  ID / hash utilities
+    "core.audio_influx",             # 7.  Audio I/O (file + live)
+    "core.audio_tasks_registry",     # 8.  DSP task class registry
+    "core.parallel_dsp",             # 9.  Process-worker DSP helpers
+    "core.proxy_management",         # 10. Bridge to Blender mesh attributes
+    "core.audio_engine",             # 11. Engine orchestration
+    # ── nodes/ sub-package ──────────────────────────────────────────────────
+    "nodes",                         # 12. Package marker (nodes/__init__.py)
+    "nodes.dummy_tree",              # 13. GN node factory & tree reader
+    "nodes.dynamic_audio_operators", # 14. Dynamic splitter/math variants
+    # ── ui/ sub-package ─────────────────────────────────────────────────────
+    "ui",                            # 15. Package marker (ui/__init__.py)
+    "ui.gn_menu",                    # 16. Geometry Node Editor add menus
+    "ui.n_panel_operators",          # 17. N-Panel operators
+    "ui.n_panel_ui",                 # 18. N-Panel UI panels
+    "ui.prefs_library_manager",      # 19. Dependency installer
+    "ui.prefs_panel_ui",             # 20. Add-on preferences UI
 ]
 
 modules = []
@@ -87,7 +97,7 @@ def register():
                 registered_modules.append(module)
 
         try:
-            from .audio_engine import register_handlers
+            from .core.audio_engine import register_handlers
             register_handlers()
         except (ImportError, AttributeError):
             pass
@@ -117,7 +127,7 @@ def unregister():
     
     # 1. Remove Handlers
     try:
-        from .audio_engine import unregister_handlers
+        from .core.audio_engine import unregister_handlers
         unregister_handlers()
     except (ImportError, AttributeError):
         pass

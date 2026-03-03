@@ -7,7 +7,7 @@ import subprocess
 import os
 import re
 import shutil
-from . import utils
+from .. import utils
 
 
 def _dependency_target_dir(create: bool = True) -> str:
@@ -143,7 +143,7 @@ class ACE_OT_install_missing_libraries(bpy.types.Operator):
         python_exe = utils.get_python_executable()
         target_dir = _dependency_target_dir(create=True)
         try:
-            from .vars import REQUIRED_LIBRARIES
+            from ..vars import REQUIRED_LIBRARIES
         except Exception:
             self.report({'ERROR'}, "Unable to resolve dependency registry.")
             return {'CANCELLED'}

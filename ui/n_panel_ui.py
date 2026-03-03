@@ -17,11 +17,11 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 
-from .id_management import ACEIdManager
-from .audio_engine import ACEAudioEngine
-from .dummy_tree import ACEDummyTreeReader
-from .vars import ACE_NODES
-from . import utils
+from ..core.id_management import ACEIdManager
+from ..core.audio_engine import ACEAudioEngine
+from ..nodes.dummy_tree import ACEDummyTreeReader
+from ..vars import ACE_NODES
+from .. import utils
 
 
 _UI_SYNC_MIN_INTERVAL = 0.25
@@ -363,7 +363,7 @@ def _resolve_ui_list_selected_node(context):
     In the 3D View N-panel this should take precedence over a stale GN editor
     active node so Capture Influx follows the user's list selection.
     """
-    from .utils import _get_active_source
+    from ..utils import _get_active_source
 
     _, active_source = _get_active_source(context)
     if not active_source:
@@ -423,7 +423,7 @@ def _resolve_capture_node(context):
 
 
 def _selected_ui_node_item(context):
-    from .utils import _get_active_source
+    from ..utils import _get_active_source
 
     _, active_source = _get_active_source(context)
     if not active_source:
@@ -577,7 +577,7 @@ def _draw_selected_node_description(layout, description: str):
 
 
 def _draw_bake_controls(layout, context):
-    from .utils import _get_active_source
+    from ..utils import _get_active_source
 
     _, active_source = _get_active_source(context)
     if not active_source:
@@ -1522,7 +1522,7 @@ class ACE_PT_presentation_panel(bpy.types.Panel):
     bl_order = 0
 
     def draw(self, context):
-        from .utils import _ensure_logo_icon
+        from ..utils import _ensure_logo_icon
         layout = self.layout
         icon_id = _ensure_logo_icon()
         if icon_id:
@@ -1667,7 +1667,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
         return bool(ace and getattr(ace, "engine_settings", None)) and not _ui_is_blocked(context)
 
     def draw(self, context):
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
 
         eng_settings = getattr(getattr(context.scene, "audiocore", None), "engine_settings", None)
         if eng_settings is None:
@@ -1709,7 +1709,7 @@ class ACE_PT_audio_sources(bpy.types.Panel):
         return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
 
     def draw(self, context):
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
         ace = context.scene.audiocore
         layout = self.layout
 
@@ -1801,12 +1801,12 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
         _, active_source = _get_active_source(context)
         return active_source is not None and not _ui_is_blocked(context)
 
     def draw(self, context):
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
         layout = self.layout
         _, src = _get_active_source(context)
         
@@ -1834,7 +1834,7 @@ class ACE_PT_information_streams(bpy.types.Panel):
         return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
 
     def draw(self, context):
-        from .utils import _get_active_source
+        from ..utils import _get_active_source
         layout = self.layout
         _, active_source = _get_active_source(context)
         layout.label(text="Active Operators:", icon="NODETREE")

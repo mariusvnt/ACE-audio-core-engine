@@ -8,7 +8,7 @@ try:
 except Exception:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
-from . import utils
+from .. import utils
 
 # --- Data structures ---
 class ACE_DependencyItem(bpy.types.PropertyGroup):
@@ -141,7 +141,7 @@ def _get_addon_preferences():
 
 def sync_preferences_dependencies():
     try:
-        from .vars import REQUIRED_LIBRARIES
+        from ..vars import REQUIRED_LIBRARIES
     except ImportError:
         return
     pref = _get_addon_preferences()
