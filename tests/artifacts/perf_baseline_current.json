@@ -1,0 +1,257 @@
+{
+  "contract": {
+    "version": "ace-perf-v1",
+    "required_scenarios": [
+      1,
+      4,
+      12,
+      24,
+      36,
+      50
+    ],
+    "required_stages": [
+      "source_read",
+      "dsp",
+      "preview",
+      "proxy_write",
+      "ui_sync"
+    ],
+    "strict_gate": {
+      "p95_regression_ratio": 1.35,
+      "p95_regression_floor_ms": 0.25,
+      "preview_p95_max_ms": 10.0,
+      "preview_scenarios": [
+        24,
+        36,
+        50
+      ],
+      "preview_underrun_rate_max": 0.01,
+      "preview_queue_drop_rate_max": 0.01
+    }
+  },
+  "frames": 180,
+  "scenarios": {
+    "1": {
+      "source_read": {
+        "count": 180,
+        "median_ms": 0.055750017054378986,
+        "p95_ms": 0.06440502475015819,
+        "max_ms": 0.1134999911300838
+      },
+      "dsp": {
+        "count": 180,
+        "median_ms": 0.2994499809574336,
+        "p95_ms": 0.33541499287821347,
+        "max_ms": 0.46250002924352884
+      },
+      "preview": {
+        "count": 180,
+        "median_ms": 1.628750003874302,
+        "p95_ms": 3.294649996678345,
+        "max_ms": 3.438299987465143
+      },
+      "proxy_write": {
+        "count": 180,
+        "median_ms": 0.011999974958598614,
+        "p95_ms": 0.01390504476148635,
+        "max_ms": 0.02400000812485814
+      },
+      "ui_sync": {
+        "count": 180,
+        "median_ms": 0.000800006091594696,
+        "p95_ms": 0.00100000761449337,
+        "max_ms": 0.001600012183189392
+      },
+      "realtime": {
+        "preview_latency_p95_ms": 3.294649996678345,
+        "preview_underrun_rate": 0.0,
+        "preview_queue_drop_rate": 0.0
+      }
+    },
+    "4": {
+      "source_read": {
+        "count": 180,
+        "median_ms": 0.05789997521787882,
+        "p95_ms": 0.07215002260636537,
+        "max_ms": 0.12039998546242714
+      },
+      "dsp": {
+        "count": 180,
+        "median_ms": 1.811850001104176,
+        "p95_ms": 1.9454600260360166,
+        "max_ms": 2.711599983740598
+      },
+      "preview": {
+        "count": 180,
+        "median_ms": 1.6110000142361969,
+        "p95_ms": 3.282954968744889,
+        "max_ms": 3.4767999895848334
+      },
+      "proxy_write": {
+        "count": 180,
+        "median_ms": 0.012399978004395962,
+        "p95_ms": 0.015204999363049863,
+        "max_ms": 0.15410000924021006
+      },
+      "ui_sync": {
+        "count": 180,
+        "median_ms": 0.000900006853044033,
+        "p95_ms": 0.0010050076525658354,
+        "max_ms": 0.001200009137392044
+      },
+      "realtime": {
+        "preview_latency_p95_ms": 3.282954968744889,
+        "preview_underrun_rate": 0.0,
+        "preview_queue_drop_rate": 0.0
+      }
+    },
+    "12": {
+      "source_read": {
+        "count": 180,
+        "median_ms": 0.0782000133767724,
+        "p95_ms": 0.09188999829348174,
+        "max_ms": 0.11290004476904869
+      },
+      "dsp": {
+        "count": 180,
+        "median_ms": 4.98999998671934,
+        "p95_ms": 5.141469978843816,
+        "max_ms": 5.6404999922961
+      },
+      "preview": {
+        "count": 180,
+        "median_ms": 1.5962000179570168,
+        "p95_ms": 3.2586400164291263,
+        "max_ms": 3.3819000236690044
+      },
+      "proxy_write": {
+        "count": 180,
+        "median_ms": 0.012400007108226418,
+        "p95_ms": 0.014149991329759342,
+        "max_ms": 0.03509997623041272
+      },
+      "ui_sync": {
+        "count": 180,
+        "median_ms": 0.000900006853044033,
+        "p95_ms": 0.00100000761449337,
+        "max_ms": 0.0014999532140791416
+      },
+      "realtime": {
+        "preview_latency_p95_ms": 3.2586400164291263,
+        "preview_underrun_rate": 0.0,
+        "preview_queue_drop_rate": 0.0
+      }
+    },
+    "24": {
+      "source_read": {
+        "count": 180,
+        "median_ms": 0.11770002311095595,
+        "p95_ms": 0.14450499438680706,
+        "max_ms": 0.20100001711398363
+      },
+      "dsp": {
+        "count": 180,
+        "median_ms": 8.582850015955046,
+        "p95_ms": 8.851434983080253,
+        "max_ms": 15.867600042838603
+      },
+      "preview": {
+        "count": 180,
+        "median_ms": 1.6000999603420496,
+        "p95_ms": 3.277295039151795,
+        "max_ms": 3.6171000101603568
+      },
+      "proxy_write": {
+        "count": 180,
+        "median_ms": 0.012800010154023767,
+        "p95_ms": 0.01561500248499214,
+        "max_ms": 0.027399975806474686
+      },
+      "ui_sync": {
+        "count": 180,
+        "median_ms": 0.000900006853044033,
+        "p95_ms": 0.00100000761449337,
+        "max_ms": 0.022799998987466097
+      },
+      "realtime": {
+        "preview_latency_p95_ms": 3.277295039151795,
+        "preview_underrun_rate": 0.0,
+        "preview_queue_drop_rate": 0.0
+      }
+    },
+    "36": {
+      "source_read": {
+        "count": 180,
+        "median_ms": 0.15725003322586417,
+        "p95_ms": 0.19182500254828477,
+        "max_ms": 0.2929000183939934
+      },
+      "dsp": {
+        "count": 180,
+        "median_ms": 12.28314999025315,
+        "p95_ms": 13.113710022298617,
+        "max_ms": 16.771199996583164
+      },
+      "preview": {
+        "count": 180,
+        "median_ms": 1.6033500141929835,
+        "p95_ms": 3.3337800035951655,
+        "max_ms": 5.954799999017268
+      },
+      "proxy_write": {
+        "count": 180,
+        "median_ms": 0.013150012819096446,
+        "p95_ms": 0.016404953203164038,
+        "max_ms": 0.060399994254112244
+      },
+      "ui_sync": {
+        "count": 180,
+        "median_ms": 0.000900006853044033,
+        "p95_ms": 0.0012050091754645094,
+        "max_ms": 0.002400018274784088
+      },
+      "realtime": {
+        "preview_latency_p95_ms": 3.3337800035951655,
+        "preview_underrun_rate": 0.0,
+        "preview_queue_drop_rate": 0.0
+      }
+    },
+    "50": {
+      "source_read": {
+        "count": 180,
+        "median_ms": 0.19665004219859838,
+        "p95_ms": 0.2221850038040429,
+        "max_ms": 0.4344999906606972
+      },
+      "dsp": {
+        "count": 180,
+        "median_ms": 17.541200009873137,
+        "p95_ms": 17.914505017688498,
+        "max_ms": 22.841400001198053
+      },
+      "preview": {
+        "count": 180,
+        "median_ms": 1.6276499954983592,
+        "p95_ms": 3.3246599923586473,
+        "max_ms": 5.806899978779256
+      },
+      "proxy_write": {
+        "count": 180,
+        "median_ms": 0.013850018149241805,
+        "p95_ms": 0.016310007777065035,
+        "max_ms": 0.03519997699186206
+      },
+      "ui_sync": {
+        "count": 180,
+        "median_ms": 0.000900006853044033,
+        "p95_ms": 0.0011050055036321265,
+        "max_ms": 0.001500011421740055
+      },
+      "realtime": {
+        "preview_latency_p95_ms": 3.3246599923586473,
+        "preview_underrun_rate": 0.0,
+        "preview_queue_drop_rate": 0.0
+      }
+    }
+  }
+}
