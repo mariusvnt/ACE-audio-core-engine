@@ -209,10 +209,24 @@ class ACE_OT_uninstall_library(bpy.types.Operator):
         try:
             removed = _remove_library_from_target(lib_name, target_dir)
             if not removed:
-                self.report({'WARNING'}, f"{lib_name} was not found in AudioCore local dependencies.")
+                # Distinguish between "installed elsewhere" and "not installed at all"
+                # so the user knows exactly what to do.
+                utils.refresh_import_caches()
+                if utils.is_module_installed(lib_name):
+                    self.report(
+                        {'WARNING'},
+                        f"{lib_name} is installed in Blender's Python environment but was "
+                        f"not installed via AudioCore's installer — it cannot be managed here. "
+                        f"Use 'pip uninstall {lib_name}' in Blender's Python to remove it.",
+                    )
+                else:
+                    self.report(
+                        {'WARNING'},
+                        f"{lib_name} is not installed. Use the Install button to install it.",
+                    )
                 return {'CANCELLED'}
             utils.log(f"Successfully removed {lib_name} from {target_dir}")
-            
+
             self.report({'INFO'}, f"{lib_name} uninstalled. Refreshing UI...")
             # Force import cache refresh so prefs detect removal immediately
             utils.refresh_import_caches()

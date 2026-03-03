@@ -17,13 +17,13 @@ from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 try:
     import soundfile as sf  # type: ignore
     SF_AVAILABLE = True
-except ImportError:
+except Exception:
     SF_AVAILABLE = False
 
 try:
     import sounddevice as sd  # type: ignore
     SOUNDDEVICE_AVAILABLE = True
-except ImportError:
+except Exception:
     SOUNDDEVICE_AVAILABLE = False
 
 
@@ -35,7 +35,13 @@ def build_live_flow_identifier(source_like: Any) -> str:
 
 
 class _ACEStreamResampler:
-    """Streaming linear resampler used for one-time file proxy generation."""
+    """Streaming linear resampler used for one-time file proxy generation.
+
+    Processes audio in arbitrary-size chunks using linear interpolation and
+    accumulates a small tail buffer between calls so the resampled output
+    stream is continuous across chunk boundaries.  Call with final=True on the
+    last chunk to flush remaining samples.
+    """
 
     def __init__(self, source_sample_rate: int, target_sample_rate: int, channels: int):
         self.source_sample_rate = max(int(source_sample_rate), 1)
@@ -47,6 +53,18 @@ class _ACEStreamResampler:
         self.tail = np.zeros((0, self.channels), dtype=np.float32)
 
     def process(self, chunk: np.ndarray, final: bool = False) -> np.ndarray:
+        """Resample one chunk of interleaved audio frames.
+
+        Args:
+            chunk: Input audio as a (frames, channels) float32 array, or a
+                1-D array that will be reshaped to (-1, channels).
+            final: When True, flush the tail and emit any remaining output
+                samples rather than holding them for the next call.
+
+        Returns:
+            Resampled audio as a (out_frames, channels) float32 array.  May be
+            empty if the buffered input is not yet sufficient to produce output.
+        """
         arr = np.asarray(chunk, dtype=np.float32)
         if arr.ndim == 1:
             arr = arr.reshape(-1, self.channels)
@@ -107,7 +125,20 @@ class _ACEStreamResampler:
 
 
 class AudioReception:
-    """Unified audio reception for both file and live flow sources."""
+    """Unified audio reception for both file and live flow sources.
+
+    Supports FILE sources (WAV via stdlib wave, plus additional formats via
+    soundfile) and LIVE sources (sounddevice capture, UDP float32 streaming,
+    DAW bridge, and instrument capture routes).  The public API is:
+
+    - open() / close() / reset() for lifecycle management
+    - read_block() to pull the next block of audio
+    - seek() for frame-locked playback sync (file sources only)
+
+    The source type is determined at construction time via *source_type*
+    ("FILE" or "LIVE").  Live sources auto-detect the backend from the
+    *flow_id* token format (see _parse_live_backend()).
+    """
 
     @staticmethod
     def supported_file_extensions() -> tuple[str, ...]:
@@ -146,10 +177,24 @@ class AudioReception:
 
     @staticmethod
     def supported_file_filter_glob() -> str:
+        """Return a semicolon-separated glob string for Blender's file browser filter."""
         return ";".join(f"*{ext}" for ext in AudioReception.supported_file_extensions())
 
     @staticmethod
     def is_supported_file_path(filepath: str) -> bool:
+        """Return True if *filepath* exists and can be opened by a supported backend.
+
+        WAV/WAVE files are always considered valid (pure-Python wave fallback).
+        All other formats require soundfile to be available and the file to open
+        without error.
+
+        Args:
+            filepath: Absolute or relative path to the audio file.
+
+        Returns:
+            True when the path exists, has a supported extension, and the file
+            can be opened by the best available backend.
+        """
         if not filepath or not os.path.isfile(filepath):
             return False
         ext = str(os.path.splitext(filepath)[1] or "").lower()
@@ -167,11 +212,20 @@ class AudioReception:
             return False
 
     def __init__(self, source_type: str, filepath: str = "", flow_id: str = "", live_latency_ms: int = 50):
+        """Initialise a reception object without opening any IO resources.
+
+        Args:
+            source_type: "FILE" or "LIVE".
+            filepath: Path to the audio file (FILE sources only).
+            flow_id: Live routing token.  Format:
+                ``sd:<device>`` | ``udp:<port>[:channels[:sample_rate]]`` |
+                ``daw:<udp-or-sd-selector>`` |
+                ``instrument:<sd-or-udp-selector>``
+            live_latency_ms: Requested sounddevice stream latency in
+                milliseconds (LIVE sources only).  Clamped to >=1 ms.
+        """
         self.source_type = source_type
         self.filepath = filepath
-        # live selector:
-        #   sd:<device> | udp:<port>[:channels[:sample_rate]]
-        #   daw:<udp-or-sd-selector> | instrument:<sd-or-udp-selector>
         self.flow_id = flow_id
         self.live_latency_ms = max(1, int(live_latency_ms))
         self.preferred_block_size: Optional[int] = None
@@ -204,6 +258,22 @@ class AudioReception:
     # Public API
     # ------------------------------------------------------------------
     def open(self, block_size: Optional[int] = None, target_sample_rate: Optional[int] = None) -> bool:
+        """Open the underlying IO resource and populate metadata fields.
+
+        For FILE sources, builds a resampled proxy WAV at *target_sample_rate*
+        if the file's native rate exceeds the target.  For LIVE sources,
+        initialises the appropriate backend (sounddevice stream or UDP socket).
+
+        Args:
+            block_size: Preferred read block size in samples.  Passed as a hint
+                to the sounddevice stream blocksize parameter.
+            target_sample_rate: If > 0 and less than the file's native rate, a
+                resampled WAV proxy is built and used for reading.
+
+        Returns:
+            True on success, False on any IO or configuration failure (see
+            self.last_error for a description).
+        """
         self.preferred_block_size = block_size
         self.target_sample_rate = (
             max(int(target_sample_rate), 1)
@@ -223,6 +293,12 @@ class AudioReception:
         return self._open_file()
 
     def reset(self):
+        """Reset the read cursor to the beginning without closing IO resources.
+
+        For LIVE sources, flushes the capture queue and clears the last-block
+        cache so the next read produces fresh data.  For FILE sources, seeks
+        to frame 0.
+        """
         if self.source_type == "LIVE":
             if self._live_queue:
                 with self._live_queue.mutex:
@@ -282,6 +358,17 @@ class AudioReception:
         return False
 
     def read_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
+        """Read the next block of audio from the source.
+
+        Args:
+            block_size: Number of samples to read per channel.
+
+        Returns:
+            A (mono, stereo, sample_rate) tuple where *mono* is a 1-D float32
+            array of length *block_size*, *stereo* is a (2, block_size) float32
+            array or None for mono sources, and *sample_rate* is an int.
+            Returns None at EOF, on IO error, or if the source is not open.
+        """
         if self.source_type == "LIVE":
             return self._read_live_block(block_size)
 
@@ -342,6 +429,7 @@ class AudioReception:
     # Internal helpers (file IO)
     # ------------------------------------------------------------------
     def _close_file_reader(self):
+        """Close the active file reader (soundfile or wave) and clear the handle."""
         try:
             if self.kind == "soundfile" and self.reader:
                 self.reader.close()  # type: ignore
@@ -352,6 +440,17 @@ class AudioReception:
         self.reader = None
 
     def _open_file_path(self, path: str) -> bool:
+        """Open a single file path, preferring soundfile then falling back to wave.
+
+        Populates self.channels, self.sample_rate, self.duration, and self.kind
+        on success.
+
+        Args:
+            path: Absolute path to the audio file.
+
+        Returns:
+            True if the file was opened successfully, False otherwise.
+        """
         self._close_file_reader()
         if SF_AVAILABLE and self.reader is None:
             try:
@@ -391,6 +490,7 @@ class AudioReception:
 
     @staticmethod
     def _proxy_cache_dir() -> str:
+        """Return the OS temp directory path used for resampled WAV proxy files."""
         return os.path.join(tempfile.gettempdir(), "ace_audio_proxy_cache")
 
     @staticmethod
@@ -421,6 +521,20 @@ class AudioReception:
         return os.path.join(self._proxy_cache_dir(), f"{sig}_{int(target_sample_rate)}.wav")
 
     def _build_resampled_proxy(self, input_path: str, output_path: str, target_sample_rate: int) -> bool:
+        """Stream-resample *input_path* to a WAV proxy at *target_sample_rate*.
+
+        Uses soundfile for non-WAV inputs when available, and falls back to
+        stdlib wave for plain WAV files.  Writes a PCM-16 WAV proxy to
+        *output_path*.
+
+        Args:
+            input_path: Source audio file path.
+            output_path: Destination WAV path for the resampled proxy.
+            target_sample_rate: Target sample rate in Hz.
+
+        Returns:
+            True if the proxy was written successfully, False on any error.
+        """
         block_frames = 65_536
         os.makedirs(self._proxy_cache_dir(), exist_ok=True)
 
@@ -482,6 +596,22 @@ class AudioReception:
         target_sample_rate: int,
         channels: int,
     ) -> Optional[str]:
+        """Return a path to a cached resampled WAV proxy, building it if missing.
+
+        The proxy path is derived deterministically from a blake2b hash of the
+        input file's absolute path, size, mtime, and the requested sample rate,
+        so the cache is automatically invalidated when the source file changes.
+
+        Args:
+            input_path: Absolute path to the original audio file.
+            source_sample_rate: Native sample rate of the source file.
+            target_sample_rate: Desired sample rate for the proxy.
+            channels: Channel count of the source file.
+
+        Returns:
+            Absolute path to the resampled WAV proxy, or None if the target
+            rate is not lower than the source rate or if proxy build failed.
+        """
         if int(target_sample_rate) <= 0 or int(target_sample_rate) >= int(source_sample_rate):
             return None
 
@@ -516,6 +646,14 @@ class AudioReception:
             return None
 
     def _open_file(self) -> bool:
+        """Open self.filepath, optionally through a resampled WAV proxy.
+
+        Sets self.proxy_filepath when a proxy is used so callers can
+        distinguish proxy from native reads.
+
+        Returns:
+            True if a readable file handle is available after the call.
+        """
         if not self.filepath or not os.path.isfile(self.filepath):
             self.last_error = "file path does not exist"
             return False
@@ -697,6 +835,22 @@ class AudioReception:
         return "instrument_sounddevice", {"device": device_token or None, "channels": channels}
 
     def _parse_live_backend(self):
+        """Determine the live backend type and configuration from self.flow_id.
+
+        Dispatches on the token prefix:
+        - ``daw:`` → DAW bridge (UDP or sounddevice)
+        - ``instrument:`` → instrument capture (sounddevice or UDP)
+        - ``udp:`` / ``udp://`` → raw UDP float32 stream
+        - ``sd:`` / ``sounddevice:`` → sounddevice InputStream
+        - loopback prefix → sounddevice with WASAPI loopback flag
+        - bare token → sounddevice with device name/index
+
+        Returns:
+            A (backend_name, cfg_dict) tuple.  *backend_name* is one of
+            "udp", "daw_udp", "instrument_udp", "sounddevice",
+            "daw_sounddevice", "instrument_sounddevice", "invalid", or
+            "unsupported".
+        """
         token = (self.flow_id or "").strip()
         if not token:
             return "sounddevice", {"device": None, "channels": 2}
@@ -713,9 +867,13 @@ class AudioReception:
             return "udp", cfg
         if lower.startswith("sd:"):
             device_token = token[3:].strip()
+            if device_token.lower().startswith("loopback:"):
+                return "sounddevice", {"device": device_token[9:].strip() or None, "channels": 2, "loopback": True}
             return "sounddevice", {"device": device_token or None, "channels": 2}
         if lower.startswith("sounddevice:"):
             device_token = token.split(":", 1)[1].strip()
+            if device_token.lower().startswith("loopback:"):
+                return "sounddevice", {"device": device_token[9:].strip() or None, "channels": 2, "loopback": True}
             return "sounddevice", {"device": device_token or None, "channels": 2}
 
         # Keep truly unsupported host-api selectors explicit.
@@ -726,6 +884,18 @@ class AudioReception:
         return "sounddevice", {"device": token, "channels": 2}
 
     def _open_live_udp(self, cfg: dict, kind: str = "udp_stream") -> bool:
+        """Bind a non-blocking UDP socket for float32 audio streaming.
+
+        Args:
+            cfg: Configuration dict with keys: host (str), port (int),
+                channels (int), sample_rate (int).
+            kind: String label stored in self.kind (e.g. "udp_stream",
+                "daw_udp", "instrument_udp").
+
+        Returns:
+            True on success.  False on socket bind failure, with
+            self.last_error set to a description.
+        """
         try:
             host = str(cfg.get("host", "0.0.0.0") or "0.0.0.0")
             port = int(cfg.get("port", 0) or 0)
@@ -778,6 +948,34 @@ class AudioReception:
         return None
 
     def _open_live_sounddevice(self, cfg: dict, kind: str = "sounddevice") -> bool:
+        """Open a sounddevice InputStream for live audio capture.
+
+        Re-attempts sounddevice import at call time in case the module became
+        available after add-on startup.  Applies WASAPI loopback settings on
+        Windows when the selected device is an output-only device or when the
+        caller sets cfg["loopback"]=True.  Falls back from stereo to mono if
+        the device rejects the requested channel count.
+
+        Args:
+            cfg: Configuration dict with keys: device (str|int|None),
+                channels (int), sample_rate (int, 0 to use device default),
+                loopback (bool, optional).
+            kind: String label stored in self.kind.
+
+        Returns:
+            True on success.  False on any sounddevice error, with
+            self.last_error set to a description.
+        """
+        global sd, SOUNDDEVICE_AVAILABLE
+        if not SOUNDDEVICE_AVAILABLE:
+            # Re-attempt import — sounddevice may have been installed after startup
+            # or the module-level import may have run before sys.path was fully set up.
+            try:
+                import sounddevice as _sd  # type: ignore
+                sd = _sd
+                SOUNDDEVICE_AVAILABLE = True
+            except Exception:
+                pass
         if not SOUNDDEVICE_AVAILABLE:
             self.kind = "live_stub"
             self.last_error = (
@@ -802,19 +1000,35 @@ class AudioReception:
             channels = int(cfg.get("channels", 2) or 2)
             channels = max(1, min(channels, 8))
             sample_rate = int(cfg.get("sample_rate", 0) or 0)
+            _use_wasapi_loopback = bool(cfg.get("loopback", False))
             device_info = self._query_sounddevice_input_info(device)
             if device_info is not None:
                 try:
                     max_input_channels = int(device_info.get("max_input_channels", 0) or 0)
                 except Exception:
                     max_input_channels = 0
-                if max_input_channels > 0:
+                if max_input_channels > 0 and not _use_wasapi_loopback:
+                    # Normal input device — clamp to its channel count.
                     channels = min(channels, max_input_channels)
                 else:
-                    raise ValueError(
-                        f"Selected capture device has no input channels. "
-                        "Check that the device is an input device and not a playback-only device."
-                    )
+                    # Either an explicit loopback request or an output-only device
+                    # (e.g. speakers/headphones for WASAPI loopback capture).
+                    try:
+                        max_output_channels = int(device_info.get("max_output_channels", 0) or 0)
+                    except Exception:
+                        max_output_channels = 0
+                    if max_output_channels > 0:
+                        channels = min(channels, max_output_channels)
+                        _use_wasapi_loopback = True
+                    elif max_input_channels > 0:
+                        # Loopback flag on a normal input device — treat as regular input.
+                        channels = min(channels, max_input_channels)
+                        _use_wasapi_loopback = False
+                    else:
+                        raise ValueError(
+                            "Selected capture device has no input or output channels. "
+                            "Verify the selected device is a valid audio input or loopback-capable output device."
+                        )
                 try:
                     default_sample_rate = int(float(device_info.get("default_samplerate", 0) or 0))
                 except Exception:
@@ -866,20 +1080,34 @@ class AudioReception:
             }
             if sample_rate > 0:
                 kwargs["samplerate"] = sample_rate
+            # Build WASAPI loopback extra_settings when needed (Windows only).
+            wasapi_extra: Optional[dict] = None
+            if _use_wasapi_loopback:
+                try:
+                    wasapi_extra = {"extra_settings": sd.WasapiSettings(loopback=True)}  # type: ignore
+                except Exception:
+                    wasapi_extra = None  # WASAPI not available on this platform
             channel_attempts = [channels]
             if channels > 1:
                 channel_attempts.append(1)
             open_error = None
             for attempt_channels in channel_attempts:
-                try:
-                    kwargs["channels"] = int(attempt_channels)
-                    self._live_stream = sd.InputStream(**kwargs)  # type: ignore
-                    self._live_stream.start()
-                    open_error = None
+                # Try WASAPI loopback settings first, then fall back to plain open.
+                kw_variants = []
+                if wasapi_extra:
+                    kw_variants.append({**kwargs, "channels": int(attempt_channels), **wasapi_extra})
+                kw_variants.append({**kwargs, "channels": int(attempt_channels)})
+                for kw in kw_variants:
+                    try:
+                        self._live_stream = sd.InputStream(**kw)  # type: ignore
+                        self._live_stream.start()
+                        open_error = None
+                        break
+                    except Exception as e:
+                        open_error = e
+                        self._live_stream = None
+                if self._live_stream is not None:
                     break
-                except Exception as e:
-                    open_error = e
-                    self._live_stream = None
             if self._live_stream is None:
                 raise RuntimeError(str(open_error) or "unknown sounddevice error")
             self.sample_rate = int(self._live_stream.samplerate)
@@ -944,6 +1172,19 @@ class AudioReception:
             return False
 
     def _read_live_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
+        """Drain the sounddevice capture queue and return the freshest block.
+
+        Keeps only the most recently arrived audio block to minimise latency —
+        stale queue entries are discarded.  Returns the last valid block on a
+        transient queue-empty condition so the engine never stalls on a
+        scheduling gap.
+
+        Args:
+            block_size: Required number of samples in the returned block.
+
+        Returns:
+            (mono, stereo, sample_rate) or None if no audio has arrived yet.
+        """
         if self.kind in {"udp_stream", "daw_udp", "instrument_udp"}:
             return self._read_live_udp_block(block_size)
         if self.kind not in {"sounddevice", "daw_sounddevice", "instrument_sounddevice"} or not self._live_queue:
@@ -1013,6 +1254,18 @@ class AudioReception:
         return mono.astype(np.float32, copy=False), stereo, self.sample_rate
 
     def _read_live_udp_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
+        """Drain the non-blocking UDP socket and return the freshest packet.
+
+        Reads all available UDP datagrams in a non-blocking loop and keeps
+        only the last one (freshest-first policy).  Returns the last valid
+        block on a transient receive-empty condition.
+
+        Args:
+            block_size: Required number of samples in the returned block.
+
+        Returns:
+            (mono, stereo, sample_rate) or None if no packet has arrived yet.
+        """
         sock = self._live_udp_socket
         if sock is None:
             return None

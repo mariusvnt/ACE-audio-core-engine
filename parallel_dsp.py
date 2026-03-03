@@ -8,6 +8,7 @@ This module is intentionally Blender-agnostic:
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -45,12 +46,29 @@ from .audio_tasks_registry import (
 
 
 _WORKER_CACHE_MAX = 64
+# Keyed by (generation_id, graph_uid, block_size, graph_ir_digest).
 _WORKER_GRAPH_CACHE: Dict[Tuple[int, str, int, str], "_CompiledWorkerGraph"] = {}
 _WORKER_LAST_GENERATION: Optional[int] = None
+# Per-source shared-memory attachment cache; keyed by "<src_id>:mono" / "<src_id>:stereo".
 _WORKER_SHM_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _coerce_worker_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:
+    """Coerce arbitrary payload data into a typed AudioChunk.
+
+    If *data* is already an AudioChunk it is returned unchanged.  Otherwise
+    the value is cast to a float32 NumPy array, zero-padded or truncated to
+    *block_size*, and wrapped in a minimal AudioChunk with default metadata.
+
+    Args:
+        data: Raw audio payload — may be None, an ndarray, a list, or an
+            existing AudioChunk.
+        block_size: Required number of samples in the returned chunk.
+        sample_rate: Sample rate to attach to the new chunk.
+
+    Returns:
+        An AudioChunk of exactly *block_size* samples.
+    """
     if isinstance(data, AudioChunk):
         return data
 
@@ -114,7 +132,12 @@ class _WorkerSourceScannerPassthroughTask(ACEAudioTask):
 
 
 class _WorkerSourceProvider:
-    """Light provider shim exposing `compute_feature` for stream tasks."""
+    """Light provider shim exposing `compute_feature` for stream tasks.
+
+    Wraps a borrowed AudioFluxAnalyzer and re-borrows it whenever the
+    sample-rate or block-size changes so every source bridge task gets a
+    correctly configured analyzer without allocating one per task.
+    """
 
     def __init__(self, sample_rate: int, block_size: int):
         self.sample_rate = max(int(sample_rate), 1)
@@ -122,6 +145,12 @@ class _WorkerSourceProvider:
         self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
 
     def ensure_context(self, sample_rate: int, block_size: int):
+        """Re-borrow the analyzer when audio parameters change.
+
+        Args:
+            sample_rate: New sample rate in Hz.
+            block_size: New block size in samples.
+        """
         sr = max(int(sample_rate), 1)
         bs = max(int(block_size), 1)
         if sr == self.sample_rate and bs == self.block_size and self.analysis is not None:
@@ -133,11 +162,21 @@ class _WorkerSourceProvider:
         self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
 
     def compute_feature(self, name: str, chunk: AudioChunk):
+        """Delegate feature computation to the underlying analyzer.
+
+        Args:
+            name: Feature name (e.g. "rms", "centroid").
+            chunk: The audio chunk to analyze.
+
+        Returns:
+            The computed feature value, or None if no analyzer is available.
+        """
         if self.analysis is None:
             return None
         return self.analysis.compute_feature(name, chunk)
 
     def close(self):
+        """Release the borrowed analyzer back to the pool."""
         if self.analysis is not None:
             AudioFluxAnalyzer.release(self.analysis)
             self.analysis = None
@@ -206,8 +245,10 @@ class _WorkerSourceBridgeTask:
                 stereo = arr.astype(np.float32, copy=False)
             elif arr.ndim == 2 and arr.shape[0] == mono.shape[0]:
                 stereo = arr.T.astype(np.float32, copy=False)
-            elif arr.ndim != 2 or (arr.shape[0] != mono.shape[0] and arr.shape[1] != mono.shape[0]):
-                import sys
+            else:  # ndim != 2 OR both shape axes mismatch mono length
+                # utils.log() cannot be used here: this module is intentionally
+                # bpy-free (Stage-B worker process). print() to stderr is the only
+                # safe fallback — this is an explicit deviation from project style.
                 print(
                     f"[ACE WARNING] Worker stereo shape mismatch: stereo={arr.shape}, "
                     f"mono_len={mono.shape[0]}, frame={frame_id}. Dropping stereo.",
@@ -296,6 +337,14 @@ class _WorkerSourceBridgeTask:
 
 
 class _CompiledWorkerGraph:
+    """A fully instantiated, wired task graph ready for per-frame evaluation.
+
+    Created once per (generation_id, graph_uid, block_size, graph_ir_digest)
+    cache key and reused across frames.  Source chunks are injected each frame
+    via set_source_payloads(); output values are read via get_output() calls on
+    individual tasks.
+    """
+
     def __init__(
         self,
         tasks: Dict[str, Any],
@@ -311,6 +360,14 @@ class _CompiledWorkerGraph:
         self.block_size = max(int(block_size), 1)
 
     def set_source_payloads(self, payloads: Dict[str, Dict[str, Any]], frame_id: int, block_size: int):
+        """Inject per-source audio chunks for the current frame.
+
+        Args:
+            payloads: Mapping from source node ID to a payload dict containing
+                at minimum ``"mono"`` and optionally ``"stereo"`` arrays.
+            frame_id: The current frame index used to validate stale chunks.
+            block_size: Expected number of samples per block.
+        """
         bs = max(int(block_size), 1)
         if bs != self.block_size:
             self.block_size = bs
@@ -328,6 +385,7 @@ class _CompiledWorkerGraph:
             src_task.set_chunk(src_payload, frame_id=frame_id, block_size=bs)
 
     def close(self):
+        """Release all task and provider resources held by this graph."""
         for task in self.tasks.values():
             close_fn = getattr(task, "close", None)
             if callable(close_fn):
@@ -345,6 +403,21 @@ class _CompiledWorkerGraph:
 
 
 def _create_worker_task(node_id: str, category: str, node_type: str, params: Dict[str, Any], block_size: int):
+    """Instantiate the correct ACEAudioTask subclass for a given node IR entry.
+
+    Falls back to a bare ACEAudioTask for unknown category/type combinations
+    so unrecognised nodes produce silence rather than crashing the worker.
+
+    Args:
+        node_id: Unique node identifier string from the graph IR.
+        category: ACE node category (e.g. "stream", "delta", "utilities").
+        node_type: ACE node type within the category (e.g. "rms", "pitch").
+        params: Parameter dict from the node IR record.
+        block_size: Analysis block size in samples.
+
+    Returns:
+        An ACEAudioTask (or subclass) instance.
+    """
     cat = str(category or "")
     typ = str(node_type or "")
     bs = max(int(block_size), 1)
@@ -393,6 +466,20 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
 
 
 def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size: int) -> _CompiledWorkerGraph:
+    """Build a _CompiledWorkerGraph from a serialised graph IR dict.
+
+    Creates source bridge tasks, regular analysis tasks, and wires all links
+    from the IR before returning the ready-to-evaluate graph.
+
+    Args:
+        graph_ir: Serialised graph IR as produced by
+            ACEAudioEngine._prepare_parallel_graph_ir().
+        sample_rate: Default sample rate to assign to source providers.
+        block_size: Initial analysis block size in samples.
+
+    Returns:
+        A fully wired _CompiledWorkerGraph instance.
+    """
     bs = max(int(block_size), 1)
     sr = max(int(sample_rate), 1)
     nodes = dict(graph_ir.get("nodes", {}) or {})
@@ -457,6 +544,16 @@ def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size
 
 
 def _normalize_worker_value(attr_type: str, value: Any):
+    """Convert a raw task output to the scalar or tuple form expected by the main process.
+
+    Args:
+        attr_type: Blender attribute type string — "FLOAT", "FLOAT_VECTOR", or
+            "FLOAT_COLOR".
+        value: Raw value from a task's get_output() call.
+
+    Returns:
+        A plain float for FLOAT, or a tuple of 3 or 4 floats for vector/color types.
+    """
     attr = str(attr_type or "FLOAT")
     if attr == "FLOAT":
         if isinstance(value, (int, float, np.integer, np.floating)):
@@ -483,6 +580,7 @@ def _normalize_worker_value(attr_type: str, value: Any):
 
 
 def _trim_worker_cache():
+    """Evict oldest entries from _WORKER_GRAPH_CACHE when capacity is exceeded."""
     if len(_WORKER_GRAPH_CACHE) <= _WORKER_CACHE_MAX:
         return
     drop_count = len(_WORKER_GRAPH_CACHE) - _WORKER_CACHE_MAX
@@ -493,6 +591,7 @@ def _trim_worker_cache():
 
 
 def _close_worker_shm_cache_entry(cache_key: str):
+    """Close and remove one shared-memory attachment from _WORKER_SHM_CACHE."""
     entry = _WORKER_SHM_CACHE.pop(str(cache_key), None)
     if not isinstance(entry, dict):
         return
@@ -506,11 +605,20 @@ def _close_worker_shm_cache_entry(cache_key: str):
 
 
 def _close_worker_shm_cache():
+    """Close and release all shared-memory attachments in _WORKER_SHM_CACHE."""
     for cache_key in list(_WORKER_SHM_CACHE.keys()):
         _close_worker_shm_cache_entry(cache_key)
 
 
 def _prune_worker_cache_for_generation(generation_id: int):
+    """Drop all cached graphs from previous generations and flush the SHM cache.
+
+    Called when the worker detects a generation change, indicating that the
+    main process has recompiled and all previously cached IRs are stale.
+
+    Args:
+        generation_id: The new active generation ID.
+    """
     stale_keys = [key for key in list(_WORKER_GRAPH_CACHE.keys()) if int(key[0]) != int(generation_id)]
     for key in stale_keys:
         graph = _WORKER_GRAPH_CACHE.pop(key, None)
@@ -520,6 +628,22 @@ def _prune_worker_cache_for_generation(generation_id: int):
 
 
 def _resolve_worker_shm_array(cache_key: str, spec: Dict[str, Any]) -> Optional[np.ndarray]:
+    """Attach to or retrieve a named shared-memory segment as a NumPy view.
+
+    Caches the attachment in _WORKER_SHM_CACHE to avoid re-opening the same
+    segment every frame.  Returns None when shared memory is unavailable or
+    the spec is incomplete.
+
+    Args:
+        cache_key: A stable string key used for the internal SHM attachment
+            cache (e.g. "src0:mono").
+        spec: Dict with at least ``"name"`` (shared-memory block name) and
+            ``"shape"`` (tuple of ints).
+
+    Returns:
+        A float32 NumPy array backed by the shared-memory segment, or None on
+        any failure.
+    """
     if not _SHARED_MEMORY_AVAILABLE:
         return None
     name = str(spec.get("name", "") or "")
@@ -549,6 +673,24 @@ def _resolve_worker_shm_array(cache_key: str, spec: Dict[str, Any]) -> Optional[
 
 
 def _resolve_source_payloads(job: Dict[str, Any]) -> tuple[Dict[str, Dict[str, Any]], list[Any]]:
+    """Extract per-source audio payloads from a job dict, resolving SHM references.
+
+    Handles both the legacy single-source ``"source_chunk"`` key and the
+    current multi-source ``"source_chunks"`` dict.  Shared-memory arrays are
+    attached in-process so callers receive plain NumPy views with no extra
+    copies.
+
+    Args:
+        job: The raw job dict received by evaluate_parallel_job().
+
+    Returns:
+        A (payloads, attached_shm) tuple where *payloads* maps source node ID
+        to a resolved payload dict and *attached_shm* is an empty list (SHM
+        segments are cached in _WORKER_SHM_CACHE rather than returned here).
+
+    Raises:
+        RuntimeError: If shared-memory segment resolution fails.
+    """
     source_chunks_raw = dict(job.get("source_chunks", {}) or {})
     if not source_chunks_raw and isinstance(job.get("source_chunk"), dict):
         # Backward compatibility with legacy one-source payloads.

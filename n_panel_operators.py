@@ -307,15 +307,19 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
         ace = context.scene.audiocore
         idx = ace.active_audio_source_index
         source = ace.audio_sources[idx]
-        
+
+        # Capture stable_id before the PropertyGroup is removed from the collection,
+        # because the Python reference may become invalid after audio_sources.remove().
+        src_uid = getattr(source, "stable_id", "") or ""
+
         # --- PROXY CLEANUP ---
         ACEProxyManager.delete_proxy_for_source(source)
-        
+
         ace.audio_sources.remove(idx)
-        
+
         if ace.active_audio_source_index >= len(ace.audio_sources):
             ace.active_audio_source_index = max(0, len(ace.audio_sources) - 1)
-        
+
         sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
         if not ace.audio_sources and getattr(ace, "gn_target_object", None) and getattr(ace.gn_target_object, "name", "") == ACEProxyManager.SONAR_OBJECT_NAME:
             try:
@@ -329,8 +333,18 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
                 pass
         engine = ACEAudioEngine.get_instance(context.scene)
         if engine:
+            # Eagerly release the bake cache for this source so its SHM/disk
+            # entries are freed immediately rather than waiting for the next
+            # compile's _prune_bake_cache() sweep.
+            if src_uid:
+                entry = engine._bake_cache.pop(src_uid, None)
+                if isinstance(entry, dict):
+                    try:
+                        engine._cleanup_bake_entry(entry)
+                    except Exception:
+                        pass
             engine._shutdown_graphs()
-            
+
         return {'FINISHED'}
     
 

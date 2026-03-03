@@ -6,9 +6,13 @@ from .vars import ACE_PROXY_PREFIX
 
 
 class ACEIdManager:
-    """
-    Central utility to generate and manage standardized IDs 
-    compatible with the ACE_NODES structure and Blender naming limits.
+    """Central utility for generating and managing standardised ACE identifiers.
+
+    All IDs follow the pattern ``ACE_<category>_<type>_<hex6>`` (node IDs) or
+    ``ACE_<name>_<hex6>`` (proxy/attribute names), keeping all keys within
+    Blender's 63-character attribute name limit.  The hex suffix is derived
+    from a blake2b-4 digest so IDs are deterministic given the same seed and
+    collision-free by stepping the salt on collision.
     """
     PREFIX = ACE_PROXY_PREFIX
 
@@ -23,12 +27,31 @@ class ACEIdManager:
         existing_ids: Optional[list[str]] = None,
         deterministic_seed: str = "",
     ) -> str:
-        """
-        Generates a stable, unique ID for a Node.
-        Validates that the category and type exist in ACE_NODES.
+        """Generate a stable, unique ACE node ID.
 
-        Format: ACE_{Category}_{Type}_{ShortHash}
-        Example: ACE_stream_rms_a19c3f
+        Validates *category_key* and *node_type_key* against ACE_NODES before
+        generating so callers receive a clear ValueError on mismatches rather
+        than a silent bad ID.  Steps a salt counter until a candidate is not
+        in *existing_ids*.
+
+        Format: ``ACE_<category>_<type>_<hex6>``
+        Example: ``ACE_stream_rms_a19c3f``
+
+        Args:
+            category_key: ACE node category (e.g. "stream").
+            node_type_key: ACE node type within that category (e.g. "rms").
+            existing_ids: Collection of IDs already in use; collision avoidance
+                steps the salt until a free candidate is found.
+            deterministic_seed: Optional stable string used as the hash input
+                base.  Defaults to "category:type".
+
+        Returns:
+            A unique ACE node ID string.
+
+        Raises:
+            ValueError: If *category_key* or *node_type_key* are not in ACE_NODES.
+            RuntimeError: If no collision-free candidate can be generated within
+                the allowed attempt count.
         """
         # 1. Importing the node registry
         from .vars import ACE_NODES
@@ -55,9 +78,19 @@ class ACEIdManager:
 
     @staticmethod
     def parse_node_id(node_id: str) -> Optional[Dict[str, str]]:
-        """
-        Utility to extract info from an ID. 
-        Returns None if ID is not an ACE ID.
+        """Parse an ACE node ID string into its component parts.
+
+        Strips the ACE prefix and resolves the category/type pair by comparing
+        the body against all known ACE_NODES keys.  Prefers the most specific
+        (longest) match to handle rare cases where a category or type key
+        contains an underscore.
+
+        Args:
+            node_id: The full ACE ID string to parse.
+
+        Returns:
+            A dict with keys "category", "type", and "uuid", or None if the
+            string is not a recognised ACE ID.
         """
         if not node_id.startswith(ACEIdManager.PREFIX):
             return None
@@ -94,8 +127,19 @@ class ACEIdManager:
 
     @staticmethod
     def ensure_source_uid(source_prop, existing_ids: Optional[list[str]] = None) -> str:
-        """
-        Guarantee that an audio source has a stable internal ID.
+        """Guarantee that an audio source has a stable internal identifier.
+
+        Returns the existing stable_id if present, otherwise generates a new
+        one via generate_node_id and writes it back to source_prop.stable_id.
+
+        Args:
+            source_prop: An ACEAudioSource property-group instance.  None is
+                accepted and returns an empty string.
+            existing_ids: IDs already in use; forwarded to generate_node_id for
+                collision avoidance when a new ID must be allocated.
+
+        Returns:
+            The stable ID string assigned to *source_prop*.
         """
         sid = getattr(source_prop, "stable_id", "") if source_prop else ""
         if sid:
@@ -113,9 +157,19 @@ class ACEIdManager:
 
     @staticmethod
     def generate_source_proxy_name(source_name: str, stable_seed: Optional[str] = None) -> str:
-        """
-        Generates a deterministic proxy object name from the user-facing source
-        name while keeping uniqueness stable via an optional seed.
+        """Generate a deterministic proxy object name from the user-facing source name.
+
+        Normalises path separators and file extensions, strips the ACE prefix
+        if already present, and appends a 6-character blake2b suffix for
+        uniqueness.  Result is capped at 63 characters for Blender compatibility.
+
+        Args:
+            source_name: Human-readable source label or file path.
+            stable_seed: Optional stable seed string used for the hash.
+                Defaults to *source_name* when not provided.
+
+        Returns:
+            A proxy object name string with the ACE prefix.
         """
         raw_name = (source_name or "").strip()
         if not raw_name:
@@ -169,9 +223,24 @@ class ACEIdManager:
 
     @staticmethod
     def generate_compact_attr_name(proxy_name: str, node_id: str, output_name: str = "", socket_idx: int = 0) -> str:
-        """
-        Short deterministic attribute key.
-        Example: ACE_rms_guit1a2
+        """Generate a short deterministic mesh attribute key.
+
+        Combines a metric hint (derived from the output name or node type) with
+        a 4-character source hint and a 6-character hash of node_id and
+        socket_idx.  Result is capped at 63 characters.
+
+        Format: ``ACE_<metric>_<srchint><hash6>``
+        Example: ``ACE_rms_guit1a2``
+
+        Args:
+            proxy_name: The proxy object name (used for the source hint).
+            node_id: The ACE node ID (hashed with socket_idx for uniqueness).
+            output_name: Human-readable output socket name; used to derive the
+                metric token when provided.
+            socket_idx: Output socket index; combined with node_id in the hash.
+
+        Returns:
+            A compact mesh attribute name string with the ACE prefix.
         """
         source_id = proxy_name
         if source_id.startswith(ACEIdManager.PREFIX):
@@ -185,7 +254,7 @@ class ACEIdManager:
                 metric_raw = parsed.get("type", "")
         metric_hint = ACEIdManager._compact_metric_token(metric_raw)
 
-        short_hash = hashlib.blake2b(f"{node_id}:{int(socket_idx)}".encode("utf-8"), digest_size=4).hexdigest()[:3]
+        short_hash = hashlib.blake2b(f"{node_id}:{int(socket_idx)}".encode("utf-8"), digest_size=4).hexdigest()[:6]
         return f"{ACEIdManager.PREFIX}{metric_hint}_{source_hint}{short_hash}"[:63]
 
     # -------------------------------------------------------------------------
@@ -194,10 +263,18 @@ class ACEIdManager:
 
     @staticmethod
     def _clean_string(input_str: str) -> str:
-        """
-        Removes non-alphanumeric characters for Blender compatibility.
-        Important: This removes underscores too, which is helpful for the ID 
-        parsing logic (ACE_Cat_Type_UUID) to ensure 'Cat' and 'Type' are atomic.
+        """Remove all non-alphanumeric characters from *input_str*.
+
+        Underscores are intentionally removed so that category and type tokens
+        embedded in the ID format (``ACE_Cat_Type_UUID``) remain atomic — a
+        type key containing "_" would otherwise break the parse_node_id rsplit
+        logic.
+
+        Args:
+            input_str: The raw string to sanitise.
+
+        Returns:
+            A string containing only [a-zA-Z0-9] characters.
         """
         return re.sub(r'[^a-zA-Z0-9]', '', input_str)
 

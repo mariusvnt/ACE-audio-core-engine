@@ -1,8 +1,20 @@
+"""
+Blender property-group definitions for the AudioCore Engine add-on.
+
+Defines ACEUINode, ACEAudioSource, ACEEngineSettings, and ACEProjectSettings
+along with the update callbacks and dynamic enum helpers that wire them to
+the engine and the live device list.
+"""
 import bpy                                                                                                                          # type: ignore
 from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
-# Helpers to track user overrides on tempo/meter so automated analysis won't overwrite.
+
+# ---------------------------------------------------------------------------
+# Update callbacks — tempo/meter override tracking
+# ---------------------------------------------------------------------------
+
 def _mark_user_bpm(self, context):  # noqa: ARG001 - Blender passes context
+    """Set ace_bpm_user_override so auto-detection does not overwrite the user's BPM."""
     try:
         self["ace_bpm_user_override"] = True
     except Exception:
@@ -10,6 +22,7 @@ def _mark_user_bpm(self, context):  # noqa: ARG001 - Blender passes context
 
 
 def _mark_user_meter(self, context):  # noqa: ARG001
+    """Set ace_meter_user_override so auto-detection does not overwrite the user's meter."""
     try:
         self["ace_meter_user_override"] = True
     except Exception:
@@ -22,6 +35,7 @@ def compose_live_flow_identifier(source_prop) -> str:
 
 
 def _sync_live_flow_identifier(source_prop):
+    """Write the current live route token into source_prop.flow_identifier."""
     try:
         source_prop.flow_identifier = compose_live_flow_identifier(source_prop)
     except Exception:
@@ -29,10 +43,18 @@ def _sync_live_flow_identifier(source_prop):
 
 
 def _on_live_routing_change(self, context):  # noqa: ARG001
+    """Blender update callback: rebuild the live flow token when any routing property changes."""
     _sync_live_flow_identifier(self)
 
 
 def _on_source_type_change(self, context):
+    """Blender update callback: sync live routing or clear stale tokens on source-type switch.
+
+    When switching to LIVE, rebuilds the flow_identifier from the current
+    transport settings.  When switching back to FILE, clears the identifier so
+    stale "sd:" or UDP tokens do not persist and confuse source routing.
+    Also triggers a full engine recompile via _on_engine_runtime_setting_change.
+    """
     if str(getattr(self, "source_type", "") or "") == "LIVE":
         _sync_live_flow_identifier(self)
     else:
@@ -48,6 +70,7 @@ def _on_source_type_change(self, context):
 
 
 def _on_engine_runtime_setting_change(self, context):  # noqa: ARG001
+    """Blender update callback: request an engine recompile on any runtime setting change."""
     scene = getattr(context, "scene", None) if context else None
     if scene is None:
         return
@@ -60,6 +83,15 @@ def _on_engine_runtime_setting_change(self, context):  # noqa: ARG001
 
 
 def _live_device_items(self, context):  # noqa: ARG001
+    """Blender dynamic-enum callback: build the live capture device list.
+
+    Queries sounddevice at draw time to enumerate available input devices and,
+    on Windows, WASAPI loopback-capable output devices.  Falls back to a single
+    "__MISSING__" sentinel item when sounddevice is not installed.
+
+    Returns:
+        List of (identifier, label, description) tuples for bpy EnumProperty.
+    """
     items = [
         ("__AUTO__", "Auto (Default Input)", "Use the system default input device"),
     ]
@@ -83,6 +115,26 @@ def _live_device_items(self, context):  # noqa: ARG001
             if host_name:
                 label = f"{label} ({host_name})"
             items.append((str(idx), label, f"{in_ch} input channel(s)"))
+
+        # Expose output-only devices as WASAPI loopback sources (Windows only).
+        if hasattr(sd, "WasapiSettings"):
+            for idx, dev in enumerate(devices):
+                in_ch = int(dev.get("max_input_channels", 0) or 0)
+                out_ch = int(dev.get("max_output_channels", 0) or 0)
+                if in_ch > 0 or out_ch <= 0:
+                    continue  # skip real inputs (already listed) and non-output devices
+                name = str(dev.get("name", f"Device {idx}") or f"Device {idx}")
+                host_name = ""
+                try:
+                    host_idx = int(dev.get("hostapi", -1))
+                    if 0 <= host_idx < len(hostapis):
+                        host_name = str(hostapis[host_idx].get("name", "") or "")
+                except Exception:
+                    host_name = ""
+                label = f"{idx}: {name} [Loopback]"
+                if host_name:
+                    label = f"{label} ({host_name})"
+                items.append((f"loopback:{idx}", label, f"WASAPI loopback — capture {out_ch} ch from this output"))
     except Exception:
         items.append(
             (
@@ -319,7 +371,6 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
             "Cap file sources to this working sample rate for analysis, preview, and prefetch proxy generation"
         ),
         items=[
-            ("native", "Native", "Keep file sources at their original sample rate"),
             ("24000", "24 kHz", "Low-cost capture and analysis"),
             ("48000", "48 kHz", "Standard balance for preview and analysis"),
             ("96000", "96 kHz", "Higher fidelity with higher cost"),

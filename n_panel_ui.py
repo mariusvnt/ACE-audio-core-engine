@@ -1,5 +1,10 @@
 """
-n_panel_ui.py is responsible for the layout construction inside the N-panel.
+N-panel UI layout for the AudioCore Engine Blender add-on.
+
+Draws the ACE panels in the 3D View N-panel (category "AudioCore Engine"),
+manages the periodic UI sync timer that rebuilds the active-source node list
+from the GN tree, and exposes helpers for splitter ramp visualisation and
+per-node operator settings.
 """
 
 import bpy  # type: ignore
@@ -50,6 +55,15 @@ _ui_tree_cache = {
 
 # --- Deal-breaker handling ---
 def _deal_breakers():
+    """Return a list of blocking configuration issue strings.
+
+    These issues prevent any ACE panel from drawing meaningful UI.  Currently
+    checks Blender version (>=5.0 required) and AudioFlux availability.
+
+    Returns:
+        A list of human-readable issue description strings.  Empty when the
+        configuration is valid.
+    """
     issues = []
     try:
         if tuple(getattr(bpy.app, "version", (0, 0, 0))) < (5, 0, 0):
@@ -62,11 +76,23 @@ def _deal_breakers():
 
 
 def _ui_is_blocked(context):
+    """Return True when one or more deal-breaker issues prevent drawing the UI."""
     return len(_deal_breakers()) > 0
 
 
 # --- Active UI Dummy Tree Helpers ---
 def _find_active_node_tree(context):
+    """Return the most relevant active GeometryNodeTree for the current context.
+
+    Priority order:
+    1. Node Editor tree when it contains ACE nodes.
+    2. GN Target Object modifier tree (from audiocore settings).
+    3. Active object modifier tree.
+    4. ACE_Sonar fallback object.
+
+    Returns the first found ACE-node tree, or a non-ACE fallback if nothing
+    else is available (so the UI remains visible even on empty GN trees).
+    """
     scene = getattr(context, "scene", None)
     ace = getattr(scene, "audiocore", None)
     target_obj = getattr(ace, "gn_target_object", None) if ace else None
@@ -126,6 +152,7 @@ def _find_active_node_tree(context):
 
 
 def _describe_node(cat: str, typ: str) -> str:
+    """Return the human-readable description string for an ACE node type, or ''."""
     try:
         return ACE_NODES[cat]["nodes"][typ]["description"]
     except Exception:
@@ -133,6 +160,18 @@ def _describe_node(cat: str, typ: str) -> str:
 
 
 def _source_display_sample_rate(source) -> int:
+    """Return the sample rate to display in the UI for *source*.
+
+    For FILE sources, prefers native_sample_rate (the rate before any working
+    rate cap is applied) so the user sees the file's actual rate.  Falls back
+    to the engine working sample_rate for live and unchecked sources.
+
+    Args:
+        source: An ACEAudioSource property-group instance.
+
+    Returns:
+        Sample rate in Hz, or 0 if not yet known.
+    """
     source_type = str(getattr(source, "source_type", "") or "").strip().upper()
     if source_type == "FILE":
         try:
@@ -148,6 +187,7 @@ def _source_display_sample_rate(source) -> int:
 
 
 def _node_type_display(cat: str, typ: str) -> str:
+    """Return the human-readable category label for an ACE node, falling back to the raw key."""
     try:
         cat_label = str(ACE_NODES[cat]["meta"]["label"] or "").strip()
     except Exception:
@@ -164,6 +204,16 @@ _splitter_ramp_last_sig = ""
 
 
 def _splitter_hz_to_norm(hz: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: float = _SPLITTER_HIGH_HZ) -> float:
+    """Map a frequency in Hz to [0, 1] on a logarithmic scale.
+
+    Args:
+        hz: Frequency value in Hz.
+        low_hz: Lower bound of the display range in Hz.
+        high_hz: Upper bound of the display range in Hz.
+
+    Returns:
+        Normalised position in [0, 1].
+    """
     import math
     low = max(float(low_hz), 1e-3)
     high = max(float(high_hz), low + 1e-3)
@@ -172,6 +222,18 @@ def _splitter_hz_to_norm(hz: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: f
 
 
 def _splitter_norm_to_hz(t: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: float = _SPLITTER_HIGH_HZ) -> float:
+    """Map a normalised [0, 1] position back to a frequency in Hz.
+
+    Inverse of _splitter_hz_to_norm.
+
+    Args:
+        t: Normalised position in [0, 1].
+        low_hz: Lower bound of the display range in Hz.
+        high_hz: Upper bound of the display range in Hz.
+
+    Returns:
+        Frequency in Hz.
+    """
     import math
     low = max(float(low_hz), 1e-3)
     high = max(float(high_hz), low + 1e-3)
@@ -180,6 +242,12 @@ def _splitter_norm_to_hz(t: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: fl
 
 
 def _splitter_display_bounds(scene) -> tuple[float, float]:
+    """Return the (low_hz, high_hz) display range for the splitter ramp.
+
+    The upper bound is clamped to just below the Nyquist frequency of the
+    active source when its sample rate is known, so cut-point sliders never
+    exceed the useful analysis range.
+    """
     low_hz = float(_SPLITTER_LOW_HZ)
     high_hz = float(_SPLITTER_HIGH_HZ)
     ace = getattr(scene, "audiocore", None)
@@ -196,6 +264,17 @@ def _splitter_display_bounds(scene) -> tuple[float, float]:
 
 
 def _splitter_cut_sockets(node) -> list:
+    """Return the unlinked cut-frequency input sockets of a FrequencySplitter node.
+
+    Skips the first input (Audio bundle) and any linked sockets since linked
+    values are not user-editable cut points.
+
+    Args:
+        node: A Blender GeometryNodeGroup node.
+
+    Returns:
+        List of NodeSocket objects representing cut-frequency inputs.
+    """
     sockets = []
     for i, sock in enumerate(getattr(node, "inputs", [])):
         if i == 0:
@@ -211,6 +290,17 @@ def _splitter_cut_sockets(node) -> list:
 
 
 def _find_tree_node_by_ace_id(tree, node_id: str):
+    """Find a Blender GN node in *tree* matching *node_id* via its ace_id property.
+
+    Args:
+        tree: A bpy.types.NodeTree (GeometryNodeTree).
+        node_id: An ACE node ID string to search for.
+
+    Returns:
+        A (node, parsed) tuple where *node* is the matching bpy.types.Node and
+        *parsed* is the result of ACEIdManager.parse_node_id().  Both elements
+        are None when no match is found.
+    """
     parsed = ACEIdManager.parse_node_id(str(node_id or ""))
     if not tree or not parsed:
         return None, None
@@ -464,6 +554,15 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             warn = box.row()
             warn.alert = True
             warn.label(text="Install SoundDevice in Preferences to enable preview audio.", icon="ERROR")
+        else:
+            err_count = ACEAudioEngine.preview_monitor_consecutive_errors()
+            if err_count >= 5:
+                warn = box.row()
+                warn.alert = True
+                warn.label(
+                    text=f"Preview DSP error \u00d7{err_count} — check console for details.",
+                    icon="ERROR",
+                )
 
     return drew_settings
 
@@ -482,14 +581,12 @@ def _draw_bake_controls(layout, context):
 
     _, active_source = _get_active_source(context)
     if not active_source:
-        layout.label(text="No Source Selected", icon="INFO")
         return
 
     row = layout.row()
     row.enabled = getattr(active_source, "source_type", "") == 'FILE'
     row.operator("audiocore.bake_active_source", icon="FILE_TICK", text="Bake Active Source")
     if not row.enabled:
-        layout.label(text="Baking is available for file sources.", icon="INFO")
         return
 
     try:
@@ -517,6 +614,11 @@ def _draw_bake_controls(layout, context):
 
 
 def _splitter_node_signature(node, scene) -> str:
+    """Build a cache-key string representing the current splitter cut-point configuration.
+
+    Encodes the display bounds (Hz) and all unlinked cut-frequency socket values
+    so the ramp texture is only redrawn when the configuration actually changes.
+    """
     low_hz, high_hz = _splitter_display_bounds(scene)
     values = []
     for sock in _splitter_cut_sockets(node):
@@ -562,6 +664,14 @@ def _ensure_splitter_ramp_texture():
 
 
 def _sync_splitter_ramp_texture_from_node(node, scene, force: bool = False):
+    """Update the hidden splitter ramp ColorRamp from the current node cut-point values.
+
+    Rate-limited by a signature cache: the ramp is only redrawn when the cut-point
+    configuration has changed since the last call.  Pass ``force=True`` to skip the
+    cache check (used when the node selection changes).
+
+    Returns the ramp_owner node, or None if the ShaderNodeTree could not be created.
+    """
     global _splitter_ramp_last_key, _splitter_ramp_last_sig
     ramp_owner = _ensure_splitter_ramp_texture()
     if ramp_owner is None:
@@ -610,6 +720,21 @@ def _splitter_ramp_ascii(
     low_hz: float = _SPLITTER_LOW_HZ,
     high_hz: float = _SPLITTER_HIGH_HZ,
 ) -> str:
+    """Render splitter cut-point positions as a compact ASCII ruler string.
+
+    Positions each frequency as a ``|`` mark on a ``-``-filled ruler of the
+    given *width*, using a logarithmic frequency scale.  Used for compact
+    text-based band visualisation in the N-panel header.
+
+    Args:
+        freqs: List of cut-point frequencies in Hz.
+        width: Total character width of the output string.
+        low_hz: Lower Hz bound for the logarithmic scale.
+        high_hz: Upper Hz bound for the logarithmic scale.
+
+    Returns:
+        A string of length *width* consisting of ``-`` and ``|`` characters.
+    """
     if width <= 2:
         return ""
     marks = ["-"] * width
@@ -621,6 +746,7 @@ def _splitter_ramp_ascii(
 
 
 def _tree_pointer(tree) -> int:
+    """Return a stable integer identity for *tree* usable as a dict key."""
     if tree is None:
         return 0
     try:
@@ -630,6 +756,18 @@ def _tree_pointer(tree) -> int:
 
 
 def _ui_tree_topology_signature(tree) -> str:
+    """Compute a short content hash representing the current GN tree topology.
+
+    Hashes node identities, ACE metadata custom properties, attribute-ID
+    socket values, link wiring, and socket counts.  The resulting digest is
+    used to detect changes that should trigger a UI sync rebuild.
+
+    Args:
+        tree: A Blender GeometryNodeTree or None.
+
+    Returns:
+        A hex digest string, or "" when *tree* is None.
+    """
     if tree is None:
         return ""
 
@@ -745,6 +883,18 @@ def _ui_tree_topology_signature(tree) -> str:
 
 
 def _ui_nodes_match(active_source, node_ids: list[str]) -> bool:
+    """Return True when the ui_nodes collection exactly matches *node_ids*.
+
+    Used to decide whether to do a cheaper in-place update or a full clear
+    and rebuild of the ui_nodes collection property.
+
+    Args:
+        active_source: An ACEAudioSource property-group instance.
+        node_ids: The ordered list of node ID strings to compare against.
+
+    Returns:
+        True only if counts and all IDs match in order.
+    """
     try:
         ui_nodes = getattr(active_source, "ui_nodes", None)
         if ui_nodes is None or len(ui_nodes) != len(node_ids):
@@ -847,7 +997,21 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
         nodes = list(abstract.nodes.values())
         if nodes:
-            nodes.sort(key=lambda n: (n.name or n.id or "", n.id))
+            bl_order: dict[str, int] = {}
+            if tree:
+                for _idx, _bl_node in enumerate(getattr(tree, "nodes", [])):
+                    try:
+                        _ace_id = str(_bl_node.get("ace_id", "") or "")
+                    except Exception:
+                        _ace_id = ""
+                    if _ace_id:
+                        bl_order[_ace_id] = _idx
+
+            def _creation_sort_key(n, _bl_order=bl_order, _lu=node_lookup_ids):
+                resolved = str(_lu.get(n.id, "") or n.id or "")
+                return _bl_order.get(resolved, _bl_order.get(n.id, 999999))
+
+            nodes.sort(key=_creation_sort_key)
         _ui_tree_cache = {
             "tree_ptr": int(tree_ptr),
             "topology_sig": topology_sig,
@@ -970,7 +1134,16 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
 
 
 def _refresh_active_source_metadata(scene, now: float | None = None):
-    """Background metadata probe for file sources with missing SR/duration."""
+    """Trigger an async metadata probe for the active file source if needed.
+
+    Probes are rate-limited to _UI_METADATA_PROBE_INTERVAL seconds per source
+    to avoid blocking the main thread.  Clears the probe record once both
+    duration and native_sample_rate are available.
+
+    Args:
+        scene: The active Blender scene.
+        now: Current monotonic timestamp in seconds, or None to read it here.
+    """
     global _ui_source_probe_last
     if scene is None:
         return
@@ -1009,6 +1182,12 @@ def _refresh_active_source_metadata(scene, now: float | None = None):
 
 
 def _ui_quick_state_key(context, scene, tree) -> str:
+    """Build a cheap string key capturing the most volatile UI state.
+
+    Used by the sync timer to detect whether a full panel redraw/sync is
+    needed without running the expensive tree-topology hash every tick.  The
+    key encodes the active tree pointer, active source index, and source UID.
+    """
     ace = getattr(scene, "audiocore", None)
     src_uid = ""
     src_idx = -1
@@ -1025,6 +1204,16 @@ def _ui_quick_state_key(context, scene, tree) -> str:
 
 
 def _ui_has_pending_engine_changes(scene, tree) -> bool:
+    """Return True when the engine has a pending recompile or dirty tree.
+
+    Args:
+        scene: The active Blender scene.
+        tree: The currently viewed GeometryNodeTree, or None.
+
+    Returns:
+        True if the engine's pending_tree matches *tree* or if *tree* is in
+        the engine's dirty_trees set.
+    """
     engine = ACEAudioEngine.get_instance(scene)
     if not engine:
         return False
@@ -1043,6 +1232,20 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
 
 
 def _engine_latency_metrics(context) -> dict[str, float | bool]:
+    """Collect and cache per-stage latency metrics for the active source.
+
+    Reads perf and diagnostics data from the engine and aggregates them into
+    named sub-totals (input, DSP, preview, Blender geometry, render).  Results
+    are cached for _UI_LATENCY_UPDATE_INTERVAL_S seconds to keep draw() calls
+    cheap.
+
+    Args:
+        context: The current Blender context.
+
+    Returns:
+        A dict mapping metric names to float values or bool flags.  All keys
+        are always present; values default to 0.0 / False when not available.
+    """
     global _ui_latency_cache
     scene = getattr(context, "scene", None)
     engine = ACEAudioEngine.get_instance(scene)
@@ -1178,6 +1381,16 @@ def _engine_latency_metrics(context) -> dict[str, float | bool]:
 
 
 def _ui_sync_timer():
+    """Blender persistent timer callback: drive background UI sync.
+
+    Runs at ``_UI_SYNC_TIMER_INTERVAL_ACTIVE`` during playback or when engine
+    changes are pending, and at ``_UI_SYNC_TIMER_INTERVAL_IDLE`` otherwise.
+    Each tick optionally triggers ``_sync_ui_dummy_tree()`` when the quick
+    state key changes or the idle interval has elapsed.
+
+    Returns:
+        Float interval in seconds for the next timer invocation.
+    """
     global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts
     try:
         context = getattr(bpy, "context", None)
@@ -1232,6 +1445,7 @@ def _ui_sync_timer():
 
 @persistent
 def _ui_load_post(_dummy):
+    """Blender load_post handler: reset all UI state caches after a file load."""
     global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache
     _ui_sync_last_ts = 0.0
     _ui_sync_last_key = ""
@@ -1257,6 +1471,12 @@ def _ui_load_post(_dummy):
 
 # --- Lists & Menus ---
 class ACE_UL_source_list(bpy.types.UIList):
+    """UIList row renderer for the audio source collection.
+
+    Shows a status icon (ERROR when proxy is missing, FILE for file sources,
+    SPEAKER for live sources) followed by the editable source name.
+    """
+
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         # Status Icons
         proxy = bpy.data.objects.get(item.proxy_object_name) if hasattr(item, "proxy_object_name") else None
@@ -1271,6 +1491,13 @@ class ACE_UL_source_list(bpy.types.UIList):
         layout.prop(item, "name", text="", emboss=False, icon=icon)
 
 class ACE_UL_dummy_tree(bpy.types.UIList):
+    """UIList row renderer for the active-source graph node list.
+
+    Displays the node name in the left column and the category label in the
+    right column.  Values are read directly from the ui_nodes collection
+    property populated by _sync_ui_dummy_tree().
+    """
+
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         # Keep drawing lean; only touch attributes that commonly exist on the ui_nodes items
         name = getattr(item, "name", f"Node {index}")
@@ -1338,6 +1565,8 @@ class ACE_PT_unsatisfactory_config(bpy.types.Panel):
                 col.label(text=chunk)
 
 class ACE_PT_project_settings(bpy.types.Panel):
+    """Top-level engine status panel showing compile state and latency summary."""
+
     bl_label = "Engine Status"
     bl_idname = "ACE_PT_project_settings"
     bl_space_type = 'VIEW_3D'
@@ -1382,9 +1611,7 @@ class ACE_PT_project_settings(bpy.types.Panel):
                 text="Refresh Engine",
             )
 
-        engine_box = layout.box()
-        engine_box.label(text="Engine", icon="PREFERENCES")
-        engine_box.label(text=status_text, icon=status_icon)
+        layout.label(text=status_text, icon=status_icon)
 
         latency_metrics = _engine_latency_metrics(context)
         render = getattr(context.scene, "render", None)
@@ -1393,7 +1620,7 @@ class ACE_PT_project_settings(bpy.types.Panel):
         scene_fps = raw_fps / fps_base if fps_base > 0.0 else raw_fps
         frame_budget_ms = 1000.0 / max(scene_fps, 1e-6)
         performance_box = layout.box()
-        performance_box.label(text="Engine Performance", icon="TIME")
+        performance_box.label(text="Engine Performance", icon="FUND")
         performance_row = performance_box.row(align=True)
         current_col = performance_row.column(align=True)
         current_col.label(text="Current Latency")
@@ -1403,6 +1630,8 @@ class ACE_PT_project_settings(bpy.types.Panel):
         max_col.label(text=f"{frame_budget_ms:.2f} ms")
 
 class ACE_PT_sub_latency_measures(bpy.types.Panel):
+    """Sub-panel showing per-stage latency breakdown under Engine Status."""
+
     bl_label = "Latency Detail"
     bl_idname = "ACE_PT_sub_latency_measures"
     bl_space_type = 'VIEW_3D'
@@ -1423,6 +1652,8 @@ class ACE_PT_sub_latency_measures(bpy.types.Panel):
         layout.label(text=f"Blender Side: {float(latency_metrics['blender_total_ms']):.2f} ms")
 
 class ACE_PT_sub_engine_settings(bpy.types.Panel):
+    """Sub-panel for engine configuration: sample rate, preprocessing, and compile mode."""
+
     bl_label = "Engine Settings"
     bl_idname = "ACE_PT_sub_engine_settings"
     bl_space_type = 'VIEW_3D'
@@ -1446,7 +1677,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
         sample_rate_row = layout.row(align=True)
         sample_rate_row.label(text="Sample Rate")
         sample_rate_buttons = sample_rate_row.row(align=True)
-        for option in ("native", "24000", "48000", "96000"):
+        for option in ("24000", "48000", "96000"):
             sample_rate_buttons.prop_enum(eng_settings, "ace_file_working_sample_rate", option)
         if src:
             layout.prop(src, "enable_preprocessing", text="Enable Source Preprocessing")
@@ -1460,10 +1691,12 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
             right = split.column(align=True)
             right.prop(src, "freq_max", text="Max Hz")
             right.prop(src, "envelope_release", text="Release (ms)")
-        layout.prop(eng_settings, "auto_compile", text="Auto-Compile Graph Changes")
+        layout.prop(eng_settings, "auto_compile", text="Auto-Compile on Tree Updates")
 
 
 class ACE_PT_audio_sources(bpy.types.Panel):
+    """Panel for managing audio sources: file or live, proxy status, and metadata."""
+
     bl_label = "Audio Sources"
     bl_idname = "ACE_PT_audio_sources"
     bl_space_type = 'VIEW_3D'
@@ -1501,22 +1734,14 @@ class ACE_PT_audio_sources(bpy.types.Panel):
                 row.prop(active_source, "filepath", text="File")
             else:
                 col = layout.column(align=True)
-                col.prop(active_source, "live_transport", text="Transport")
+                col.prop(active_source, "live_transport", text="Input Method")
                 if str(getattr(active_source, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE") == "UDP":
                     col.prop(active_source, "live_udp_port", text="UDP Port")
                     split_udp = col.split(factor=0.5, align=True)
                     split_udp.prop(active_source, "live_udp_channels", text="Channels")
                     split_udp.prop(active_source, "live_udp_sample_rate", text="Sample Rate")
-                    layout.label(
-                        text="Configure your sender to stream float audio to this UDP endpoint.",
-                        icon="INFO",
-                    )
                 else:
-                    col.prop(active_source, "live_device_selector", text="Capture Device")
-                    layout.label(
-                        text="Capture audio from the selected input device.",
-                        icon="INFO",
-                    )
+                    col.prop(active_source, "live_device_selector", text="Audio Input")
                 layout.prop(active_source, "live_latency_ms", text="Latency (ms)")
                 live_status = getattr(active_source, "live_status", "")
                 if live_status:
@@ -1524,22 +1749,9 @@ class ACE_PT_audio_sources(bpy.types.Panel):
                     warn.alert = True
                     warn.label(text=live_status, icon="ERROR")
         else:
-            layout.label(text="No Source Selected", icon="INFO")
             return
 
-        # Status / Proxy
-        # Safe access to proxy object
         proxy_name = getattr(active_source, "proxy_object_name", "")
-        proxy = bpy.data.objects.get(proxy_name) if proxy_name else None
-
-        if proxy:
-            row = layout.row()
-            row.label(text=f"Proxy Object: {proxy_name}")
-        else:
-            row = layout.row()
-            row.alert = True
-            row.label(text="Missing Corresponding Proxy. Reset the selected source.", icon="ERROR")
-            # Could add a 'Rebuild Proxy' operator button here
 
         # Parallel DSP disabled warning — shown when restart limit was exhausted.
         # _parallel_disabled_sources is keyed by source_uid (stable_id), with proxy_name
@@ -1557,19 +1769,29 @@ class ACE_PT_audio_sources(bpy.types.Panel):
                 icon="ERROR",
             )
 
-        # Analysis Data
-        col = layout.column(align=True)
-        dur = float(getattr(active_source, "duration", 0.0) or 0.0)
-        rate = _source_display_sample_rate(active_source)
-
-        if rate > 0:
-            col.label(text=f"Sample Rate: {rate}Hz")
-        if dur > 0.0:
-            col.label(text=f"Duration: {dur:.2f}s")
-        if rate <= 0 and dur <= 0.0:
-            col.label(text="Metadata unavailable for the selected source.", icon="INFO")
+        # Analysis Data — only shown when the source is actually linked to audio.
+        src_type = str(getattr(active_source, "source_type", "") or "").upper()
+        filepath = str(getattr(active_source, "filepath", "") or "").strip()
+        transport = str(getattr(active_source, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE")
+        device_sel = str(getattr(active_source, "live_device_selector", "") or "").strip()
+        source_configured = (
+            (src_type == "FILE" and bool(filepath))
+            or (src_type == "LIVE" and (transport == "UDP" or bool(device_sel)))
+        )
+        if source_configured:
+            col = layout.column(align=True)
+            dur = float(getattr(active_source, "duration", 0.0) or 0.0)
+            rate = _source_display_sample_rate(active_source)
+            if rate > 0:
+                col.label(text=f"Sample Rate: {rate}Hz")
+            if dur > 0.0:
+                col.label(text=f"Duration: {dur:.2f}s")
+            if rate <= 0 and dur <= 0.0:
+                col.label(text="Metadata unavailable for the selected source.", icon="INFO")
 
 class ACE_PT_sub_tempo_meter(bpy.types.Panel):
+    """Sub-panel for per-source BPM and time-signature settings."""
+
     bl_label = "Tempo & Meter"
     bl_idname = "ACE_PT_sub_tempo_meter"
     bl_space_type = 'VIEW_3D'
@@ -1598,6 +1820,8 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
 
 
 class ACE_PT_information_streams(bpy.types.Panel):
+    """Panel listing all ACE graph nodes for the active source with live values."""
+
     bl_label = "Information Streams"
     bl_idname = "ACE_PT_information_streams"
     bl_space_type = 'VIEW_3D'
@@ -1613,9 +1837,8 @@ class ACE_PT_information_streams(bpy.types.Panel):
         from .utils import _get_active_source
         layout = self.layout
         _, active_source = _get_active_source(context)
-        layout.label(text="Graph Nodes:", icon="NODETREE")
+        layout.label(text="Active Operators:", icon="NODETREE")
         if not active_source:
-            layout.label(text="No Source Selected", icon="INFO")
             return
         
         row = layout.row()
@@ -1630,6 +1853,8 @@ class ACE_PT_information_streams(bpy.types.Panel):
 
 
 class ACE_PT_information_streams_description(bpy.types.Panel):
+    """Sub-panel showing the description of the currently selected graph node."""
+
     bl_label = "Description"
     bl_idname = "ACE_PT_information_streams_description"
     bl_space_type = 'VIEW_3D'
@@ -1648,12 +1873,15 @@ class ACE_PT_information_streams_description(bpy.types.Panel):
             _draw_selected_node_description(self.layout, description)
 
 class ACE_PT_capture_influx(bpy.types.Panel):
+    """Panel providing bake controls for writing stream outputs to f-curves."""
+
     bl_label = "Baking"
     bl_idname = "ACE_PT_capture_influx"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
     bl_order = 4
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -1665,12 +1893,15 @@ class ACE_PT_capture_influx(bpy.types.Panel):
 
 
 class ACE_PT_stream_confluence(bpy.types.Panel):
+    """Panel for selecting the Geometry Nodes target object that hosts the ACE tree."""
+
     bl_label = "Geometry Target"
     bl_idname = "ACE_PT_stream_confluence"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
     bl_order = 5
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -1706,6 +1937,7 @@ classes = (
 )
 
 def register():
+    """Register all N-panel UI classes and start the background sync timer."""
     for cls in classes:
         bpy.utils.register_class(cls)
     if _ui_load_post not in bpy.app.handlers.load_post:
@@ -1714,6 +1946,7 @@ def register():
         bpy.app.timers.register(_ui_sync_timer, first_interval=0.1, persistent=True)
 
 def unregister():
+    """Unregister all N-panel UI classes, stop the sync timer, and clear UI caches."""
     global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
