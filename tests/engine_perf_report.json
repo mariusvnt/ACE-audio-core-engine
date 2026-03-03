@@ -1,0 +1,1228 @@
+{
+  "contract": {
+    "version": "ace-engine-perf-v1",
+    "required_scenarios": [
+      1,
+      4,
+      12,
+      24,
+      36,
+      50
+    ],
+    "modes": [
+      "threads_io",
+      "processes_dsp"
+    ],
+    "strict_gate": {
+      "dsp_p95_ratio_max": 1.1,
+      "dsp_ratio_scenarios": [
+        24,
+        36,
+        50
+      ],
+      "parallel_timeouts_max": 0.0,
+      "parallel_exceptions_max": 0.0,
+      "parallel_queue_drop_rate_max": 0.03,
+      "parallel_fresh_result_rate_min": 0.9
+    },
+    "sla_topology": {
+      "sample_rate_hz": 96000,
+      "pass_total_latency_p95_ms": 15.0,
+      "ideal_total_latency_p95_ms": 10.0,
+      "topology": "3 sources -> specs -> 5-band splitters -> stream terminals; cross-source multiply -> chromagram; chroma[0] preview + all chroma outputs to streams",
+      "machine_profile": {
+        "cpu": "AMD Ryzen 7",
+        "gpu": "NVIDIA RTX 3060 Ti",
+        "ram_gb": 16
+      }
+    }
+  },
+  "machine_profile": {
+    "cpu": "AMD Ryzen 7",
+    "gpu": "NVIDIA RTX 3060 Ti",
+    "ram_gb": 16
+  },
+  "frames": 120,
+  "warmup_frames": 24,
+  "scenarios": {
+    "1": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 0.13182249919433767,
+            "p95_ms": 0.17009995644912124,
+            "max_ms": 0.23040000814944506
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0016791663559464116,
+            "p95_ms": 0.0024999608285725117,
+            "max_ms": 0.006499991286545992
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 1.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "BenchSourceTask": {
+            "count": 120.0,
+            "mean_ms": 0.014300837453144291,
+            "p95_ms": 0.019600032828748226,
+            "max_ms": 0.022299995180219412
+          },
+          "RMSTask": {
+            "count": 120.0,
+            "mean_ms": 0.10729666925423469,
+            "p95_ms": 0.1373999984934926,
+            "max_ms": 0.19270001212134957
+          }
+        },
+        "total_latency_p95_ms": 0.17259991727769375
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 30.0,
+            "mean_ms": 0.16434999415650964,
+            "p95_ms": 0.210359992343001,
+            "max_ms": 0.6661000079475343
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0011558348584609728,
+            "p95_ms": 0.001500011421740055,
+            "max_ms": 0.002500019036233425
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 120.0,
+          "parallel_submit_success": 120.0,
+          "parallel_submit_success_rate": 1.0,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 30.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.25
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 1.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 0.21186000376474107
+      },
+      "comparison": {
+        "dsp_p95_ratio_processes_vs_threads": 1.2366845749659083,
+        "dsp_p95_delta_ms": 0.040260035893879775,
+        "dsp_metrics_valid": true,
+        "threads_dsp_p95_ms": 0.17009995644912124,
+        "processes_dsp_p95_ms": 0.210359992343001
+      }
+    },
+    "4": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 1.1187391680626508,
+            "p95_ms": 1.2724999687634408,
+            "max_ms": 1.3707000180147588
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.001656664729428788,
+            "p95_ms": 0.0023999600671231747,
+            "max_ms": 0.0036999699659645557
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 4.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "BenchSourceTask": {
+            "count": 120.0,
+            "mean_ms": 0.013342499732971191,
+            "p95_ms": 0.016300007700920105,
+            "max_ms": 0.021599989850074053
+          },
+          "PitchTask": {
+            "count": 120.0,
+            "mean_ms": 0.8446250018702509,
+            "p95_ms": 0.943399965763092,
+            "max_ms": 0.9783999994397163
+          },
+          "RMSTask": {
+            "count": 120.0,
+            "mean_ms": 0.08243916575641681,
+            "p95_ms": 0.10420003673061728,
+            "max_ms": 0.11859997175633907
+          },
+          "SpectralCentroidTask": {
+            "count": 120.0,
+            "mean_ms": 0.0776624995827054,
+            "p95_ms": 0.09089999366551638,
+            "max_ms": 0.38350000977516174
+          },
+          "SpectralFluxTask": {
+            "count": 120.0,
+            "mean_ms": 0.07794000218079115,
+            "p95_ms": 0.09009998757392168,
+            "max_ms": 0.11109997285529971
+          }
+        },
+        "total_latency_p95_ms": 1.274899928830564
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 18.0,
+            "mean_ms": 2.976561123634585,
+            "p95_ms": 3.378915006760508,
+            "max_ms": 3.550700028426945
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0013458309695124626,
+            "p95_ms": 0.001900014467537403,
+            "max_ms": 0.002300017513334751
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 120.0,
+          "parallel_submit_success": 120.0,
+          "parallel_submit_success_rate": 1.0,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 18.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.15
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 4.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 3.3808150212280452
+      },
+      "comparison": {
+        "dsp_p95_ratio_processes_vs_threads": 2.6553360233430796,
+        "dsp_p95_delta_ms": 2.106415037997067,
+        "dsp_metrics_valid": true,
+        "threads_dsp_p95_ms": 1.2724999687634408,
+        "processes_dsp_p95_ms": 3.378915006760508
+      }
+    },
+    "12": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 3.6108608333355128,
+            "p95_ms": 4.033199977129698,
+            "max_ms": 4.463899997062981
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0020541672711260617,
+            "p95_ms": 0.002700020559132099,
+            "max_ms": 0.005400041118264198
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 12.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "BenchSourceTask": {
+            "count": 120.0,
+            "mean_ms": 0.013652496272698045,
+            "p95_ms": 0.015500001609325409,
+            "max_ms": 0.030099996365606785
+          },
+          "OnsetTask": {
+            "count": 120.0,
+            "mean_ms": 0.1071266655344516,
+            "p95_ms": 0.1210999907925725,
+            "max_ms": 0.1650999765843153
+          },
+          "PitchTask": {
+            "count": 240.0,
+            "mean_ms": 0.7692495855735615,
+            "p95_ms": 0.8925999864004552,
+            "max_ms": 1.0011999984271824
+          },
+          "RMSTask": {
+            "count": 240.0,
+            "mean_ms": 0.06524333366542123,
+            "p95_ms": 0.0782000133767724,
+            "max_ms": 0.14780001947656274
+          },
+          "SpectralCentroidTask": {
+            "count": 240.0,
+            "mean_ms": 0.062182497640606016,
+            "p95_ms": 0.0727999722585082,
+            "max_ms": 0.11470000026747584
+          },
+          "SpectralFluxTask": {
+            "count": 240.0,
+            "mean_ms": 0.06813124685625857,
+            "p95_ms": 0.08129997877404094,
+            "max_ms": 0.12340000830590725
+          },
+          "StereoBalanceTask": {
+            "count": 120.0,
+            "mean_ms": 0.09872333078722781,
+            "p95_ms": 0.11740002082660794,
+            "max_ms": 0.22059999173507094
+          },
+          "StereoWidthTask": {
+            "count": 120.0,
+            "mean_ms": 0.06382833137953033,
+            "p95_ms": 0.07459998596459627,
+            "max_ms": 0.11000002268701792
+          },
+          "ZeroCrossTask": {
+            "count": 120.0,
+            "mean_ms": 1.3447733367987287,
+            "p95_ms": 1.5261999797075987,
+            "max_ms": 1.8375000217929482
+          }
+        },
+        "total_latency_p95_ms": 4.03589999768883
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 20.0,
+            "mean_ms": 8.455290016718209,
+            "p95_ms": 8.706524976878427,
+            "max_ms": 8.906500006560236
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.001824169400303314,
+            "p95_ms": 0.0023999600671231747,
+            "max_ms": 0.014199991710484028
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 120.0,
+          "parallel_submit_success": 120.0,
+          "parallel_submit_success_rate": 1.0,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 20.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.16666666666666666
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 12.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 8.70892493694555
+      },
+      "comparison": {
+        "dsp_p95_ratio_processes_vs_threads": 2.1587139309354524,
+        "dsp_p95_delta_ms": 4.673324999748729,
+        "dsp_metrics_valid": true,
+        "threads_dsp_p95_ms": 4.033199977129698,
+        "processes_dsp_p95_ms": 8.706524976878427
+      }
+    },
+    "24": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 7.6396908329722155,
+            "p95_ms": 7.960899965837598,
+            "max_ms": 8.445900049991906
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0032133345181743302,
+            "p95_ms": 0.005599984433501959,
+            "max_ms": 0.006700051017105579
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 24.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "BenchSourceTask": {
+            "count": 120.0,
+            "mean_ms": 0.013864166006290663,
+            "p95_ms": 0.016400008462369442,
+            "max_ms": 0.019199971575289965
+          },
+          "OnsetTask": {
+            "count": 360.0,
+            "mean_ms": 0.09158499985157202,
+            "p95_ms": 0.11219998123124242,
+            "max_ms": 0.14379998901858926
+          },
+          "PitchTask": {
+            "count": 360.0,
+            "mean_ms": 0.7400169430184178,
+            "p95_ms": 0.8809000137262046,
+            "max_ms": 0.9445999749004841
+          },
+          "RMSTask": {
+            "count": 360.0,
+            "mean_ms": 0.06395833220772652,
+            "p95_ms": 0.07539999205619097,
+            "max_ms": 0.13480003690347075
+          },
+          "SpectralCentroidTask": {
+            "count": 360.0,
+            "mean_ms": 0.060110276455007904,
+            "p95_ms": 0.06500002928078175,
+            "max_ms": 0.09370001498609781
+          },
+          "SpectralFluxTask": {
+            "count": 360.0,
+            "mean_ms": 0.0681116700030139,
+            "p95_ms": 0.0803999719209969,
+            "max_ms": 0.1501000369898975
+          },
+          "StereoBalanceTask": {
+            "count": 360.0,
+            "mean_ms": 0.0968102792588373,
+            "p95_ms": 0.11650001397356391,
+            "max_ms": 0.20599999697878957
+          },
+          "StereoWidthTask": {
+            "count": 360.0,
+            "mean_ms": 0.0596222231656106,
+            "p95_ms": 0.07010000990703702,
+            "max_ms": 0.16910000704228878
+          },
+          "ZeroCrossTask": {
+            "count": 360.0,
+            "mean_ms": 1.3305838895677073,
+            "p95_ms": 1.3834999990649521,
+            "max_ms": 1.6326999757438898
+          }
+        },
+        "total_latency_p95_ms": 7.9664999502711
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 17.0,
+            "mean_ms": 11.678300003575929,
+            "p95_ms": 12.593700003344564,
+            "max_ms": 14.962100016418844
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0028333301694753272,
+            "p95_ms": 0.003400025889277458,
+            "max_ms": 0.006300047971308231
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 120.0,
+          "parallel_submit_success": 120.0,
+          "parallel_submit_success_rate": 1.0,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 17.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.14166666666666666
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 24.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 12.597100029233841
+      },
+      "comparison": {
+        "dsp_p95_ratio_processes_vs_threads": 1.5819442597429412,
+        "dsp_p95_delta_ms": 4.632800037506966,
+        "dsp_metrics_valid": true,
+        "threads_dsp_p95_ms": 7.960899965837598,
+        "processes_dsp_p95_ms": 12.593700003344564
+      }
+    },
+    "36": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 11.090137497618949,
+            "p95_ms": 12.013099971227348,
+            "max_ms": 12.393200013320893
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0034975018934346735,
+            "p95_ms": 0.0048999791033566,
+            "max_ms": 0.008200004231184721
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 36.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "BenchSourceTask": {
+            "count": 120.0,
+            "mean_ms": 0.013529998735369494,
+            "p95_ms": 0.015600002370774746,
+            "max_ms": 0.018600025214254856
+          },
+          "OnsetTask": {
+            "count": 480.0,
+            "mean_ms": 0.08497250091750175,
+            "p95_ms": 0.1094000181183219,
+            "max_ms": 0.13689999468624592
+          },
+          "PitchTask": {
+            "count": 600.0,
+            "mean_ms": 0.7400583343890806,
+            "p95_ms": 0.8746999665163457,
+            "max_ms": 0.9471999946981668
+          },
+          "RMSTask": {
+            "count": 600.0,
+            "mean_ms": 0.05988266804100325,
+            "p95_ms": 0.07260002894327044,
+            "max_ms": 0.10140001541003585
+          },
+          "SpectralCentroidTask": {
+            "count": 600.0,
+            "mean_ms": 0.05845800061554959,
+            "p95_ms": 0.07010000990703702,
+            "max_ms": 0.17380004283040762
+          },
+          "SpectralFluxTask": {
+            "count": 600.0,
+            "mean_ms": 0.06573366787051782,
+            "p95_ms": 0.07750000804662704,
+            "max_ms": 0.19749999046325684
+          },
+          "StereoBalanceTask": {
+            "count": 480.0,
+            "mean_ms": 0.09435208169937445,
+            "p95_ms": 0.11480000102892518,
+            "max_ms": 0.42429997120052576
+          },
+          "StereoWidthTask": {
+            "count": 480.0,
+            "mean_ms": 0.058967706718249246,
+            "p95_ms": 0.07210002513602376,
+            "max_ms": 0.11800002539530396
+          },
+          "ZeroCrossTask": {
+            "count": 480.0,
+            "mean_ms": 1.3426254180861483,
+            "p95_ms": 1.4708000235259533,
+            "max_ms": 2.0997999818064272
+          }
+        },
+        "total_latency_p95_ms": 12.017999950330704
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 23.0,
+            "mean_ms": 17.557626078917604,
+            "p95_ms": 17.902430007234216,
+            "max_ms": 18.446300004143268
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0031408349362512427,
+            "p95_ms": 0.0036999699659645557,
+            "max_ms": 0.006699992809444666
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 6.0,
+          "parallel_queue_drop_rate": 0.05,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 120.0,
+          "parallel_submit_success": 114.0,
+          "parallel_submit_success_rate": 0.95,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 23.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.20175438596491227
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 36.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 17.90612997720018
+      },
+      "comparison": {
+        "dsp_p95_ratio_processes_vs_threads": 1.4902423229734574,
+        "dsp_p95_delta_ms": 5.889330036006868,
+        "dsp_metrics_valid": true,
+        "threads_dsp_p95_ms": 12.013099971227348,
+        "processes_dsp_p95_ms": 17.902430007234216
+      }
+    },
+    "50": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 15.929068332479801,
+            "p95_ms": 16.446500027086586,
+            "max_ms": 20.82669996889308
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0043325043710259106,
+            "p95_ms": 0.007299997378140688,
+            "max_ms": 0.013599987141788006
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 50.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "BenchSourceTask": {
+            "count": 120.0,
+            "mean_ms": 0.01213999833756437,
+            "p95_ms": 0.014499993994832039,
+            "max_ms": 0.026999972760677338
+          },
+          "OnsetTask": {
+            "count": 720.0,
+            "mean_ms": 0.07710472135739918,
+            "p95_ms": 0.11020002420991659,
+            "max_ms": 0.24550000671297312
+          },
+          "PitchTask": {
+            "count": 840.0,
+            "mean_ms": 0.7243758334966731,
+            "p95_ms": 0.846700044348836,
+            "max_ms": 0.9516999707557261
+          },
+          "RMSTask": {
+            "count": 840.0,
+            "mean_ms": 0.060067976162480635,
+            "p95_ms": 0.07230002665892243,
+            "max_ms": 0.14479999663308263
+          },
+          "SpectralCentroidTask": {
+            "count": 720.0,
+            "mean_ms": 0.058469584069421716,
+            "p95_ms": 0.06799999391660094,
+            "max_ms": 0.11279998579993844
+          },
+          "SpectralFluxTask": {
+            "count": 720.0,
+            "mean_ms": 0.06628930495935492,
+            "p95_ms": 0.07670000195503235,
+            "max_ms": 0.1645000302232802
+          },
+          "StereoBalanceTask": {
+            "count": 720.0,
+            "mean_ms": 0.09297610910531753,
+            "p95_ms": 0.10550004662945867,
+            "max_ms": 0.2101999707520008
+          },
+          "StereoWidthTask": {
+            "count": 720.0,
+            "mean_ms": 0.057402084187035345,
+            "p95_ms": 0.06370001938194036,
+            "max_ms": 0.13860000763088465
+          },
+          "ZeroCrossTask": {
+            "count": 720.0,
+            "mean_ms": 1.35714055731013,
+            "p95_ms": 1.400899956934154,
+            "max_ms": 2.81810003798455
+          }
+        },
+        "total_latency_p95_ms": 16.453800024464726
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 21.0,
+            "mean_ms": 22.984619044499205,
+            "p95_ms": 23.55919999536127,
+            "max_ms": 23.66979996440932
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0032975023107913635,
+            "p95_ms": 0.003800028935074806,
+            "max_ms": 0.006100046448409557
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 34.0,
+          "parallel_queue_drop_rate": 0.2833333333333333,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 120.0,
+          "parallel_submit_success": 86.0,
+          "parallel_submit_success_rate": 0.7166666666666667,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 21.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.2441860465116279
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 50.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 1.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 23.563000024296343
+      },
+      "comparison": {
+        "dsp_p95_ratio_processes_vs_threads": 1.4324749920384527,
+        "dsp_p95_delta_ms": 7.112699968274683,
+        "dsp_metrics_valid": true,
+        "threads_dsp_p95_ms": 16.446500027086586,
+        "processes_dsp_p95_ms": 23.55919999536127
+      }
+    }
+  },
+  "sla_topology": {
+    "modes": {
+      "threads_io": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 120.0,
+            "mean_ms": 6.325140833602442,
+            "p95_ms": 6.776500027626753,
+            "max_ms": 15.668499981984496
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 0.0007541680436891814,
+            "p95_ms": 0.00100000761449337,
+            "max_ms": 0.001100008375942707
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0036216680503760776,
+            "p95_ms": 0.004400033503770828,
+            "max_ms": 0.006300047971308231
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 0.0,
+          "parallel_submit_success": 0.0,
+          "parallel_submit_success_rate": 0.0,
+          "parallel_result_requests": 0.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 0.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 1.0
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 27.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 3.0,
+          "dsp_stage_source": "engine_dsp"
+        },
+        "dsp_hotspots": {
+          "AudioMathTask": {
+            "count": 120.0,
+            "mean_ms": 0.5145116675218258,
+            "p95_ms": 0.4344999906606972,
+            "max_ms": 9.47630003793165
+          },
+          "BenchSourceTask": {
+            "count": 360.0,
+            "mean_ms": 0.08517111079224075,
+            "p95_ms": 0.015099998563528061,
+            "max_ms": 9.151700010988861
+          },
+          "ChromagramTask": {
+            "count": 120.0,
+            "mean_ms": 0.09935749597692242,
+            "p95_ms": 0.1254999660886824,
+            "max_ms": 0.14519999967887998
+          },
+          "FrequencySplitterTask": {
+            "count": 360.0,
+            "mean_ms": 0.06886916752490732,
+            "p95_ms": 0.10569998994469643,
+            "max_ms": 0.13259996194392443
+          },
+          "RMSTask": {
+            "count": 1024.0,
+            "mean_ms": 0.18290957007138786,
+            "p95_ms": 0.23069995222613215,
+            "max_ms": 0.3850999637506902
+          },
+          "SourceSpecsTask": {
+            "count": 360.0,
+            "mean_ms": 0.004801111774415606,
+            "p95_ms": 0.008200004231184721,
+            "max_ms": 0.014899997040629387
+          }
+        },
+        "total_latency_p95_ms": 6.781900068745017
+      },
+      "processes_dsp": {
+        "stages": {
+          "source_read": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          },
+          "dsp": {
+            "count": 102.0,
+            "mean_ms": 3.9438421554936496,
+            "p95_ms": 12.682375017902814,
+            "max_ms": 15.77330002328381
+          },
+          "preview": {
+            "count": 120.0,
+            "mean_ms": 1.0588441703779001,
+            "p95_ms": 1.3210999895818532,
+            "max_ms": 1.4349999255500734
+          },
+          "proxy_write": {
+            "count": 120.0,
+            "mean_ms": 0.0035449988596762223,
+            "p95_ms": 0.004199973773211241,
+            "max_ms": 0.006499933078885078
+          },
+          "ui_sync": {
+            "count": 120.0,
+            "mean_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0
+          }
+        },
+        "realtime": {
+          "parallel_job_timeouts": 0.0,
+          "parallel_job_exceptions": 0.0,
+          "parallel_pool_restarts": 0.0,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
+          "parallel_disabled_sources": 0.0,
+          "parallel_submit_attempts": 360.0,
+          "parallel_submit_success": 360.0,
+          "parallel_submit_success_rate": 1.0,
+          "parallel_result_requests": 120.0,
+          "parallel_fresh_results": 0.0,
+          "parallel_completed_results": 102.0,
+          "parallel_accepted_results": 0.0,
+          "parallel_fresh_result_rate": 0.2833333333333333
+        },
+        "parallel_meta": {
+          "parallel_offload_attr_count": 27.0,
+          "parallel_local_attr_count": 0.0,
+          "parallel_shards": 3.0,
+          "dsp_stage_source": "parallel_worker_elapsed"
+        },
+        "dsp_hotspots": {},
+        "total_latency_p95_ms": 14.007674981257878
+      }
+    },
+    "evaluation": {
+      "sample_rate_hz": 96000,
+      "pass_threshold_ms": 15.0,
+      "ideal_threshold_ms": 10.0,
+      "total_latency_p95_ms": 14.007674981257878,
+      "passes": true,
+      "ideal": false
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m unittest tests.test_regression_findings -v)",
+      "Bash(python -m unittest tests.test_regression_findings.TestRegressionFindings.test_runtime_diagnostics_and_parallel_slot_reuse_exist tests.test_regression_findings.TestRegressionFindings.test_layer1_facade_specs_scanner_have_no_sampling_internals tests.test_regression_findings.TestRegressionFindings.test_auto_attr_ids_reinitialize_on_reconnect)",
+      "Bash(python -m unittest tests.test_regression_findings.TestRegressionFindings.test_masked_mono_signal_layer2_guard_and_not_reachable_from_preview tests.test_regression_findings.TestRegressionFindings.test_probe_offloaded_from_main_thread tests.test_regression_findings.TestRegressionFindings.test_parallel_stale_reuse_is_time_based tests.test_regression_findings.TestRegressionFindings.test_inflight_per_source_within_spec tests.test_regression_findings.TestRegressionFindings.test_parallel_worker_processes_terminated_on_shutdown -v)",
+      "Bash(python -m unittest tests.test_regression_findings)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\mariu\\.claude\\projects\\c--Users-mariu-AppData-Roaming-Blender-Foundation-Blender-5-0-scripts-addons-AudioCore-Engine"
+    ]
+  }
+}
