@@ -41,6 +41,7 @@ from .audio_tasks_registry import (
     StereoWidthTask,
     StereoBalanceTask,
     StereoVectorTask,
+    StreamAccumulatorTask,
     AudioMathTask,
 )
 
@@ -412,6 +413,8 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
             return _WorkerSourceSpecsPassthroughTask(node_id, params, bs)
         if typ == "audio_math":
             return AudioMathTask(node_id, params, bs)
+        if typ == "stream_accumulator":
+            return StreamAccumulatorTask(node_id, params, bs)
 
     if cat == "delta":
         if typ == "frequency_splitter":

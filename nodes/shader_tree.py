@@ -67,6 +67,8 @@ class ACEShaderNodeFactory:
             cls._new_socket(ng, "Beat Phase Attribute ID", "INPUT", "NodeSocketString")
         elif category == "utilities" and node_type == "util_rolling_avg":
             cls._new_socket(ng, "Attribute ID", "INPUT", "NodeSocketString")
+        elif category == "utilities" and node_type == "stream_accumulator":
+            cls._new_socket(ng, "Attribute ID", "INPUT", "NodeSocketString")
 
         try:
             input_node = next((n for n in ng.nodes if n.type == "GROUP_INPUT"), None)

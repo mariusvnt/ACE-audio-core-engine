@@ -258,6 +258,10 @@ class ACEDummyNodeFactory:
             required_inputs = {"Value", "Number of Frames", "Attribute ID", "Proxy Object"}
             required_outputs = {"Rolling Avg"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        if node_type == "stream_accumulator":
+            required_inputs = {"Value", "Attribute ID", "Proxy Object"}
+            required_outputs = {"Accumulated"}
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
 
         # ── Delta nodes ──────────────────────────────────────────────────────
         # All delta nodes share a single "Audio" input; outputs are fixed named
@@ -303,6 +307,8 @@ class ACEDummyNodeFactory:
         if category == "utilities" and node_type == "src_specs":
             return ("Frames per Beat Attribute ID", "Beat Phase Attribute ID")
         if category == "utilities" and node_type == "util_rolling_avg":
+            return ("Attribute ID",)
+        if category == "utilities" and node_type == "stream_accumulator":
             return ("Attribute ID",)
         return ()
 
@@ -593,6 +599,56 @@ class ACEDummyNodeFactory:
                 # E. (Value + Number of Frames) × 0 → Sample Index (Index) — always 0
                 ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
                 # F. Sample Index (Value) → Group Output (Rolling Avg)
+                if len(outputs_def) > 0:
+                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
+
+            elif node_type == 'stream_accumulator':
+                # Attribute ID input (string) — the auto-generated proxy attribute name.
+                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
+                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+
+                attr_id_idx = len(inputs_def)  # 1: after Value (0)
+
+                # Proxy Object input — the source proxy mesh to read the attribute from.
+                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
+
+                proxy_obj_idx = len(inputs_def) + 1  # 2: after Attribute ID (1)
+
+                # Consume Value so the input is active, then force index 0 sampling.
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-420, -160)
+                ng.links.new(input_node.outputs[0], math_mul.inputs[0])  # Value → × 0
+
+                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+                obj_info.transform_space = 'ORIGINAL'
+                obj_info.location = (-300, 0)
+                if 'As Instance' in obj_info.inputs:
+                    obj_info.inputs['As Instance'].default_value = False
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.data_type = 'FLOAT'
+                named_attr.location = (-100, 150)
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.data_type = 'FLOAT'
+                sample_idx.domain = 'POINT'
+                sample_idx.location = (150, 0)
+
+                # A. Group Input (Proxy Object) → Object Info (Object)
+                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                # B. Object Info (Geometry) → Sample Index (Geometry)
+                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                # C. Group Input (Attribute ID) → Named Attribute (Name)
+                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
+                # D. Named Attribute → Sample Index (Value)
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                # E. Value × 0 → Sample Index (Index) — always 0
+                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
+                # F. Sample Index (Value) → Group Output (Accumulated)
                 if len(outputs_def) > 0:
                     ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
 
@@ -969,7 +1025,11 @@ class ACEDummyTreeReader:
             str(getattr(node, "category", "")) == "utilities"
             and str(getattr(node, "type", "")) == "util_rolling_avg"
         )
-        return bool(is_stream or is_specs or is_rolling_avg)
+        is_stream_accumulator = (
+            str(getattr(node, "category", "")) == "utilities"
+            and str(getattr(node, "type", "")) == "stream_accumulator"
+        )
+        return bool(is_stream or is_specs or is_rolling_avg or is_stream_accumulator)
 
     def _emit_consumer_intents(self):
         sink_kind = (
