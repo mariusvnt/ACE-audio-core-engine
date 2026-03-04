@@ -14,7 +14,8 @@ Defines every audio processing node (tasks) used by the engine pipeline:
     ``StereoBalanceTask``, ``StereoVectorTask``.
   - **Layer-3 preview**: ``PreviewSinkTask`` — time-domain-only biquad filter
     chain; strictly no iFFT/iBFT.
-  - **Utility**: ``RollingAvgTask``, ``AudioMathTask``, ``SourceFrontendProcessor``.
+  - **Utility**: ``RollingAvgTask``, ``StreamAccumulatorTask``, ``AudioMathTask``,
+    ``SourceFrontendProcessor``.
 
 All bpy access is forbidden in this module: tasks are evaluated on Stage-B
 worker processes (via ``parallel_dsp``) that are intentionally bpy-free.
@@ -4707,6 +4708,109 @@ class RollingAvgTask(ACEAudioTask):
 
         self._buffer.append(value)
         return float(np.mean(self._buffer))
+
+
+class StreamAccumulatorTask(ACEAudioTask):
+    """Running sum utility for scalar or vector stream values.
+
+    Maintains accumulator state in the task instance so values persist across
+    frames in Stage-B worker execution.  Resets automatically on timeline
+    rewind / first frame and supports an optional manual reset trigger through
+    ``parameters`` keys (``manual_reset``, ``reset_trigger``, ``reset``).
+    """
+
+    def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
+        super().__init__(node_id, parameters, block_size)
+        self._accumulator: Optional[np.ndarray] = None
+        self._last_frame_request: Optional[int] = None
+        self._manual_reset_latched: bool = False
+
+    @staticmethod
+    def _coerce_input_array(raw_value: Any) -> np.ndarray:
+        if raw_value is None:
+            return np.zeros(1, dtype=np.float64)
+        if isinstance(raw_value, (int, float, np.integer, np.floating)):
+            resolved = float(raw_value)
+            if not np.isfinite(resolved):
+                resolved = 0.0
+            return np.asarray([resolved], dtype=np.float64)
+        try:
+            arr = np.asarray(raw_value, dtype=np.float64).reshape(-1)
+        except Exception:
+            return np.zeros(1, dtype=np.float64)
+        if arr.size <= 0:
+            return np.zeros(1, dtype=np.float64)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        return arr.astype(np.float64, copy=False)
+
+    @staticmethod
+    def _coerce_reset_flag(raw_value: Any) -> bool:
+        if isinstance(raw_value, bool):
+            return bool(raw_value)
+        if isinstance(raw_value, (int, float, np.integer, np.floating)):
+            try:
+                return bool(np.isfinite(float(raw_value)) and abs(float(raw_value)) > 1e-9)
+            except Exception:
+                return False
+        if isinstance(raw_value, str):
+            token = raw_value.strip().lower()
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            if token in {"0", "false", "no", "off", ""}:
+                return False
+        return False
+
+    def _manual_reset_requested(self, inputs: Dict[int, Any]) -> bool:
+        raw_reset = inputs.get(1)
+        if raw_reset is None:
+            for key in ("manual_reset", "reset_trigger", "reset"):
+                if key in self.parameters:
+                    raw_reset = self.parameters.get(key)
+                    break
+        flag = self._coerce_reset_flag(raw_reset)
+        triggered = bool(flag and not self._manual_reset_latched)
+        self._manual_reset_latched = bool(flag)
+        return triggered
+
+    def _should_reset_for_frame(self, frame_idx: int, manual_reset: bool) -> bool:
+        if manual_reset:
+            return True
+        if frame_idx < 0:
+            return False
+        frame_start = int(getattr(self, "scene_frame_start", 1) or 1)
+        if frame_idx <= frame_start:
+            return True
+        last_frame = self._last_frame_request
+        if last_frame is not None and frame_idx < int(last_frame):
+            return True
+        return False
+
+    def process(self, inputs):
+        raw_value = inputs.get(0)
+        if raw_value is None:
+            raw_value = self.parameters.get("in_0", 0.0)
+        value_arr = self._coerce_input_array(raw_value)
+
+        try:
+            frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
+        except Exception:
+            frame_idx = -1
+        manual_reset = self._manual_reset_requested(inputs)
+        should_reset = self._should_reset_for_frame(frame_idx, manual_reset)
+
+        if self._accumulator is None or tuple(self._accumulator.shape) != tuple(value_arr.shape):
+            self._accumulator = np.zeros_like(value_arr, dtype=np.float64)
+            should_reset = False
+        elif should_reset:
+            self._accumulator.fill(0.0)
+
+        np.add(self._accumulator, value_arr, out=self._accumulator, casting="unsafe")
+        if frame_idx >= 0:
+            self._last_frame_request = int(frame_idx)
+
+        if int(self._accumulator.size) == 1:
+            return float(self._accumulator[0])
+        return self._accumulator.astype(np.float32, copy=False)
 
 
 class AudioMathTask(ACEAudioTask):

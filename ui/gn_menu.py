@@ -124,7 +124,10 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         is_stream = parsed.get("category") == "stream"
         is_specs = parsed.get("category") == "utilities" and parsed.get("type") == "src_specs"
         is_rolling_avg = parsed.get("category") == "utilities" and parsed.get("type") == "util_rolling_avg"
-        if not (is_stream or is_specs or is_rolling_avg):
+        is_stream_accumulator = (
+            parsed.get("category") == "utilities" and parsed.get("type") == "stream_accumulator"
+        )
+        if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator):
             return
 
         proxy_name = ACE_OT_add_node_group._resolve_active_proxy_name(context)
@@ -175,7 +178,25 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             if attr_sock:
                 attr_sock.default_value = auto_name
 
+        if is_stream_accumulator and len(node.outputs) > 0:
+            auto_name = ACE_OT_add_node_group._default_attr_name(
+                proxy_name,
+                node["ace_id"],
+                node.outputs[0].name,
+                0,
+            )
+            attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Attribute ID"), None)
+            if attr_sock:
+                attr_sock.default_value = auto_name
+
         if (is_specs or is_rolling_avg) and proxy_obj:
+            proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
+            if proxy_sock:
+                try:
+                    proxy_sock.default_value = proxy_obj
+                except Exception:
+                    pass
+        if is_stream_accumulator and proxy_obj:
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
             if proxy_sock:
                 try:

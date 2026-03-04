@@ -73,6 +73,7 @@ from .audio_tasks_registry import (
     StereoVectorTask,
     PreviewSinkTask,
     RollingAvgTask,
+    StreamAccumulatorTask,
     AudioMathTask,
     ACESinkBinding,
     _clear_file_open_locks,
@@ -1774,6 +1775,8 @@ class ACEAudioEngine:
         category = str(getattr(node, "category", "") or "")
         node_type = str(getattr(node, "type", "") or "")
         if category == "utilities" and node_type == "src_specs":
+            return True
+        if category == "utilities" and node_type == "stream_accumulator":
             return True
         if category != "stream":
             return False
@@ -3649,7 +3652,7 @@ class ACEAudioEngine:
     def _is_output_node(node: ACEAbstractNode) -> bool:
         is_specs = bool(
             node
-            and node.type in {'src_specs', 'util_rolling_avg'}
+            and node.type in {'src_specs', 'util_rolling_avg', 'stream_accumulator'}
             and node.category == 'utilities'
         )
         return bool(
@@ -4335,7 +4338,8 @@ class ACEAudioEngine:
 
             is_stream = abs_node.category == "stream"
             is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
-            if not (is_stream or is_specs):
+            is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
+            if not (is_stream or is_specs or is_stream_accumulator):
                 continue
 
             proxy_name = self._resolve_proxy_name_for_output_node(abs_node, source_lookup, unique_proxies)
@@ -4373,6 +4377,15 @@ class ACEAudioEngine:
                         topology_sig=topology_sig,
                     )
                     socket_map[socket_name] = str(out_idx)
+            elif is_stream_accumulator and len(abs_node.outputs) > 0:
+                desired_map["0"] = self._build_auto_attr_name(
+                    proxy_name,
+                    abs_node.id,
+                    abs_node.outputs[0].name,
+                    0,
+                    topology_sig=topology_sig,
+                )
+                socket_map["Attribute ID"] = "0"
 
             if not desired_map:
                 continue
@@ -4526,7 +4539,8 @@ class ACEAudioEngine:
             is_stream = abs_node.category == "stream"
             is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
             is_rolling_avg = abs_node.type == "util_rolling_avg" and abs_node.category == "utilities"
-            if not (is_stream or is_specs or is_rolling_avg):
+            is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
+            if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator):
                 continue
 
             root_sig = json.dumps(sorted(set(getattr(abs_node, "root_sources", set()) or set())))
@@ -4563,6 +4577,15 @@ class ACEAudioEngine:
                         )
                         socket_map[socket_name] = str(out_idx)
                 elif is_rolling_avg and len(abs_node.outputs) > 0:
+                    desired_map["0"] = self._build_auto_attr_name(
+                        proxy_name,
+                        abs_node.id,
+                        abs_node.outputs[0].name,
+                        0,
+                        topology_sig=topology_sig,
+                    )
+                    socket_map["Attribute ID"] = "0"
+                elif is_stream_accumulator and len(abs_node.outputs) > 0:
                     desired_map["0"] = self._build_auto_attr_name(
                         proxy_name,
                         abs_node.id,
@@ -4609,6 +4632,8 @@ class ACEAudioEngine:
                 return AudioMathTask(node.id, node.parameters, block_size)
             if typ == 'util_rolling_avg':
                 return RollingAvgTask(node.id, node.parameters, block_size)
+            if typ == 'stream_accumulator':
+                return StreamAccumulatorTask(node.id, node.parameters, block_size)
         elif cat == 'delta':
             if typ == 'frequency_splitter':
                 return FrequencySplitterTask(node.id, node.parameters, block_size)
@@ -5876,6 +5901,7 @@ class ACEAudioEngine:
                                 node.category == 'stream'
                                 or (node.type == 'src_specs' and node.category == 'utilities')
                                 or (node.type == 'util_rolling_avg' and node.category == 'utilities')
+                                or (node.type == 'stream_accumulator' and node.category == 'utilities')
                                 or (node.category == 'utilities' and node.type == 'preview_sink')
                             )
                             if not is_output_node:

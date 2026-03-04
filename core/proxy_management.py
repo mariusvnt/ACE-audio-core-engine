@@ -228,7 +228,8 @@ class ACEProxyManager:
     def _cache_output_defs(self):
         """Precompute attribute slugs and Blender data types for all writeable outputs.
 
-        Iterates over stream, source_specs, and util_rolling_avg nodes in the abstract tree.
+        Iterates over stream, source_specs, util_rolling_avg, and stream_accumulator
+        nodes in the abstract tree.
         For each non-bundle output socket, builds a dict entry keyed by
         ``"<node_id>:<socket_idx>"`` containing the derived attribute name slug,
         Blender attribute type, and any user-supplied Attribute ID overrides.
@@ -242,7 +243,8 @@ class ACEProxyManager:
             is_stream = node.category == 'stream'
             is_source_specs = node.type == 'src_specs' and node.category == 'utilities'
             is_rolling_avg = node.type == 'util_rolling_avg' and node.category == 'utilities'
-            if not (is_stream or is_source_specs or is_rolling_avg):
+            is_stream_accumulator = node.type == 'stream_accumulator' and node.category == 'utilities'
+            if not (is_stream or is_source_specs or is_rolling_avg or is_stream_accumulator):
                 continue
 
             for sock in node.outputs:

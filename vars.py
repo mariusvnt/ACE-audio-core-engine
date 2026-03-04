@@ -236,6 +236,13 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
             "outputs": [('NodeSocketFloat', 'Rolling Avg')],
             },
+            "stream_accumulator": {
+            "label": "Stream Accumulator",
+            "icon": "",
+            "description": "Maintains a running sum of the input stream values.",
+            "inputs": [('NodeSocketFloat', 'Value')],
+            "outputs": [('NodeSocketFloat', 'Accumulated')],
+            },
         },
     },
 }
