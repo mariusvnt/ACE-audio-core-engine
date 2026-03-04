@@ -116,6 +116,26 @@ class TestParallelDSP(unittest.TestCase):
             },
         }
 
+    def _stream_accumulator_graph_ir(self):
+        return {
+            "nodes": {
+                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "rms": {"category": "stream", "type": "rms", "parameters": {}},
+                "accum": {"category": "utilities", "type": "stream_accumulator", "parameters": {}},
+            },
+            "links": [
+                ("src_a", 0, "rms", 0),
+                ("rms", 0, "accum", 0),
+            ],
+            "source_node_ids": ["src_a"],
+            "source_ir": {
+                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
+            },
+            "output_specs": {
+                "accum:0": {"node_id": "accum", "socket_idx": 0, "attr_type": "FLOAT"},
+            },
+        }
+
     def _math_chroma_stream_graph_ir(self):
         return {
             "nodes": {
@@ -267,6 +287,40 @@ class TestParallelDSP(unittest.TestCase):
         self.assertIn("rms1:0", values)
         self.assertTrue(np.isfinite(float(values["rms0:0"])))
         self.assertTrue(np.isfinite(float(values["rms1:0"])))
+
+    def test_worker_stream_accumulator_persists_state_and_resets_on_rewind(self):
+        n = 256
+        mono = np.ones(n, dtype=np.float32)
+        base_job = {
+            "generation_id": 1006,
+            "graph_uid": "stream_accum_graph",
+            "block_size": n,
+            "sample_rate": 48000,
+            "graph_ir_digest": "digest_stream_accum",
+            "graph_ir": self._stream_accumulator_graph_ir(),
+            "source_chunks": {
+                "src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0},
+            },
+        }
+
+        def _run(frame_id: int, job_key: str) -> float:
+            payload = dict(base_job)
+            payload["frame_id"] = int(frame_id)
+            payload["job_key"] = str(job_key)
+            out = self.pds.evaluate_parallel_job(payload)
+            values = dict(out.get("values", {}) or {})
+            self.assertIn("accum:0", values)
+            return float(values["accum:0"])
+
+        v1 = _run(1, "stream_accum_graph:f1:j1")
+        v2 = _run(2, "stream_accum_graph:f2:j1")
+        v3 = _run(3, "stream_accum_graph:f3:j1")
+        v1_rewind = _run(1, "stream_accum_graph:f1:j2")
+
+        self.assertAlmostEqual(v1, 1.0, places=5)
+        self.assertAlmostEqual(v2, 2.0, places=5)
+        self.assertAlmostEqual(v3, 3.0, places=5)
+        self.assertAlmostEqual(v1_rewind, 1.0, places=5)
 
     def test_shared_memory_payload_resolution_reuses_worker_cache(self):
         if not bool(getattr(self.pds, "_SHARED_MEMORY_AVAILABLE", False)):
