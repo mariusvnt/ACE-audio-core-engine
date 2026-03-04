@@ -2,13 +2,13 @@ ACE Architecture & Developer Onboarding Brief
 
 1. Executive Summary & Philosophy
 
-Mission: AudioCore Engine (ACE) converts continuous audio streams — file playback or live microphone/device input — into per-frame numeric attributes consumed by Blender 5.0+ Geometry Nodes, enabling fully procedural, audio-reactive animation without any keyframes.
+Mission: AudioCore Engine (ACE) converts continuous audio streams — file playback or live microphone/device input — into per-frame numeric outputs consumed by Blender 5.0+ Geometry Nodes and object-bound shader materials, enabling fully procedural, audio-reactive animation without any keyframes.
 
 Core philosophy: Complete decoupling across three independent concerns.
 
 The UI (Layer 1) expresses intent only. No GN node performs a calculation. The visible node tree is a configuration contract, not an execution graph.
 
-The DSP backend (Layer 2) performs all spectral and temporal analysis in isolation from the Blender API, writing scalar/vector results into proxy mesh attributes that GN reads passively.
+The DSP backend (Layer 2) performs all spectral and temporal analysis in isolation from the Blender API, writing scalar/vector results into proxy mesh attributes and object custom properties that Blender frontends read passively.
 
 The audio preview (Layer 3) is a strictly time-domain, lazily-evaluated playback path that only activates when the user explicitly routes audio to a Preview or Group Output socket. It exists independently of Layer 2 and shares no frequency-domain machinery with it.
 
@@ -18,15 +18,15 @@ The design consequence: the three layers can be reasoned about, tested, and exte
 
 Layer 1 — The Facade (UI & Routing)
 
-The Geometry Nodes tree the user authors is a pure interface contract. Every node the user places belongs to a category defined in ACE_NODES (vars.py) and maps to a pre-built GN group datablock managed by ACEDummyNodeFactory in dummy_tree.py.
+Scene frontends are pure interface contracts. In V1 that means top-level Geometry Nodes modifier trees plus top-level object-bound material Shader node trees. Every ACE node the user places belongs to a category defined in ACE_NODES (vars.py) and maps to a pre-built frontend group datablock managed by ACEDummyNodeFactory in dummy_tree.py or ACEShaderNodeFactory in shader_tree.py.
 
 Nodes have zero internal calculation logic. Their GN group internals are stubs — sockets pass data through without modification.
 
 The sole purpose of a Layer 1 node is to declare what analysis should happen and which audio branch carries the signal, by virtue of its type, its position in the tree, and the sockets it exposes.
 
-ACEDummyTreeReader walks the GN tree, reads ace_id properties on nodes, resolves their category/type, and emits an ACEAbstractTree — the in-memory representation of the user's routing intent.
+Each frontend reader walks one top-level Blender node tree, reads frontend-scoped ace_id properties on nodes, resolves their category/type, and emits a partial ACEAbstractTree. Stage A then merges all discovered frontends into one scene-scoped ACEAbstractTree, including frontend metadata and consumer intents.
 
-The Geometry Nodes editor the user sees reads back the proxy mesh attributes written by Layer 2. It does not participate in computing them.
+Geometry Nodes read back proxy mesh attributes written by Layer 2. Shader frontends read object custom properties via Blender's Attribute node in Object mode. Neither frontend participates in computing the values.
 
 Practical implication for developers: You will never find feature extraction code, signal processing, or numpy operations inside anything managed by dummy_tree.py. If you do, that is a Layer violation.
 
@@ -44,7 +44,7 @@ Each AudioChunk carries not just audio samples but branch metadata: band constra
 
 Terminal Stream tasks (RMSTask, PitchTask, SpectralCentroidTask, OnsetTask, etc.) consume the chunk's metadata and the cached spectrum to emit a single float or vector.
 
-Results are committed in Stage C by proxy_management.py, which writes FLOAT / FLOAT_VECTOR / FLOAT_COLOR attributes to the point domain of single-vertex proxy meshes. Attribute names are deterministic 24-bit blake2b hashes (id_management.py).
+Results are committed in Stage C by proxy_management.py, which writes FLOAT / FLOAT_VECTOR / FLOAT_COLOR outputs to either point-domain attributes on single-vertex proxy meshes or deterministic object custom properties. Attribute and property names are generated through the same compact hashing path in id_management.py.
 
 Practical implication for developers: Layer 2 only cares about extracting numbers. There is no audio output here. The final AudioChunk at a Stream node's output has no audio consumer.
 
@@ -94,7 +94,7 @@ Delta nodes are the key to ACE's efficiency. A FrequencySplitter does not split 
 
 Stream nodes are terminal. RMSTask, ZeroCrossTask, PitchTask, SpectralCentroidTask, SpectralFluxTask, OnsetTask, StereoWidthTask, StereoBalanceTask all inherit ACEAudioTask and implement process(chunk) -> float | np.ndarray. The return value is written to the proxy attribute. None of these return an AudioChunk.
 
-Utility nodes span both layers. src_specs (SourceSpecsTask) exposes BPM, beats-per-bar, duration, and sample rate as attributes while passing the audio chunk downstream. audio_math (AudioMathTask) is the one node that explicitly crosses source-branch boundaries — it synchronizes two distinct root-source branches and must handle mismatched block sizes.
+Utility nodes span both layers. src_specs (SourceSpecsTask) exposes frames-per-beat and beat-phase attributes while passing the audio chunk downstream. audio_math (AudioMathTask) is the one node that explicitly crosses source-branch boundaries — it synchronizes two distinct root-source branches and must handle mismatched block sizes.
 
 4. The Parallel Execution Pipeline & Concurrency Strategy
 
@@ -104,23 +104,25 @@ ACE uses a strict three-stage model to keep Blender's main thread unblocked duri
 
 Stage A — Main-Thread Graph Setup
 
-Owner: audio_engine.py — compile_from_blender_tree(), invoked from main thread only (enforced by utils.assert_main_thread()).
+Owner: audio_engine.py — compile_scene_frontends(), invoked from main thread only (enforced by utils.assert_main_thread()).
 
-Reads the GN tree via ACEDummyTreeReader.
+Discovers all managed scene frontends (Geometry Nodes modifiers and object-bound shader materials).
 
-Builds the ACEAbstractTree.
+Synchronizes managed source placeholders in every Geometry Nodes frontend.
 
-Synchronizes auto-generated attribute IDs.
+Reads each frontend via ACEDummyTreeReader or ACEShaderTreeReader.
 
-Rebuilds the abstract tree post-sync.
+Synchronizes auto-generated sink IDs per frontend and refreshes abstract parameters.
+
+Merges partial frontend IR into one scene-scoped ACEAbstractTree.
 
 Compiles one ACEAudioGraph per source (topological sort, task instantiation).
 
 Serializes each graph into a compact parallel IR (integer/float dictionaries, no Python objects) via _prepare_parallel_graph_ir().
 
-Resolves output attribute schema on each source proxy.
+Resolves concrete sink bindings so each computed attr_key knows whether it writes to proxy attributes, object properties, or both.
 
-Stage A only runs when the tree signature changes. Between compiles it is a no-op. The signature is a blake2b digest of the tree topology and all parameter values (_compute_tree_signature()).
+Stage A only runs when the scene frontend signature changes. Between compiles it is a no-op. The signature is a blake2b digest of node topology, parameter values, frontend metadata, and consumer intents (_compute_tree_signature()).
 
 
 
@@ -140,15 +142,15 @@ In-flight count per source is capped at _PARALLEL_MAX_INFLIGHT_PER_SOURCE = 2 (e
 
 _parallel_poll_futures() drains completed futures. A fallback 2-second drain timer (_shm_drain_timer) fires unconditionally to prevent SHM leaks if no frame events arrive (e.g., during render or pause).
 
-Stage C — Main-Thread Commit (Attribute Write)
+Stage C — Main-Thread Commit (Sink Dispatch)
 
 Owner: audio_engine.py / proxy_management.py — execute_next_frame(), main thread only.
 
 Reads completed future results from Stage B.
 
-Calls proxy_management to write float/vector/color values to the named point-domain attributes on source proxy meshes.
+Calls proxy_management to fan out float/vector/color values to the named point-domain attributes on source proxy meshes and to deterministic object custom properties for shader consumers.
 
-Commits happen inside use_lock_interface — Blender will not read these attributes from the depsgraph while a commit is in progress.
+Commits happen inside use_lock_interface — Blender will not read these attributes or custom properties from the depsgraph while a commit is in progress.
 
 _attr_schema_dirty dirty flag triggers attribute schema resync when node topology has changed since last commit (replaces the old 120-frame polling approach).
 

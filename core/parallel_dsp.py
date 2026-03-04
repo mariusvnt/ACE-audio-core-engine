@@ -109,26 +109,11 @@ class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
         beats_per_bar = float(self.parameters.get("scene_beats_per_bar", 4.0) or 4.0)
         fps           = float(self.parameters.get("scene_fps", 24.0) or 24.0)
         beats_per_frame = float(bpm / max(60.0 * fps, 1e-6))
+        frames_per_beat = float(1.0 / beats_per_frame) if beats_per_frame > 1e-6 else 0.0
         frame_idx = int(getattr(chunk_in, "frame_index", 0) or 0)
         pos_in_measure = (float(frame_idx) * beats_per_frame) % beats_per_bar
-        ts_vec = (float(pos_in_measure), float(beats_per_bar), 0.0)
         beat_phase = float(pos_in_measure / beats_per_bar) if beats_per_bar > 0.0 else 0.0
-        return (float(beats_per_frame), ts_vec, float(beat_phase), chunk_in)
-
-
-class _WorkerSourceScannerPassthroughTask(ACEAudioTask):
-    """
-    Worker-safe replacement for SourceScannerTask:
-    reports latency estimate and forwards audio chunk.
-    """
-
-    def process(self, inputs):
-        chunk_in = _coerce_worker_audio_chunk(inputs.get(0), self.block_size)
-        latency_ms = float(getattr(chunk_in, "latency_ms", 0.0) or 0.0)
-        if latency_ms <= 0.0:
-            sr = float(max(getattr(chunk_in, "sample_rate", SAMPLE_RATE), 1.0))
-            latency_ms = (float(self.block_size) / sr) * 1000.0
-        return (float(max(latency_ms, 0.0)), chunk_in)
+        return (float(frames_per_beat), float(beat_phase), chunk_in)
 
 
 class _WorkerSourceProvider:
@@ -425,8 +410,6 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
     if cat == "utilities":
         if typ == "src_specs":
             return _WorkerSourceSpecsPassthroughTask(node_id, params, bs)
-        if typ == "scanner":
-            return _WorkerSourceScannerPassthroughTask(node_id, params, bs)
         if typ == "audio_math":
             return AudioMathTask(node_id, params, bs)
 

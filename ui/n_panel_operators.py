@@ -131,30 +131,27 @@ class ACE_OT_rebuild_audio_engine(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         try:
-            from .n_panel_ui import _find_active_node_tree
-            return bool(_find_active_node_tree(context))
+            scene = getattr(context, "scene", None)
+            if scene is None:
+                return False
+            engine = ACEAudioEngine.ensure_instance(scene)
+            return bool(engine.discover_scene_frontends(scene))
         except Exception:
             return False
     
     def execute(self, context):
-        tree = None
-        try:
-            from .n_panel_ui import _find_active_node_tree
-            tree = _find_active_node_tree(context)
-        except Exception:
-            tree = None
-
-        if not tree:
-            self.report({'ERROR'}, "Select an object with a Geometry Nodes modifier to compile.")
+        scene = getattr(context, "scene", None)
+        if scene is None:
+            self.report({'ERROR'}, "Scene unavailable.")
             return {'CANCELLED'}
 
         try:
-            # 1. Get/Init Engine
-            engine = ACEAudioEngine.ensure_instance(context.scene)
-            
-            # 2. Compile directly from the Blender tree
-            engine.compile_from_blender_tree(tree, context.scene)
-            engine.execute_next_frame(context.scene, force=True)
+            engine = ACEAudioEngine.ensure_instance(scene)
+            if not engine.discover_scene_frontends(scene):
+                self.report({'ERROR'}, "No ACE-managed scene frontends found to compile.")
+                return {'CANCELLED'}
+            engine.compile_scene_frontends(scene)
+            engine.execute_next_frame(scene, force=True)
             
             task_count = sum(len(g.tasks) for g in engine.graphs.values()) if engine.graphs else 0
             self.report({'INFO'}, f"Engine compiled: {task_count} tasks.")
@@ -624,6 +621,48 @@ class ACE_OT_set_audio_math_op(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
+    """Queue non-blocking BPM / beats-per-bar detection for the active file source."""
+    bl_idname = "audiocore.detect_source_tempo_meter"
+    bl_label = "Auto Detect BPM / BPB"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            _, active_source = utils._get_active_source(context)
+        except Exception:
+            active_source = None
+        if not active_source:
+            return False
+        if str(getattr(active_source, "source_type", "") or "").upper() != "FILE":
+            return False
+        return bool(str(getattr(active_source, "filepath", "") or "").strip())
+
+    def execute(self, context):
+        try:
+            _, active_source = utils._get_active_source(context)
+        except Exception:
+            active_source = None
+        if not active_source:
+            self.report({'ERROR'}, "No active source selected.")
+            return {'CANCELLED'}
+
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        ok, message = engine.request_source_tempo_detection(active_source)
+        try:
+            engine.flush_source_tempo_detection_updates([active_source])
+        except Exception:
+            pass
+
+        if not ok:
+            self.report({'ERROR'}, message or "Tempo detection could not start.")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, message or "Tempo detection queued.")
+        return {'FINISHED'}
+
+
 class ACE_OT_refresh_stream_list(bpy.types.Operator):
     """Refresh the UI dummy tree list for the active source."""
     bl_idname = "audiocore.refresh_stream_list"
@@ -772,20 +811,13 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             self.report({'ERROR'}, "Select a file path before baking.")
             return {'CANCELLED'}
 
-        try:
-            from .n_panel_ui import _find_active_node_tree
-        except Exception:
-            _find_active_node_tree = None  # type: ignore
-
-        tree = _find_active_node_tree(context) if _find_active_node_tree else None
         engine = ACEAudioEngine.ensure_instance(context.scene)
-        if tree:
-            try:
-                engine.compile_from_blender_tree(tree, context.scene)
-            except Exception:
-                pass
+        try:
+            engine.compile_scene_frontends(context.scene)
+        except Exception:
+            pass
 
-        ok = engine.bake_source_to_cache(active_source, tree, scene=context.scene)
+        ok = engine.bake_source_to_cache(active_source, None, scene=context.scene)
         if not ok:
             self.report({'ERROR'}, "Bake request failed.")
             return {'CANCELLED'}
@@ -805,6 +837,7 @@ classes = (
     ACE_OT_apply_splitter_ramp,
     ACE_OT_update_audio_math_inputs,
     ACE_OT_set_audio_math_op,
+    ACE_OT_detect_source_tempo_meter,
     ACE_OT_refresh_stream_list,
     ACE_OT_set_target_object,
     ACE_OT_toggle_preview_sink,

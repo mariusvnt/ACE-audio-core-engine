@@ -42,9 +42,54 @@ def _sync_live_flow_identifier(source_prop):
         pass
 
 
+def _clear_tempo_detection_state(source_prop):
+    """Drop cached tempo-detection idprops when the source path/type changes."""
+    stale_keys = (
+        "ace_tempo_detect_status",
+        "ace_tempo_detect_message",
+        "ace_tempo_detect_filepath",
+        "ace_tempo_detect_mtime",
+        "ace_bpm_auto",
+        "ace_meter_auto",
+    )
+    for key in stale_keys:
+        try:
+            if hasattr(source_prop, "keys") and key in source_prop.keys():
+                del source_prop[key]
+        except Exception:
+            pass
+
+
 def _on_live_routing_change(self, context):  # noqa: ARG001
     """Blender update callback: rebuild the live flow token when any routing property changes."""
     _sync_live_flow_identifier(self)
+
+
+def _on_filepath_change(self, context):
+    """Validate the selected filepath immediately and write ace_source_error.
+
+    Runs on the main thread (Blender update callback).  Uses the pure-Python
+    ``AudioReception.is_supported_file_path()`` probe — no bpy access inside.
+    Clears the error for non-FILE sources and empty paths.
+    """
+    fp = str(getattr(self, "filepath", "") or "").strip()
+    error_msg = ""
+    if fp and str(getattr(self, "source_type", "FILE")) == "FILE":
+        try:
+            import os
+            from .core.audio_influx import AudioReception
+            if not os.path.isfile(fp):
+                error_msg = "File not found"
+            elif not AudioReception.is_supported_file_path(fp):
+                error_msg = "Unsupported or unreadable audio format"
+        except Exception:
+            pass
+    try:
+        self.ace_source_error = error_msg
+    except Exception:
+        pass
+    _clear_tempo_detection_state(self)
+    _on_engine_runtime_setting_change(self, context)
 
 
 def _on_source_type_change(self, context):
@@ -64,6 +109,7 @@ def _on_source_type_change(self, context):
             self.flow_identifier = ""
         except Exception:
             pass
+    _clear_tempo_detection_state(self)
     # Invalidate engine caches and force a recompile so the new source type
     # takes effect immediately (clears probe cache, stale parallel futures, etc.)
     _on_engine_runtime_setting_change(self, context)
@@ -177,9 +223,10 @@ class ACEAudioSource(bpy.types.PropertyGroup):
     )
     
     filepath: bpy.props.StringProperty(                                                                                             # type: ignore
-        name="File Path", 
+        name="File Path",
         subtype='FILE_PATH',
-        description="Path to the audio file"
+        description="Path to the audio file",
+        update=_on_filepath_change,
     )
     
     flow_identifier: bpy.props.StringProperty(                                                                                      # type: ignore
@@ -320,6 +367,16 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         default=""
     )
 
+    # --- FILE ERROR ---
+    ace_source_error: bpy.props.StringProperty(                                                                                     # type: ignore
+        name="Source Error",
+        description=(
+            "Non-empty when the selected file cannot be opened by the engine "
+            "(unsupported format, missing file, or corrupt data)."
+        ),
+        default="",
+    )
+
     # --- UI NODE LIST ---
     ui_nodes: bpy.props.CollectionProperty(type=ACEUINode)                                                                          # type: ignore
     active_ui_node_index: bpy.props.IntProperty(default=0)                                                                          # type: ignore
@@ -371,7 +428,8 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
             "Cap file sources to this working sample rate for analysis, preview, and prefetch proxy generation"
         ),
         items=[
-            ("24000", "24 kHz", "Low-cost capture and analysis"),
+            ("22050", "22 kHz", "Minimum viable sample rate for voice analysis"),
+            ("44100", "44.1 kHz", "CD-quality standard for music"),
             ("48000", "48 kHz", "Standard balance for preview and analysis"),
             ("96000", "96 kHz", "Higher fidelity with higher cost"),
         ],

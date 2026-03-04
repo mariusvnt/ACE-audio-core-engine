@@ -257,6 +257,34 @@ class ACEIdManager:
         short_hash = hashlib.blake2b(f"{node_id}:{int(socket_idx)}".encode("utf-8"), digest_size=4).hexdigest()[:6]
         return f"{ACEIdManager.PREFIX}{metric_hint}_{source_hint}{short_hash}"[:63]
 
+    @staticmethod
+    def generate_error_state_attr_name(proxy_name: str, node_id: str) -> str:
+        """Generate the attribute name for an error-state signal output.
+
+        The GN proxy attribute named by this function should be written with
+        ``-1.0`` when the associated source is in an unrecoverable error state,
+        and ``0.0`` otherwise.  This lets GN-side drivers detect broken sources
+        deterministically without polling ``ace_source_error``.
+
+        Format: ``ACE_errst_<srchint><hash6>``
+        Example: ``ACE_errst_guit1a2b3c``
+
+        Args:
+            proxy_name: The proxy object name (used for the source hint).
+            node_id: The ACE node ID (hashed with "errst" suffix for uniqueness).
+
+        Returns:
+            A compact mesh attribute name string with the ACE prefix.
+        """
+        source_id = proxy_name
+        if source_id.startswith(ACEIdManager.PREFIX):
+            source_id = source_id[len(ACEIdManager.PREFIX):]
+        source_hint = ACEIdManager._clean_string(source_id.split("_", 1)[0]).lower()[:4] or "src"
+        short_hash = hashlib.blake2b(
+            f"{node_id}:errst".encode("utf-8"), digest_size=4
+        ).hexdigest()[:6]
+        return f"{ACEIdManager.PREFIX}errst_{source_hint}{short_hash}"[:63]
+
     # -------------------------------------------------------------------------
     # HELPERS
     # -------------------------------------------------------------------------

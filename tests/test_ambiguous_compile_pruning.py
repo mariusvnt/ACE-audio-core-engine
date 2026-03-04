@@ -4,9 +4,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+_SUBPACKAGE_PATHS = {
+    "audio_engine.py": "core/audio_engine.py",
+    "dummy_tree.py": "nodes/dummy_tree.py",
+}
+
 
 def _read(name: str) -> str:
-    return (ROOT / name).read_text(encoding="utf-8")
+    return (ROOT / _SUBPACKAGE_PATHS.get(name, name)).read_text(encoding="utf-8")
 
 
 class TestAmbiguousCompilePruning(unittest.TestCase):

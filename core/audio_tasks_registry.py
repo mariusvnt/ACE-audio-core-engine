@@ -5,7 +5,7 @@ Defines every audio processing node (tasks) used by the engine pipeline:
 
   - **Infrastructure**: ``ACEAudioTask``, ``ACEAudioGraph``, ``AudioChunk``,
     ``TaskConnection``, and the ``AudioFluxAnalyzer`` pool-managed BFT wrapper.
-  - **Source nodes**: ``SourceTask``, ``SourceSpecsTask``, ``SourceScannerTask``.
+  - **Source nodes**: ``SourceTask``, ``SourceSpecsTask``.
   - **Splitter nodes**: ``FrequencySplitterTask``, ``MidsideSplitterTask``,
     ``AttackReleaseSplitterTask``, ``ChromagramTask``,
     ``AutoComponentSplitterTask``.
@@ -14,7 +14,7 @@ Defines every audio processing node (tasks) used by the engine pipeline:
     ``StereoBalanceTask``, ``StereoVectorTask``.
   - **Layer-3 preview**: ``PreviewSinkTask`` — time-domain-only biquad filter
     chain; strictly no iFFT/iBFT.
-  - **Utility**: ``AudioMathTask``, ``SourceFrontendProcessor``.
+  - **Utility**: ``RollingAvgTask``, ``AudioMathTask``, ``SourceFrontendProcessor``.
 
 All bpy access is forbidden in this module: tasks are evaluated on Stage-B
 worker processes (via ``parallel_dsp``) that are intentionally bpy-free.
@@ -24,6 +24,7 @@ import os
 import hashlib
 import threading
 import time
+from dataclasses import dataclass
 from collections import deque, OrderedDict
 from queue import Queue, Empty, Full
 from typing import Dict, List, Any, Optional, Tuple, NamedTuple
@@ -113,6 +114,25 @@ def _clear_file_open_locks():
         idle = [k for k, v in _FILE_OPEN_LOCKS.items() if not v.locked()]
         for k in idle:
             _FILE_OPEN_LOCKS.pop(k, None)
+
+
+def _make_silence_chunk(block_size: int, sample_rate: int = SAMPLE_RATE) -> "AudioChunk":
+    """Return a zero-filled AudioChunk used as a safe placeholder for broken sources.
+
+    Downstream DSP tasks always receive a well-formed chunk (not ``None``) so
+    Stage-B workers never encounter a missing input.  All analysis on the
+    returned chunk yields zero/silence values.
+
+    Args:
+        block_size: Number of samples in the silence block.
+        sample_rate: Sample rate to embed in the chunk (default: ``SAMPLE_RATE``).
+
+    Returns:
+        An ``AudioChunk`` whose ``mono`` array is all zeros.
+    """
+    silence = np.zeros(max(int(block_size), 1), dtype=np.float32)
+    return AudioChunk(silence, None, int(max(sample_rate, 1)), latency_ms=0.0)
+
 
 _ADAPTIVE_FILE_BLOCK_BUCKETS = (
     512,
@@ -938,6 +958,10 @@ class AudioFluxAnalyzer:
             return global_mag
 
         data, _ = _analysis_signal_for_chunk(chunk)
+        # Guard against empty chunks (e.g. from _make_silence_chunk on broken sources)
+        # to prevent null/invalid spectrum entries from entering the cache.
+        if data is None or data.size == 0:
+            return None
         if data.shape[-1] < self.fft_length:
             padded = np.zeros(self.fft_length, dtype=np.float32)
             padded[:data.shape[-1]] = data
@@ -1536,8 +1560,10 @@ class SourceTask(ACEAudioTask):
         chunk = self._read_next_block()
         if chunk:
             return chunk
-        if not self.source_ready and getattr(self.source_context, "source_type", "") == "FILE":
-            return None
+        if not self.source_ready:
+            # Return a zero-filled chunk rather than None so Stage-B workers always
+            # receive a well-formed input.  The UI reads ace_source_error for detail.
+            return _make_silence_chunk(self.block_size, self.sample_rate)
         return self.silence_buffer
 
     def _timeslice_mode_hint(self) -> str:
@@ -1743,7 +1769,7 @@ class SourceTask(ACEAudioTask):
             self.last_error = ""
             if ctx and getattr(ctx, "source_type", "") == "FILE":
                 try:
-                    ctx["ace_source_error"] = ""
+                    ctx.ace_source_error = ""
                 except Exception:
                     pass
             if ctx and getattr(ctx, "source_type", "") == "LIVE" and hasattr(ctx, "live_status"):
@@ -1752,7 +1778,12 @@ class SourceTask(ACEAudioTask):
         else:
             self.sample_rate = SAMPLE_RATE
             self.source_ready = False
-            self.last_error = getattr(self.reception, "last_error", "") if self.reception else "Source open failed"
+            rec = self.reception
+            self.last_error = (
+                rec.format_error_summary()
+                if rec is not None and hasattr(rec, "format_error_summary")
+                else (getattr(rec, "last_error", "") if rec is not None else "Source open failed")
+            ) or "Source open failed"
             if ctx and getattr(ctx, "source_type", "") == "LIVE" and hasattr(ctx, "live_status"):
                 ctx.live_status = getattr(self.reception, "last_error", "") if self.reception else "Live input unavailable"
             self.reception = None
@@ -1760,7 +1791,7 @@ class SourceTask(ACEAudioTask):
                 self.live_ready = False
             if ctx and getattr(ctx, "source_type", "") == "FILE":
                 try:
-                    ctx["ace_source_error"] = self.last_error or "File input unavailable"
+                    ctx.ace_source_error = self.last_error
                 except Exception:
                     pass
 
@@ -2361,6 +2392,7 @@ class SourceSpecsTask(ACEAudioTask):
         self._long_term_target: Optional[Tuple[str, float]] = None
         self._long_term_done: bool = False
         self._auto_bpm_key = "ace_bpm_auto"
+        self._auto_meter_key = "ace_meter_auto"
         self._analysis_rec: Optional[AudioReception] = None
         self._analysis_analyzer = None
         self._analysis_block: int = 0
@@ -2375,13 +2407,24 @@ class SourceSpecsTask(ACEAudioTask):
         chunk_in = _ensure_audio_chunk(inputs.get(0), self.block_size)
         ctx = self.source_context
         if ctx:
-            # If the user changed BPM after an automatic estimate, honor that override and stop auto-updates
+            # If the user changed BPM or meter after an automatic estimate, honor
+            # that override and stop auto-updates for this source.
             try:
                 auto_val = ctx.get(self._auto_bpm_key, None) if hasattr(ctx, "get") else None
                 if auto_val is not None:
                     current = float(getattr(ctx, "bpm", 120.0))
                     if abs(current - float(auto_val)) > 1e-3:
                         ctx["ace_bpm_user_override"] = True
+                        self._long_term_done = True
+                        self._reset_long_term_analysis_state(clear_target=False)
+            except Exception:
+                pass
+            try:
+                auto_meter = ctx.get(self._auto_meter_key, None) if hasattr(ctx, "get") else None
+                if auto_meter is not None:
+                    current_meter = int(getattr(ctx, "beats_per_bar", 4) or 4)
+                    if current_meter != int(auto_meter):
+                        ctx["ace_meter_user_override"] = True
                         self._long_term_done = True
                         self._reset_long_term_analysis_state(clear_target=False)
             except Exception:
@@ -2407,6 +2450,7 @@ class SourceSpecsTask(ACEAudioTask):
         else:
             beats_per_frame, beats_per_bar, sample_rate, duration, _, _ = self._static_specs
 
+        frames_per_beat = float(1.0 / beats_per_frame) if beats_per_frame > 1e-6 else 0.0
         engine = getattr(self, "engine_ref", None)
         current_frame = getattr(engine, "current_frame", 0) if engine else 0
         measure_len_frames = float(beats_per_bar) / beats_per_frame if beats_per_frame > 0 else 0.0
@@ -2415,10 +2459,9 @@ class SourceSpecsTask(ACEAudioTask):
         else:
             pos_in_measure = 0.0
 
-        ts_vec = (pos_in_measure, float(beats_per_bar), 0.0)
         beat_phase = pos_in_measure / float(beats_per_bar) if beats_per_bar > 0 else 0.0
-        # Output order matches ACE_NODES: BPF, Time Signature, Beat Phase, Audio passthrough
-        return (beats_per_frame, ts_vec, beat_phase, chunk_in)
+        # Output order matches ACE_NODES: Frames per Beat, Beat Phase, Audio passthrough
+        return (frames_per_beat, beat_phase, chunk_in)
 
     def close(self):
         self._reset_long_term_analysis_state(clear_target=True)
@@ -2482,10 +2525,46 @@ class SourceSpecsTask(ACEAudioTask):
         if int(owner) == int(id(self)):
             SourceSpecsTask._GLOBAL_ACTIVE_ANALYSIS.pop(active_target, None)
 
+    @staticmethod
+    def resolve_analysis_target(ctx: Optional[Any]) -> Optional[Tuple[str, float]]:
+        if not ctx or str(getattr(ctx, "source_type", "") or "").upper() != "FILE":
+            return None
+        filepath = str(getattr(ctx, "filepath", "") or "").strip()
+        if not filepath or not os.path.isfile(filepath):
+            return None
+        try:
+            return (filepath, float(os.path.getmtime(filepath)))
+        except OSError:
+            return None
+
     @classmethod
-    def _store_global_bpm_cache(cls, target: Tuple[str, float], bpm_est: float):
+    def get_cached_analysis(cls, target: Optional[Tuple[str, float]]) -> Optional[Dict[str, Any]]:
+        if target is None:
+            return None
         with cls._GLOBAL_CACHE_LOCK:
-            cls._GLOBAL_LONG_TERM_CACHE[target] = {"bpm": float(bpm_est), "ts": time.time()}
+            raw = cls._GLOBAL_LONG_TERM_CACHE.get(target)
+            cached = dict(raw) if isinstance(raw, dict) else None
+        if not cached:
+            return None
+        if (time.time() - float(cached.get("ts", 0.0) or 0.0)) > cls._GLOBAL_CACHE_TTL:
+            with cls._GLOBAL_CACHE_LOCK:
+                cls._GLOBAL_LONG_TERM_CACHE.pop(target, None)
+            return None
+        return cached
+
+    @classmethod
+    def _store_global_analysis_result(
+        cls,
+        target: Tuple[str, float],
+        bpm_est: float,
+        beats_per_bar: int,
+    ):
+        with cls._GLOBAL_CACHE_LOCK:
+            cls._GLOBAL_LONG_TERM_CACHE[target] = {
+                "bpm": float(bpm_est),
+                "beats_per_bar": int(max(1, beats_per_bar)),
+                "ts": time.time(),
+            }
             if len(cls._GLOBAL_LONG_TERM_CACHE) > cls._GLOBAL_CACHE_MAX:
                 overflow = len(cls._GLOBAL_LONG_TERM_CACHE) - cls._GLOBAL_CACHE_MAX
                 stale_items = sorted(
@@ -2496,9 +2575,18 @@ class SourceSpecsTask(ACEAudioTask):
                     cls._GLOBAL_LONG_TERM_CACHE.pop(stale_key, None)
 
     @classmethod
-    def _store_global_analysis_failure(cls, target: Tuple[str, float]):
+    def _store_global_bpm_cache(cls, target: Tuple[str, float], bpm_est: float, beats_per_bar: int = 4):
+        cls._store_global_analysis_result(target, bpm_est, beats_per_bar)
+
+    @classmethod
+    def _store_global_analysis_failure(cls, target: Tuple[str, float], error: str = ""):
         with cls._GLOBAL_CACHE_LOCK:
-            cls._GLOBAL_LONG_TERM_CACHE[target] = {"bpm": None, "ts": time.time()}
+            cls._GLOBAL_LONG_TERM_CACHE[target] = {
+                "bpm": None,
+                "beats_per_bar": None,
+                "error": str(error or "Tempo analysis failed"),
+                "ts": time.time(),
+            }
             if len(cls._GLOBAL_LONG_TERM_CACHE) > cls._GLOBAL_CACHE_MAX:
                 overflow = len(cls._GLOBAL_LONG_TERM_CACHE) - cls._GLOBAL_CACHE_MAX
                 stale_items = sorted(
@@ -2569,11 +2657,15 @@ class SourceSpecsTask(ACEAudioTask):
                 continue
 
             try:
-                bpm_est = cls._estimate_bpm_for_target(target)
-                if bpm_est is None:
+                detected = cls._estimate_tempo_for_target(target)
+                if not detected:
                     cls._store_global_analysis_failure(target)
                 else:
-                    cls._store_global_bpm_cache(target, float(bpm_est))
+                    cls._store_global_analysis_result(
+                        target,
+                        float(detected["bpm"]),
+                        int(detected["beats_per_bar"]),
+                    )
             except Exception:
                 cls._store_global_analysis_failure(target)
             finally:
@@ -2585,7 +2677,114 @@ class SourceSpecsTask(ACEAudioTask):
                     pass
 
     @classmethod
-    def _estimate_bpm_for_target(cls, target: Tuple[str, float]) -> Optional[float]:
+    @staticmethod
+    def _flux_peak_indices(flux_arr: np.ndarray) -> np.ndarray:
+        flux = np.asarray(flux_arr, dtype=np.float32).reshape(-1)
+        if flux.size < 4:
+            return np.empty(0, dtype=np.int32)
+        mean = float(np.mean(flux))
+        std = float(np.std(flux))
+        thresh = mean + (0.5 * std)
+        mids = flux[1:-1]
+        if mids.size <= 0:
+            return np.empty(0, dtype=np.int32)
+        peaks_mask = (mids > flux[:-2]) & (mids > flux[2:]) & (mids > thresh)
+        return (np.nonzero(peaks_mask)[0] + 1).astype(np.int32, copy=False)
+
+    @classmethod
+    def _estimate_beats_per_bar_from_flux(
+        cls,
+        flux_arr: np.ndarray,
+        peaks: np.ndarray,
+        beat_period_blocks: float,
+    ) -> int:
+        flux = np.asarray(flux_arr, dtype=np.float32).reshape(-1)
+        peak_idx = np.asarray(peaks, dtype=np.int32).reshape(-1)
+        if flux.size < 8 or peak_idx.size < 4 or beat_period_blocks <= 1e-6:
+            return 4
+
+        strengths = flux[peak_idx].astype(np.float64, copy=False)
+        mean_strength = float(np.mean(strengths) or 0.0)
+        if mean_strength <= 1e-9:
+            return 4
+
+        beat_numbers = np.rint(
+            (peak_idx.astype(np.float64) - float(peak_idx[0])) / max(float(beat_period_blocks), 1e-6)
+        ).astype(np.int32, copy=False)
+        centered_flux = flux.astype(np.float64) - float(np.mean(flux))
+        best_candidate = 4
+        best_score = -1.0e12
+        max_candidate = min(8, max(2, int(peak_idx.size // 2)))
+
+        for candidate in range(2, max_candidate + 1):
+            sums = np.zeros(candidate, dtype=np.float64)
+            counts = np.zeros(candidate, dtype=np.float64)
+            for beat_num, strength in zip(beat_numbers, strengths):
+                idx = int(beat_num % candidate)
+                sums[idx] += float(strength)
+                counts[idx] += 1.0
+            if np.count_nonzero(counts) < candidate:
+                continue
+
+            means = np.divide(sums, np.maximum(counts, 1.0))
+            normalized = means / mean_strength
+            variance_score = float(np.var(normalized))
+            downbeat_score = float(normalized[0] - np.mean(normalized[1:])) if candidate > 1 else 0.0
+
+            periodicity_score = 0.0
+            lag = int(round(float(beat_period_blocks) * float(candidate)))
+            if 0 < lag < centered_flux.size:
+                lhs = centered_flux[:-lag]
+                rhs = centered_flux[lag:]
+                denom = float(np.linalg.norm(lhs) * np.linalg.norm(rhs))
+                if denom > 1e-9:
+                    periodicity_score = float(np.dot(lhs, rhs) / denom)
+
+            score = variance_score + max(downbeat_score, 0.0) + (0.5 * max(periodicity_score, 0.0))
+            score -= 0.05 * float(candidate - 2)
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+
+        return int(max(best_candidate, 1))
+
+    @classmethod
+    def _estimate_tempo_from_flux(
+        cls,
+        flux_vals: list[float] | np.ndarray,
+        block_size: int,
+        sample_rate: float,
+    ) -> Optional[Dict[str, Any]]:
+        flux_arr = np.asarray(flux_vals, dtype=np.float32).reshape(-1)
+        if flux_arr.size < 4:
+            return None
+
+        peaks = cls._flux_peak_indices(flux_arr)
+        if peaks.size < 2:
+            return None
+
+        intervals = np.diff(peaks).astype(np.float64)
+        intervals = intervals[intervals > 0.5]
+        if intervals.size == 0:
+            return None
+
+        beat_period_blocks = float(np.median(intervals))
+        seconds_per_beat = beat_period_blocks * (float(block_size) / max(float(sample_rate), 1.0))
+        if seconds_per_beat <= 1e-6:
+            return None
+
+        bpm_est = 60.0 / seconds_per_beat
+        if not np.isfinite(bpm_est):
+            return None
+
+        beats_per_bar = cls._estimate_beats_per_bar_from_flux(flux_arr, peaks, beat_period_blocks)
+        return {
+            "bpm": float(np.clip(bpm_est, 20.0, 300.0)),
+            "beats_per_bar": int(max(1, beats_per_bar)),
+        }
+
+    @classmethod
+    def _estimate_tempo_for_target(cls, target: Tuple[str, float]) -> Optional[Dict[str, Any]]:
         filepath, _mtime = target
         if not filepath or not os.path.isfile(filepath):
             return None
@@ -2623,45 +2822,32 @@ class SourceSpecsTask(ACEAudioTask):
                     flux_vals.append(float(np.sum(np.maximum(diff, 0.0), dtype=np.float64)))
                 prev_mag = mag
 
-            if len(flux_vals) < 4:
-                return None
-
-            flux_arr = np.asarray(flux_vals, dtype=np.float32)
-            mean = float(np.mean(flux_arr))
-            std = float(np.std(flux_arr))
-            thresh = mean + (0.5 * std)
-            mids = flux_arr[1:-1]
-            if mids.size <= 0:
-                return None
-
-            peaks_mask = (mids > flux_arr[:-2]) & (mids > flux_arr[2:]) & (mids > thresh)
-            peaks = np.nonzero(peaks_mask)[0] + 1
-            if peaks.size < 2:
-                return None
-
-            intervals = np.diff(peaks).astype(np.float64) * (float(block) / max(float(sr), 1.0))
-            intervals = intervals[intervals > 1e-3]
-            if intervals.size == 0:
-                return None
-
-            bpm_est = 60.0 / float(np.median(intervals))
-            if not np.isfinite(bpm_est):
-                return None
-            return float(np.clip(bpm_est, 20.0, 300.0))
+            return cls._estimate_tempo_from_flux(flux_vals, block, sr)
         finally:
             try:
                 rec.close()
             except Exception:
                 pass
 
-    def _apply_auto_bpm(self, ctx: Optional[Any], bpm_val: float):
+    def _apply_detected_tempo(
+        self,
+        ctx: Optional[Any],
+        bpm_val: float,
+        beats_per_bar: int,
+        *,
+        respect_override: bool = True,
+    ):
         self._long_term_cache["bpm"] = float(bpm_val)
+        self._long_term_cache["beats_per_bar"] = int(max(1, beats_per_bar))
         self._long_term_done = True
-        if ctx and not SourceSpecsTask._user_overrode_tempo(ctx):
+        if ctx and (not respect_override or not SourceSpecsTask._user_overrode_tempo(ctx)):
             try:
                 ctx[self._auto_bpm_key] = float(bpm_val)
+                ctx[self._auto_meter_key] = int(max(1, beats_per_bar))
                 ctx.bpm = float(bpm_val)
+                ctx.beats_per_bar = int(max(1, beats_per_bar))
                 ctx["ace_bpm_user_override"] = False
+                ctx["ace_meter_user_override"] = False
             except Exception:
                 pass
 
@@ -2694,30 +2880,23 @@ class SourceSpecsTask(ACEAudioTask):
         return True
 
     def _finalize_long_term_analysis(self, ctx: Optional[Any]):
-        bpm_est = None
         flux_vals = list(self._analysis_flux_vals)
         sr = max(float(self._analysis_sr), 1.0)
         block = max(int(self._analysis_block), 1)
-
-        if len(flux_vals) >= 4:
-            flux_arr = np.asarray(flux_vals, dtype=np.float32)
-            mean = float(np.mean(flux_arr))
-            std = float(np.std(flux_arr))
-            thresh = mean + 0.5 * std
-            mids = flux_arr[1:-1]
-            peaks_mask = (mids > flux_arr[:-2]) & (mids > flux_arr[2:]) & (mids > thresh)
-            peaks = np.nonzero(peaks_mask)[0] + 1
-            if peaks.size >= 2:
-                intervals = np.diff(peaks) * (block / sr)
-                median_interval = float(np.median(intervals))
-                if median_interval > 1e-3:
-                    bpm_est = 60.0 / median_interval
-
-        if bpm_est is not None:
+        detected = self._estimate_tempo_from_flux(flux_vals, block, sr)
+        if detected:
             target = self._long_term_target
             if target is not None:
-                SourceSpecsTask._store_global_bpm_cache(target, float(bpm_est))
-            self._apply_auto_bpm(ctx, float(bpm_est))
+                SourceSpecsTask._store_global_analysis_result(
+                    target,
+                    float(detected["bpm"]),
+                    int(detected["beats_per_bar"]),
+                )
+            self._apply_detected_tempo(
+                ctx,
+                float(detected["bpm"]),
+                int(detected["beats_per_bar"]),
+            )
         else:
             self._long_term_done = True
         self._reset_long_term_analysis_state(clear_target=False)
@@ -2757,7 +2936,8 @@ class SourceSpecsTask(ACEAudioTask):
             self._finalize_long_term_analysis(ctx)
 
     def _maybe_run_long_term_analysis(self, ctx: Optional[Any]):
-        if not ctx or getattr(ctx, "source_type", "") != "FILE":
+        target = self.resolve_analysis_target(ctx)
+        if target is None:
             self._reset_long_term_analysis_state(clear_target=True)
             return
         if self._user_overrode_tempo(ctx):
@@ -2765,36 +2945,25 @@ class SourceSpecsTask(ACEAudioTask):
             self._reset_long_term_analysis_state(clear_target=False)
             return
 
-        filepath = getattr(ctx, "filepath", "")
-        if not filepath or not os.path.isfile(filepath):
-            self._reset_long_term_analysis_state(clear_target=True)
-            return
-
-        try:
-            mtime = os.path.getmtime(filepath)
-        except OSError:
-            return
-
-        target = (filepath, mtime)
         if self._long_term_target != target:
             self._reset_long_term_analysis_state(clear_target=False)
             self._long_term_target = target
             self._long_term_cache.clear()
             self._long_term_done = False
 
-        with SourceSpecsTask._GLOBAL_CACHE_LOCK:
-            raw_cached = SourceSpecsTask._GLOBAL_LONG_TERM_CACHE.get(target)
-            cached = dict(raw_cached) if isinstance(raw_cached, dict) else None
+        cached = SourceSpecsTask.get_cached_analysis(target)
         if cached:
-            if (time.time() - float(cached.get("ts", 0.0) or 0.0)) <= SourceSpecsTask._GLOBAL_CACHE_TTL:
-                bpm_cached = cached.get("bpm", None)
-                if bpm_cached is not None:
-                    self._apply_auto_bpm(ctx, float(bpm_cached))
-                else:
-                    self._long_term_done = True
-                return
-            with SourceSpecsTask._GLOBAL_CACHE_LOCK:
-                SourceSpecsTask._GLOBAL_LONG_TERM_CACHE.pop(target, None)
+            bpm_cached = cached.get("bpm", None)
+            beats_per_bar_cached = cached.get("beats_per_bar", None)
+            if bpm_cached is not None:
+                self._apply_detected_tempo(
+                    ctx,
+                    float(bpm_cached),
+                    int(beats_per_bar_cached or 4),
+                )
+            else:
+                self._long_term_done = True
+            return
 
         if self._long_term_done:
             return
@@ -2806,28 +2975,6 @@ class SourceSpecsTask(ACEAudioTask):
 
         # Run long-term tempo estimation outside the realtime DSP frame path.
         SourceSpecsTask._queue_background_analysis(target)
-
-
-class SourceScannerTask(ACEAudioTask):
-    """
-    Reports estimated branch/source latency in milliseconds while
-    passing the incoming audio chunk through unchanged.
-    """
-
-    def process(self, inputs):
-        chunk_in = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        ctx = self.source_context
-
-        latency_ms = float(getattr(chunk_in, "latency_ms", 0.0) or 0.0)
-        if latency_ms <= 0.0:
-            source_type = str(getattr(ctx, "source_type", "") or "").upper() if ctx else ""
-            live_latency_ms = float(getattr(ctx, "live_latency_ms", 0.0) or 0.0) if source_type == "LIVE" else 0.0
-            sr = float(getattr(chunk_in, "sample_rate", 0) or 0.0)
-            if sr <= 0.0:
-                sr = float(getattr(ctx, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE) if ctx else float(SAMPLE_RATE)
-            block_latency_ms = (float(self.block_size) / sr) * 1000.0 if sr > 0.0 else 0.0
-            latency_ms = float(max(0.0, live_latency_ms + block_latency_ms))
-        return (latency_ms, chunk_in)
 
 
 def _ensure_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:
@@ -4364,7 +4511,7 @@ class PreviewSinkTask(ACEAudioTask):
         return mono_out, stereo_out
 
     def process(self, inputs):
-        # Mark this thread as Layer-3 preview so _masked_mono_signal() can detect
+        # Mark this thread as Layer-3 preview so the Layer-2 guard can detect
         # and report a guardrail violation if accidentally reached from here.
         _LAYER3_THREAD_LOCAL.in_preview = True
         try:
@@ -4511,6 +4658,55 @@ class PreviewSinkTask(ACEAudioTask):
 
     def is_enabled(self) -> bool:
         return bool(self.parameters.get("preview_enabled", True))
+
+
+class RollingAvgTask(ACEAudioTask):
+    """Computes a rolling (moving) average of a scalar attribute stream.
+
+    Receives a float ``Value`` from a connected stream operator and maintains a
+    fixed-size frame buffer whose capacity is derived from ``Number of Frames``.
+    Each call to ``process()`` appends the current value and returns the mean of
+    the buffer.  The buffer is resized automatically when the frame count
+    changes, preserving as many recent samples as possible.
+
+    This is a scalar post-processing node: it does not touch the time-domain
+    audio signal and is therefore transparent to the Layer-3 preview chain.
+    """
+
+    def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
+        super().__init__(node_id, parameters, block_size)
+        self._buffer: deque = deque(maxlen=1)
+        self._buffer_maxlen: int = 1
+
+    def process(self, inputs):
+        # ── Resolve current value ─────────────────────────────────────────────
+        raw_value = inputs.get(0)
+        if raw_value is None:
+            raw_value = self.parameters.get("in_0", 0.0)
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            value = 0.0
+
+        # ── Resolve frame count ───────────────────────────────────────────────
+        raw_frame_count = inputs.get(1)
+        if raw_frame_count is None:
+            raw_frame_count = self.parameters.get("in_1", 1)
+        try:
+            frame_count = max(1, int(round(float(raw_frame_count))))
+        except (TypeError, ValueError):
+            frame_count = 1
+
+        # ── Resize buffer when capacity changes ───────────────────────────────
+        new_maxlen = max(1, int(frame_count))
+        if new_maxlen != self._buffer_maxlen:
+            # Preserve as many recent samples as fit in the new capacity.
+            existing = list(self._buffer)
+            self._buffer = deque(existing[-new_maxlen:], maxlen=new_maxlen)
+            self._buffer_maxlen = new_maxlen
+
+        self._buffer.append(value)
+        return float(np.mean(self._buffer))
 
 
 class AudioMathTask(ACEAudioTask):
@@ -4772,6 +4968,7 @@ class ACEAudioGraph:
         self.proxy_name = proxy_name
         self.tasks: Dict[str, ACEAudioTask] = {}
         self.output_attr_keys: List[str] = []
+        self.sink_bindings_by_attr: Dict[str, List["ACESinkBinding"]] = {}
         self.parallel_graph_uid: str = ""
         self.parallel_ir: Dict[str, Any] = {}
         self.parallel_ir_digest: str = ""
@@ -4797,3 +4994,13 @@ class ACEAudioGraph:
     def get_proxy_object(self):
         import bpy  # late import to avoid Blender dependency at module load                                            # type: ignore
         return bpy.data.objects.get(self.proxy_name)
+
+
+@dataclass(frozen=True)
+class ACESinkBinding:
+    """Concrete main-thread write target resolved at compile time."""
+
+    sink_kind: str
+    target_object_name: str
+    target_data_name: str
+    attr_type: str = "FLOAT"
