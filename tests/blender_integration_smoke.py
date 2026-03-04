@@ -73,11 +73,59 @@ def main():
     ]
     _assert(bool(source_nodes), "No managed source placeholder found in ACE_Sonar tree")
 
+    frontend_obj = None
+    frontend_mesh = None
+    frontend_gn_tree = None
+    frontend_mat = None
+    frontend_shader_tree = None
+    try:
+        frontend_mesh = bpy.data.meshes.new("ACE_Smoke_Frontend_Mesh")
+        frontend_obj = bpy.data.objects.new("ACE_Smoke_Frontend_Object", frontend_mesh)
+        scene.collection.objects.link(frontend_obj)
+
+        frontend_gn_tree = bpy.data.node_groups.new("ACE_Smoke_GN", "GeometryNodeTree")
+        frontend_gn_tree["ace_frontend_uid"] = "ACE_SMOKE_FRONTEND_GN"
+        try:
+            frontend_gn_tree.is_modifier = True
+        except Exception:
+            pass
+        frontend_mod = frontend_obj.modifiers.new("ACE Smoke GN", "NODES")
+        frontend_mod.node_group = frontend_gn_tree
+
+        frontend_mat = bpy.data.materials.new("ACE_Smoke_Material")
+        frontend_mat.use_nodes = True
+        frontend_shader_tree = frontend_mat.node_tree
+        _assert(frontend_shader_tree is not None, "Material node tree was not created")
+        frontend_shader_tree["ace_frontend_uid"] = "ACE_SMOKE_FRONTEND_SHADER"
+        frontend_obj.data.materials.append(frontend_mat)
+
+        discovered = engine.discover_scene_frontends(scene)
+        kinds = sorted(rec.frontend_ref.kind for rec in discovered)
+        _assert("GEOMETRY_NODES" in kinds, "Scene frontend discovery missed Geometry Nodes frontend")
+        _assert("SHADER_NODES" in kinds, "Scene frontend discovery missed Shader frontend")
+
+        engine.compile_scene_frontends(scene)
+        _assert(
+            "ACE_SMOKE_FRONTEND_GN" in getattr(engine, "_compiled_frontend_refs", {}),
+            "Scene compile missed the GN frontend",
+        )
+        _assert(
+            "ACE_SMOKE_FRONTEND_SHADER" in getattr(engine, "_compiled_frontend_refs", {}),
+            "Scene compile missed the shader frontend",
+        )
+    finally:
+        if frontend_obj is not None:
+            bpy.data.objects.remove(frontend_obj, do_unlink=True)
+        if frontend_mat is not None:
+            bpy.data.materials.remove(frontend_mat, do_unlink=True)
+        if frontend_gn_tree is not None and frontend_gn_tree.users == 0:
+            bpy.data.node_groups.remove(frontend_gn_tree)
+
     remove_result = bpy.ops.audiocore.remove_audio_source()
     _assert('FINISHED' in remove_result, "audiocore.remove_audio_source failed")
     _assert(len(ace.audio_sources) == before_count, "Audio source count did not return to initial value")
 
-    print("[ACE smoke] Version and lifecycle checks passed.")
+    print("[ACE smoke] Version, lifecycle, and scene frontend checks passed.")
     print(f"[ACE smoke] Enabled addon keys: {addon_keys}")
 
 

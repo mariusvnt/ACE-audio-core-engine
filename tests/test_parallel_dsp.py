@@ -322,10 +322,10 @@ class TestParallelDSP(unittest.TestCase):
         """Gap 1 runtime check: worker SourceSpecs computes correct beat-phase from injected params."""
         n = 512
         mono = np.zeros(n, dtype=np.float32)
-        # 180 BPM, 3/4 time, 30 FPS → beats_per_frame = 180 / (60 * 30) = 0.1
+        # 180 BPM, 3/4 time, 30 FPS → frames_per_beat = (60 * 30) / 180 = 10
         # At frame 5: pos_in_measure = (5 * 0.1) % 3.0 = 0.5; beat_phase = 0.5 / 3.0 ≈ 0.1667
-        expected_bpf  = 180.0 / (60.0 * 30.0)
-        expected_phase = ((5 * expected_bpf) % 3.0) / 3.0
+        expected_frames_per_beat = (60.0 * 30.0) / 180.0
+        expected_phase = ((5 * (1.0 / expected_frames_per_beat)) % 3.0) / 3.0
 
         graph_ir = {
             "nodes": {
@@ -339,7 +339,7 @@ class TestParallelDSP(unittest.TestCase):
             },
             "links": [
                 ("src_a", 0, "specs", 0),
-                ("specs", 3, "rms",   0),   # socket 3 = audio passthrough
+                ("specs", 2, "rms",   0),   # socket 2 = audio passthrough
             ],
             "source_node_ids": ["src_a"],
             "source_ir": {
@@ -367,10 +367,10 @@ class TestParallelDSP(unittest.TestCase):
         out = self.pds.evaluate_parallel_job(job)
         values = dict(out.get("values", {}) or {})
         self.assertIn("specs:0", values)
-        # Output socket 0 = beats_per_frame
-        bpf_val = float(values["specs:0"])
-        self.assertAlmostEqual(bpf_val, expected_bpf, places=5,
-                               msg="beats_per_frame should reflect injected BPM+FPS, not hardcoded defaults")
+        # Output socket 0 = frames_per_beat
+        frames_per_beat_val = float(values["specs:0"])
+        self.assertAlmostEqual(frames_per_beat_val, expected_frames_per_beat, places=5,
+                               msg="frames_per_beat should reflect injected BPM+FPS, not hardcoded defaults")
 
 
 if __name__ == "__main__":

@@ -210,19 +210,8 @@ ACE_NODES: dict[str, Category] = {
             "description": "Long-term specs and passing through the audio.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [
-                ('NodeSocketFloat', 'BPF'),
-                ('NodeSocketVector', 'Time Signature'),
+                ('NodeSocketFloat', 'Frames per Beat'),
                 ('NodeSocketFloat', 'Beat Phase'),
-                ('NodeSocketBundle', 'Audio')
-            ],
-            },
-            "scanner": {
-            "label": "Latency Tracker",
-            "icon": "",
-            "description": "Tracks branch/source latency in milliseconds while passing audio through.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [
-                ('NodeSocketFloat', 'Latency ms'),
                 ('NodeSocketBundle', 'Audio')
             ],
             },
@@ -239,6 +228,13 @@ ACE_NODES: dict[str, Category] = {
             "description": "Audio operations: add, subtract, multiply.",
             "inputs": [('NodeSocketBundle', 'Audio')], # dynamic
             "outputs": [('NodeSocketBundle', 'Audio')], # dynamic
+            },
+            "util_rolling_avg": {
+            "label": "Rolling Average",
+            "icon": "",
+            "description": "Smooths a scalar attribute stream over a fixed number of scene frames.",
+            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
+            "outputs": [('NodeSocketFloat', 'Rolling Avg')],
             },
         },
     },

@@ -400,7 +400,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertIsNone(chunk)
         self.assertEqual(task.source_context.live_status, task.last_error)
 
-    def test_source_specs_outputs_beats_per_frame(self):
+    def test_source_specs_outputs_frames_per_beat(self):
         class DummyCtx:
             source_type = "FILE"
             filepath = ""
@@ -418,57 +418,19 @@ class TestAudioTasksRegistry(unittest.TestCase):
         task.engine_ref = DummyEngine()
 
         chunk = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
-        bpf, ts_vec, beat_phase, _ = task.process({0: chunk})
+        frames_per_beat, beat_phase, _ = task.process({0: chunk})
 
-        self.assertAlmostEqual(float(bpf), 120.0 / (60.0 * 24.0), places=6)
-        self.assertAlmostEqual(float(ts_vec[0]), 1.0, places=6)
+        self.assertAlmostEqual(float(frames_per_beat), (60.0 * 24.0) / 120.0, places=6)
         self.assertAlmostEqual(float(beat_phase), 0.25, places=6)
 
-    def test_source_scanner_reports_latency_and_passthrough(self):
-        class DummyCtx:
-            source_type = "LIVE"
-            live_latency_ms = 50
-            sample_rate = 48000
+    def test_rolling_average_uses_fixed_frame_count(self):
+        task = atr.RollingAvgTask("rolling_node", {"in_1": 3}, block_size=128)
 
-        task = atr.SourceScannerTask("scanner_node", {}, block_size=480)
-        task.source_context = DummyCtx()
-        chunk = atr.AudioChunk(np.ones(480, dtype=np.float32), None, 48000, lineage=("src",))
-
-        latency_ms, out_chunk = task.process({0: chunk})
-        self.assertAlmostEqual(float(latency_ms), 60.0, places=4)
-        self.assertIs(out_chunk, chunk)
-
-    def test_source_scanner_reports_block_latency_for_file_sources(self):
-        class DummyCtx:
-            source_type = "FILE"
-            sample_rate = 48000
-
-        task = atr.SourceScannerTask("scanner_node", {}, block_size=480)
-        task.source_context = DummyCtx()
-        chunk = atr.AudioChunk(np.ones(480, dtype=np.float32), None, 48000, lineage=("src",))
-
-        latency_ms, out_chunk = task.process({0: chunk})
-        self.assertAlmostEqual(float(latency_ms), 10.0, places=4)
-        self.assertIs(out_chunk, chunk)
-
-    def test_source_scanner_accumulates_chromagram_branch_latency(self):
-        sr = 48000
-        n = 960
-        base_chunk = atr.AudioChunk(
-            np.ones(n, dtype=np.float32),
-            None,
-            sr,
-            latency_ms=12.5,
-            lineage=("src",),
-        )
-        splitter = atr.FrequencySplitterTask("split_node", {"in_1": 400.0}, block_size=1024)
-        low_band = splitter.process({0: base_chunk})[0]
-        chroma = atr.ChromagramTask("chroma_node", {}, block_size=1024)
-        chroma_a = chroma.process({0: low_band})[9]
-
-        scanner = atr.SourceScannerTask("scanner_node", {}, block_size=1024)
-        latency_ms, _ = scanner.process({0: chroma_a})
-        self.assertAlmostEqual(float(latency_ms), 22.5, places=4)
+        self.assertAlmostEqual(float(task.process({0: 1.0})), 1.0, places=6)
+        self.assertAlmostEqual(float(task.process({0: 2.0})), 1.5, places=6)
+        self.assertAlmostEqual(float(task.process({0: 3.0})), 2.0, places=6)
+        self.assertAlmostEqual(float(task.process({0: 9.0})), (2.0 + 3.0 + 9.0) / 3.0, places=6)
+        self.assertAlmostEqual(float(task.process({0: 5.0, 1: 2})), 7.0, places=6)
 
     def test_masked_rms_prefers_provider_feature_path(self):
         calls = []

@@ -9,7 +9,7 @@ import socket
 import tempfile
 import wave
 from queue import Queue, Empty, Full
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 from ..utils import compose_live_flow_identifier as _compose_live_flow_identifier
@@ -237,6 +237,8 @@ class AudioReception:
         self.duration: float = 0.0
         self._eof = False
         self.last_error: str = ""
+        self.error_kind: Optional[str] = None
+        # Possible values: "not_found", "unsupported_format", "open_failed", "read_failed"
         self._cursor_sample: int = 0
         self.target_sample_rate: Optional[int] = None
         self.proxy_filepath: str = ""
@@ -402,6 +404,7 @@ class AudioReception:
                         reached_eof = True
         except Exception as e:
             self.last_error = f"read_block failed ({self.kind}): {e}"
+            self.error_kind = "read_failed"
             return None
 
         self._eof = bool(reached_eof)
@@ -443,7 +446,11 @@ class AudioReception:
         """Open a single file path, preferring soundfile then falling back to wave.
 
         Populates self.channels, self.sample_rate, self.duration, and self.kind
-        on success.
+        on success.  Sets ``error_kind`` and ``last_error`` on failure:
+
+        * ``"not_found"`` — file does not exist on disk.
+        * ``"unsupported_format"`` — extension unsupported or soundfile refused it.
+        * ``"open_failed"`` — supported extension but open raised an unexpected error.
 
         Args:
             path: Absolute path to the audio file.
@@ -452,6 +459,22 @@ class AudioReception:
             True if the file was opened successfully, False otherwise.
         """
         self._close_file_reader()
+
+        # Fast existence check — avoids confusing "file not found" with codec errors.
+        if not os.path.isfile(path):
+            self.kind = None
+            self.error_kind = "not_found"
+            self.last_error = f"File not found: {path}"
+            return False
+
+        # Determine whether the extension is in the supported list before trying opens.
+        ext = os.path.splitext(path)[-1].lower()
+        if ext not in self.supported_file_extensions():
+            self.kind = None
+            self.error_kind = "unsupported_format"
+            self.last_error = f"Unsupported audio format: '{ext}'"
+            return False
+
         if SF_AVAILABLE and self.reader is None:
             try:
                 self.reader = sf.SoundFile(path, mode="r")  # type: ignore
@@ -464,10 +487,13 @@ class AudioReception:
                 self.kind = "soundfile"
                 self._eof = False
                 self.last_error = ""
+                self.error_kind = None
                 return True
             except Exception as e:
                 self.last_error = f"soundfile open failed: {e}"
                 self.reader = None
+                # Fall through to wave fallback — soundfile may refuse the format even
+                # if the extension is nominally supported (e.g. a corrupt MP3 header).
 
         try:
             self.reader = wave.open(path, "rb")
@@ -480,13 +506,42 @@ class AudioReception:
             self.kind = "wave"
             self._eof = False
             self.last_error = ""
+            self.error_kind = None
             return True
         except Exception as e:
             self.reader = None
             self.last_error = f"wave open failed: {e}"
 
+        # Both backends failed; classify as open_failed (file exists but is unreadable).
         self.kind = None
+        self.error_kind = "open_failed"
         return False
+
+    def format_error_summary(self) -> str:
+        """Return a concise, user-facing description of the last error.
+
+        Consults ``error_kind`` for context-aware messaging, falling back to the
+        raw ``last_error`` string when no classification is available.
+
+        Returns:
+            A short string suitable for display in the N-panel.
+        """
+        _KIND_LABELS: Dict[str, str] = {
+            "not_found": "File not found",
+            "unsupported_format": "Unsupported audio format",
+            "open_failed": "Cannot open file",
+            "read_failed": "Read error",
+        }
+        kind = self.error_kind or ""
+        base = _KIND_LABELS.get(kind, "")
+        detail = self.last_error or ""
+        # For "not_found" and "unsupported_format" the base label is self-explanatory;
+        # suppress the raw backend error to keep the message concise.
+        if base and kind in ("not_found", "unsupported_format"):
+            return base
+        if base and detail:
+            return f"{base}: {detail}"
+        return base or detail or "Unknown error"
 
     @staticmethod
     def _proxy_cache_dir() -> str:
