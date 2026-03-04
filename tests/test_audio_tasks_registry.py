@@ -432,6 +432,33 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertAlmostEqual(float(task.process({0: 9.0})), (2.0 + 3.0 + 9.0) / 3.0, places=6)
         self.assertAlmostEqual(float(task.process({0: 5.0, 1: 2})), 7.0, places=6)
 
+    def test_stream_accumulator_persists_and_resets_on_timeline_rewind(self):
+        task = atr.StreamAccumulatorTask("accum_node", {}, block_size=128)
+        task.scene_frame_start = 1
+
+        task._current_frame_request = 1
+        self.assertAlmostEqual(float(task.process({0: 1.25})), 1.25, places=6)
+        task._current_frame_request = 2
+        self.assertAlmostEqual(float(task.process({0: 2.75})), 4.0, places=6)
+        task._current_frame_request = 3
+        self.assertAlmostEqual(float(task.process({0: -1.0})), 3.0, places=6)
+
+        # Rewind to frame 1: accumulator should reset before adding the new value.
+        task._current_frame_request = 1
+        self.assertAlmostEqual(float(task.process({0: 5.0})), 5.0, places=6)
+
+    def test_stream_accumulator_supports_vector_inputs(self):
+        task = atr.StreamAccumulatorTask("accum_vec_node", {}, block_size=64)
+        task.scene_frame_start = 1
+
+        task._current_frame_request = 1
+        out_a = task.process({0: (1.0, 2.0, 3.0)})
+        self.assertTrue(np.allclose(np.asarray(out_a, dtype=np.float32), np.array([1.0, 2.0, 3.0], dtype=np.float32)))
+
+        task._current_frame_request = 2
+        out_b = task.process({0: np.array([0.5, -1.0, 2.0], dtype=np.float32)})
+        self.assertTrue(np.allclose(np.asarray(out_b, dtype=np.float32), np.array([1.5, 1.0, 5.0], dtype=np.float32)))
+
     def test_masked_rms_prefers_provider_feature_path(self):
         calls = []
 
