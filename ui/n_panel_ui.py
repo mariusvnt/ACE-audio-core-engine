@@ -1238,7 +1238,14 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             tree_dirty_hint = tree_dirty_hint or dirty_tree_match
         if not tree_dirty_hint:
             compiled_ptr = int(getattr(engine, "_compiled_tree_ptr", 0) or 0)
-            if compiled_ptr == int(tree_ptr):
+            # In Multiple-Trees-Support, _compiled_tree_ptr only tracks the
+            # preferred (first) tree. Check all compiled frontend pointers so
+            # any compiled tree gets engine_tree_ready = True and uses the
+            # merged abstract tree directly instead of falling back to reader.build().
+            compiled_frontend_ptrs = set(
+                (getattr(engine, "_compiled_frontend_ptrs", {}) or {}).values()
+            )
+            if compiled_ptr == int(tree_ptr) or int(tree_ptr) in compiled_frontend_ptrs:
                 engine_abstract = getattr(engine, "abstract_tree_ref", None)
                 engine_tree_ready = bool(engine_abstract)
 

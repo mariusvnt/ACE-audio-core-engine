@@ -6305,13 +6305,28 @@ class ACEAudioEngine:
                 if parallel_offload_graph:
                     # Stage B: asynchronous numeric DSP worker path (fresh -> stale -> zero).
                     local_keys = list(getattr(graph, "parallel_local_attr_keys", []) or [])
-                    results = self._collect_graph_results_for_frame(graph, self.current_frame, attr_keys=local_keys)
-                    parallel_values = self._parallel_values_for_graph_frame(
-                        graph=graph,
-                        graph_key=parallel_graph_key,
-                        frame_index=int(self.current_frame),
+                    has_parallel_values = self._parallel_has_usable_values_for_graph_frame(
+                        parallel_graph_key,
+                        int(self.current_frame),
                     )
-                    results.update(parallel_values)
+                    if not has_parallel_values or not parallel_submit_enabled:
+                        # Hard fallback: if worker values are not yet usable OR jobs
+                        # cannot be submitted this frame (disabled source, pool
+                        # unavailable), compute offloaded keys locally so stream
+                        # outputs never stall at zero.
+                        local_keys = list(
+                            dict.fromkeys(
+                                local_keys + list(getattr(graph, "parallel_offload_attr_keys", []) or [])
+                            )
+                        )
+                    results = self._collect_graph_results_for_frame(graph, self.current_frame, attr_keys=local_keys)
+                    if has_parallel_values and parallel_submit_enabled:
+                        parallel_values = self._parallel_values_for_graph_frame(
+                            graph=graph,
+                            graph_key=parallel_graph_key,
+                            frame_index=int(self.current_frame),
+                        )
+                        results.update(parallel_values)
                 else:
                     results = self._collect_graph_results_for_frame(graph, self.current_frame)
 
@@ -6982,14 +6997,22 @@ def _shm_drain_timer():
     when the scene is paused indefinitely (no frame change events), completed
     futures hold their SHM handles until the next frame event.  On platforms
     with a small /dev/shm limit (Linux default 64 MB) this can exhaust shared
-    memory for multi-source sessions.  This timer fires unconditionally so SHM
-    is reclaimed within ~2 s of job completion even during playback pause.
+    memory for multi-source sessions.
+
+    During active playback the per-frame execute_next_frame() already drains
+    futures every frame; firing the drain here too causes redundant IPC pipe
+    reads (future_obj.result(timeout=0.0) on a ProcessPoolExecutor) which add
+    measurable latency on Windows and can produce periodic stutters that match
+    the 2 s timer interval.  Skip the drain while the animation is playing.
     """
     try:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         engine = ACEAudioEngine.get_instance(scene) if scene is not None else None
         if engine is not None and engine._parallel_future_meta:
-            engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
+            # Only drain when the scene is NOT actively playing — during playback
+            # execute_next_frame() handles all future draining every frame.
+            if not engine._is_animation_playing():
+                engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
     except Exception as _exc:
         try:
             utils.log(
