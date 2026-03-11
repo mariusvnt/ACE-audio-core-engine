@@ -102,6 +102,13 @@ def register():
             register_handlers()
         except (ImportError, AttributeError):
             pass
+        try:
+            import bpy  # type: ignore
+            from .properties import _live_device_cache_timer
+            if not bpy.app.timers.is_registered(_live_device_cache_timer):
+                bpy.app.timers.register(_live_device_cache_timer, first_interval=0.1, persistent=True)
+        except Exception:
+            pass
 
         modules[:] = imported_modules
         log(f"Registered successfully ({len(modules)} modules).")
@@ -131,6 +138,13 @@ def unregister():
         from .core.audio_engine import unregister_handlers
         unregister_handlers()
     except (ImportError, AttributeError):
+        pass
+    try:
+        import bpy  # type: ignore
+        from .properties import _live_device_cache_timer
+        if bpy.app.timers.is_registered(_live_device_cache_timer):
+            bpy.app.timers.unregister(_live_device_cache_timer)
+    except Exception:
         pass
 
     # 2. Unregister Blender Classes

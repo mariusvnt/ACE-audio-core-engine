@@ -25,6 +25,8 @@ class ACEProxyManager:
     SONAR_OBJECT_NAME = "ACE_Sonar"
     SONAR_MODIFIER_NAME = "ACE_Sonar_Mod"
     SONAR_TREE_NAME = "ACE_Sonar_Tree"
+    SONAR_SHADER_MATERIAL_NAME = "ACE_Sonar_Material"
+    _MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA = False
 
     def __init__(self, abstract_tree: ACEAbstractTree | None = None):
         self.abstract_tree = abstract_tree
@@ -489,49 +491,129 @@ class ACEProxyManager:
             flat[3] = 1.0
         return [float(v) for v in flat.tolist()]
 
+    @staticmethod
+    def _mesh_data_idblock(obj):
+        if obj is None:
+            return None
+        data = getattr(obj, "data", None)
+        if data is None:
+            return None
+        if not hasattr(data, "keys"):
+            return None
+        return data
+
     def ensure_object_property_sinks(self, object_name: str, bindings) -> bool:
         utils.assert_main_thread("ensure_object_property_sinks")
         obj = self._object_prop_cache.get(object_name)
+        if obj is not None and str(getattr(obj, "name", "") or "") != str(object_name or ""):
+            obj = None
         if obj is None:
             obj = bpy.data.objects.get(object_name)
             if obj is None:
                 return False
             self._object_prop_cache[object_name] = obj
+        mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
+        mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
+        layout_changed = False
         for binding in bindings or []:
             prop_name = str(getattr(binding, "target_data_name", "") or "")
             if not prop_name:
                 continue
-            if prop_name in obj.keys():
-                continue
+            zero_value = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
+            if prop_name not in obj.keys():
+                try:
+                    obj[prop_name] = zero_value
+                    layout_changed = True
+                except Exception:
+                    pass
+            if mesh_data is not None:
+                try:
+                    if prop_name not in mesh_data.keys():
+                        mesh_data[prop_name] = zero_value
+                        layout_changed = True
+                except Exception:
+                    pass
+        if layout_changed:
             try:
-                obj[prop_name] = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
+                if mirror_to_data:
+                    obj.update_tag(refresh={"OBJECT", "DATA"})
+                else:
+                    obj.update_tag(refresh={"OBJECT"})
             except Exception:
-                pass
+                try:
+                    obj.update_tag()
+                except Exception:
+                    pass
         return True
 
     def update_object_property_sinks(self, object_name: str, prop_values: Dict[str, Any], prop_types: Dict[str, str]) -> bool:
         utils.assert_main_thread("update_object_property_sinks")
+        if not prop_values:
+            return True
         obj = self._object_prop_cache.get(object_name)
+        if obj is not None and str(getattr(obj, "name", "") or "") != str(object_name or ""):
+            obj = None
         if obj is None:
             obj = bpy.data.objects.get(object_name)
             if obj is None:
                 return False
             self._object_prop_cache[object_name] = obj
+        mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
+        mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
         last_vals = self._last_object_prop_values.setdefault(object_name, {})
-        for prop_name, raw_value in (prop_values or {}).items():
-            attr_type = str(prop_types.get(prop_name, "FLOAT") or "FLOAT")
+        changed_specs: list[tuple[str, str, Any]] = []
+        for prop_name, raw_value in prop_values.items():
+            if not prop_name:
+                continue
+            attr_type = str((prop_types or {}).get(prop_name, "FLOAT") or "FLOAT")
             norm_value = self._normalize_object_prop_value(raw_value, attr_type)
             prev_value = last_vals.get(prop_name)
             if self._values_equal(prev_value, norm_value):
                 continue
+            changed_specs.append((prop_name, attr_type, norm_value))
+        if not changed_specs:
+            return True
+
+        changed_values: Dict[str, Any] = {}
+        for prop_name, attr_type, norm_value in changed_specs:
+            wrote = False
             try:
                 obj[prop_name] = norm_value
-                last_vals[prop_name] = norm_value
+                wrote = True
             except Exception:
                 try:
                     zero_value = self._zero_value_for_type(attr_type)
                     obj[prop_name] = zero_value
-                    last_vals[prop_name] = zero_value
+                    norm_value = zero_value
+                    wrote = True
+                except Exception:
+                    pass
+            if wrote:
+                changed_values[prop_name] = norm_value
+
+        if mesh_data is not None and changed_values:
+            for prop_name, norm_value in changed_values.items():
+                try:
+                    current_val = mesh_data.get(prop_name, None)
+                except Exception:
+                    current_val = None
+                if self._values_equal(current_val, norm_value):
+                    continue
+                try:
+                    mesh_data[prop_name] = norm_value
+                except Exception:
+                    pass
+
+        if changed_values:
+            last_vals.update(changed_values)
+            try:
+                if mirror_to_data:
+                    obj.update_tag(refresh={"OBJECT", "DATA"})
+                else:
+                    obj.update_tag(refresh={"OBJECT"})
+            except Exception:
+                try:
+                    obj.update_tag()
                 except Exception:
                     pass
         return True
@@ -698,7 +780,7 @@ class ACEProxyManager:
                         attr.data[0].vector = tuple(float(x) for x in vec.tolist())
                     else:
                         buf = self._get_write_buffer(mesh.name, attr_name, count * 3)
-                        buf.reshape(count, 3)[:] = vec
+                        np.copyto(buf.reshape(count, 3), vec)
                         attr.data.foreach_set("vector", buf)
                 elif dtype == 'FLOAT_COLOR':
                     col = last_vals.get(attr_name)
@@ -708,7 +790,7 @@ class ACEProxyManager:
                         attr.data[0].color = tuple(float(x) for x in col.tolist())
                     else:
                         buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
-                        buf.reshape(count, 4)[:] = col
+                        np.copyto(buf.reshape(count, 4), col)
                         attr.data.foreach_set("color", buf)
             except Exception:
                 # Fallback to zeroing on failure
@@ -823,6 +905,7 @@ class ACEProxyManager:
 
         if tree:
             ACEProxyManager._sync_sonar_tree(tree, sources or [])
+        ACEProxyManager.ensure_sonar_shader_setup(scene, sources, obj=obj)
         try:
             ace = getattr(scene, "audiocore", None)
             if ace and not getattr(ace, "gn_target_object", None):
@@ -852,6 +935,69 @@ class ACEProxyManager:
             except Exception:
                 pass
         return obj
+
+    @staticmethod
+    def ensure_sonar_shader_setup(scene, sources, obj=None):
+        """Create or refresh a managed shader frontend material on ACE_Sonar."""
+        if scene is None:
+            return None
+
+        if obj is None:
+            obj = bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME)
+        if obj is None:
+            return None
+
+        material = None
+        for slot in getattr(obj, "material_slots", []) or []:
+            slot_mat = getattr(slot, "material", None)
+            if slot_mat is None:
+                continue
+            if str(getattr(slot_mat, "name", "") or "") == ACEProxyManager.SONAR_SHADER_MATERIAL_NAME:
+                material = slot_mat
+                break
+
+        if material is None and sources:
+            material = bpy.data.materials.get(ACEProxyManager.SONAR_SHADER_MATERIAL_NAME)
+            if material is None:
+                material = bpy.data.materials.new(ACEProxyManager.SONAR_SHADER_MATERIAL_NAME)
+
+            obj_materials = getattr(getattr(obj, "data", None), "materials", None)
+            linked = False
+            if obj_materials is not None:
+                for candidate in obj_materials:
+                    if candidate == material:
+                        linked = True
+                        break
+                if not linked:
+                    try:
+                        obj_materials.append(material)
+                        linked = True
+                    except Exception:
+                        pass
+            if not linked:
+                try:
+                    obj.active_material = material
+                except Exception:
+                    pass
+
+        if material is None:
+            return None
+
+        try:
+            if not bool(getattr(material, "use_nodes", False)):
+                material.use_nodes = True
+        except Exception:
+            pass
+
+        tree = getattr(material, "node_tree", None)
+        if tree is None:
+            return None
+
+        try:
+            ACEProxyManager.sync_managed_source_tree(tree, sources or [])
+        except Exception:
+            pass
+        return tree
 
     @staticmethod
     def _frontend_kind_for_tree(tree) -> str:
@@ -1021,6 +1167,19 @@ class ACEProxyManager:
                     proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                     if proxy_obj and proxy_socket:
                         proxy_socket.default_value = proxy_obj
+                except Exception:
+                    pass
+            elif frontend_kind == FRONTEND_KIND_SHADER:
+                try:
+                    proxy_name = str(getattr(src, "proxy_object_name", "") or "")
+                    proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
+                    if proxy_socket and proxy_name:
+                        try:
+                            current = getattr(proxy_socket, "default_value", None)
+                        except Exception:
+                            current = None
+                        if isinstance(current, str):
+                            proxy_socket.default_value = proxy_name
                 except Exception:
                     pass
 

@@ -129,8 +129,9 @@ class ACEIdManager:
     def ensure_source_uid(source_prop, existing_ids: Optional[list[str]] = None) -> str:
         """Guarantee that an audio source has a stable internal identifier.
 
-        Returns the existing stable_id if present, otherwise generates a new
-        one via generate_node_id and writes it back to source_prop.stable_id.
+        Returns the existing stable_id when it is a valid source ACE ID.
+        Otherwise generates a replacement ID via generate_node_id and writes
+        it back to source_prop.stable_id.
 
         Args:
             source_prop: An ACEAudioSource property-group instance.  None is
@@ -141,10 +142,35 @@ class ACEIdManager:
         Returns:
             The stable ID string assigned to *source_prop*.
         """
-        sid = getattr(source_prop, "stable_id", "") if source_prop else ""
+        sid = str(getattr(source_prop, "stable_id", "") or "") if source_prop else ""
         if sid:
-            return sid
-        sid = ACEIdManager.generate_node_id("source_mngmt", "src", existing_ids=existing_ids)
+            parsed = ACEIdManager.parse_node_id(sid)
+            if (
+                parsed
+                and parsed.get("category") == "source_mngmt"
+                and parsed.get("type") == "src"
+            ):
+                return sid
+
+        # Legacy migration path: replace invalid persisted IDs with a valid
+        # source ACE ID so source nodes are not pruned during graph traversal.
+        legacy_seed = sid
+        existing = [str(v) for v in (existing_ids or []) if str(v) and str(v) != sid]
+        if source_prop and not legacy_seed:
+            source_name = str(getattr(source_prop, "name", "") or "")
+            source_type = str(getattr(source_prop, "source_type", "") or "")
+            source_path = str(getattr(source_prop, "filepath", "") or "")
+            source_flow = str(getattr(source_prop, "flow_identifier", "") or "")
+            legacy_seed = "|".join(
+                token for token in (source_type, source_name, source_path, source_flow) if token
+            )
+
+        sid = ACEIdManager.generate_node_id(
+            "source_mngmt",
+            "src",
+            existing_ids=existing,
+            deterministic_seed=f"source:{legacy_seed or 'default'}",
+        )
         try:
             source_prop.stable_id = sid  # type: ignore[attr-defined]
         except Exception:
@@ -305,5 +331,4 @@ class ACEIdManager:
             A string containing only [a-zA-Z0-9] characters.
         """
         return re.sub(r'[^a-zA-Z0-9]', '', input_str)
-
 

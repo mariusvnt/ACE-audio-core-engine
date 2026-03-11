@@ -459,6 +459,39 @@ class TestAudioTasksRegistry(unittest.TestCase):
         out_b = task.process({0: np.array([0.5, -1.0, 2.0], dtype=np.float32)})
         self.assertTrue(np.allclose(np.asarray(out_b, dtype=np.float32), np.array([1.5, 1.0, 5.0], dtype=np.float32)))
 
+    def test_stream_accumulator_state_roundtrip_preserves_running_sum(self):
+        task_a = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
+        task_a.scene_frame_start = 1
+        task_a._current_frame_request = 1
+        self.assertAlmostEqual(float(task_a.process({0: 1.0})), 1.0, places=6)
+        task_a._current_frame_request = 2
+        self.assertAlmostEqual(float(task_a.process({0: 2.0})), 3.0, places=6)
+
+        snapshot = dict(task_a.export_state() or {})
+        self.assertIn("accumulator", snapshot)
+
+        task_b = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
+        task_b.scene_frame_start = 1
+        restored = task_b.import_state(snapshot)
+        self.assertTrue(restored)
+        task_b._current_frame_request = 3
+        self.assertAlmostEqual(float(task_b.process({0: 0.5})), 3.5, places=6)
+
+    def test_stream_accumulator_state_roundtrip_preserves_vector_sum(self):
+        task_a = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
+        task_a.scene_frame_start = 1
+        task_a._current_frame_request = 1
+        _ = task_a.process({0: np.array([1.0, 2.0], dtype=np.float32)})
+        task_a._current_frame_request = 2
+        _ = task_a.process({0: np.array([0.5, -1.0], dtype=np.float32)})
+
+        task_b = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
+        task_b.scene_frame_start = 1
+        self.assertTrue(task_b.import_state(dict(task_a.export_state() or {})))
+        task_b._current_frame_request = 3
+        out = np.asarray(task_b.process({0: np.array([0.25, 0.75], dtype=np.float32)}), dtype=np.float32)
+        self.assertTrue(np.allclose(out, np.array([1.75, 1.75], dtype=np.float32)))
+
     def test_masked_rms_prefers_provider_feature_path(self):
         calls = []
 
@@ -509,6 +542,67 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertTrue(np.isfinite(float(vec_val[0])))
         self.assertTrue(np.isfinite(float(vec_val[1])))
         self.assertTrue(np.isfinite(float(vec_val[2])))
+
+    def test_lufs_task_reports_floor_for_silence(self):
+        task = atr.LUFSTask("lufs_node", {}, block_size=512)
+        chunk = atr.AudioChunk(np.zeros(512, dtype=np.float32), None, 48000, lineage=("src",))
+        loudness = task.process({0: chunk})
+        self.assertAlmostEqual(float(loudness), 0.0, places=6)
+
+    def test_lufs_task_increases_with_signal_level(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        low = 0.05 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        high = 0.5 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        task = atr.LUFSTask("lufs_node", {}, block_size=n)
+
+        task._current_frame_request = 1
+        low_lufs = task.process({0: atr.AudioChunk(low, None, sr, lineage=("src", "low"))})
+        task._current_frame_request = 2
+        high_lufs = task.process({0: atr.AudioChunk(high, None, sr, lineage=("src", "high"))})
+
+        self.assertGreater(float(high_lufs), float(low_lufs))
+
+    def test_lufs_task_accepts_window_and_overlap_inputs(self):
+        n = 1024
+        sr = 44100
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        signal = 0.25 * np.sin(2.0 * np.pi * 1000.0 * t).astype(np.float32)
+        task = atr.LUFSTask("lufs_node", {}, block_size=n)
+        loudness = task.process(
+            {
+                0: atr.AudioChunk(signal, None, sr, lineage=("src",)),
+                1: 0.8,   # window seconds
+                2: 0.2,   # overlap ratio (0..1)
+            }
+        )
+        self.assertTrue(np.isfinite(float(loudness)))
+        self.assertGreaterEqual(float(loudness), 0.0)
+        self.assertLessEqual(float(loudness), 1.0)
+
+    def test_peak_task_reports_floor_for_silence(self):
+        task = atr.PeakTask("peak_node", {}, block_size=512)
+        chunk = atr.AudioChunk(np.zeros(512, dtype=np.float32), None, 48000, lineage=("src",))
+        peak = task.process({0: chunk})
+        self.assertAlmostEqual(float(peak), 0.0, places=6)
+
+    def test_peak_task_increases_with_signal_level(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        low = 0.05 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        high = 0.5 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        task = atr.PeakTask("peak_node", {}, block_size=n)
+
+        task._current_frame_request = 1
+        low_peak = task.process({0: atr.AudioChunk(low, None, sr, lineage=("src", "low"))})
+        task._current_frame_request = 2
+        high_peak = task.process({0: atr.AudioChunk(high, None, sr, lineage=("src", "high"))})
+
+        self.assertGreater(float(high_peak), float(low_peak))
+        self.assertGreaterEqual(float(high_peak), 0.0)
+        self.assertLessEqual(float(high_peak), 1.0)
 
     def test_preview_sink_audibly_masks_frequency_band(self):
         sr = 48000

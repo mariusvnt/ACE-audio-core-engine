@@ -657,14 +657,62 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(len(bindings["gn_attr"]), 1)
         self.assertEqual(bindings["gn_attr"][0].sink_kind, "PROXY_ATTRIBUTE")
         self.assertEqual(bindings["gn_attr"][0].target_object_name, "ACE_PROXY_src_a")
-        self.assertEqual(len(bindings["shader_attr"]), 2)
-        self.assertEqual(
-            sorted(binding.target_object_name for binding in bindings["shader_attr"]),
-            ["Cube", "Sphere"],
-        )
+        self.assertEqual(len(bindings["shader_attr"]), 1)
+        self.assertEqual(bindings["shader_attr"][0].target_object_name, "ACE_PROXY_src_a")
         self.assertTrue(
             all(binding.sink_kind == "OBJECT_PROPERTY" for binding in bindings["shader_attr"])
         )
+
+    def test_shader_sink_bindings_do_not_fall_back_to_consumer_objects_without_proxy(self):
+        engine = self._engine_shell()
+        engine.writer.output_defs = {
+            "shader_attr": {"node_id": "node_shader", "socket_idx": 0, "type": "FLOAT", "output_name": "RMS"},
+        }
+        graph = types.SimpleNamespace(output_attr_keys=["shader_attr"])
+        tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "node_shader": self.abs_mod.ACEAbstractNode(
+                    id="node_shader",
+                    name="Shader RMS",
+                    category="stream",
+                    type="rms",
+                    frontend_uid="frontend_shader",
+                    frontend_kind="SHADER_NODES",
+                ),
+            },
+            frontends={
+                "frontend_shader": self.abs_mod.ACEFrontendRef(
+                    uid="frontend_shader",
+                    kind="SHADER_NODES",
+                    tree_name="Shader",
+                    tree_bl_idname="ShaderNodeTree",
+                    owner_keys=("Cube", "Sphere"),
+                    material_name="ACE Mat",
+                    tree_ptr=22,
+                ),
+            },
+            consumer_intents=[
+                self.abs_mod.ACEConsumerIntent(
+                    frontend_uid="frontend_shader",
+                    node_id="node_shader",
+                    socket_idx=0,
+                    sink_kind="OBJECT_PROPERTY",
+                    source_token="src_a",
+                    consumer_keys=("Cube", "Sphere"),
+                    output_name="RMS",
+                ),
+            ],
+        )
+
+        bindings = engine._resolve_sink_bindings_for_graph(
+            graph,
+            tree,
+            source_uid="src_a",
+            proxy_name="",
+            single_source_mode=False,
+        )
+
+        self.assertEqual(bindings["shader_attr"], [])
 
     def test_shader_output_ids_use_source_roots_in_multi_source_scenes(self):
         engine = self._engine_shell()
@@ -764,8 +812,10 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
         self.assertEqual(engine.requested[0], geometry_tree)
         self.assertEqual(engine.requested[1], shader_tree)
-        self.assertIsNone(engine.requested[2])
-        self.assertEqual(len(engine.requested), 3)
+        self.assertEqual(engine.requested[2], geometry_tree)
+        self.assertEqual(engine.requested[3], shader_tree)
+        self.assertEqual(engine.requested[4], shader_tree)
+        self.assertEqual(len(engine.requested), 5)
 
     def test_frame_change_handler_skips_compile_and_sink_work_when_render_writes_are_unsafe(self):
         calls = []
@@ -791,6 +841,34 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertFalse(any(call[0] == "execute" for call in calls))
         self.assertFalse(any(call[0] == "discover" for call in calls))
         self.assertFalse(any(call[0] == "compile" for call in calls))
+
+    def test_parallel_usable_values_accepts_current_frame_payload(self):
+        engine = self._engine_shell()
+        engine._parallel_results = {"graph_a": {24: {"node:0": 0.0}}}
+        engine._parallel_last_valid = {}
+        engine._parallel_last_valid_frame = {}
+        engine._current_scene_fps = 30.0
+
+        self.assertTrue(engine._parallel_has_usable_values_for_graph_frame("graph_a", 24))
+
+    def test_parallel_usable_values_accepts_recent_last_valid_cache(self):
+        engine = self._engine_shell()
+        engine._parallel_results = {"graph_a": {}}
+        engine._parallel_last_valid = {"graph_a": {"node:0": 0.42}}
+        engine._parallel_last_valid_frame = {"graph_a": 100}
+        engine._current_scene_fps = 30.0
+
+        self.assertTrue(engine._parallel_has_usable_values_for_graph_frame("graph_a", 102))
+
+    def test_parallel_usable_values_rejects_stale_or_empty_cache(self):
+        engine = self._engine_shell()
+        engine._parallel_results = {"graph_a": {}}
+        engine._parallel_last_valid = {"graph_a": {"node:0": 0.42}}
+        engine._parallel_last_valid_frame = {"graph_a": 100}
+        engine._current_scene_fps = 30.0
+
+        self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_a", 104))
+        self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_missing", 104))
 
     def test_compile_requires_main_thread(self):
         errors = []

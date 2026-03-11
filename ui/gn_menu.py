@@ -1,14 +1,19 @@
 import bpy # type: ignore
 from ..vars import ACE_NODES
-from ..nodes.dummy_tree import ACEDummyNodeFactory
+from ..nodes.dummy_tree import (
+    ACEDummyNodeFactory,
+    ensure_frontend_uid,
+    FRONTEND_KIND_SHADER,
+)
 from ..nodes.shader_tree import ACEShaderNodeFactory
 from ..core.id_management import ACEIdManager
+from ..core.proxy_management import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 from .. import utils
 
 _ALLOWED_CATEGORIES_BY_TREE_TYPE = {
     "GeometryNodeTree": ("source_mngmt", "delta", "stream", "utilities"),
-    "ShaderNodeTree": ("delta", "stream", "utilities"),
+    "ShaderNodeTree": ("source_mngmt", "delta", "stream", "utilities"),
 }
 
 
@@ -67,6 +72,10 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if idx < 0 or idx >= len(ace.audio_sources):
             return ""
         source = ace.audio_sources[idx]
+        try:
+            ACEProxyManager.ensure_proxy_for_source(source, scene=getattr(context, "scene", None))
+        except Exception:
+            pass
         return getattr(source, "proxy_object_name", "") or ""
 
     @staticmethod
@@ -100,21 +109,65 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         node.label = source_name
         node.name = source_name
 
-        proxy_name = str(getattr(active_source, "proxy_object_name", "") or "")
-        if not proxy_name:
-            return
         try:
-            proxy_obj = bpy.data.objects.get(proxy_name)
+            ACEProxyManager.ensure_proxy_for_source(active_source, scene=getattr(context, "scene", None))
         except Exception:
-            proxy_obj = None
-        if proxy_obj is None:
-            return
+            pass
+
+        proxy_name = str(getattr(active_source, "proxy_object_name", "") or "")
         proxy_sock = next((s for s in getattr(node, "inputs", []) if getattr(s, "name", "") == "Proxy Object"), None)
         if proxy_sock is not None:
+            proxy_obj = None
+            if proxy_name:
+                try:
+                    proxy_obj = bpy.data.objects.get(proxy_name)
+                except Exception:
+                    proxy_obj = None
             try:
-                proxy_sock.default_value = proxy_obj
+                if proxy_obj is not None:
+                    proxy_sock.default_value = proxy_obj
+                elif proxy_name:
+                    ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
             except Exception:
-                pass
+                if proxy_name:
+                    ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
+
+    @staticmethod
+    def _collect_scene_frontend_uids(scene) -> list[str]:
+        if scene is None:
+            return []
+        ordered: list[str] = []
+
+        def _push_uid(tree):
+            if tree is None:
+                return
+            uid = ""
+            try:
+                uid = str(tree.get("ace_frontend_uid", "") or "")
+            except Exception:
+                uid = ""
+            if uid and uid not in ordered:
+                ordered.append(uid)
+
+        for obj in getattr(scene, "objects", []) or []:
+            for mod in getattr(obj, "modifiers", []) or []:
+                if getattr(mod, "type", None) != "NODES":
+                    continue
+                _push_uid(getattr(mod, "node_group", None))
+            for slot in getattr(obj, "material_slots", []) or []:
+                material = getattr(slot, "material", None)
+                tree = getattr(material, "node_tree", None) if material is not None else None
+                if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                    continue
+                _push_uid(tree)
+        return ordered
+
+    @classmethod
+    def _ensure_shader_frontend_uid(cls, tree, context):
+        if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+            return ""
+        existing_uids = cls._collect_scene_frontend_uids(getattr(context, "scene", None))
+        return ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, existing_uids)
 
     @staticmethod
     def _initialize_auto_attr_ids(node, context):
@@ -139,15 +192,17 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 proxy_obj = None
 
         if is_stream and len(node.outputs) > 0:
-            auto_name = ACE_OT_add_node_group._default_attr_name(
-                proxy_name,
-                node["ace_id"],
-                node.outputs[0].name,
-                0,
-            )
-            attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Attribute ID"), None)
-            if attr_sock:
-                attr_sock.default_value = auto_name
+            for out_idx, out_sock in enumerate(node.outputs):
+                auto_name = ACE_OT_add_node_group._default_attr_name(
+                    proxy_name,
+                    node["ace_id"],
+                    out_sock.name,
+                    out_idx,
+                )
+                socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
+                attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == socket_name), None)
+                if attr_sock:
+                    ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
         if is_specs:
             socket_map = (
@@ -165,7 +220,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 )
                 attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == socket_name), None)
                 if attr_sock:
-                    attr_sock.default_value = auto_name
+                    ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
         if is_rolling_avg and len(node.outputs) > 0:
             auto_name = ACE_OT_add_node_group._default_attr_name(
@@ -176,7 +231,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             )
             attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Attribute ID"), None)
             if attr_sock:
-                attr_sock.default_value = auto_name
+                ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
         if is_stream_accumulator and len(node.outputs) > 0:
             auto_name = ACE_OT_add_node_group._default_attr_name(
@@ -187,7 +242,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             )
             attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Attribute ID"), None)
             if attr_sock:
-                attr_sock.default_value = auto_name
+                ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
         if (is_specs or is_rolling_avg) and proxy_obj:
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
@@ -195,14 +250,41 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 try:
                     proxy_sock.default_value = proxy_obj
                 except Exception:
-                    pass
+                    if proxy_name:
+                        ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
         if is_stream_accumulator and proxy_obj:
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
             if proxy_sock:
                 try:
                     proxy_sock.default_value = proxy_obj
                 except Exception:
-                    pass
+                    if proxy_name:
+                        ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
+
+    @staticmethod
+    def _set_socket_default_value(sock, value) -> bool:
+        """Safely assign a socket default, skipping incompatible socket types."""
+        if sock is None:
+            return False
+        try:
+            current = getattr(sock, "default_value", None)
+        except Exception:
+            current = None
+        if hasattr(value, "name"):
+            try:
+                value_name = str(getattr(value, "name", "") or "")
+            except Exception:
+                value_name = ""
+            if isinstance(current, str):
+                value = value_name
+        if isinstance(value, str) and current is not None and not isinstance(current, str):
+            # Some Shader sockets are float fallbacks when String sockets are unavailable.
+            return False
+        try:
+            sock.default_value = value
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _show_attr_id_socket_values(node):
@@ -331,11 +413,23 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if self.node_type_key == 'preview_sink':
             node["ace_preview_enabled"] = bool(node.get("ace_preview_enabled", True))
         if self.category_key == "source_mngmt" and self.node_type_key == "src":
+            if tree_type == "ShaderNodeTree":
+                self._ensure_shader_frontend_uid(tree, context)
             self._initialize_source_binding(node, context)
 
         # 4. Initialize deterministic attribute IDs for stream/spec nodes
         self._initialize_auto_attr_ids(node, context)
         self._show_attr_id_socket_values(node)
+        if tree_type == "ShaderNodeTree":
+            try:
+                proxy_name = self._resolve_active_proxy_name(context)
+                ACEShaderNodeFactory.sync_node_instance_group_bindings(
+                    node,
+                    proxy_name=proxy_name,
+                    scene=getattr(context, "scene", None),
+                )
+            except Exception:
+                pass
 
         # 5. UI Cleanup (Selection)
         for n in tree.nodes:
@@ -385,7 +479,7 @@ class ACE_MT_delta(ACE_MT_add_node_menu_base):
 
 class ACE_MT_source_mngmt(ACE_MT_add_node_menu_base):
     bl_idname = "ACE_MT_source_mngmt"
-    bl_label = "Source Management"
+    bl_label = "Input"
 
     @classmethod
     def poll(cls, context):
@@ -443,6 +537,15 @@ def add_node_menu_func(self, context):
     self.layout.separator()
     self.layout.menu("ACE_MT_add_node_menu", icon='SOUND')
 
+
+def add_shader_category_menu_func(self, context):
+    space = getattr(context, "space_data", None)
+    tree = getattr(space, "node_tree", None) if space is not None else None
+    if str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+        return
+    self.layout.separator()
+    self.layout.menu("ACE_MT_add_node_menu", icon='SOUND')
+
 # ==============================================================================
 # 3. REGISTRATION
 # ==============================================================================
@@ -460,8 +563,15 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.NODE_MT_add.append(add_node_menu_func)
+    if hasattr(bpy.types, "NODE_MT_category_shader_add"):
+        bpy.types.NODE_MT_category_shader_add.append(add_shader_category_menu_func)
 
 def unregister():
     bpy.types.NODE_MT_add.remove(add_node_menu_func)
+    if hasattr(bpy.types, "NODE_MT_category_shader_add"):
+        try:
+            bpy.types.NODE_MT_category_shader_add.remove(add_shader_category_menu_func)
+        except Exception:
+            pass
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

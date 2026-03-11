@@ -1,6 +1,4 @@
-"""
-Blender Shader node group management for ACE frontends.
-"""
+"""Blender Shader node group management for ACE frontends."""
 
 import hashlib
 import json
@@ -9,13 +7,16 @@ import bpy  # type: ignore
 
 from ..vars import ACE_NODES
 from .. import utils
-from .dummy_tree import ACEDummyTreeReader, FRONTEND_KIND_SHADER
+from ..core.id_management import ACEIdManager
+from .dummy_tree import ACEDummyTreeReader, FRONTEND_KIND_SHADER, ACEDummyNodeFactory
 
 
 class ACEShaderNodeFactory:
     """Create hidden ShaderNodeTree ACE groups for shader frontends."""
 
     _NODES_CONTENT_HASH: str = ""
+    _ATTR_NODE_OUTPUT_IDX_KEY = "ace_shader_output_idx"
+    _OUTPUT_NODE_KIND_KEY = "ace_shader_sink_kind"
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
@@ -36,51 +37,1169 @@ class ACEShaderNodeFactory:
     @staticmethod
     def _shader_socket_type(sock_type: str) -> str:
         mapping = {
-            "NodeSocketBundle": "NodeSocketFloat",
-            "NodeSocketObject": "NodeSocketString",
+            # Keep bundle sockets native in shader groups (Blender 5.0+),
+            # only remap types that are unreliable in shader interfaces.
             "NodeSocketInt": "NodeSocketFloat",
         }
         return mapping.get(str(sock_type or ""), str(sock_type or "NodeSocketFloat"))
 
     @classmethod
     def _new_socket(cls, ng, sock_name: str, in_out: str, socket_type: str):
-        mapped = cls._shader_socket_type(socket_type)
-        try:
-            return ng.interface.new_socket(sock_name, in_out=in_out, socket_type=mapped)
-        except Exception:
+        requested = str(socket_type or "NodeSocketFloat")
+        mapped = cls._shader_socket_type(requested)
+        candidates: list[str] = []
+        for candidate in (requested, mapped):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        # Do not silently downgrade string/bundle interfaces to float.
+        needs_strict_type = any(token in mapped for token in ("String", "Bundle"))
+        if (not needs_strict_type) and "NodeSocketFloat" not in candidates:
+            candidates.append("NodeSocketFloat")
+        for candidate in candidates:
             try:
-                return ng.interface.new_socket(sock_name, in_out=in_out, socket_type="NodeSocketFloat")
+                return ng.interface.new_socket(sock_name, in_out=in_out, socket_type=candidate)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _extra_inputs(category: str, node_type: str) -> tuple[tuple[str, str, str], ...]:
+        if category == "stream":
+            stream_nodes = (
+                ACE_NODES.get("stream", {}).get("nodes", {})
+                if isinstance(ACE_NODES.get("stream", {}), dict)
+                else {}
+            )
+            node_def = stream_nodes.get(str(node_type or ""), {}) if isinstance(stream_nodes, dict) else {}
+            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
+            value_output_count = max(
+                1,
+                sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
+            )
+            specs = [("NodeSocketString", "Attribute ID", "ACE_undefined")]
+            for idx in range(1, int(value_output_count)):
+                specs.append(
+                    (
+                        "NodeSocketString",
+                        f"Attribute ID {int(idx + 1)}",
+                        f"ACE_undefined_{int(idx + 1)}",
+                    )
+                )
+            return tuple(specs)
+        if category == "source_mngmt" and node_type == "src":
+            return (("NodeSocketString", "Proxy Object", ""),)
+        if category == "utilities" and node_type == "src_specs":
+            return (
+                ("NodeSocketString", "Frames per Beat Attribute ID", "ACE_undefined_frames_per_beat"),
+                ("NodeSocketString", "Beat Phase Attribute ID", "ACE_undefined_beatphase"),
+                ("NodeSocketString", "Proxy Object", ""),
+            )
+        if category == "utilities" and node_type == "util_rolling_avg":
+            return (
+                ("NodeSocketString", "Attribute ID", "ACE_undefined"),
+                ("NodeSocketString", "Proxy Object", ""),
+            )
+        if category == "utilities" and node_type == "stream_accumulator":
+            return (
+                ("NodeSocketString", "Attribute ID", "ACE_undefined"),
+                ("NodeSocketString", "Proxy Object", ""),
+            )
+        return ()
+
+    @staticmethod
+    def _attr_socket_names(category: str, node_type: str) -> tuple[str, ...]:
+        if category == "stream":
+            return tuple(
+                str(sock_name)
+                for _sock_type, sock_name, _default in ACEShaderNodeFactory._extra_inputs(category, node_type)
+            )
+        return ACEDummyNodeFactory._attr_socket_names(category, node_type)
+
+    @staticmethod
+    def _is_property_output_node(category: str, node_type: str) -> bool:
+        cat = str(category or "")
+        typ = str(node_type or "")
+        return bool(
+            cat == "stream"
+            or (cat == "utilities" and typ in {"src_specs", "util_rolling_avg", "stream_accumulator"})
+        )
+
+    @staticmethod
+    def _expected_attribute_output_indices(node_def) -> tuple[int, ...]:
+        indices: list[int] = []
+        for idx, (sock_type, _sock_name) in enumerate(node_def.get("outputs", [])):
+            if "Bundle" in str(sock_type or ""):
+                continue
+            indices.append(int(idx))
+        return tuple(indices)
+
+    @classmethod
+    def _expected_interface_names(cls, node_def, category: str, node_type: str) -> tuple[set[str], set[str]]:
+        input_names = {str(name) for _sock_type, name in node_def.get("inputs", [])}
+        output_names = {str(name) for _sock_type, name in node_def.get("outputs", [])}
+        for _sock_type, extra_name, _default_value in cls._extra_inputs(category, node_type):
+            input_names.add(str(extra_name))
+        return input_names, output_names
+
+    @classmethod
+    def _expected_interface_types(
+        cls,
+        node_def,
+        category: str,
+        node_type: str,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        input_types: dict[str, str] = {}
+        output_types: dict[str, str] = {}
+        for sock_type, sock_name in node_def.get("inputs", []):
+            input_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
+        for sock_type, sock_name in node_def.get("outputs", []):
+            output_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
+        for sock_type, sock_name, _default_value in cls._extra_inputs(category, node_type):
+            input_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
+        return input_types, output_types
+
+    @staticmethod
+    def _interface_socket_type(item) -> str:
+        for attr_name in ("socket_type", "bl_socket_idname", "type"):
+            try:
+                raw = getattr(item, attr_name, "")
+            except Exception:
+                raw = ""
+            token = str(raw or "")
+            if token:
+                return token
+        return ""
+
+    @staticmethod
+    def _socket_type_matches(expected: str, actual: str) -> bool:
+        exp = str(expected or "").lower()
+        act = str(actual or "").lower()
+        if not exp:
+            return True
+        if not act:
+            return False
+        if "bundle" in exp:
+            return "bundle" in act
+        if "string" in exp:
+            return "string" in act
+        if "vector" in exp:
+            return "vector" in act
+        if "color" in exp or "rgba" in exp:
+            return ("color" in act) or ("rgba" in act)
+        if "float" in exp:
+            return ("float" in act) or ("value" in act)
+        if "int" in exp:
+            return ("int" in act) or ("float" in act) or ("value" in act)
+        return exp == act
+
+    @classmethod
+    def _node_group_needs_refresh(cls, ng, node_def, category: str, node_type: str) -> bool:
+        expected_inputs, expected_outputs = cls._expected_interface_names(node_def, category, node_type)
+        expected_input_types, expected_output_types = cls._expected_interface_types(node_def, category, node_type)
+        try:
+            inputs = {
+                str(item.name): cls._interface_socket_type(item)
+                for item in ng.interface.items_tree
+                if getattr(item, "in_out", None) == "INPUT"
+            }
+            outputs = {
+                str(item.name): cls._interface_socket_type(item)
+                for item in ng.interface.items_tree
+                if getattr(item, "in_out", None) == "OUTPUT"
+            }
+        except Exception:
+            return True
+        if not expected_inputs.issubset(set(inputs.keys())) or not expected_outputs.issubset(set(outputs.keys())):
+            return True
+        for sock_name, expected_type in expected_input_types.items():
+            if not cls._socket_type_matches(expected_type, inputs.get(str(sock_name), "")):
+                return True
+        for sock_name, expected_type in expected_output_types.items():
+            if not cls._socket_type_matches(expected_type, outputs.get(str(sock_name), "")):
+                return True
+        try:
+            has_input = any(getattr(node, "type", "") == "GROUP_INPUT" for node in ng.nodes)
+            has_output = any(getattr(node, "type", "") == "GROUP_OUTPUT" for node in ng.nodes)
+            if not has_input or not has_output:
+                return True
+            allow_math_nodes = bool(str(category or "") == "stream" and str(node_type or "") == "lufs")
+            for node in ng.nodes:
+                bl_idname = str(getattr(node, "bl_idname", "") or "")
+                node_type_name = str(getattr(node, "type", "") or "")
+                if (not allow_math_nodes) and bl_idname in {"ShaderNodeMath", "ShaderNodeVectorMath"}:
+                    return True
+                if (not allow_math_nodes) and node_type_name in {"MATH", "VECTOR_MATH"}:
+                    return True
+            expected_attr_indices = set(cls._expected_attribute_output_indices(node_def))
+            if expected_attr_indices:
+                found_attr_indices: set[int] = set()
+                for node in ng.nodes:
+                    try:
+                        raw_idx = node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, None)
+                    except Exception:
+                        raw_idx = None
+                    try:
+                        if raw_idx is not None:
+                            found_attr_indices.add(int(raw_idx))
+                    except Exception:
+                        pass
+                if not expected_attr_indices.issubset(found_attr_indices):
+                    return True
+        except Exception:
+            return True
+        return False
+
+    @staticmethod
+    def _shader_attr_output_socket(attr_node, socket_type: str):
+        st = str(socket_type or "")
+        if "Vector" in st:
+            preferred = ("Vector", "Color", "Factor", "Fac", "Alpha")
+        elif "Color" in st or "RGBA" in st:
+            preferred = ("Color", "Vector", "Factor", "Fac", "Alpha")
+        else:
+            preferred = ("Factor", "Fac", "Alpha", "Color", "Vector")
+        outputs = list(getattr(attr_node, "outputs", []) or [])
+        for wanted in preferred:
+            for sock in outputs:
+                if str(getattr(sock, "name", "") or "") == wanted:
+                    return sock
+        return outputs[0] if outputs else None
+
+    @classmethod
+    def _set_attr_node_defaults(cls, attr_node, attr_name: str) -> bool:
+        changed = False
+        if hasattr(attr_node, "attribute_type"):
+            for enum_token in ("OBJECT", "OBJECT_DATA"):
+                try:
+                    if str(getattr(attr_node, "attribute_type", "") or "") == enum_token:
+                        break
+                    attr_node.attribute_type = enum_token
+                    changed = True
+                    break
+                except Exception:
+                    continue
+        name = str(attr_name or "").strip()
+        if not name:
+            return changed
+        for prop_name in ("attribute_name", "name"):
+            if not hasattr(attr_node, prop_name):
+                continue
+            try:
+                current_name = str(getattr(attr_node, prop_name, "") or "")
+            except Exception:
+                current_name = ""
+            if current_name == name:
+                continue
+            try:
+                setattr(attr_node, prop_name, name)
+                changed = True
+            except Exception:
+                pass
+        return changed
+
+    @staticmethod
+    def _placeholder_attr_name(output_idx: int, output_name: str) -> str:
+        token = ACEIdManager._clean_string(str(output_name or f"out_{int(output_idx)}")).lower() or f"out{int(output_idx)}"
+        return f"{ACEIdManager.PREFIX}{token[:20]}_{int(output_idx)}"[:63]
+
+    @classmethod
+    def _find_group_output_node(cls, ng):
+        for node in getattr(ng, "nodes", []) or []:
+            if str(getattr(node, "type", "") or "") == "GROUP_OUTPUT":
+                return node
+        return None
+
+    @classmethod
+    def _clear_socket_driver(cls, socket, array_index: int | None = None):
+        if socket is None:
+            return
+        try:
+            if array_index is None:
+                socket.driver_remove("default_value")
+            else:
+                socket.driver_remove("default_value", int(array_index))
+        except Exception:
+            pass
+
+    @classmethod
+    def _ensure_socket_driver(
+        cls,
+        socket,
+        target_id,
+        data_path: str,
+        array_index: int | None = None,
+        target_id_type: str = "OBJECT",
+    ):
+        if socket is None or target_id is None or not data_path:
+            return False
+        cls._clear_socket_driver(socket, array_index=array_index)
+        try:
+            if array_index is None:
+                fcurve = socket.driver_add("default_value")
+            else:
+                fcurve = socket.driver_add("default_value", int(array_index))
+        except Exception:
+            return False
+        try:
+            driver = fcurve.driver
+            driver.type = "SCRIPTED"
+            driver.expression = "v"
+            while driver.variables:
+                driver.variables.remove(driver.variables[0])
+            var = driver.variables.new()
+            var.name = "v"
+            var.type = "SINGLE_PROP"
+            target = var.targets[0]
+            target.id_type = str(target_id_type or "OBJECT")
+            target.id = target_id
+            target.data_path = str(data_path or "")
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _escape_prop_name(prop_name: str) -> str:
+        return str(prop_name or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    @classmethod
+    def _driver_prop_path(
+        cls,
+        prop_name: str,
+        component_idx: int | None = None,
+        target_obj=None,
+    ) -> str:
+        escaped_prop = cls._escape_prop_name(prop_name)
+        base = f'["{escaped_prop}"]'
+        if target_obj is not None:
+            try:
+                resolved = str(target_obj.path_from_id(base) or "")
+                if resolved:
+                    base = resolved
+            except Exception:
+                pass
+        if component_idx is None:
+            return base
+        return f"{base}[{int(component_idx)}]"
+
+    @staticmethod
+    def _resolve_driver_target_context(target_obj, scene=None) -> tuple[str, object | None, bool]:
+        return ("OBJECT", target_obj, False)
+
+    @staticmethod
+    def _sink_default_value_for_kind(sink_kind: str):
+        kind = str(sink_kind or "")
+        if kind == "VECTOR_DRIVER":
+            return [0.0, 0.0, 0.0]
+        if kind == "COLOR_DRIVER":
+            return [0.0, 0.0, 0.0, 1.0]
+        return 0.0
+
+    @classmethod
+    def _ensure_target_object_property(cls, target_obj, prop_name: str, sink_kind: str) -> bool:
+        if target_obj is None:
+            return False
+        name = str(prop_name or "").strip()
+        if not name:
+            return False
+        default_value = cls._sink_default_value_for_kind(sink_kind)
+        try:
+            if name in target_obj.keys():
+                try:
+                    current = target_obj.get(name, None)
+                except Exception:
+                    current = None
+                expects_vector = isinstance(default_value, list) and len(default_value) == 3
+                expects_color = isinstance(default_value, list) and len(default_value) == 4
+                if expects_vector and isinstance(current, (list, tuple)) and len(current) >= 3:
+                    return False
+                if expects_color and isinstance(current, (list, tuple)) and len(current) >= 4:
+                    return False
+                if (not expects_vector) and (not expects_color) and isinstance(current, (int, float)):
+                    return False
+        except Exception:
+            pass
+        changed = False
+        try:
+            target_obj[name] = default_value
+            changed = True
+        except Exception:
+            if isinstance(default_value, list):
+                try:
+                    target_obj[name] = tuple(default_value)
+                    changed = True
+                except Exception:
+                    pass
+        if changed:
+            try:
+                target_obj.update_tag(refresh={"OBJECT", "DATA"})
+            except Exception:
+                try:
+                    target_obj.update_tag()
+                except Exception:
+                    pass
+        return changed
+
+    @classmethod
+    def _create_output_sink_node(
+        cls,
+        ng,
+        output_node,
+        output_idx: int,
+        socket_type: str,
+        socket_name: str,
+    ):
+        if output_node is None or output_idx < 0 or output_idx >= len(getattr(output_node, "inputs", []) or []):
+            return None
+        st = str(socket_type or "")
+        sink_node = None
+        sink_kind = "FLOAT_DRIVER"
+        out_sock = None
+
+        try:
+            if "Vector" in st:
+                sink_node = ng.nodes.new("ShaderNodeCombineXYZ")
+                sink_kind = "VECTOR_DRIVER"
+                out_sock = sink_node.outputs[0] if len(getattr(sink_node, "outputs", [])) > 0 else None
+            elif "Color" in st or "RGBA" in st:
+                sink_node = ng.nodes.new("ShaderNodeRGB")
+                sink_kind = "COLOR_DRIVER"
+                out_sock = sink_node.outputs[0] if len(getattr(sink_node, "outputs", [])) > 0 else None
+            else:
+                sink_node = ng.nodes.new("ShaderNodeValue")
+                sink_kind = "FLOAT_DRIVER"
+                out_sock = sink_node.outputs[0] if len(getattr(sink_node, "outputs", [])) > 0 else None
+        except Exception:
+            sink_node = None
+
+        # Fallback path: keep attribute node support for unsupported node types.
+        if sink_node is None:
+            try:
+                sink_node = ng.nodes.new("ShaderNodeAttribute")
+                sink_kind = "ATTRIBUTE"
+                out_sock = cls._shader_attr_output_socket(sink_node, socket_type)
+                cls._set_attr_node_defaults(
+                    sink_node,
+                    cls._placeholder_attr_name(output_idx, socket_name),
+                )
             except Exception:
                 return None
 
-    @classmethod
-    def _build_group_content(cls, ng, node_def, category: str, node_type: str):
-        for sock_type_str, sock_name in node_def.get("inputs", []):
-            cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
-        for sock_type_str, sock_name in node_def.get("outputs", []):
-            cls._new_socket(ng, sock_name, "OUTPUT", sock_type_str)
-
-        if category == "stream":
-            cls._new_socket(ng, "Attribute ID", "INPUT", "NodeSocketString")
-        elif category == "utilities" and node_type == "src_specs":
-            cls._new_socket(ng, "Frames per Beat Attribute ID", "INPUT", "NodeSocketString")
-            cls._new_socket(ng, "Beat Phase Attribute ID", "INPUT", "NodeSocketString")
-        elif category == "utilities" and node_type == "util_rolling_avg":
-            cls._new_socket(ng, "Attribute ID", "INPUT", "NodeSocketString")
-        elif category == "utilities" and node_type == "stream_accumulator":
-            cls._new_socket(ng, "Attribute ID", "INPUT", "NodeSocketString")
-
+        sink_node.location = (300, -200 - (int(output_idx) * 150))
         try:
-            input_node = next((n for n in ng.nodes if n.type == "GROUP_INPUT"), None)
-            if input_node is None:
-                input_node = ng.nodes.new("NodeGroupInput")
-                input_node.location = (-300, 0)
-            output_node = next((n for n in ng.nodes if n.type == "GROUP_OUTPUT"), None)
-            if output_node is None:
-                output_node = ng.nodes.new("NodeGroupOutput")
-                output_node.location = (300, 0)
+            sink_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
         except Exception:
             pass
+        try:
+            sink_node[cls._OUTPUT_NODE_KIND_KEY] = str(sink_kind)
+        except Exception:
+            pass
+        try:
+            sink_node["ace_shader_output_name"] = str(socket_name or "")
+        except Exception:
+            pass
+        if out_sock is not None:
+            try:
+                ng.links.new(out_sock, output_node.inputs[int(output_idx)])
+            except Exception:
+                pass
+        return sink_node
+
+    @classmethod
+    def _bind_sink_node_to_object_property(
+        cls,
+        sink_node,
+        sink_kind: str,
+        target_obj,
+        prop_name: str,
+        scene=None,
+    ) -> bool:
+        if sink_node is None:
+            return False
+        changed = False
+        kind = str(sink_kind or "")
+        target_id_type, target_id, _ = cls._resolve_driver_target_context(target_obj, scene=scene)
+        if kind == "FLOAT_DRIVER":
+            outputs = list(getattr(sink_node, "outputs", []) or [])
+            if outputs:
+                changed = cls._ensure_socket_driver(
+                    outputs[0],
+                    target_id,
+                    cls._driver_prop_path(
+                        prop_name,
+                        target_obj=target_obj,
+                    ),
+                    target_id_type=target_id_type,
+                ) or changed
+            return changed
+        if kind == "VECTOR_DRIVER":
+            inputs = list(getattr(sink_node, "inputs", []) or [])
+            for idx in range(min(3, len(inputs))):
+                changed = cls._ensure_socket_driver(
+                    inputs[idx],
+                    target_id,
+                    cls._driver_prop_path(
+                        prop_name,
+                        component_idx=idx,
+                        target_obj=target_obj,
+                    ),
+                    target_id_type=target_id_type,
+                ) or changed
+            return changed
+        if kind == "COLOR_DRIVER":
+            outputs = list(getattr(sink_node, "outputs", []) or [])
+            if not outputs:
+                return False
+            for idx in range(4):
+                changed = cls._ensure_socket_driver(
+                    outputs[0],
+                    target_id,
+                    cls._driver_prop_path(
+                        prop_name,
+                        component_idx=idx,
+                        target_obj=target_obj,
+                    ),
+                    array_index=idx,
+                    target_id_type=target_id_type,
+                ) or changed
+            return changed
+        if kind == "ATTRIBUTE":
+            return cls._set_attr_node_defaults(sink_node, prop_name)
+        return False
+
+    @classmethod
+    def _set_socket_default(cls, ng, socket_name: str, default_value: str):
+        if default_value == "":
+            return
+        try:
+            item = next(
+                (
+                    it
+                    for it in getattr(ng.interface, "items_tree", [])
+                    if getattr(it, "in_out", None) == "INPUT" and getattr(it, "name", "") == socket_name
+                ),
+                None,
+            )
+        except Exception:
+            item = None
+        if item is None:
+            return
+        if not hasattr(item, "default_value"):
+            return
+        try:
+            item.default_value = default_value
+        except Exception:
+            pass
+
+    @classmethod
+    def _ensure_attr_interface_visible(cls, ng, category: str, node_type: str):
+        for attr_name in cls._attr_socket_names(category, node_type):
+            item = next(
+                (
+                    it
+                    for it in getattr(ng.interface, "items_tree", [])
+                    if getattr(it, "in_out", None) == "INPUT" and getattr(it, "name", "") == attr_name
+                ),
+                None,
+            )
+            if item is not None and hasattr(item, "hide_value"):
+                try:
+                    item.hide_value = False
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _bundle_item_candidates_for_socket(socket_type: str) -> tuple[str, ...]:
+        st = str(socket_type or "")
+        if "Bundle" in st:
+            return ("BUNDLE", "VALUE", "FLOAT")
+        if "String" in st:
+            return ("STRING", "TEXT", "VALUE")
+        if "Vector" in st:
+            return ("VECTOR", "FLOAT_VECTOR", "VALUE")
+        if "Color" in st or "RGBA" in st:
+            return ("RGBA", "COLOR", "FLOAT", "VALUE")
+        if "Int" in st:
+            return ("INT", "FLOAT", "VALUE")
+        if "Float" in st:
+            return ("FLOAT", "VALUE")
+        return ("VALUE", "FLOAT")
+
+    @staticmethod
+    def _safe_bundle_item(bundle_node, item_name: str, candidates: tuple[str, ...]):
+        for item_type in candidates:
+            try:
+                return bundle_node.bundle_items.new(item_type, item_name)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _link_or_consume_reroute(ng, source_socket, location_x: int, location_y: int):
+        try:
+            reroute = ng.nodes.new("NodeReroute")
+            reroute.location = (int(location_x), int(location_y))
+            ng.links.new(source_socket, reroute.inputs[0])
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _build_group_content(cls, ng, node_def, category: str, node_type: str):
+        base_inputs = list(node_def.get("inputs", []))
+        base_outputs = list(node_def.get("outputs", []))
+
+        for sock_type_str, sock_name in base_inputs:
+            cls._new_socket(ng, str(sock_name), "INPUT", str(sock_type_str))
+        for sock_type_str, sock_name in base_outputs:
+            cls._new_socket(ng, str(sock_name), "OUTPUT", str(sock_type_str))
+
+        if str(category or "") == "stream" and str(node_type or "") == "lufs":
+            for item in getattr(getattr(ng, "interface", None), "items_tree", []):
+                if getattr(item, "in_out", None) != "INPUT":
+                    continue
+                name = str(getattr(item, "name", "") or "")
+                if name == "Window (s)":
+                    try:
+                        item.default_value = 0.4
+                    except Exception:
+                        pass
+                    for attr_name, value in (
+                        ("min_value", 0.05),
+                        ("max_value", 3.0),
+                        ("soft_min", 0.05),
+                        ("soft_max", 3.0),
+                    ):
+                        try:
+                            setattr(item, attr_name, value)
+                        except Exception:
+                            pass
+                elif name == "Overlap Ratio":
+                    try:
+                        item.default_value = 0.25
+                    except Exception:
+                        pass
+                    for attr_name, value in (
+                        ("min_value", 0.0),
+                        ("max_value", 1.0),
+                        ("soft_min", 0.0),
+                        ("soft_max", 1.0),
+                    ):
+                        try:
+                            setattr(item, attr_name, value)
+                        except Exception:
+                            pass
+
+        for sock_type_str, sock_name, default_value in cls._extra_inputs(category, node_type):
+            cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
+            cls._set_socket_default(ng, sock_name, default_value)
+
+        # Shader groups are mostly strict facades:
+        # Group Input/Output + optional passthrough wiring and property reads.
+        # LUFS adds a tiny control-consumption chain so Window/Overlap Ratio stay active.
+        input_node = ng.nodes.new("NodeGroupInput")
+        output_node = ng.nodes.new("NodeGroupOutput")
+        input_node.location = (-760, 0)
+        output_node.location = (680, 0)
+
+        all_inputs = list(base_inputs) + [
+            (sock_type_str, sock_name)
+            for sock_type_str, sock_name, _default_value in cls._extra_inputs(category, node_type)
+        ]
+        bundle_input_indices = [
+            idx for idx, (sock_type, _name) in enumerate(all_inputs) if "Bundle" in str(sock_type or "")
+        ]
+        bundle_output_indices = [
+            idx for idx, (sock_type, _name) in enumerate(base_outputs) if "Bundle" in str(sock_type or "")
+        ]
+        first_bundle_input_idx = int(bundle_input_indices[0]) if bundle_input_indices else -1
+
+        sep_bundle = None
+        proxy_from_bundle_socket = None
+        if first_bundle_input_idx >= 0:
+            try:
+                sep_bundle = ng.nodes.new("NodeSeparateBundle")
+                sep_bundle.location = (-420, 120)
+                proxy_item = cls._safe_bundle_item(
+                    sep_bundle,
+                    "Proxy Object",
+                    ("STRING", "TEXT", "VALUE"),
+                )
+                ng.links.new(input_node.outputs[first_bundle_input_idx], sep_bundle.inputs[0])
+                if proxy_item is not None:
+                    try:
+                        proxy_from_bundle_socket = sep_bundle.outputs[proxy_item.name]
+                    except Exception:
+                        proxy_from_bundle_socket = sep_bundle.outputs[0] if len(sep_bundle.outputs) > 0 else None
+            except Exception:
+                sep_bundle = None
+                proxy_from_bundle_socket = None
+
+        consume_bundle = None
+        consume_bundle_has_primary = False
+        try:
+            consume_bundle = ng.nodes.new("NodeCombineBundle")
+            consume_bundle.location = (120, 120)
+        except Exception:
+            consume_bundle = None
+
+        if consume_bundle is not None and first_bundle_input_idx >= 0:
+            primary_item = cls._safe_bundle_item(
+                consume_bundle,
+                "Audio",
+                ("BUNDLE", "VALUE", "FLOAT"),
+            )
+            if primary_item is not None and first_bundle_input_idx < len(getattr(input_node, "outputs", [])):
+                try:
+                    ng.links.new(input_node.outputs[first_bundle_input_idx], consume_bundle.inputs[primary_item.name])
+                    consume_bundle_has_primary = True
+                except Exception:
+                    consume_bundle_has_primary = False
+
+        if consume_bundle is not None and proxy_from_bundle_socket is not None:
+            proxy_out_item = cls._safe_bundle_item(
+                consume_bundle,
+                "Proxy Object",
+                ("STRING", "TEXT", "VALUE"),
+            )
+            if proxy_out_item is not None:
+                try:
+                    ng.links.new(proxy_from_bundle_socket, consume_bundle.inputs[proxy_out_item.name])
+                except Exception:
+                    try:
+                        ng.links.new(proxy_from_bundle_socket, consume_bundle.inputs[-1])
+                    except Exception:
+                        pass
+
+        # Consume every input socket so UI sockets stay active/non-grey.
+        for input_idx, (socket_type, socket_name) in enumerate(all_inputs):
+            if input_idx >= len(getattr(input_node, "outputs", [])):
+                continue
+            if input_idx == first_bundle_input_idx:
+                continue
+            source_sock = input_node.outputs[input_idx]
+            is_bundle_input = "Bundle" in str(socket_type or "")
+            if is_bundle_input:
+                cls._link_or_consume_reroute(ng, source_sock, -120, -160 - (input_idx * 90))
+                continue
+            linked = False
+            if consume_bundle is not None:
+                bundle_item = cls._safe_bundle_item(
+                    consume_bundle,
+                    str(socket_name),
+                    cls._bundle_item_candidates_for_socket(str(socket_type)),
+                )
+                if bundle_item is not None:
+                    try:
+                        ng.links.new(source_sock, consume_bundle.inputs[bundle_item.name])
+                        linked = True
+                    except Exception:
+                        try:
+                            ng.links.new(source_sock, consume_bundle.inputs[-1])
+                            linked = True
+                        except Exception:
+                            linked = False
+            if not linked:
+                cls._link_or_consume_reroute(ng, source_sock, -120, -160 - (input_idx * 90))
+
+        # Source groups seed the bundle with the proxy object token.
+        if category == "source_mngmt" and node_type == "src":
+            proxy_idx = next(
+                (
+                    idx
+                    for idx, (_stype, name) in enumerate(all_inputs)
+                    if str(name or "") == "Proxy Object"
+                ),
+                -1,
+            )
+            if consume_bundle is not None and proxy_idx >= 0 and proxy_idx < len(getattr(input_node, "outputs", [])):
+                proxy_item = cls._safe_bundle_item(
+                    consume_bundle,
+                    "Proxy Object",
+                    ("STRING", "TEXT", "VALUE"),
+                )
+                if proxy_item is not None:
+                    try:
+                        ng.links.new(input_node.outputs[proxy_idx], consume_bundle.inputs[proxy_item.name])
+                    except Exception:
+                        try:
+                            ng.links.new(input_node.outputs[proxy_idx], consume_bundle.inputs[-1])
+                        except Exception:
+                            pass
+
+        if bundle_output_indices:
+            bundle_source = None
+            if first_bundle_input_idx >= 0 and first_bundle_input_idx < len(getattr(input_node, "outputs", [])):
+                non_bundle_inputs = [
+                    idx
+                    for idx, (sock_type, _name) in enumerate(all_inputs)
+                    if idx != first_bundle_input_idx and "Bundle" not in str(sock_type or "")
+                ]
+                if (
+                    non_bundle_inputs
+                    and consume_bundle is not None
+                    and consume_bundle_has_primary
+                    and len(getattr(consume_bundle, "outputs", [])) > 0
+                ):
+                    # If this group has extra controls, route through a combine bundle
+                    # so the audio payload and auxiliary controls are packed together.
+                    bundle_source = consume_bundle.outputs[0]
+                else:
+                    # Pure audio passthrough groups stay direct.
+                    bundle_source = input_node.outputs[first_bundle_input_idx]
+            elif consume_bundle is not None and len(getattr(consume_bundle, "outputs", [])) > 0:
+                # Source-like nodes without bundle input still emit a seeded bundle.
+                bundle_source = consume_bundle.outputs[0]
+            for output_idx in bundle_output_indices:
+                if output_idx >= len(getattr(output_node, "inputs", [])):
+                    continue
+                try:
+                    if bundle_source is not None:
+                        ng.links.new(bundle_source, output_node.inputs[int(output_idx)])
+                except Exception:
+                    pass
+
+        # Shader frontends expose stream/spec scalar outputs via driver-backed
+        # sink nodes (fallbacking to Attribute nodes only when needed).
+        sink_nodes_by_idx: dict[int, object] = {}
+        for output_idx, (socket_type, socket_name) in enumerate(base_outputs):
+            if "Bundle" in str(socket_type or ""):
+                continue
+            sink_node = cls._create_output_sink_node(
+                ng,
+                output_node,
+                int(output_idx),
+                str(socket_type or ""),
+                str(socket_name or ""),
+            )
+            if sink_node is not None:
+                sink_nodes_by_idx[int(output_idx)] = sink_node
+
+        # LUFS-specific shader equivalent of the GN index-driver trick:
+        # (Window + Overlap Ratio) * 0 + 1 multiplies each scalar property output by 1,
+        # preserving output values while keeping both controls truly consumed.
+        if str(category or "") == "stream" and str(node_type or "") == "lufs" and sink_nodes_by_idx:
+            window_idx = next(
+                (idx for idx, (_stype, name) in enumerate(all_inputs) if str(name or "") == "Window (s)"),
+                -1,
+            )
+            overlap_idx = next(
+                (idx for idx, (_stype, name) in enumerate(all_inputs) if str(name or "") == "Overlap Ratio"),
+                -1,
+            )
+            if (
+                window_idx >= 0
+                and overlap_idx >= 0
+                and window_idx < len(getattr(input_node, "outputs", []))
+                and overlap_idx < len(getattr(input_node, "outputs", []))
+            ):
+                add_node = ng.nodes.new("ShaderNodeMath")
+                add_node.operation = "ADD"
+                add_node.location = (20, -320)
+                ng.links.new(input_node.outputs[int(window_idx)], add_node.inputs[0])
+                ng.links.new(input_node.outputs[int(overlap_idx)], add_node.inputs[1])
+
+                mul_zero = ng.nodes.new("ShaderNodeMath")
+                mul_zero.operation = "MULTIPLY"
+                mul_zero.inputs[1].default_value = 0.0
+                mul_zero.location = (220, -320)
+                ng.links.new(add_node.outputs[0], mul_zero.inputs[0])
+
+                add_one = ng.nodes.new("ShaderNodeMath")
+                add_one.operation = "ADD"
+                add_one.inputs[1].default_value = 1.0
+                add_one.location = (420, -320)
+                ng.links.new(mul_zero.outputs[0], add_one.inputs[0])
+
+                for output_idx, sink_node in sink_nodes_by_idx.items():
+                    if output_idx < 0 or output_idx >= len(base_outputs):
+                        continue
+                    if output_idx >= len(getattr(output_node, "inputs", [])):
+                        continue
+
+                    socket_type = str(base_outputs[output_idx][0] or "")
+                    target_input = output_node.inputs[int(output_idx)]
+                    for link in list(getattr(target_input, "links", []) or []):
+                        try:
+                            ng.links.remove(link)
+                        except Exception:
+                            pass
+
+                    source_out = None
+                    sink_kind = ""
+                    try:
+                        sink_kind = str(sink_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "")
+                    except Exception:
+                        sink_kind = ""
+                    if sink_kind == "FLOAT_DRIVER":
+                        outputs = list(getattr(sink_node, "outputs", []) or [])
+                        source_out = outputs[0] if outputs else None
+                    elif sink_kind == "ATTRIBUTE":
+                        source_out = cls._shader_attr_output_socket(sink_node, socket_type)
+                    if source_out is None:
+                        continue
+
+                    if "Vector" in socket_type:
+                        vec_mul = ng.nodes.new("ShaderNodeVectorMath")
+                        vec_mul.operation = "SCALE"
+                        vec_mul.location = (460, 180 - (int(output_idx) * 150))
+                        ng.links.new(source_out, vec_mul.inputs[0])
+                        scale_input = None
+                        try:
+                            scale_input = vec_mul.inputs.get("Scale")
+                        except Exception:
+                            scale_input = None
+                        if scale_input is None and len(getattr(vec_mul, "inputs", [])) > 1:
+                            scale_input = vec_mul.inputs[1]
+                        if scale_input is not None:
+                            ng.links.new(add_one.outputs[0], scale_input)
+                        ng.links.new(vec_mul.outputs[0], target_input)
+                    else:
+                        scalar_mul = ng.nodes.new("ShaderNodeMath")
+                        scalar_mul.operation = "MULTIPLY"
+                        scalar_mul.location = (460, 180 - (int(output_idx) * 150))
+                        ng.links.new(source_out, scalar_mul.inputs[0])
+                        ng.links.new(add_one.outputs[0], scalar_mul.inputs[1])
+                        ng.links.new(scalar_mul.outputs[0], target_input)
+
+        cls._ensure_attr_interface_visible(ng, category, node_type)
+
+    @staticmethod
+    def _sanitize_explicit_name(raw_name: str) -> str:
+        name = str(raw_name or "").strip()
+        if not name:
+            return ""
+        if not name.startswith(ACEIdManager.PREFIX):
+            name = ACEIdManager.PREFIX + ACEIdManager._clean_string(name)
+        return name[:63]
+
+    @staticmethod
+    def _socket_name_to_output_idx(category: str, node_type: str) -> dict[str, int]:
+        cat = str(category or "")
+        typ = str(node_type or "")
+        if cat == "stream":
+            mapping: dict[str, int] = {"Attribute ID": 0}
+            stream_nodes = (
+                ACE_NODES.get("stream", {}).get("nodes", {})
+                if isinstance(ACE_NODES.get("stream", {}), dict)
+                else {}
+            )
+            node_def = stream_nodes.get(typ, {}) if isinstance(stream_nodes, dict) else {}
+            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
+            value_output_count = max(
+                1,
+                sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
+            )
+            for idx in range(1, int(value_output_count)):
+                mapping[f"Attribute ID {int(idx + 1)}"] = int(idx)
+            return mapping
+        if cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator"}:
+            return {"Attribute ID": 0}
+        if cat == "utilities" and typ == "src_specs":
+            return {
+                "Frames per Beat Attribute ID": 0,
+                "Beat Phase Attribute ID": 1,
+            }
+        return {}
+
+    @staticmethod
+    def _instance_group_suffix(category: str, node_type: str, ace_id: str) -> str:
+        seed = f"{category}|{node_type}|{ace_id}".encode("utf-8")
+        return hashlib.blake2b(seed, digest_size=6).hexdigest()
+
+    @classmethod
+    def get_instance_group_name(cls, category: str, node_type: str, ace_id: str) -> str:
+        base = cls.get_group_name(category, node_type)
+        suffix = cls._instance_group_suffix(category, node_type, ace_id)
+        return f"{base}_{suffix}"
+
+    @classmethod
+    def _ensure_instance_group_for_node(cls, node, category: str, node_type: str, ace_id: str):
+        desired_name = cls.get_instance_group_name(category, node_type, ace_id)
+        current_group = getattr(node, "node_tree", None)
+        current_name = str(getattr(current_group, "name", "") or "")
+        if current_group is not None and current_name == desired_name:
+            return current_group, False
+
+        group = bpy.data.node_groups.get(desired_name)
+        if group is None or str(getattr(group, "bl_idname", "") or "") != "ShaderNodeTree":
+            base_name = cls.get_group_name(category, node_type)
+            base_group = bpy.data.node_groups.get(base_name)
+            if base_group is None or str(getattr(base_group, "bl_idname", "") or "") != "ShaderNodeTree":
+                cls.rebuild_node_group(category, node_type)
+                base_group = bpy.data.node_groups.get(base_name)
+            if base_group is None:
+                return None, False
+            try:
+                group = base_group.copy()
+                group.name = desired_name
+            except Exception:
+                return None, False
+
+        changed = False
+        if current_group != group:
+            try:
+                node.node_tree = group
+                changed = True
+            except Exception:
+                pass
+        return group, changed
+
+    @classmethod
+    def sync_node_instance_group_bindings(cls, node, proxy_name: str = "", scene=None) -> bool:
+        """Ensure shader node instance outputs read the intended object properties."""
+        if node is None or str(getattr(node, "type", "") or "") != "GROUP":
+            return False
+        if scene is None:
+            try:
+                scene = getattr(getattr(bpy, "context", None), "scene", None)
+            except Exception:
+                scene = None
+        try:
+            ace_id = str(node.get("ace_id", "") or "")
+        except Exception:
+            ace_id = ""
+        parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
+        if not parsed:
+            return False
+        category = str(parsed.get("category", "") or "")
+        node_type = str(parsed.get("type", "") or "")
+        if not cls._is_property_output_node(category, node_type):
+            return False
+
+        node_def = ACE_NODES.get(category, {}).get("nodes", {}).get(node_type, {})
+        output_defs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
+        if not output_defs:
+            return False
+
+        expected_indices = cls._expected_attribute_output_indices({"outputs": output_defs})
+        if not expected_indices:
+            return False
+
+        socket_to_idx = cls._socket_name_to_output_idx(category, node_type)
+        explicit_by_idx: dict[int, str] = {}
+        for sock in getattr(node, "inputs", []) or []:
+            out_idx = socket_to_idx.get(str(getattr(sock, "name", "") or ""))
+            if out_idx is None:
+                continue
+            raw_val = getattr(sock, "default_value", None)
+            if isinstance(raw_val, str):
+                sanitized = cls._sanitize_explicit_name(raw_val)
+                if sanitized:
+                    explicit_by_idx[int(out_idx)] = sanitized
+
+        group, changed = cls._ensure_instance_group_for_node(node, category, node_type, ace_id)
+        if group is None:
+            return changed
+
+        output_node = cls._find_group_output_node(group)
+        sink_nodes_by_idx: dict[int, object] = {}
+        for sink_node in getattr(group, "nodes", []) or []:
+            try:
+                raw_idx = sink_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, None)
+            except Exception:
+                raw_idx = None
+            try:
+                if raw_idx is not None:
+                    sink_nodes_by_idx[int(raw_idx)] = sink_node
+            except Exception:
+                continue
+
+        for out_idx in expected_indices:
+            if out_idx < 0 or out_idx >= len(output_defs):
+                continue
+            sock_type, default_output_name = output_defs[out_idx]
+            if "Bundle" in str(sock_type or ""):
+                continue
+            sink_node = sink_nodes_by_idx.get(int(out_idx))
+            if sink_node is None:
+                sink_node = cls._create_output_sink_node(
+                    group,
+                    output_node,
+                    int(out_idx),
+                    str(sock_type or ""),
+                    str(default_output_name or ""),
+                )
+                if sink_node is not None:
+                    changed = True
+                    sink_nodes_by_idx[int(out_idx)] = sink_node
+            if sink_node is None:
+                continue
+            sink_kind = ""
+            try:
+                sink_kind = str(sink_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "")
+            except Exception:
+                sink_kind = ""
+            if not sink_kind:
+                sink_kind = "ATTRIBUTE" if str(getattr(sink_node, "bl_idname", "") or "") == "ShaderNodeAttribute" else "FLOAT_DRIVER"
+            if sink_kind == "ATTRIBUTE":
+                # Migrate legacy attribute-only sinks to driver-capable sinks.
+                try:
+                    group.nodes.remove(sink_node)
+                except Exception:
+                    pass
+                sink_node = cls._create_output_sink_node(
+                    group,
+                    output_node,
+                    int(out_idx),
+                    str(sock_type or ""),
+                    str(default_output_name or ""),
+                )
+                if sink_node is not None:
+                    changed = True
+                    sink_nodes_by_idx[int(out_idx)] = sink_node
+                    try:
+                        sink_kind = str(sink_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "")
+                    except Exception:
+                        sink_kind = ""
+                if sink_node is None:
+                    continue
+
+            output_name = str(default_output_name or f"out_{int(out_idx)}")
+            node_outputs = list(getattr(node, "outputs", []) or [])
+            if out_idx < len(node_outputs):
+                output_name = str(getattr(node_outputs[out_idx], "name", "") or output_name)
+
+            target_name = explicit_by_idx.get(int(out_idx), "")
+            if not target_name:
+                target_name = ACEIdManager.generate_compact_attr_name(
+                    str(proxy_name or ""),
+                    str(ace_id or ""),
+                    output_name,
+                    int(out_idx),
+                )[:63]
+            if not target_name:
+                target_name = cls._placeholder_attr_name(int(out_idx), output_name)
+
+            target_obj = None
+            if proxy_name:
+                try:
+                    target_obj = bpy.data.objects.get(str(proxy_name))
+                except Exception:
+                    target_obj = None
+
+            if not sink_kind:
+                sink_kind = "FLOAT_DRIVER"
+            if target_obj is None and sink_kind != "ATTRIBUTE":
+                continue
+
+            if sink_kind != "ATTRIBUTE":
+                if cls._ensure_target_object_property(
+                    target_obj,
+                    target_name,
+                    sink_kind,
+                ):
+                    changed = True
+
+            if cls._bind_sink_node_to_object_property(
+                sink_node,
+                sink_kind,
+                target_obj,
+                target_name,
+                scene=scene,
+            ):
+                changed = True
+
+        return changed
 
     @classmethod
     def rebuild_node_group(cls, cat_key: str, type_key: str):
@@ -129,12 +1248,16 @@ class ACEShaderNodeFactory:
                         ng = None
                 if ng is None:
                     ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
-                else:
+                elif cls._node_group_needs_refresh(ng, node_def, cat_key, type_key):
                     ng.clear()
                     ng.interface.clear()
+                else:
+                    cls._ensure_attr_interface_visible(ng, cat_key, type_key)
+                    continue
                 cls._build_group_content(ng, node_def, cat_key, type_key)
         try:
             from .dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+
             ACESplitterManager.refresh_existing_variants("ShaderNodeTree")
             ACEAudioMathManager.refresh_existing_variants("ShaderNodeTree")
         except Exception:
@@ -167,6 +1290,41 @@ class ACEShaderTreeReader(ACEDummyTreeReader):
             reserved_node_ids=reserved_node_ids,
             consumer_keys=consumer_keys,
         )
+
+    @staticmethod
+    def is_managed_tree(tree) -> bool:
+        """Return True when *tree* is a shader frontend containing ACE nodes."""
+        if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+            return False
+        try:
+            if bool(tree.get("ace_frontend_uid", "")):
+                return True
+        except Exception:
+            pass
+        for node in getattr(tree, "nodes", []) or []:
+            try:
+                if bool(node.get("ace_id", "")):
+                    return True
+            except Exception:
+                pass
+            try:
+                if bool(node.get("ace_source_id", "")):
+                    return True
+            except Exception:
+                pass
+            if str(getattr(node, "type", "") or "") != "GROUP":
+                continue
+            group = getattr(node, "node_tree", None)
+            group_name = str(getattr(group, "name", "") or "")
+            norm_group_name = group_name.lstrip(".")
+            if (
+                group_name.startswith(".ACE_SHADER_")
+                or norm_group_name.startswith("ACE_SHADER_")
+                or group_name.startswith(".ACE_")
+                or norm_group_name.startswith("ACE_")
+            ):
+                return True
+        return False
 
 
 def register():

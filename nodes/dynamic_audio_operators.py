@@ -25,7 +25,6 @@ def _mapped_socket_type(tree_or_type, socket_type: str) -> str:
     if _tree_bl_idname(tree_or_type) != "ShaderNodeTree":
         return socket_type
     mapping = {
-        "NodeSocketBundle": "NodeSocketFloat",
         "NodeSocketInt": "NodeSocketFloat",
         "NodeSocketObject": "NodeSocketString",
     }
@@ -50,7 +49,7 @@ class ACESplitterManager:
     Manages independent variants of the Frequency Splitter.
     Generates hidden Node Groups like '.ACE_delta_frequency_splitter_3_bands'.
     """
-    _INTERNAL_VERSION_TAG = "ACE_SPLITTER_INTERNALS_V4"
+    _INTERNAL_VERSION_TAG = "ACE_SPLITTER_INTERNALS_V5"
 
     @staticmethod
     def get_or_create_variant(band_count: int, tree_or_type="GeometryNodeTree") -> bpy.types.NodeTree:
@@ -297,15 +296,10 @@ class ACESplitterManager:
             input_idx = split_idx + 1
             if input_idx >= len(getattr(input_node, "outputs", [])):
                 continue
-            math_node = ng.nodes.new('ShaderNodeMath')
-            math_node.operation = 'ADD'
-            math_node.location = (-220, -120 * split_idx)
-            math_node.parent = marker
-            try:
-                math_node.inputs[1].default_value = 0.0
-            except Exception:
-                pass
-            ng.links.new(input_node.outputs[input_idx], math_node.inputs[0])
+            splitter_tap = ng.nodes.new('NodeReroute')
+            splitter_tap.location = (-220, -120 * split_idx)
+            splitter_tap.parent = marker
+            ng.links.new(input_node.outputs[input_idx], splitter_tap.inputs[0])
 
         if len(getattr(input_node, "outputs", [])) <= 0:
             return
@@ -363,7 +357,7 @@ class ACEAudioMathManager:
     Manages independent variants of the Audio Math node.
     Generates hidden Node Groups like '.ACE_utilities_audio_math_3_inputs'.
     """
-    _INTERNAL_VERSION_TAG = "ACEAudioMathInternals_v2"
+    _INTERNAL_VERSION_TAG = "ACEAudioMathInternals_v3"
 
     @staticmethod
     def get_or_create_variant(input_count: int, tree_or_type="GeometryNodeTree") -> bpy.types.NodeTree:
@@ -512,25 +506,20 @@ class ACEAudioMathManager:
         marker.label = "ACE Audio Math Internals"
         marker.location = (-700, 260)
 
-        accum_socket = None
-        for i in range(max(int(input_count), 1)):
-            if i >= len(getattr(input_node, "outputs", [])):
-                continue
-            if accum_socket is None:
-                reroute = ng.nodes.new('NodeReroute')
-                reroute.location = (-540, -120 * i)
-                reroute.parent = marker
-                ng.links.new(input_node.outputs[i], reroute.inputs[0])
-                accum_socket = reroute.outputs[0]
-                continue
-            math_add = ng.nodes.new('ShaderNodeMath')
-            math_add.operation = 'ADD'
-            math_add.location = (-260, -120 * i)
-            math_add.parent = marker
-            ng.links.new(accum_socket, math_add.inputs[0])
-            ng.links.new(input_node.outputs[i], math_add.inputs[1])
-            accum_socket = math_add.outputs[0]
+        outputs = getattr(input_node, "outputs", [])
+        if len(outputs) > 0 and len(getattr(output_node, "inputs", [])) > 0:
+            passthrough = ng.nodes.new('NodeReroute')
+            passthrough.location = (-420, 0)
+            passthrough.parent = marker
+            ng.links.new(outputs[0], passthrough.inputs[0])
+            ng.links.new(passthrough.outputs[0], output_node.inputs[0])
 
-        if accum_socket is not None and len(getattr(output_node, "inputs", [])) > 0:
-            ng.links.new(accum_socket, output_node.inputs[0])
+        # Keep extra inputs "alive" without embedding DSP logic in the shader facade.
+        for i in range(1, max(int(input_count), 1)):
+            if i >= len(outputs):
+                continue
+            sink_tap = ng.nodes.new('NodeReroute')
+            sink_tap.location = (-540, -120 * i)
+            sink_tap.parent = marker
+            ng.links.new(outputs[i], sink_tap.inputs[0])
     

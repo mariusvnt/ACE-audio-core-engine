@@ -779,7 +779,11 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
     """Bake the active file source outputs over the scene frame range."""
     bl_idname = "audiocore.bake_active_source"
     bl_label = "Bake Active Source"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER'}
+
+    _timer = None
+    _source_uid: str = ""
+    _source_name: str = ""
 
     @classmethod
     def poll(cls, context):
@@ -792,6 +796,59 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             return False
         source = sources[idx]
         return bool(getattr(source, "source_type", "") == 'FILE')
+
+    @staticmethod
+    def _find_source_by_uid(context, source_uid: str):
+        ace = getattr(getattr(context, "scene", None), "audiocore", None)
+        if not ace:
+            return None
+        for src in getattr(ace, "audio_sources", []) or []:
+            if str(getattr(src, "stable_id", "") or "") == str(source_uid or ""):
+                return src
+        return None
+
+    def _finish_modal(self, context):
+        if self._timer is not None:
+            try:
+                context.window_manager.event_timer_remove(self._timer)
+            except Exception:
+                pass
+            self._timer = None
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        try:
+            engine.flush_bake_results()
+        except Exception:
+            pass
+
+        source = self._find_source_by_uid(context, self._source_uid)
+        if source is None:
+            self._finish_modal(context)
+            self.report({'WARNING'}, "Bake source is no longer available.")
+            return {'CANCELLED'}
+
+        try:
+            status = str(source.get("ace_bake_status", "") or "")
+        except Exception:
+            status = ""
+        if status in {"done", "ready"}:
+            self._finish_modal(context)
+            self.report({'INFO'}, f"Bake completed for '{self._source_name or getattr(source, 'name', 'source')}'.")
+            return {'FINISHED'}
+        if status in {"error", "failed"}:
+            err = ""
+            try:
+                err = str(source.get("ace_bake_error", "") or "")
+            except Exception:
+                err = ""
+            self._finish_modal(context)
+            self.report({'ERROR'}, f"Bake failed: {err or 'Unknown error'}")
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
 
     def execute(self, context):
         ace = getattr(context.scene, "audiocore", None)
@@ -816,13 +873,19 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             engine.compile_scene_frontends(context.scene)
         except Exception:
             pass
-
         ok = engine.bake_source_to_cache(active_source, None, scene=context.scene)
         if not ok:
             self.report({'ERROR'}, "Bake request failed.")
             return {'CANCELLED'}
-        self.report({'INFO'}, "Bake completed for active source.")
-        return {'FINISHED'}
+        self._source_uid = str(getattr(active_source, "stable_id", "") or "")
+        self._source_name = str(getattr(active_source, "name", "") or "")
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        self._finish_modal(context)
 
 # --- REGISTRATION ---
 classes = (
