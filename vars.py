@@ -138,6 +138,27 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'RMS')],
             },
+            "lufs": {
+            "label": "Loudness (LUFS)",
+            "icon": "DRIVER_DISTANCE",
+            "description": (
+                "Normalized loudness output in 0..1 "
+                "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
+                "Window sets averaging time: larger values are smoother/slower, "
+                "smaller values react faster. "
+                "Overlap Ratio (0..1) controls update density: "
+                "0 = stepped window updates, 1 = maximally smooth updates."
+            ),
+            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)'), ('NodeSocketFloat', 'Overlap Ratio')],
+            "outputs": [('NodeSocketFloat', 'Loudness')],
+            },
+            "peak": {
+            "label": "Peak",
+            "icon": "DRIVER_DISTANCE",
+            "description": "Normalized K-weighted peak level in 0..1 (0 = silence, 1 = 0 dB full scale).",
+            "inputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [('NodeSocketFloat', 'Peak')],
+            },
             "spectral_centroid": {
             "label": "Spectral Centroid",
             "icon": "CURVE_NCIRCLE",

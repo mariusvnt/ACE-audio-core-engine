@@ -94,6 +94,46 @@ class TestParallelDSP(unittest.TestCase):
             },
         }
 
+    def _lufs_stream_graph_ir(self):
+        return {
+            "nodes": {
+                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "lufs": {
+                    "category": "stream",
+                    "type": "lufs",
+                    "parameters": {"window_size": 0.4, "overlap_ratio": 0.25},
+                },
+            },
+            "links": [
+                ("src_a", 0, "lufs", 0),
+            ],
+            "source_node_ids": ["src_a"],
+            "source_ir": {
+                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
+            },
+            "output_specs": {
+                "lufs:0": {"node_id": "lufs", "socket_idx": 0, "attr_type": "FLOAT"},
+            },
+        }
+
+    def _peak_stream_graph_ir(self):
+        return {
+            "nodes": {
+                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "peak": {"category": "stream", "type": "peak", "parameters": {}},
+            },
+            "links": [
+                ("src_a", 0, "peak", 0),
+            ],
+            "source_node_ids": ["src_a"],
+            "source_ir": {
+                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
+            },
+            "output_specs": {
+                "peak:0": {"node_id": "peak", "socket_idx": 0, "attr_type": "FLOAT"},
+            },
+        }
+
     def _specs_splitter_stream_graph_ir(self):
         return {
             "nodes": {
@@ -260,6 +300,54 @@ class TestParallelDSP(unittest.TestCase):
         self.assertIn("rms:0", values)
         self.assertTrue(np.isfinite(float(values["rms:0"])))
         self.assertGreater(float(values["rms:0"]), 0.0)
+
+    def test_worker_supports_lufs_stream_operator(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        mono = (0.2 * np.sin((2.0 * np.pi * 440.0 * t))).astype(np.float32, copy=False)
+        job = {
+            "generation_id": 10041,
+            "graph_uid": "lufs_graph",
+            "frame_id": 4,
+            "block_size": n,
+            "sample_rate": sr,
+            "graph_ir_digest": "digest_lufs",
+            "graph_ir": self._lufs_stream_graph_ir(),
+            "source_chunks": {
+                "src_a": {"mono": mono, "sample_rate": sr, "latency_ms": 0.0},
+            },
+        }
+        out = self.pds.evaluate_parallel_job(job)
+        values = dict(out.get("values", {}) or {})
+        self.assertIn("lufs:0", values)
+        self.assertTrue(np.isfinite(float(values["lufs:0"])))
+        self.assertGreaterEqual(float(values["lufs:0"]), 0.0)
+        self.assertLessEqual(float(values["lufs:0"]), 1.0)
+
+    def test_worker_supports_peak_stream_operator(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        mono = (0.2 * np.sin((2.0 * np.pi * 440.0 * t))).astype(np.float32, copy=False)
+        job = {
+            "generation_id": 10042,
+            "graph_uid": "peak_graph",
+            "frame_id": 4,
+            "block_size": n,
+            "sample_rate": sr,
+            "graph_ir_digest": "digest_peak",
+            "graph_ir": self._peak_stream_graph_ir(),
+            "source_chunks": {
+                "src_a": {"mono": mono, "sample_rate": sr, "latency_ms": 0.0},
+            },
+        }
+        out = self.pds.evaluate_parallel_job(job)
+        values = dict(out.get("values", {}) or {})
+        self.assertIn("peak:0", values)
+        self.assertTrue(np.isfinite(float(values["peak:0"])))
+        self.assertGreaterEqual(float(values["peak:0"]), 0.0)
+        self.assertLessEqual(float(values["peak:0"]), 1.0)
 
     def test_worker_supports_cross_source_math_chromagram_branches(self):
         n = 1024

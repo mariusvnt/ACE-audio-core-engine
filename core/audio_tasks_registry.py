@@ -9,9 +9,10 @@ Defines every audio processing node (tasks) used by the engine pipeline:
   - **Splitter nodes**: ``FrequencySplitterTask``, ``MidsideSplitterTask``,
     ``AttackReleaseSplitterTask``, ``ChromagramTask``,
     ``AutoComponentSplitterTask``.
-  - **Stream operators**: ``RMSTask``, ``PitchTask``, ``SpectralCentroidTask``,
-    ``SpectralFluxTask``, ``OnsetTask``, ``ZeroCrossTask``, ``StereoWidthTask``,
-    ``StereoBalanceTask``, ``StereoVectorTask``.
+  - **Stream operators**: ``RMSTask``, ``LUFSTask``, ``PeakTask``, ``PitchTask``,
+    ``SpectralCentroidTask``, ``SpectralFluxTask``, ``OnsetTask``,
+    ``ZeroCrossTask``, ``StereoWidthTask``, ``StereoBalanceTask``,
+    ``StereoVectorTask``.
   - **Layer-3 preview**: ``PreviewSinkTask`` — time-domain-only biquad filter
     chain; strictly no iFFT/iBFT.
   - **Utility**: ``RollingAvgTask``, ``StreamAccumulatorTask``, ``AudioMathTask``,
@@ -23,12 +24,13 @@ worker processes (via ``parallel_dsp``) that are intentionally bpy-free.
 import math
 import os
 import hashlib
+import heapq
 import threading
 import time
 from dataclasses import dataclass
 from collections import deque, OrderedDict
 from queue import Queue, Empty, Full
-from typing import Dict, List, Any, Optional, Tuple, NamedTuple
+from typing import Dict, List, Any, Optional, Tuple, NamedTuple, Callable
 
 import numpy as np
 
@@ -770,8 +772,8 @@ class AudioFluxAnalyzer:
     # internal BLAS thread-pool enabled), so this class-level dict is safe without
     # a Lock under the current architecture. If worker-internal threading is ever
     # introduced, protect all mutations with a threading.Lock here.
-    _GLOBAL_SPECTRUM_CACHE: Dict[Any, np.ndarray] = {}
-    _GLOBAL_SPECTRUM_CACHE_MAX = 16
+    _GLOBAL_SPECTRUM_CACHE: "OrderedDict[Any, np.ndarray]" = OrderedDict()
+    _GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT = 64
 
     def __init__(self, sample_rate: int, block_size: int):
         self.sample_rate = sample_rate
@@ -861,6 +863,21 @@ class AudioFluxAnalyzer:
                 if stale_key == key:
                     continue
                 cls._POOL.pop(stale_key, None)
+
+    @classmethod
+    def _global_spectrum_cache_limit(cls) -> int:
+        """Return the global cross-instance spectrum cache capacity."""
+        try:
+            raw = int(
+                os.environ.get(
+                    "ACE_GLOBAL_SPECTRUM_CACHE_MAX",
+                    cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT,
+                )
+                or cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT
+            )
+        except Exception:
+            raw = int(cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT)
+        return int(min(max(raw, 16), 1024))
 
     def reset_state(self):
         """Clear all per-frame caches and flux-history state."""
@@ -955,6 +972,7 @@ class AudioFluxAnalyzer:
         global_key = (chunk_token, "full_spectrum", int(chunk.frame_index))
         global_mag = AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.get(global_key)
         if global_mag is not None:
+            AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
             self.cache[spec_key] = global_mag
             return global_mag
 
@@ -982,14 +1000,15 @@ class AudioFluxAnalyzer:
             pass
 
         self.cache[spec_key] = mag
-        # Populate global cross-instance cache; evict oldest entry when full.
+        # Populate global cross-instance cache with LRU eviction.
         AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE[global_key] = mag
-        if len(AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE) > AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE_MAX:
+        AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
+        max_entries = AudioFluxAnalyzer._global_spectrum_cache_limit()
+        while len(AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE) > int(max_entries):
             try:
-                oldest = next(iter(AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE))
-                AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.pop(oldest, None)
-            except StopIteration:
-                pass
+                AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.popitem(last=False)
+            except Exception:
+                break
         if self.bft.is_temporal:
             try:
                 _, rms_arr, zcr_arr = self.bft.get_temporal_data()
@@ -1486,6 +1505,8 @@ class SourceTask(ACEAudioTask):
         self._last_config_signature: Optional[Tuple[Any, ...]] = None
         self.source_ready: bool = True
         self.last_error: str = ""
+        # Pending bpy PropertyGroup writes deferred from non-main threads.
+        self._pending_ctx_writes: dict[str, Any] = {}
 
         # --- Prefetch double-buffer (FILE sources only) ---
         # A daemon thread pre-reads the next sequential block while the main
@@ -1558,6 +1579,7 @@ class SourceTask(ACEAudioTask):
             self._prefetch_ready.set()
 
     def process(self, inputs):
+        self._flush_pending_ctx_writes()   # drain RNA writes from prefetch thread
         chunk = self._read_next_block()
         if chunk:
             return chunk
@@ -1566,6 +1588,21 @@ class SourceTask(ACEAudioTask):
             # receive a well-formed input.  The UI reads ace_source_error for detail.
             return _make_silence_chunk(self.block_size, self.sample_rate)
         return self.silence_buffer
+
+    def _flush_pending_ctx_writes(self) -> None:
+        """Apply deferred PropertyGroup writes. Call only from the main thread."""
+        if not self._pending_ctx_writes:
+            return
+        ctx = self.source_context
+        if ctx is None:
+            self._pending_ctx_writes.clear()
+            return
+        for attr, val in list(self._pending_ctx_writes.items()):
+            try:
+                setattr(ctx, attr, val)
+            except Exception:
+                pass
+        self._pending_ctx_writes.clear()
 
     def _timeslice_mode_hint(self) -> str:
         settings = getattr(self, "engine_settings", None)
@@ -1734,7 +1771,6 @@ class SourceTask(ACEAudioTask):
 
     def _load_source(self):
         """Load source audio into memory and prepare analyzers."""
-        import time
         self.initialized = True
         ctx = self.source_context
 
@@ -1742,10 +1778,7 @@ class SourceTask(ACEAudioTask):
         filepath = getattr(ctx, "filepath", "") if ctx else ""
         flow_id = build_live_flow_identifier(ctx) if ctx else ""
         if ctx is not None:
-            try:
-                ctx.flow_identifier = flow_id
-            except Exception:
-                pass
+            self._pending_ctx_writes["flow_identifier"] = flow_id
         live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx else 10
         target_sample_rate = None
         engine = getattr(self, "engine_ref", None)
@@ -1769,12 +1802,9 @@ class SourceTask(ACEAudioTask):
             self.source_ready = True
             self.last_error = ""
             if ctx and getattr(ctx, "source_type", "") == "FILE":
-                try:
-                    ctx.ace_source_error = ""
-                except Exception:
-                    pass
-            if ctx and getattr(ctx, "source_type", "") == "LIVE" and hasattr(ctx, "live_status"):
-                ctx.live_status = ""
+                self._pending_ctx_writes["ace_source_error"] = ""
+            if ctx and getattr(ctx, "source_type", "") == "LIVE":
+                self._pending_ctx_writes["live_status"] = ""
             self.live_ready = True
         else:
             self.sample_rate = SAMPLE_RATE
@@ -1785,16 +1815,15 @@ class SourceTask(ACEAudioTask):
                 if rec is not None and hasattr(rec, "format_error_summary")
                 else (getattr(rec, "last_error", "") if rec is not None else "Source open failed")
             ) or "Source open failed"
-            if ctx and getattr(ctx, "source_type", "") == "LIVE" and hasattr(ctx, "live_status"):
-                ctx.live_status = getattr(self.reception, "last_error", "") if self.reception else "Live input unavailable"
+            if ctx and getattr(ctx, "source_type", "") == "LIVE":
+                self._pending_ctx_writes["live_status"] = (
+                    getattr(self.reception, "last_error", "") if self.reception else "Live input unavailable"
+                )
             self.reception = None
             if ctx and getattr(ctx, "source_type", "") == "LIVE":
                 self.live_ready = False
             if ctx and getattr(ctx, "source_type", "") == "FILE":
-                try:
-                    ctx.ace_source_error = self.last_error
-                except Exception:
-                    pass
+                self._pending_ctx_writes["ace_source_error"] = self.last_error
 
         # Recompute block size now that the real sample rate is known
         resolve_fn = self.resolve_block_size_fn or _resolve_block_size_default
@@ -1824,11 +1853,11 @@ class SourceTask(ACEAudioTask):
                 native_sample_rate = int(getattr(self.reception, "native_sample_rate", 0) or 0)
                 if native_sample_rate <= 0:
                     native_sample_rate = int(self.sample_rate)
-                ctx.sample_rate = int(self.sample_rate)
-                ctx.native_sample_rate = int(native_sample_rate)
-                ctx.duration = duration_val
+                self._pending_ctx_writes["sample_rate"] = int(self.sample_rate)
+                self._pending_ctx_writes["native_sample_rate"] = int(native_sample_rate)
+                self._pending_ctx_writes["duration"] = duration_val
                 if hasattr(ctx, "live_status") and opened:
-                    ctx.live_status = ""
+                    self._pending_ctx_writes["live_status"] = ""
             except Exception:
                 pass
 
@@ -1954,30 +1983,6 @@ class SourceTask(ACEAudioTask):
         """Backward-compatible mono wrapper around the shared frontend processor."""
         analysis_mono, _, _ = self._analysis_frontend_tracks(block, None)
         return analysis_mono
-
-    def _apply_envelope(self, data: np.ndarray, attack_c: float, release_c: float) -> np.ndarray:
-        """Legacy helper retained for compatibility; smooths the signed waveform."""
-        signal = np.asarray(data, dtype=np.float32).reshape(-1).astype(np.float32, copy=False)
-        if self._env_buffer is None or self._env_buffer.shape != signal.shape:
-            self._env_buffer = np.empty_like(signal)
-        if NUMBA_AVAILABLE:
-            try:
-                env_out, env_state = _signed_smooth_block(signal, attack_c, release_c, float(self._env_state))
-                np.copyto(self._env_buffer, env_out)
-                self._env_state = float(env_state)
-                return self._env_buffer
-            except Exception:
-                pass
-
-        env = float(self._env_state)
-        out = self._env_buffer
-        for i in range(signal.shape[0]):
-            x = float(signal[i])
-            coeff = attack_c if abs(x) > abs(env) else release_c
-            env = coeff * env + (1.0 - coeff) * x
-            out[i] = env
-        self._env_state = env
-        return out
 
     def _reset_sample_clocks(self):
         self.read_cursor = 0
@@ -2154,7 +2159,6 @@ class SourceTask(ACEAudioTask):
 
     def _read_next_block_sync(self, track_perf_stage: bool = True) -> Optional["AudioChunk"]:
         """Synchronous block read.  May perform file I/O or queue dequeue."""
-        import time
         t0 = time.perf_counter()
         try:
             current_signature = self._config_signature()
@@ -2382,9 +2386,12 @@ class SourceSpecsTask(ACEAudioTask):
     _BG_QUEUE_MAX = 16
     _BG_TASK_QUEUE: Queue = Queue(maxsize=_BG_QUEUE_MAX)
     _BG_PENDING: set[Tuple[str, float]] = set()
+    _BG_QUEUED: set[Tuple[str, float]] = set()
     _BG_THREAD_LOCK = threading.Lock()
     _BG_STOP_EVENT = threading.Event()
     _BG_THREAD: Optional[threading.Thread] = None
+    # Pending ctx writes: (target_key, bpm, beats_per_bar). Drained on main thread.
+    _PENDING_CTX_WRITES: "Queue[Tuple[Tuple[str, float], float, int]]" = Queue()
 
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -2404,6 +2411,12 @@ class SourceSpecsTask(ACEAudioTask):
         self._analysis_next_tick_ts: float = 0.0
 
     def process(self, inputs):
+        # Flush any detected-tempo results from the background worker.
+        # Guarded to main-thread execution only so worker/bake threads never mutate bpy state.
+        if threading.current_thread() is threading.main_thread():
+            SourceSpecsTask.flush_pending_ctx_writes(
+                getattr(getattr(self, "engine_ref", None), "_source_specs_task_registry", {})
+            )
         # Preserve the audio path
         chunk_in = _ensure_audio_chunk(inputs.get(0), self.block_size)
         ctx = self.source_context
@@ -2568,10 +2581,11 @@ class SourceSpecsTask(ACEAudioTask):
             }
             if len(cls._GLOBAL_LONG_TERM_CACHE) > cls._GLOBAL_CACHE_MAX:
                 overflow = len(cls._GLOBAL_LONG_TERM_CACHE) - cls._GLOBAL_CACHE_MAX
-                stale_items = sorted(
+                stale_items = heapq.nsmallest(
+                    overflow,
                     cls._GLOBAL_LONG_TERM_CACHE.items(),
                     key=lambda kv: float(kv[1].get("ts", 0.0)) if isinstance(kv[1], dict) else 0.0,
-                )[:overflow]
+                )
                 for stale_key, _ in stale_items:
                     cls._GLOBAL_LONG_TERM_CACHE.pop(stale_key, None)
 
@@ -2590,10 +2604,11 @@ class SourceSpecsTask(ACEAudioTask):
             }
             if len(cls._GLOBAL_LONG_TERM_CACHE) > cls._GLOBAL_CACHE_MAX:
                 overflow = len(cls._GLOBAL_LONG_TERM_CACHE) - cls._GLOBAL_CACHE_MAX
-                stale_items = sorted(
+                stale_items = heapq.nsmallest(
+                    overflow,
                     cls._GLOBAL_LONG_TERM_CACHE.items(),
                     key=lambda kv: float(kv[1].get("ts", 0.0)) if isinstance(kv[1], dict) else 0.0,
-                )[:overflow]
+                )
                 for stale_key, _ in stale_items:
                     cls._GLOBAL_LONG_TERM_CACHE.pop(stale_key, None)
 
@@ -2626,6 +2641,7 @@ class SourceSpecsTask(ACEAudioTask):
         cls._BG_THREAD = None
         with cls._GLOBAL_CACHE_LOCK:
             cls._BG_PENDING.clear()
+            cls._BG_QUEUED.clear()
             cls._GLOBAL_ACTIVE_ANALYSIS.clear()
         try:
             while True:
@@ -2635,18 +2651,50 @@ class SourceSpecsTask(ACEAudioTask):
             pass
 
     @classmethod
+    def flush_pending_ctx_writes(cls, task_registry: dict) -> None:
+        """Apply detected-tempo results to bpy PropertyGroup objects.
+
+        Must be called from the main thread.
+        """
+        utils.assert_main_thread("SourceSpecsTask.flush_pending_ctx_writes")
+        try:
+            while True:
+                target, bpm_val, beats_per_bar = cls._PENDING_CTX_WRITES.get_nowait()
+                task = task_registry.get(target)
+                ctx = getattr(task, "source_context", None) if task else None
+                if ctx is None:
+                    continue
+                if cls._user_overrode_tempo(ctx):
+                    continue
+                try:
+                    ctx[task._auto_bpm_key] = float(bpm_val)
+                    ctx[task._auto_meter_key] = int(max(1, beats_per_bar))
+                    ctx.bpm = float(bpm_val)
+                    ctx.beats_per_bar = int(max(1, beats_per_bar))
+                    ctx["ace_bpm_user_override"] = False
+                    ctx["ace_meter_user_override"] = False
+                except Exception:
+                    pass
+        except Empty:
+            pass
+        except Exception:
+            pass
+
+    @classmethod
     def _queue_background_analysis(cls, target: Tuple[str, float]) -> bool:
         cls._ensure_background_worker()
         with cls._GLOBAL_CACHE_LOCK:
-            if target in cls._BG_PENDING:
+            if target in cls._BG_QUEUED:
                 return True
             cls._BG_PENDING.add(target)
         try:
             cls._BG_TASK_QUEUE.put_nowait(target)
+            with cls._GLOBAL_CACHE_LOCK:
+                cls._BG_QUEUED.add(target)
             return True
         except Full:
-            with cls._GLOBAL_CACHE_LOCK:
-                cls._BG_PENDING.discard(target)
+            # Queue is full. Keep target in _BG_PENDING so callers avoid flooding
+            # duplicate enqueue attempts while the worker drains existing items.
             return False
 
     @classmethod
@@ -2656,6 +2704,8 @@ class SourceSpecsTask(ACEAudioTask):
                 target = cls._BG_TASK_QUEUE.get(timeout=0.25)
             except Empty:
                 continue
+            with cls._GLOBAL_CACHE_LOCK:
+                cls._BG_QUEUED.discard(target)
 
             try:
                 detected = cls._estimate_tempo_for_target(target)
@@ -2672,12 +2722,12 @@ class SourceSpecsTask(ACEAudioTask):
             finally:
                 with cls._GLOBAL_CACHE_LOCK:
                     cls._BG_PENDING.discard(target)
+                    cls._BG_QUEUED.discard(target)
                 try:
                     cls._BG_TASK_QUEUE.task_done()
                 except Exception:
                     pass
 
-    @classmethod
     @staticmethod
     def _flux_peak_indices(flux_arr: np.ndarray) -> np.ndarray:
         flux = np.asarray(flux_arr, dtype=np.float32).reshape(-1)
@@ -2838,19 +2888,21 @@ class SourceSpecsTask(ACEAudioTask):
         *,
         respect_override: bool = True,
     ):
+        # Update the instance cache (task-local state).
         self._long_term_cache["bpm"] = float(bpm_val)
         self._long_term_cache["beats_per_bar"] = int(max(1, beats_per_bar))
         self._long_term_done = True
+        # Do not write bpy properties here: this may be called from background work.
+        # Queue the write for main-thread flush instead.
         if ctx and (not respect_override or not SourceSpecsTask._user_overrode_tempo(ctx)):
-            try:
-                ctx[self._auto_bpm_key] = float(bpm_val)
-                ctx[self._auto_meter_key] = int(max(1, beats_per_bar))
-                ctx.bpm = float(bpm_val)
-                ctx.beats_per_bar = int(max(1, beats_per_bar))
-                ctx["ace_bpm_user_override"] = False
-                ctx["ace_meter_user_override"] = False
-            except Exception:
-                pass
+            target = self._long_term_target
+            if target is not None:
+                try:
+                    SourceSpecsTask._PENDING_CTX_WRITES.put_nowait(
+                        (target, float(bpm_val), int(max(1, beats_per_bar)))
+                    )
+                except Exception:
+                    pass
 
     def _start_long_term_analysis(self, target: Tuple[str, float]) -> bool:
         filepath, _ = target
@@ -3094,10 +3146,13 @@ def _zero_crossing_rate(mono: np.ndarray, epsilon: float = 1e-6) -> float:
         if nz.size == 0:
             return 0.0
         first = int(nz[0])
-        signs[:first] = signs[first]
-        for idx in range(first + 1, n):
-            if signs[idx] == 0:
-                signs[idx] = signs[idx - 1]
+        # Forward-fill sign values entirely in NumPy (no Python loop).
+        fill_idx = np.zeros(n, dtype=np.intp)
+        fill_idx[nz] = nz
+        if first > 0:
+            fill_idx[:first] = first
+        np.maximum.accumulate(fill_idx, out=fill_idx)
+        signs = signs[fill_idx]
 
     crossings = int(np.count_nonzero(signs[1:] != signs[:-1]))
     return float(crossings / float(max(n - 1, 1)))
@@ -3791,6 +3846,327 @@ class RMSTask(ACEAudioTask):
             weights[idx == (n // 2)] = 1.0
         mean_square = float(np.sum(power * weights) / (n * n))
         return float(np.sqrt(max(mean_square, 0.0)))
+
+
+class LUFSTask(ACEAudioTask):
+    """Estimate integrated short-window loudness using K-weighting (LUFS).
+
+    Applies the ITU-R BS.1770-style K-weighting filter chain:
+      1. +4 dB high-shelf pre-filter at 1500 Hz (Q = 1/sqrt(2))
+      2. RLB high-pass at 38 Hz (Q = 0.5)
+
+    The loudness output is computed from the running windowed mean-square:
+      ``LUFS = -0.691 + 10 * log10(mean_square)``
+
+    Output (normalized):
+      - socket 0: loudness in [0, 1], where 0 = silence (-inf LUFS), 1 = 0 LUFS
+    """
+
+    _DEFAULT_WINDOW_S = 0.4
+    _DEFAULT_OVERLAP_RATIO = 0.25
+    _MIN_WINDOW_S = 0.05
+    _MAX_WINDOW_S = 3.0
+
+    def __init__(self, node_id, params, block_size):
+        super().__init__(node_id, params, block_size)
+        self._sample_rate: int = 0
+        self._prefilter_coeffs: Tuple[float, float, float, float, float] = (1.0, 0.0, 0.0, 0.0, 0.0)
+        self._rlb_coeffs: Tuple[float, float, float, float, float] = (1.0, 0.0, 0.0, 0.0, 0.0)
+        self._prefilter_state: List[float] = [0.0, 0.0]
+        self._rlb_state: List[float] = [0.0, 0.0]
+        self._weighted_energy: np.ndarray = np.zeros(0, dtype=np.float64)
+        self._samples_since_update: int = 0
+        self._last_lufs: float = 0.0
+        self._last_frame_request: Optional[int] = None
+
+    def _reset_temporal_state(self):
+        self._weighted_energy = np.zeros(0, dtype=np.float64)
+        self._samples_since_update = 0
+        self._last_lufs = 0.0
+
+    def _reset_filter_state(self):
+        self._prefilter_state[0] = 0.0
+        self._prefilter_state[1] = 0.0
+        self._rlb_state[0] = 0.0
+        self._rlb_state[1] = 0.0
+
+    @staticmethod
+    def _coerce_scalar(value: Any, fallback: float) -> float:
+        if isinstance(value, AudioChunk):
+            return float(fallback)
+        if isinstance(value, np.ndarray):
+            arr = np.asarray(value, dtype=np.float64).reshape(-1)
+            return float(arr[0]) if arr.size > 0 else float(fallback)
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return float(fallback)
+            try:
+                return float(value[0])
+            except Exception:
+                return float(fallback)
+        try:
+            return float(value)
+        except Exception:
+            return float(fallback)
+
+    def _resolve_seconds(
+        self,
+        inputs: Dict[int, Any],
+        input_idx: int,
+        param_key: str,
+        fallback: float,
+        min_value: float,
+        max_value: float,
+    ) -> float:
+        raw = inputs.get(int(input_idx))
+        if raw is None:
+            raw = self.parameters.get(f"in_{int(input_idx)}", self.parameters.get(param_key, fallback))
+        val = self._coerce_scalar(raw, fallback)
+        if not np.isfinite(val):
+            val = float(fallback)
+        return float(np.clip(val, float(min_value), float(max_value)))
+
+    @staticmethod
+    def _design_high_shelf(sample_rate: int, freq_hz: float = 1500.0, gain_db: float = 4.0, q: float = 0.70710678118):
+        sr = max(float(sample_rate), 1.0)
+        nyquist = 0.5 * sr
+        f0 = float(np.clip(freq_hz, 10.0, max(nyquist * 0.95, 10.0)))
+        q_safe = max(float(q), 1e-6)
+        A = 10.0 ** (float(gain_db) / 40.0)
+        w0 = 2.0 * math.pi * f0 / sr
+        cos_w0 = math.cos(w0)
+        sin_w0 = math.sin(w0)
+        alpha = sin_w0 / (2.0 * q_safe)
+        sqrt_A = math.sqrt(A)
+
+        b0 = A * ((A + 1.0) + ((A - 1.0) * cos_w0) + (2.0 * sqrt_A * alpha))
+        b1 = -2.0 * A * ((A - 1.0) + ((A + 1.0) * cos_w0))
+        b2 = A * ((A + 1.0) + ((A - 1.0) * cos_w0) - (2.0 * sqrt_A * alpha))
+        a0 = (A + 1.0) - ((A - 1.0) * cos_w0) + (2.0 * sqrt_A * alpha)
+        a1 = 2.0 * ((A - 1.0) - ((A + 1.0) * cos_w0))
+        a2 = (A + 1.0) - ((A - 1.0) * cos_w0) - (2.0 * sqrt_A * alpha)
+        if abs(a0) <= 1e-12:
+            return (1.0, 0.0, 0.0, 0.0, 0.0)
+        return (
+            float(b0 / a0),
+            float(b1 / a0),
+            float(b2 / a0),
+            float(a1 / a0),
+            float(a2 / a0),
+        )
+
+    @staticmethod
+    def _design_high_pass(sample_rate: int, freq_hz: float = 38.0, q: float = 0.5):
+        sr = max(float(sample_rate), 1.0)
+        nyquist = 0.5 * sr
+        f0 = float(np.clip(freq_hz, 5.0, max(nyquist * 0.95, 5.0)))
+        q_safe = max(float(q), 1e-6)
+        w0 = 2.0 * math.pi * f0 / sr
+        cos_w0 = math.cos(w0)
+        sin_w0 = math.sin(w0)
+        alpha = sin_w0 / (2.0 * q_safe)
+
+        b0 = 0.5 * (1.0 + cos_w0)
+        b1 = -(1.0 + cos_w0)
+        b2 = 0.5 * (1.0 + cos_w0)
+        a0 = 1.0 + alpha
+        a1 = -2.0 * cos_w0
+        a2 = 1.0 - alpha
+        if abs(a0) <= 1e-12:
+            return (1.0, 0.0, 0.0, 0.0, 0.0)
+        return (
+            float(b0 / a0),
+            float(b1 / a0),
+            float(b2 / a0),
+            float(a1 / a0),
+            float(a2 / a0),
+        )
+
+    @staticmethod
+    def _apply_biquad(
+        signal: np.ndarray,
+        coeffs: Tuple[float, float, float, float, float],
+        state: List[float],
+    ) -> np.ndarray:
+        src = np.asarray(signal, dtype=np.float32).reshape(-1)
+        if src.size == 0:
+            return src
+        b0, b1, b2, a1, a2 = coeffs
+        z1 = float(state[0]) if len(state) > 0 else 0.0
+        z2 = float(state[1]) if len(state) > 1 else 0.0
+
+        if NUMBA_AVAILABLE:
+            out, z1_new, z2_new = _biquad_filter_block(src, b0, b1, b2, a1, a2, z1, z2)
+            state[0] = float(z1_new)
+            state[1] = float(z2_new)
+            return out.astype(np.float32, copy=False)
+
+        if SCIPY_AVAILABLE and callable(scipy_lfilter):
+            try:
+                out_64, zf = scipy_lfilter(
+                    np.array([b0, b1, b2], dtype=np.float64),
+                    np.array([1.0, a1, a2], dtype=np.float64),
+                    src.astype(np.float64, copy=False),
+                    zi=np.array([z1, z2], dtype=np.float64),
+                )
+                state[0] = float(zf[0])
+                state[1] = float(zf[1])
+                return out_64.astype(np.float32, copy=False)
+            except Exception:
+                pass
+
+        out = np.empty_like(src, dtype=np.float32)
+        s1 = z1
+        s2 = z2
+        for i in range(src.shape[0]):
+            x = float(src[i])
+            y = (b0 * x) + s1
+            s1 = (b1 * x) - (a1 * y) + s2
+            s2 = (b2 * x) - (a2 * y)
+            out[i] = y
+        state[0] = float(s1)
+        state[1] = float(s2)
+        return out
+
+    def _ensure_filter_coeffs(self, sample_rate: int):
+        sr = max(int(sample_rate), 1)
+        if int(self._sample_rate) == sr:
+            return
+        self._sample_rate = sr
+        self._prefilter_coeffs = self._design_high_shelf(sr)
+        self._rlb_coeffs = self._design_high_pass(sr)
+        self._reset_filter_state()
+        self._weighted_energy = np.zeros(0, dtype=np.float64)
+        self._samples_since_update = 0
+
+    @staticmethod
+    def _db_to_unit(db_value: float) -> float:
+        """Map a dB-like value to [0, 1] with 0 dB -> 1 and -inf dB -> 0."""
+        try:
+            db = float(db_value)
+        except Exception:
+            return 0.0
+        if not np.isfinite(db):
+            return 0.0
+        if db <= -120.0:
+            return 0.0
+        if db >= 0.0:
+            return 1.0
+        return float(np.clip(10.0 ** (db / 20.0), 0.0, 1.0))
+
+    def process(self, inputs):
+        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
+        frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
+        last_frame = self._last_frame_request
+        if last_frame is not None and frame_idx >= 0 and frame_idx < int(last_frame):
+            self._reset_temporal_state()
+            self._reset_filter_state()
+
+        sample_rate = max(int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE), 1)
+        self._ensure_filter_coeffs(sample_rate)
+
+        window_s = self._resolve_seconds(
+            inputs,
+            input_idx=1,
+            param_key="window_size",
+            fallback=self._DEFAULT_WINDOW_S,
+            min_value=self._MIN_WINDOW_S,
+            max_value=self._MAX_WINDOW_S,
+        )
+        overlap_ratio = self._resolve_seconds(
+            inputs,
+            input_idx=2,
+            param_key="overlap_ratio",
+            fallback=self._DEFAULT_OVERLAP_RATIO,
+            min_value=0.0,
+            max_value=1.0,
+        )
+
+        window_samples = max(int(round(window_s * float(sample_rate))), 1)
+        max_overlap_samples = max(window_samples - 1, 0)
+        overlap_samples = int(round(float(overlap_ratio) * float(max_overlap_samples)))
+        overlap_samples = int(np.clip(overlap_samples, 0, max_overlap_samples))
+        hop_samples = max(window_samples - max(overlap_samples, 0), 1)
+
+        analysis_mono = _masked_mono_signal(chunk)
+        if analysis_mono.size <= 0:
+            self._last_lufs = 0.0
+            if frame_idx >= 0:
+                self._last_frame_request = frame_idx
+            return float(self._last_lufs)
+
+        weighted = self._apply_biquad(analysis_mono, self._prefilter_coeffs, self._prefilter_state)
+        weighted = self._apply_biquad(weighted, self._rlb_coeffs, self._rlb_state)
+        energy = np.square(weighted.astype(np.float64, copy=False))
+
+        if self._weighted_energy.size <= 0:
+            self._weighted_energy = energy[-window_samples:]
+        else:
+            self._weighted_energy = np.concatenate((self._weighted_energy, energy), axis=0)
+            if self._weighted_energy.size > window_samples:
+                self._weighted_energy = self._weighted_energy[-window_samples:]
+        self._samples_since_update += int(energy.size)
+
+        if self._samples_since_update >= hop_samples or self._last_frame_request is None:
+            mean_square = float(np.mean(self._weighted_energy, dtype=np.float64)) if self._weighted_energy.size > 0 else 0.0
+            if (not np.isfinite(mean_square)) or mean_square <= 1e-12:
+                lufs = float("-inf")
+            else:
+                lufs = -0.691 + (10.0 * math.log10(mean_square))
+                if not np.isfinite(lufs):
+                    lufs = float("-inf")
+            self._last_lufs = self._db_to_unit(lufs)
+            self._samples_since_update %= hop_samples
+
+        if frame_idx >= 0:
+            self._last_frame_request = frame_idx
+        return float(self._last_lufs)
+
+
+class PeakTask(LUFSTask):
+    """Estimate K-weighted peak level.
+
+    Output (normalized):
+      - socket 0: weighted peak in [0, 1], where 0 = -inf dB, 1 = 0 dB
+    """
+
+    def __init__(self, node_id, params, block_size):
+        super().__init__(node_id, params, block_size)
+        self._last_peak: float = 0.0
+
+    def _reset_temporal_state(self):
+        self._last_peak = 0.0
+
+    def process(self, inputs):
+        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
+        frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
+        last_frame = self._last_frame_request
+        if last_frame is not None and frame_idx >= 0 and frame_idx < int(last_frame):
+            self._reset_temporal_state()
+            self._reset_filter_state()
+
+        sample_rate = max(int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE), 1)
+        self._ensure_filter_coeffs(sample_rate)
+
+        analysis_mono = _masked_mono_signal(chunk)
+        if analysis_mono.size <= 0:
+            self._last_peak = 0.0
+            if frame_idx >= 0:
+                self._last_frame_request = frame_idx
+            return float(self._last_peak)
+
+        weighted = self._apply_biquad(analysis_mono, self._prefilter_coeffs, self._prefilter_state)
+        weighted = self._apply_biquad(weighted, self._rlb_coeffs, self._rlb_state)
+        peak = float(np.max(np.abs(weighted))) if weighted.size > 0 else 0.0
+        if peak <= 1e-12 or (not np.isfinite(peak)):
+            peak_db = float("-inf")
+        else:
+            peak_db = float(20.0 * math.log10(max(float(peak), 1e-12)))
+        self._last_peak = self._db_to_unit(peak_db)
+
+        if frame_idx >= 0:
+            self._last_frame_request = frame_idx
+        return float(self._last_peak)
 
 
 class PitchTask(ACEAudioTask):
@@ -4725,6 +5101,43 @@ class StreamAccumulatorTask(ACEAudioTask):
         self._last_frame_request: Optional[int] = None
         self._manual_reset_latched: bool = False
 
+    def export_state(self) -> Dict[str, Any]:
+        """Return a serializable snapshot of the current accumulator state."""
+        if self._accumulator is None:
+            return {}
+        try:
+            acc = np.asarray(self._accumulator, dtype=np.float64).reshape(-1)
+        except Exception:
+            return {}
+        if acc.size <= 0:
+            return {}
+        return {
+            "accumulator": acc.copy(),
+            "last_frame_request": (
+                int(self._last_frame_request) if self._last_frame_request is not None else None
+            ),
+            "manual_reset_latched": bool(self._manual_reset_latched),
+        }
+
+    def import_state(self, state: Dict[str, Any]) -> bool:
+        """Restore accumulator state from ``export_state()`` data."""
+        if not isinstance(state, dict):
+            return False
+        raw_acc = state.get("accumulator")
+        if raw_acc is None:
+            return False
+        acc = self._coerce_input_array(raw_acc)
+        if int(acc.size) <= 0:
+            return False
+        self._accumulator = np.asarray(acc, dtype=np.float64).copy()
+        raw_last = state.get("last_frame_request")
+        try:
+            self._last_frame_request = int(raw_last) if raw_last is not None else None
+        except Exception:
+            self._last_frame_request = None
+        self._manual_reset_latched = bool(state.get("manual_reset_latched", False))
+        return True
+
     @staticmethod
     def _coerce_input_array(raw_value: Any) -> np.ndarray:
         if raw_value is None:
@@ -5094,10 +5507,16 @@ class ACEAudioGraph:
         self.eval_plan_cache: Dict[Tuple[str, ...], List[str]] = {}
         self.output_slot_specs: List[Tuple[str, str, int]] = []
         self.output_slot_specs_by_subset: Dict[Tuple[str, ...], List[Tuple[str, str, int]]] = {}
+        self.proxy_lookup_fn: Optional[Callable[[str], Any]] = None
 
     def get_proxy_object(self):
-        import bpy  # late import to avoid Blender dependency at module load                                            # type: ignore
-        return bpy.data.objects.get(self.proxy_name)
+        resolver = getattr(self, "proxy_lookup_fn", None)
+        if callable(resolver):
+            try:
+                return resolver(str(self.proxy_name or ""))
+            except Exception:
+                return None
+        return None
 
 
 @dataclass(frozen=True)

@@ -85,6 +85,10 @@ class _FaultyObject(_TrackingObject):
         super().__setitem__(key, value)
 
 
+class _TrackingMeshData(dict):
+    pass
+
+
 class TestProxyManagement(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -154,6 +158,17 @@ class TestProxyManagement(unittest.TestCase):
         self.assertEqual(first_writes, 1)
         self.assertEqual(consumer_obj.write_count, 1)
         self.assertEqual(consumer_obj["ace_prop"], 1.25)
+
+    def test_update_object_property_sinks_skips_mesh_data_mirroring_by_default(self):
+        consumer_obj = _TrackingObject("Cube")
+        consumer_obj.data = _TrackingMeshData()
+        self.bpy.data.objects = {"Cube": consumer_obj}
+        manager = self.proxy_mod.ACEProxyManager(None)
+
+        manager.update_object_property_sinks("Cube", {"ace_prop": 1.25}, {"ace_prop": "FLOAT"})
+
+        self.assertEqual(consumer_obj["ace_prop"], 1.25)
+        self.assertNotIn("ace_prop", consumer_obj.data)
 
     def test_update_object_property_sinks_falls_back_to_zero_on_failure(self):
         faulty_obj = _FaultyObject("Cube")

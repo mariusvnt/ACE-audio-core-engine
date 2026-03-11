@@ -6,6 +6,7 @@ along with the update callbacks and dynamic enum helpers that wire them to
 the engine and the live device list.
 """
 import bpy                                                                                                                          # type: ignore
+import time
 from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 
@@ -42,6 +43,35 @@ def _sync_live_flow_identifier(source_prop):
         pass
 
 
+def _source_has_tempo_meter_selection(source_prop) -> bool:
+    """Return True when the source has a selected file or a valid live route."""
+    src_type = str(getattr(source_prop, "source_type", "") or "").upper()
+    if src_type == "FILE":
+        return bool(str(getattr(source_prop, "filepath", "") or "").strip())
+    if src_type != "LIVE":
+        return False
+
+    transport = str(getattr(source_prop, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE").upper()
+    if transport == "UDP":
+        try:
+            return int(getattr(source_prop, "live_udp_port", 0) or 0) > 0
+        except Exception:
+            return False
+
+    device = str(getattr(source_prop, "live_device_selector", "") or "").strip()
+    return bool(device) and device != "__MISSING__"
+
+
+def _sync_tempo_meter_panel_expansion(source_prop):
+    """Keep Tempo & Meter foldout state aligned with source selection/config."""
+    should_open = _source_has_tempo_meter_selection(source_prop)
+    try:
+        if bool(getattr(source_prop, "tempo_meter_panel_open", False)) != bool(should_open):
+            source_prop.tempo_meter_panel_open = bool(should_open)
+    except Exception:
+        pass
+
+
 def _clear_tempo_detection_state(source_prop):
     """Drop cached tempo-detection idprops when the source path/type changes."""
     stale_keys = (
@@ -63,6 +93,7 @@ def _clear_tempo_detection_state(source_prop):
 def _on_live_routing_change(self, context):  # noqa: ARG001
     """Blender update callback: rebuild the live flow token when any routing property changes."""
     _sync_live_flow_identifier(self)
+    _sync_tempo_meter_panel_expansion(self)
 
 
 def _on_filepath_change(self, context):
@@ -89,6 +120,7 @@ def _on_filepath_change(self, context):
     except Exception:
         pass
     _clear_tempo_detection_state(self)
+    _sync_tempo_meter_panel_expansion(self)
     _on_engine_runtime_setting_change(self, context)
 
 
@@ -110,6 +142,7 @@ def _on_source_type_change(self, context):
         except Exception:
             pass
     _clear_tempo_detection_state(self)
+    _sync_tempo_meter_panel_expansion(self)
     # Invalidate engine caches and force a recompile so the new source type
     # takes effect immediately (clears probe cache, stale parallel futures, etc.)
     _on_engine_runtime_setting_change(self, context)
@@ -128,16 +161,26 @@ def _on_engine_runtime_setting_change(self, context):  # noqa: ARG001
         pass
 
 
-def _live_device_items(self, context):  # noqa: ARG001
-    """Blender dynamic-enum callback: build the live capture device list.
+def _on_active_source_index_change(self, context):  # noqa: ARG001
+    """Auto-open Tempo & Meter when selecting a source with configured input."""
+    sources = getattr(self, "audio_sources", None) or []
+    try:
+        idx = int(getattr(self, "active_audio_source_index", -1) or -1)
+    except Exception:
+        idx = -1
+    if 0 <= idx < len(sources):
+        _sync_tempo_meter_panel_expansion(sources[idx])
 
-    Queries sounddevice at draw time to enumerate available input devices and,
-    on Windows, WASAPI loopback-capable output devices.  Falls back to a single
-    "__MISSING__" sentinel item when sounddevice is not installed.
 
-    Returns:
-        List of (identifier, label, description) tuples for bpy EnumProperty.
-    """
+# Module-level cache for live-device enumeration.
+_LIVE_DEVICE_CACHE: list = []
+_LIVE_DEVICE_CACHE_TS: float = 0.0
+_LIVE_DEVICE_CACHE_INTERVAL: float = 2.0  # seconds between PortAudio rescans
+
+
+def _refresh_live_device_cache() -> None:
+    """Enumerate live input devices and update the module-level cache."""
+    global _LIVE_DEVICE_CACHE, _LIVE_DEVICE_CACHE_TS
     items = [
         ("__AUTO__", "Auto (Default Input)", "Use the system default input device"),
     ]
@@ -168,7 +211,7 @@ def _live_device_items(self, context):  # noqa: ARG001
                 in_ch = int(dev.get("max_input_channels", 0) or 0)
                 out_ch = int(dev.get("max_output_channels", 0) or 0)
                 if in_ch > 0 or out_ch <= 0:
-                    continue  # skip real inputs (already listed) and non-output devices
+                    continue
                 name = str(dev.get("name", f"Device {idx}") or f"Device {idx}")
                 host_name = ""
                 try:
@@ -189,7 +232,21 @@ def _live_device_items(self, context):  # noqa: ARG001
                 "Install SoundDevice in add-on preferences to enumerate live devices",
             )
         )
-    return items
+    _LIVE_DEVICE_CACHE = items
+    _LIVE_DEVICE_CACHE_TS = time.monotonic()
+
+
+def _live_device_cache_timer() -> float:
+    """bpy.app.timers callback: refresh device list every 2 seconds."""
+    _refresh_live_device_cache()
+    return _LIVE_DEVICE_CACHE_INTERVAL
+
+
+def _live_device_items(self, context):  # noqa: ARG001
+    """Blender dynamic-enum callback: return cached live capture devices."""
+    if not _LIVE_DEVICE_CACHE:
+        _refresh_live_device_cache()  # first draw only
+    return _LIVE_DEVICE_CACHE
 
 # ==============================================================================
 # 0. UI NODE DATA
@@ -359,6 +416,12 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         default=4, min=1, max=32,
         update=_mark_user_meter
     )
+    tempo_meter_panel_open: bpy.props.BoolProperty(                                                                                 # type: ignore
+        name="Tempo & Meter Expanded",
+        description="UI foldout state for Tempo & Meter settings.",
+        default=False,
+        options={'SKIP_SAVE'},
+    )
 
     # --- LIVE STATUS ---
     live_status: bpy.props.StringProperty(                                                                                          # type: ignore
@@ -484,7 +547,10 @@ class ACEProjectSettings(bpy.types.PropertyGroup):
     
     # Collections
     audio_sources: bpy.props.CollectionProperty(type=ACEAudioSource)                                                                # type: ignore
-    active_audio_source_index: bpy.props.IntProperty()                                                                              # type: ignore
+    active_audio_source_index: bpy.props.IntProperty(                                                                               # type: ignore
+        default=0,
+        update=_on_active_source_index_change,
+    )
     
     # Sub-Properties
     engine_settings: bpy.props.PointerProperty(type=ACEEngineSettings)                                                              # type: ignore

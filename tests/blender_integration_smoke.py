@@ -72,6 +72,17 @@ def main():
         if getattr(n, "type", "") == 'GROUP' and getattr(n, "get", lambda *_: "")("ace_source_id", "") == src.stable_id
     ]
     _assert(bool(source_nodes), "No managed source placeholder found in ACE_Sonar tree")
+    sonar_mat = bpy.data.materials.get("ACE_Sonar_Material")
+    _assert(sonar_mat is not None, "ACE_Sonar shader material was not created")
+    _assert(bool(getattr(sonar_mat, "use_nodes", False)), "ACE_Sonar shader material is not node-based")
+    _assert(sonar.active_material == sonar_mat, "ACE_Sonar shader material is not assigned")
+    sonar_shader_tree = getattr(sonar_mat, "node_tree", None)
+    _assert(sonar_shader_tree is not None, "ACE_Sonar shader material has no node tree")
+    shader_source_nodes = [
+        n for n in sonar_shader_tree.nodes
+        if getattr(n, "type", "") == 'GROUP' and getattr(n, "get", lambda *_: "")("ace_source_id", "") == src.stable_id
+    ]
+    _assert(bool(shader_source_nodes), "No managed source placeholder found in ACE_Sonar shader tree")
 
     frontend_obj = None
     frontend_mesh = None

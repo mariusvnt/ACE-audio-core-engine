@@ -262,6 +262,25 @@ class ACEDummyNodeFactory:
             required_inputs = {"Value", "Attribute ID", "Proxy Object"}
             required_outputs = {"Accumulated"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        stream_nodes = (
+            ACE_NODES.get("stream", {}).get("nodes", {})
+            if isinstance(ACE_NODES.get("stream", {}), dict)
+            else {}
+        )
+        if node_type in stream_nodes:
+            node_def = stream_nodes.get(node_type, {}) if isinstance(stream_nodes, dict) else {}
+            required_inputs = {str(name) for _sock_type, name in list(node_def.get("inputs", []))}
+            required_outputs = {str(name) for _sock_type, name in list(node_def.get("outputs", []))}
+            value_output_count = 0
+            for sock_type, _sock_name in list(node_def.get("outputs", [])):
+                if "Bundle" in str(sock_type or ""):
+                    continue
+                value_output_count += 1
+            if value_output_count > 0:
+                required_inputs.add("Attribute ID")
+            for idx in range(1, int(value_output_count)):
+                required_inputs.add(f"Attribute ID {int(idx + 1)}")
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
 
         # ── Delta nodes ──────────────────────────────────────────────────────
         # All delta nodes share a single "Audio" input; outputs are fixed named
@@ -303,7 +322,21 @@ class ACEDummyNodeFactory:
             carry no attribute-ID sockets.
         """
         if category == "stream":
-            return ("Attribute ID",)
+            stream_nodes = (
+                ACE_NODES.get("stream", {}).get("nodes", {})
+                if isinstance(ACE_NODES.get("stream", {}), dict)
+                else {}
+            )
+            node_def = stream_nodes.get(str(node_type or ""), {}) if isinstance(stream_nodes, dict) else {}
+            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
+            value_output_count = max(
+                1,
+                sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
+            )
+            names = ["Attribute ID"]
+            for idx in range(1, int(value_output_count)):
+                names.append(f"Attribute ID {int(idx + 1)}")
+            return tuple(names)
         if category == "utilities" and node_type == "src_specs":
             return ("Frames per Beat Attribute ID", "Beat Phase Attribute ID")
         if category == "utilities" and node_type == "util_rolling_avg":
@@ -359,6 +392,42 @@ class ACEDummyNodeFactory:
         outputs = node_def.get('outputs', [])
         for sock_type_str, sock_name in outputs:
             ng.interface.new_socket(sock_name, in_out='OUTPUT', socket_type=sock_type_str)
+
+        if category == "stream" and node_type == "lufs":
+            for item in getattr(getattr(ng, "interface", None), "items_tree", []):
+                if getattr(item, "in_out", None) != "INPUT":
+                    continue
+                name = str(getattr(item, "name", "") or "")
+                if name == "Window (s)":
+                    try:
+                        item.default_value = 0.4
+                    except Exception:
+                        pass
+                    for attr_name, value in (
+                        ("min_value", 0.05),
+                        ("max_value", 3.0),
+                        ("soft_min", 0.05),
+                        ("soft_max", 3.0),
+                    ):
+                        try:
+                            setattr(item, attr_name, value)
+                        except Exception:
+                            pass
+                elif name == "Overlap Ratio":
+                    try:
+                        item.default_value = 0.25
+                    except Exception:
+                        pass
+                    for attr_name, value in (
+                        ("min_value", 0.0),
+                        ("max_value", 1.0),
+                        ("soft_min", 0.0),
+                        ("soft_max", 1.0),
+                    ):
+                        try:
+                            setattr(item, attr_name, value)
+                        except Exception:
+                            pass
         
         # --- 2. INTERNALS SWITCH ---
         ACEDummyNodeFactory._create_dummy_internals(ng, inputs, outputs, category, node_type)
@@ -421,57 +490,105 @@ class ACEDummyNodeFactory:
         # CASE C: STREAM (Audio -> Float/Vector)
         # =====================================================================
         elif category == 'stream':
-            # Logic: Separate Bundle -> Sample Index (on Geometry) -> Output
-            
-            # 1. Attribute ID Input
-            if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
-                ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
-                ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+            # Logic: Separate Bundle -> one Sample Index per non-bundle output.
+            # Stream nodes with extra numeric controls (e.g. LUFS window/overlap ratio)
+            # consume those inputs via (sum * 0) fed into Sample Index[Index] so
+            # sockets stay active and non-grey without altering sampled values.
 
-            attr_id_idx = len(inputs_def)
+            # 1. Attribute-ID sockets (one per output)
+            value_output_count = sum(1 for sock_type, _sock_name in outputs_def if "Bundle" not in str(sock_type or ""))
+            if value_output_count <= 0:
+                value_output_count = len(outputs_def)
+            value_output_count = max(int(value_output_count), 0)
+            attr_socket_names: list[str] = []
+            for out_idx in range(value_output_count):
+                sock_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
+                if not any(s.name == sock_name for s in ng.interface.items_tree):
+                    ng.interface.new_socket(sock_name, in_out='INPUT', socket_type='NodeSocketString')
+                try:
+                    ng.interface.items_tree[sock_name].default_value = (
+                        "ACE_undefined" if out_idx == 0 else f"ACE_undefined_{int(out_idx + 1)}"
+                    )
+                except Exception:
+                    pass
+                attr_socket_names.append(sock_name)
+
+            attr_id_start_idx = len(inputs_def)
 
             # 2. Nodes
-            # [Separate Bundle] (Extract Geometry from Bundle)
-            sep_bundle = ng.nodes.new('NodeSeparateBundle') 
+            sep_bundle = ng.nodes.new('NodeSeparateBundle')
             sep_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
-            sep_bundle.location = (-200, 0)
-            
-            # [Named Attribute] (Read data)
-            named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
-            named_attr.location = (0, 150)
-            
-            target_type = 'FLOAT'
-            if len(outputs_def) > 0 and 'Vector' in outputs_def[0][0]:
-                target_type = 'FLOAT_VECTOR'
-                named_attr.data_type = 'FLOAT_VECTOR'
-            else:
-                named_attr.data_type = 'FLOAT'
+            sep_bundle.location = (-220, 0)
 
-            # [Sample Index]
-            sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
-            sample_idx.location = (200, 0)
-            sample_idx.data_type = target_type
-            sample_idx.domain = 'POINT'
+            # Optional index driver for numeric controls.
+            index_driver_socket = None
+            numeric_ctrl_indices = []
+            for idx, (sock_type, _sock_name) in enumerate(inputs_def):
+                if idx == 0:
+                    continue
+                st = str(sock_type or "")
+                if "Bundle" in st or "String" in st or "Object" in st:
+                    continue
+                numeric_ctrl_indices.append(idx)
+            if len(numeric_ctrl_indices) >= 2:
+                math_add = ng.nodes.new('ShaderNodeMath')
+                math_add.operation = 'ADD'
+                math_add.location = (-560, -180)
+                ng.links.new(input_node.outputs[int(numeric_ctrl_indices[0])], math_add.inputs[0])
+                ng.links.new(input_node.outputs[int(numeric_ctrl_indices[1])], math_add.inputs[1])
+                add_out = math_add.outputs[0]
+                for extra_idx in numeric_ctrl_indices[2:]:
+                    add_next = ng.nodes.new('ShaderNodeMath')
+                    add_next.operation = 'ADD'
+                    add_next.location = (int(math_add.location.x) + 180, int(math_add.location.y))
+                    ng.links.new(add_out, add_next.inputs[0])
+                    ng.links.new(input_node.outputs[int(extra_idx)], add_next.inputs[1])
+                    add_out = add_next.outputs[0]
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-340, -180)
+                ng.links.new(add_out, math_mul.inputs[0])
+                index_driver_socket = math_mul.outputs[0]
+            elif len(numeric_ctrl_indices) == 1:
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-340, -180)
+                ng.links.new(input_node.outputs[int(numeric_ctrl_indices[0])], math_mul.inputs[0])
+                index_driver_socket = math_mul.outputs[0]
 
             # 3. Wiring
-            
-            # A. Group Input (Bundle) -> Separate Bundle
             if len(inputs_def) > 0:
                 ng.links.new(input_node.outputs[0], sep_bundle.inputs[0])
-            
-            # B. Separate Bundle (Geometry) -> Sample Index (Geometry)
-            # Assuming output 0 of Separate Bundle is the geometry content
-            ng.links.new(sep_bundle.outputs[0], sample_idx.inputs['Geometry'])
-            
-            # C. Group Input (Attribute ID) -> Named Attribute (Name)
-            ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
-            
-            # D. Named Attribute -> Sample Index (Value)
-            ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-            
-            # E. Sample Index (Value) -> Group Output
-            if len(outputs_def) > 0:
-                ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
+
+            for out_idx in range(min(len(outputs_def), len(output_node.inputs))):
+                sock_type = str(outputs_def[out_idx][0] or "") if out_idx < len(outputs_def) else ""
+                if "Bundle" in sock_type:
+                    continue
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.location = (0, 210 - (out_idx * 220))
+                target_type = 'FLOAT'
+                if 'Vector' in sock_type:
+                    target_type = 'FLOAT_VECTOR'
+                elif 'Color' in sock_type or 'RGBA' in sock_type:
+                    target_type = 'FLOAT_COLOR'
+                named_attr.data_type = target_type
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.location = (220, 200 - (out_idx * 220))
+                sample_idx.data_type = target_type
+                sample_idx.domain = 'POINT'
+
+                ng.links.new(sep_bundle.outputs[0], sample_idx.inputs['Geometry'])
+                attr_socket_idx = attr_id_start_idx + out_idx
+                if attr_socket_idx < len(input_node.outputs):
+                    ng.links.new(input_node.outputs[attr_socket_idx], named_attr.inputs['Name'])
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                if index_driver_socket is not None:
+                    ng.links.new(index_driver_socket, sample_idx.inputs['Index'])
+                ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
         # =====================================================================
         # CASE D: UTILITIES
@@ -834,8 +951,9 @@ class ACEDummyTreeReader:
         if result:
             return result
 
-        # Fallback: prefix-based scan for dynamic variants (e.g. frequency_splitter_3bands,
-        # audio_math_3).  Only reached for group names not in the exact lookup.
+        # Fallback: prefix-based scan for dynamic/specialized variants.
+        # This covers splitter/audio_math dynamic arity groups and shader
+        # per-instance groups such as ".ACE_SHADER_stream_rms_<hash>".
         resolved_cat = ""
         resolved_type = ""
         clean_group_name = ACEIdManager._clean_string(norm_group_name).lower()
@@ -845,25 +963,11 @@ class ACEDummyTreeReader:
                 norm_canonical = canonical.lstrip(".")
                 clean_canonical = ACEIdManager._clean_string(norm_canonical).lower()
                 if (
-                    cat_key == "delta"
-                    and type_key == "frequency_splitter"
-                    and (
-                        group_name.startswith(canonical + "_")
-                        or norm_group_name.startswith(norm_canonical + "_")
-                        or (clean_group_name and clean_group_name.startswith(clean_canonical))
-                    )
-                ):
-                    resolved_cat = cat_key
-                    resolved_type = type_key
-                    break
-                if (
-                    cat_key == "utilities"
-                    and type_key == "audio_math"
-                    and (
-                        group_name.startswith(canonical + "_")
-                        or norm_group_name.startswith(norm_canonical + "_")
-                        or (clean_group_name and clean_group_name.startswith(clean_canonical))
-                    )
+                    group_name.startswith(canonical + "_")
+                    or group_name.startswith(canonical + ".")
+                    or norm_group_name.startswith(norm_canonical + "_")
+                    or norm_group_name.startswith(norm_canonical + ".")
+                    or (clean_group_name and clean_group_name.startswith(clean_canonical))
                 ):
                     resolved_cat = cat_key
                     resolved_type = type_key
@@ -1351,20 +1455,31 @@ class ACEDummyTreeReader:
             try:
                 proxy_sock = next((s for s in bl_node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                 if proxy_sock and getattr(proxy_sock, "default_value", None):
-                    proxy_obj = proxy_sock.default_value
-                    root_id = getattr(proxy_obj, "name", "") or ""
+                    proxy_value = proxy_sock.default_value
+                    if isinstance(proxy_value, str):
+                        root_id = str(proxy_value or "").strip()
+                    else:
+                        root_id = getattr(proxy_value, "name", "") or ""
             except Exception:
                 root_id = ""
         return root_id
 
     @staticmethod
     def _attribute_socket_to_output_index(sock_name: str) -> Optional[int]:
+        name = str(sock_name or "").strip()
+        if name == "Attribute ID":
+            return 0
+        if name.startswith("Attribute ID "):
+            suffix = name[len("Attribute ID "):].strip()
+            if suffix.isdigit():
+                idx = int(suffix) - 1
+                if idx >= 0:
+                    return int(idx)
         mapping = {
-            "Attribute ID": 0,
             "Frames per Beat Attribute ID": 0,
             "Beat Phase Attribute ID": 1,
         }
-        return mapping.get(sock_name)
+        return mapping.get(name)
 
     def _parse_node(self, bl_node, root_id: str) -> Optional[ACEAbstractNode]:
         ace_id = self._ensure_ace_id(bl_node, root_id=root_id)

@@ -70,6 +70,8 @@ class TestRegressionFindings(unittest.TestCase):
             "class ACE_PT_information_streams_description",
             label="ACE_PT_information_streams body",
         )
+        self.assertIn("bl_label = \"Active Operators\"", info_streams_body)
+        self.assertNotIn("layout.label(text=\"Active Operators:\", icon=\"NODETREE\")", info_streams_body)
         self.assertNotIn("        _sync_ui_dummy_tree(context)", info_streams_body)
         self.assertIn("_selected_node_has_operator_settings(context)", info_streams_body)
         self.assertIn("_draw_selected_node_operator_settings(layout, context)", info_streams_body)
@@ -136,6 +138,8 @@ class TestRegressionFindings(unittest.TestCase):
             "class ACE_PT_information_streams_description",
             label="ACE_PT_information_streams body",
         )
+        self.assertIn("bl_label = \"Active Operators\"", info_streams_body)
+        self.assertNotIn("layout.label(text=\"Active Operators:\", icon=\"NODETREE\")", info_streams_body)
         self.assertIn("_draw_selected_node_operator_settings(layout, context)", info_streams_body)
         self.assertIn("_selected_node_has_operator_settings(context)", info_streams_body)
         self.assertNotIn("_draw_selected_node_description(", info_streams_body)
@@ -154,10 +158,10 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("_draw_selected_node_description(self.layout, description)", desc_panel_body)
 
         dyn_src = _read("dynamic_audio_operators.py")
-        self.assertIn("ACEAudioMathInternals_v2", dyn_src)
+        self.assertIn("ACEAudioMathInternals_v3", dyn_src)
         self.assertIn("GeometryNodeJoinGeometry", dyn_src)
         self.assertIn("NodeSeparateBundle", dyn_src)
-        self.assertIn("ACE_SPLITTER_INTERNALS_V4", dyn_src)
+        self.assertIn("ACE_SPLITTER_INTERNALS_V5", dyn_src)
         splitter_body = _slice_between(
             dyn_src,
             "def _build_variant_internals",
@@ -407,6 +411,7 @@ class TestRegressionFindings(unittest.TestCase):
         menu_src = _read("gn_menu.py")
         self.assertIn("def _initialize_source_binding(node, context):", menu_src)
         self.assertIn("node[\"ace_source_id\"]", menu_src)
+        self.assertIn("bl_label = \"Input\"", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_source_mngmt\"", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_delta\"", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_stream\"", menu_src)
@@ -416,7 +421,7 @@ class TestRegressionFindings(unittest.TestCase):
     def test_shader_editor_add_menu_uses_shader_group_nodes(self):
         menu_src = _read("gn_menu.py")
         self.assertIn("_ALLOWED_CATEGORIES_BY_TREE_TYPE", menu_src)
-        self.assertIn('"ShaderNodeTree": ("delta", "stream", "utilities")', menu_src)
+        self.assertIn('"ShaderNodeTree": ("source_mngmt", "delta", "stream", "utilities")', menu_src)
         self.assertIn("def _allowed_categories_for_context(context) -> tuple[str, ...]:", menu_src)
         self.assertIn("from ..nodes.shader_tree import ACEShaderNodeFactory", menu_src)
         self.assertIn("def poll(cls, context):", menu_src)
@@ -430,6 +435,10 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("ACESplitterManager.get_or_create_variant(splitter_bands, tree)", menu_src)
         self.assertIn("ACEAudioMathManager.get_or_create_variant(audio_math_inputs, tree)", menu_src)
         self.assertIn("node = tree.nodes.new(group_node_type)", menu_src)
+        self.assertIn("self._ensure_shader_frontend_uid(tree, context)", menu_src)
+        self.assertIn("ACEShaderNodeFactory.sync_node_instance_group_bindings(", menu_src)
+        self.assertIn("scene=getattr(context, \"scene\", None)", menu_src)
+        self.assertIn("NODE_MT_category_shader_add.append(add_shader_category_menu_func)", menu_src)
 
     def test_shader_editor_dynamic_variants_are_tree_aware(self):
         dynamic_src = _read("dynamic_audio_operators.py")
@@ -439,13 +448,49 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("def _tree_bl_idname(tree_or_type) -> str:", dynamic_src)
         self.assertIn("from .shader_tree import ACEShaderNodeFactory", dynamic_src)
         self.assertIn("if _tree_bl_idname(tree_or_type) == \"ShaderNodeTree\":", dynamic_src)
-        self.assertIn("ShaderNodeMath", dynamic_src)
+        self.assertNotIn("ShaderNodeMath", dynamic_src)
+        self.assertIn("NodeReroute", dynamic_src)
         self.assertIn("get_or_create_variant(band_count, getattr(node, \"id_data\", None))", dynamic_src)
         self.assertIn("get_or_create_variant(count, getattr(node, \"id_data\", None))", dynamic_src)
         self.assertIn("def rebuild_node_group(cls, cat_key: str, type_key: str):", shader_src)
         self.assertIn("ACESplitterManager.refresh_existing_variants(\"ShaderNodeTree\")", shader_src)
         self.assertIn("ACEAudioMathManager.refresh_existing_variants(\"ShaderNodeTree\")", shader_src)
+        self.assertIn("ShaderNodeAttribute", shader_src)
+        self.assertIn("def sync_node_instance_group_bindings(", shader_src)
+        self.assertIn("for enum_token in (\"OBJECT\", \"OBJECT_DATA\")", shader_src)
         self.assertIn("ACEAudioMathManager.refresh_existing_variants(\"GeometryNodeTree\")", dummy_src)
+
+    def test_shader_output_id_sync_updates_shader_instance_bindings(self):
+        engine_src = _read("audio_engine.py")
+        body = _slice_between(
+            engine_src,
+            "def _sync_shader_output_ids(",
+            "def _create_task_for_node(",
+            label="_sync_shader_output_ids body",
+        )
+        self.assertIn("shader_factory.sync_node_instance_group_bindings(", body)
+
+    def test_shader_sink_bindings_route_object_properties_to_source_proxy(self):
+        engine_src = _read("audio_engine.py")
+        body = _slice_between(
+            engine_src,
+            "def _resolve_sink_bindings_for_graph(",
+            "@staticmethod\n    def _safe_file_mtime(",
+            label="_resolve_sink_bindings_for_graph body",
+        )
+        self.assertIn("if frontend_kind == FRONTEND_KIND_SHADER and proxy_name:", body)
+        self.assertIn("consumers = (str(proxy_name),)", body)
+
+    def test_shader_sinks_use_driver_bound_internal_nodes(self):
+        shader_src = _read("shader_tree.py")
+        self.assertIn("ShaderNodeValue", shader_src)
+        self.assertIn("ShaderNodeCombineXYZ", shader_src)
+        self.assertIn("driver_add(\"default_value\")", shader_src)
+        self.assertIn("target_obj.path_from_id", shader_src)
+        self.assertIn("return (\"OBJECT\", target_obj, False)", shader_src)
+        self.assertIn("_ensure_target_object_property(", shader_src)
+        self.assertIn("target.id_type = str(target_id_type or \"OBJECT\")", shader_src)
+        self.assertIn("sink_node[cls._OUTPUT_NODE_KIND_KEY]", shader_src)
 
     def test_ui_active_node_list_follows_shader_or_geometry_editor_context(self):
         ui_src = _read("n_panel_ui.py")
@@ -456,6 +501,8 @@ class TestRegressionFindings(unittest.TestCase):
             label="_find_active_node_tree body",
         )
         self.assertIn("{'GeometryNodeTree', 'ShaderNodeTree'}", find_body)
+        self.assertIn("get_from_context", find_body)
+        self.assertIn("material_slots", find_body)
 
         sync_body = _slice_between(
             ui_src,
@@ -539,7 +586,7 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertNotIn("PREFERENCES", panel_body)
         self.assertIn("ACEAudioEngine._is_animation_playing()", panel_body)
         self.assertIn("latency_metrics = _engine_latency_metrics(context)", panel_body)
-        self.assertIn("performance_box.label(text=\"Engine Performance\", icon=\"TIME\")", panel_body)
+        self.assertIn("performance_box.label(text=\"Engine Performance\", icon=\"DRIVER\")", panel_body)
         self.assertIn("current_col.label(text=\"Current Latency\")", panel_body)
         self.assertIn("max_col.label(text=\"Latency Budget\")", panel_body)
         self.assertIn("current_col.label(text=f\"{float(latency_metrics['total_latency_ms']):.2f} ms\")", panel_body)
@@ -558,7 +605,7 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("bl_options = {'DEFAULT_CLOSED'}", panel_body)
         self.assertIn("bl_order = -1", panel_body)
 
-    def test_active_ace_instances_panel_uses_scene_frontend_discovery(self):
+    def test_active_ace_instances_panel_uses_compiled_source_instance_ledger(self):
         ui_src = _read("n_panel_ui.py")
         panel_body = _slice_between(
             ui_src,
@@ -567,10 +614,18 @@ class TestRegressionFindings(unittest.TestCase):
             label="ACE_PT_stream_confluence body",
         )
         self.assertIn("bl_label = \"Active ACE Instances\"", panel_body)
-        self.assertIn("frontends = _scene_frontends(", panel_body)
-        self.assertIn("No active ACE instances.", panel_body)
-        self.assertIn("kind == \"GEOMETRY_NODES\"", panel_body)
-        self.assertIn("SHADING_RENDERED", panel_body)
+        self.assertIn("ledger_rows = _compiled_source_instance_rows(", panel_body)
+        self.assertIn("source_box = layout.box()", panel_body)
+        self.assertIn("source_icon = _source_list_icon(entry.get(\"source_prop\"))", panel_body)
+        self.assertIn("empty_row.label(text=\"No connected instances\")", panel_body)
+        self.assertIn("layout.label(text=\"Engine offline or no sources found.\")", panel_body)
+        self.assertIn("_frontend_object_name(frontend_ref)", panel_body)
+        self.assertIn("_frontend_instance_type(frontend_kind)", panel_body)
+        self.assertNotIn("tree_name", panel_body)
+        self.assertNotIn("material_name", panel_body)
+        self.assertNotIn("bl_options = {'DEFAULT_CLOSED'}", panel_body)
+        self.assertNotIn("frontends = _scene_frontends(", panel_body)
+        self.assertNotIn("No active ACE instances.", panel_body)
         self.assertNotIn("layout.prop(ace, \"gn_target_object\", text=\"GN Target\")", panel_body)
 
     def test_latency_measures_panel_is_project_settings_child(self):
@@ -627,6 +682,7 @@ class TestRegressionFindings(unittest.TestCase):
         )
         self.assertIn("bl_label = \"Engine Settings\"", settings_body)
         self.assertIn("bl_parent_id = \"ACE_PT_project_settings\"", settings_body)
+        self.assertIn("bl_options = {'DEFAULT_CLOSED'}", settings_body)
         self.assertIn("sample_rate_row = layout.row(align=True)", settings_body)
         self.assertIn("sample_rate_row.label(text=\"Sample Rate\")", settings_body)
         self.assertIn("sample_rate_buttons = sample_rate_row.row(align=True)", settings_body)
@@ -657,30 +713,29 @@ class TestRegressionFindings(unittest.TestCase):
         helper_body = _slice_between(
             ui_src,
             "def _compiled_source_instance_rows(scene):",
-            "class ACE_PT_AudioSources",
+            "class ACE_PT_audio_sources",
             label="_compiled_source_instance_rows body",
         )
         panel_body = _slice_between(
             ui_src,
-            "class ACE_PT_AudioSources",
-            "class ACE_PT_audio_sources",
-            label="ACE_PT_AudioSources body",
+            "class ACE_PT_stream_confluence",
+            "# --- REGISTRATION ---",
+            label="ACE_PT_stream_confluence body",
         )
         self.assertIn("abstract_tree = _compiled_abstract_tree(scene)", helper_body)
         self.assertIn("consumer_intents", helper_body)
         self.assertIn("source_binding_id", helper_body)
         self.assertIn("source_mngmt", helper_body)
-        self.assertIn("No connected instances", panel_body)
-        self.assertIn("Engine offline or no sources found.", panel_body)
+        self.assertIn("empty_row.label(text=\"No connected instances\")", panel_body)
+        self.assertIn("layout.label(text=\"Engine offline or no sources found.\")", panel_body)
+        self.assertNotIn("empty_row.label(text=\"No connected instances\", icon=\"INFO\")", panel_body)
+        self.assertNotIn("layout.label(text=\"Engine offline or no sources found.\", icon=\"INFO\")", panel_body)
         self.assertIn("separator(factor=2.0)", panel_body)
-        self.assertIn("NODETREE", panel_body)
-        self.assertIn("SHADING_RENDERED", panel_body)
-        self.assertIn("draw_header", panel_body)
-        self.assertIn("OUTLINER_OB_SPEAKER", panel_body)
+        self.assertIn("_frontend_kind_icon(frontend_kind)", panel_body)
         self.assertNotIn("compile_scene_frontends(", panel_body)
         self.assertNotIn("request_recompile(", panel_body)
 
-    def test_manage_sources_panel_is_child_of_audio_sources_tree(self):
+    def test_audio_sources_panel_is_top_level_manage_sources_panel(self):
         ui_src = _read("n_panel_ui.py")
         manage_body = _slice_between(
             ui_src,
@@ -688,8 +743,9 @@ class TestRegressionFindings(unittest.TestCase):
             "class ACE_PT_sub_tempo_meter",
             label="ACE_PT_audio_sources body",
         )
-        self.assertIn("bl_label = \"Manage Sources\"", manage_body)
-        self.assertIn("bl_parent_id = \"ACE_PT_AudioSources\"", manage_body)
+        self.assertIn("bl_label = \"Audio Sources\"", manage_body)
+        self.assertIn("bl_order = 2", manage_body)
+        self.assertNotIn("bl_parent_id", manage_body)
         self.assertIn("row.template_list(", manage_body)
         self.assertIn("layout.prop(active_source, \"source_type\", text=\"Type\")", manage_body)
 
@@ -710,7 +766,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("rate = _source_display_sample_rate(active_source)", audio_sources_body)
 
         tasks_src = _read("audio_tasks_registry.py")
-        self.assertIn("ctx.native_sample_rate = int(native_sample_rate)", tasks_src)
+        self.assertIn("self._pending_ctx_writes[\"native_sample_rate\"] = int(native_sample_rate)", tasks_src)
+        self.assertIn("def _flush_pending_ctx_writes(self) -> None:", tasks_src)
 
         engine_src = _read("audio_engine.py")
         self.assertIn("def _source_original_sample_rate(", engine_src)
@@ -728,7 +785,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("col.operator(\"audiocore.remove_audio_source\", icon='REMOVE', text=\"\")", ui_src)
         self.assertNotIn("audiocore.add_audio_sources_from_files", ui_src)
         self.assertNotIn("add_live =", ui_src)
-        self.assertIn("icon = 'FILE'", ui_src)
+        self.assertIn("def _source_list_icon(source_prop) -> str:", ui_src)
+        self.assertIn("icon = _source_list_icon(item)", ui_src)
         self.assertNotIn("icon = 'FILE_SOUND'", ui_src)
         self.assertNotIn("Flow token is generated internally from these settings.", ui_src)
 
@@ -897,6 +955,35 @@ class TestRegressionFindings(unittest.TestCase):
         )
         self.assertIn('utils.assert_main_thread("commit_results")', commit_body)
 
+    def test_stage_c_runtime_paths_guard_unsafe_render_writes(self):
+        engine_src = _read("audio_engine.py")
+        compile_body = _slice_between(
+            engine_src,
+            "def compile(self, abstract_tree: ACEAbstractTree, blender_scene):",
+            "def _log_runtime(",
+            label="compile body",
+        )
+        self.assertIn(
+            "sink_writes_allowed = not self._unsafe_for_handler_writes(blender_scene)",
+            compile_body,
+        )
+        self.assertIn("if self.writer is not None and sink_writes_allowed:", compile_body)
+        self.assertIn("Skipping ACE sink layout writes during render.", compile_body)
+
+        execute_body = _slice_between(
+            engine_src,
+            "def execute_next_frame",
+            "def bake_source_to_cache",
+            label="execute_next_frame body",
+        )
+        self.assertIn("if self._unsafe_for_handler_writes(scene):", execute_body)
+        self.assertIn("Skipping ACE frame writes during render.", execute_body)
+
+    def test_object_property_sink_updates_tag_depsgraph(self):
+        proxy_src = _read("proxy_management.py")
+        self.assertIn("obj.update_tag(refresh={\"OBJECT\", \"DATA\"})", proxy_src)
+        self.assertIn("elif frontend_kind == FRONTEND_KIND_SHADER:", proxy_src)
+
     def test_scene_and_membership_signatures_ignore_discovery_order_metadata(self):
         engine_src = _read("audio_engine.py")
 
@@ -936,10 +1023,15 @@ class TestRegressionFindings(unittest.TestCase):
             label="depsgraph_update_handler body",
         )
         self.assertIn("bl_idname in {\"GeometryNodeTree\", \"ShaderNodeTree\"}", handler_body)
-        self.assertNotIn("if bl_idname == \"Material\":", handler_body)
         self.assertIn("if bl_idname == \"Object\":", handler_body)
-        self.assertIn("engine.request_recompile(_id)", handler_body)
-        self.assertIn("engine.request_recompile(None)", handler_body)
+        self.assertIn("if bl_idname == \"Material\":", handler_body)
+        self.assertIn("recompile_targets: list = []", handler_body)
+        self.assertIn("seen_targets: set[int] = set()", handler_body)
+        self.assertIn("def _queue_recompile_target(tree_obj) -> None:", handler_body)
+        self.assertIn("if ACEAudioEngine._tree_is_ace_managed(_id):", handler_body)
+        self.assertNotIn("recompile_targets.append(None)", handler_body)
+        self.assertIn("for target in recompile_targets:", handler_body)
+        self.assertIn("engine.request_recompile(target)", handler_body)
 
     def test_preview_numba_is_forced_when_dependency_is_available(self):
         tasks_src = _read("audio_tasks_registry.py")
