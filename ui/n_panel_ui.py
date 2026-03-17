@@ -53,6 +53,47 @@ _ui_tree_cache = {
     "lookup_ids": {},
 }
 _ui_label_icon_ids: set[str] | None = None
+_has_ace_nodes_in_trees: bool = False
+
+
+# --- ACE node presence detection (for Active ACE Instances panel) ---
+
+def _tree_has_ace_nodes(tree) -> bool:
+    """Return True if *tree* contains at least one node with an ``ace_id`` custom property."""
+    if tree is None:
+        return False
+    for node in getattr(tree, "nodes", []) or []:
+        if node.get("ace_id"):
+            return True
+    return False
+
+
+def _refresh_ace_nodes_in_trees_flag(scene) -> None:
+    """Update the module-level ``_has_ace_nodes_in_trees`` flag.
+
+    Scans all GN modifiers and shader material trees attached to objects in
+    *scene* for the presence of any ACE node (identified by the ``ace_id``
+    custom property).  Designed to be called from the UI sync timer so the
+    expensive scene walk is not repeated every redraw.
+    """
+    global _has_ace_nodes_in_trees
+    if scene is None:
+        _has_ace_nodes_in_trees = False
+        return
+    for obj in getattr(scene, "objects", []) or []:
+        for mod in getattr(obj, "modifiers", []) or []:
+            if getattr(mod, "type", None) != "NODES":
+                continue
+            if _tree_has_ace_nodes(getattr(mod, "node_group", None)):
+                _has_ace_nodes_in_trees = True
+                return
+        for slot in getattr(obj, "material_slots", []) or []:
+            mat = getattr(slot, "material", None)
+            tree = getattr(mat, "node_tree", None) if mat is not None else None
+            if _tree_has_ace_nodes(tree):
+                _has_ace_nodes_in_trees = True
+                return
+    _has_ace_nodes_in_trees = False
 
 
 # --- Deal-breaker handling ---
@@ -83,19 +124,75 @@ def _ui_is_blocked(context):
 
 
 # --- Active UI Dummy Tree Helpers ---
-def _find_active_node_tree(context):
+def _iter_visible_node_editor_trees(context):
+    """Yield unique supported trees from visible Node Editor areas.
+
+    The 3D View N-panel runs outside a node editor context, so this helper
+    inspects open windows/screens for visible ``NODE_EDITOR`` areas and yields
+    their active ``edit_tree``/``node_tree`` values.
+    """
+    seen_tree_ptrs: set[int] = set()
+    seen_area_ptrs: set[int] = set()
+
+    def _tree_from_space(space):
+        if getattr(space, "type", "") != "NODE_EDITOR":
+            return
+        for tree in (getattr(space, "edit_tree", None), getattr(space, "node_tree", None)):
+            tree_type = str(getattr(tree, "bl_idname", "") or "")
+            if tree_type not in {'GeometryNodeTree', 'ShaderNodeTree'}:
+                continue
+            tree_ptr = _tree_pointer(tree)
+            if tree_ptr in seen_tree_ptrs:
+                continue
+            seen_tree_ptrs.add(tree_ptr)
+            yield tree
+
+    # Current context space first when already in a node editor.
+    for tree in _tree_from_space(getattr(context, "space_data", None)):
+        yield tree
+
+    wm = getattr(context, "window_manager", None)
+    windows = list(getattr(wm, "windows", []) or [])
+    current_window = getattr(context, "window", None)
+    if current_window is not None:
+        windows = [current_window] + [win for win in windows if win is not current_window]
+
+    for window in windows:
+        screen = getattr(window, "screen", None)
+        for area in getattr(screen, "areas", []) or []:
+            if getattr(area, "type", "") != "NODE_EDITOR":
+                continue
+            try:
+                area_ptr = int(area.as_pointer())
+            except Exception:
+                area_ptr = id(area)
+            if area_ptr in seen_area_ptrs:
+                continue
+            seen_area_ptrs.add(area_ptr)
+            spaces = getattr(area, "spaces", None)
+            active_space = getattr(spaces, "active", None) if spaces is not None else None
+            if active_space is None:
+                continue
+            for tree in _tree_from_space(active_space):
+                yield tree
+
+
+def _find_active_node_tree(context, editor_context_only: bool = False):
     """Return the most relevant active ACE authoring tree for the current context.
 
     Priority order:
-    1. Context-resolved active node tree (``NodeTree.get_from_context``).
-    2. Node Editor ``edit_tree`` / ``node_tree`` when available.
-    3. Active object shader material tree.
-    4. GN target object (shader material tree, then modifier tree).
-    5. Active object modifier tree.
-    6. ACE_Sonar fallback object.
+    1. Active node-editor context tree (when currently in a Node Editor).
+    2. Trees visible in open Node Editor areas (current window first).
+    3. Broad scene/object fallback (unless ``editor_context_only=True``).
 
     Returns the first found ACE-node tree, or a non-ACE fallback if nothing
-    else is available (so the UI remains visible even on empty frontend trees).
+    else is available.
+
+    Args:
+        context: Blender context.
+        editor_context_only: When True, only resolve from visible/editor
+            context trees and skip object/material fallbacks. This is used by
+            the N-panel active-node list so it tracks editor context.
     """
     scene = getattr(context, "scene", None)
     ace = getattr(scene, "audiocore", None)
@@ -158,28 +255,34 @@ def _find_active_node_tree(context):
             fallback = tree
         return None
 
-    # Respect Blender's context-level tree resolution first.
-    try:
-        resolver = getattr(getattr(bpy, "types", None), "NodeTree", None)
-        if resolver is not None and hasattr(resolver, "get_from_context"):
-            resolved = resolver.get_from_context(context)
-            if isinstance(resolved, (list, tuple)):
-                tree = resolved[0] if resolved else None
-            else:
-                tree = resolved
-            chosen = _consider_tree(tree)
-            if chosen is not None:
-                return chosen
-    except Exception:
-        pass
-
-    # Prefer the node editor tree when available so UI follows what user edits.
+    # Respect Blender's context resolver only when currently in the Node Editor.
     space = getattr(context, "space_data", None)
     if getattr(space, "type", "") == 'NODE_EDITOR':
+        try:
+            resolver = getattr(getattr(bpy, "types", None), "NodeTree", None)
+            if resolver is not None and hasattr(resolver, "get_from_context"):
+                resolved = resolver.get_from_context(context)
+                if isinstance(resolved, (list, tuple)):
+                    tree = resolved[0] if resolved else None
+                else:
+                    tree = resolved
+                chosen = _consider_tree(tree)
+                if chosen is not None:
+                    return chosen
+        except Exception:
+            pass
         for tree in (getattr(space, "edit_tree", None), getattr(space, "node_tree", None)):
             chosen = _consider_tree(tree)
             if chosen is not None:
                 return chosen
+
+    for tree in _iter_visible_node_editor_trees(context):
+        chosen = _consider_tree(tree)
+        if chosen is not None:
+            return chosen
+
+    if editor_context_only:
+        return fallback
 
     obj = getattr(context, "active_object", None)
     if obj:
@@ -645,7 +748,7 @@ def _resolve_ui_list_selected_node(context):
     if not node_id:
         return None, None
 
-    tree = _find_active_node_tree(context)
+    tree = _find_active_node_tree(context, editor_context_only=True)
     node, parsed = _find_tree_node_by_ace_id(tree, node_id)
     if node and parsed:
         return node, parsed
@@ -1214,7 +1317,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         utils.log("UI sync skipped: active_source has no ui_nodes property.", "DEBUG")
         return
 
-    tree = _find_active_node_tree(context)
+    tree = _find_active_node_tree(context, editor_context_only=True)
     source_uid = getattr(active_source, "stable_id", "") or ""
     source_proxy = getattr(active_source, "proxy_object_name", "") or ""
     tree_ptr = _tree_pointer(tree)
@@ -1711,7 +1814,8 @@ def _ui_sync_timer():
         if _ui_is_blocked(context):
             return _UI_SYNC_TIMER_INTERVAL_IDLE
 
-        tree = _find_active_node_tree(context)
+        _refresh_ace_nodes_in_trees_flag(scene)
+        tree = _find_active_node_tree(context, editor_context_only=True)
         quick_key = _ui_quick_state_key(context, scene, tree)
         now = time.monotonic()
         engine_dirty = _ui_has_pending_engine_changes(scene, tree)
@@ -1764,12 +1868,13 @@ def _ui_sync_timer():
 @persistent
 def _ui_load_post(_dummy):
     """Blender load_post handler: reset all UI state caches after a file load."""
-    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache
+    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees
     _ui_sync_last_ts = 0.0
     _ui_sync_last_key = ""
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
     _ui_timer_last_dirty_rebuild_ts = 0.0
+    _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
         "scene_key": 0,
@@ -2262,7 +2367,11 @@ class ACE_PT_stream_confluence(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
+        return (
+            hasattr(context.scene, "audiocore")
+            and not _ui_is_blocked(context)
+            and _has_ace_nodes_in_trees
+        )
 
     def draw(self, context):
         layout = self.layout
@@ -2326,10 +2435,11 @@ def register():
 
 def unregister():
     """Unregister all N-panel UI classes, stop the sync timer, and clear UI caches."""
-    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache
+    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
     _ui_timer_last_dirty_rebuild_ts = 0.0
+    _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
         "scene_key": 0,

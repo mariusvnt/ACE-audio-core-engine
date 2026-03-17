@@ -520,7 +520,8 @@ class ACEProxyManager:
             if not prop_name:
                 continue
             zero_value = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
-            if prop_name not in obj.keys():
+            already_exists = prop_name in obj.keys()
+            if not already_exists:
                 try:
                     obj[prop_name] = zero_value
                     layout_changed = True

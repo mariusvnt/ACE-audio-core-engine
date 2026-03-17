@@ -189,6 +189,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         cls.idm = load_module("id_management")
         cls.tasks_mod = load_module("audio_tasks_registry")
         cls.dummy_tree = load_module("dummy_tree")
+        cls.shader_tree_mod = load_module("shader_tree")
         cls.engine_mod = load_module("audio_engine")
         cls.utils_mod = load_module("utils")
 
@@ -657,13 +658,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(len(bindings["gn_attr"]), 1)
         self.assertEqual(bindings["gn_attr"][0].sink_kind, "PROXY_ATTRIBUTE")
         self.assertEqual(bindings["gn_attr"][0].target_object_name, "ACE_PROXY_src_a")
-        self.assertEqual(len(bindings["shader_attr"]), 1)
-        self.assertEqual(bindings["shader_attr"][0].target_object_name, "ACE_PROXY_src_a")
+        self.assertEqual(len(bindings["shader_attr"]), 2)
+        shader_targets = {b.target_object_name for b in bindings["shader_attr"]}
+        self.assertEqual(shader_targets, {"Cube", "Sphere"})
         self.assertTrue(
             all(binding.sink_kind == "OBJECT_PROPERTY" for binding in bindings["shader_attr"])
         )
 
-    def test_shader_sink_bindings_do_not_fall_back_to_consumer_objects_without_proxy(self):
+    def test_shader_sink_bindings_resolve_to_consumer_objects_without_proxy(self):
         engine = self._engine_shell()
         engine.writer.output_defs = {
             "shader_attr": {"node_id": "node_shader", "socket_idx": 0, "type": "FLOAT", "output_name": "RMS"},
@@ -712,7 +714,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
             single_source_mode=False,
         )
 
-        self.assertEqual(bindings["shader_attr"], [])
+        self.assertEqual(len(bindings["shader_attr"]), 2)
+        shader_targets = {b.target_object_name for b in bindings["shader_attr"]}
+        self.assertEqual(shader_targets, {"Cube", "Sphere"})
 
     def test_shader_output_ids_use_source_roots_in_multi_source_scenes(self):
         engine = self._engine_shell()
@@ -763,6 +767,71 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(changed_node_ids, {"node_shader"})
         self.assertEqual(shader_node.inputs[0].default_value, expected_name)
         self.assertEqual(shader_node.get("ace_auto_attr_topology_json"), expected_topology)
+
+    def test_shader_instance_group_sync_uses_existing_attr_ids_when_proxy_is_unresolved(self):
+        engine = self._engine_shell()
+        shader_node = _FakeAttrNode(
+            "node_shader",
+            input_names=["Attribute ID"],
+            output_names=["RMS"],
+        )
+        shader_node.inputs[0].default_value = "ACE_manual_attr"
+        shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 506)
+        shader_tree.nodes = [shader_node]
+        source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
+        source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
+        scene = types.SimpleNamespace(
+            audiocore=types.SimpleNamespace(audio_sources=[source_a, source_b])
+        )
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "node_shader": self.abs_mod.ACEAbstractNode(
+                    id="node_shader",
+                    name="Shader RMS",
+                    category="stream",
+                    type="rms",
+                    root_sources=set(),
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="node_shader_out_0",
+                            name="RMS",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            }
+        )
+
+        calls = []
+        original_sync = self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings
+
+        def _fake_sync(cls, node, proxy_name="", scene=None, attr_names_by_idx=None):
+            calls.append(
+                {
+                    "node": node,
+                    "proxy_name": proxy_name,
+                    "scene": scene,
+                    "attr_names_by_idx": attr_names_by_idx,
+                }
+            )
+            return True
+
+        self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = classmethod(_fake_sync)
+        try:
+            changed, changed_node_ids = engine._sync_shader_output_ids(shader_tree, abstract_tree, scene)
+        finally:
+            self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
+
+        self.assertTrue(changed)
+        self.assertEqual(changed_node_ids, {"node_shader"})
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0]["node"], shader_node)
+        self.assertEqual(calls[0]["proxy_name"], "")
+        self.assertIs(calls[0]["scene"], scene)
+        self.assertIsNone(calls[0]["attr_names_by_idx"])
+        self.assertEqual(shader_node.inputs[0].default_value, "ACE_manual_attr")
 
     def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
         engine = types.SimpleNamespace(

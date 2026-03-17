@@ -295,3 +295,4 @@ Strict Constraints:
 Do not execute any DSP or modify the audio graph here. This is a read-only visual ledger of Layer 1 intent.
 
 Handle cases where a source exists but has no consuming frontends yet (display an indented label: "No connected instances").
+

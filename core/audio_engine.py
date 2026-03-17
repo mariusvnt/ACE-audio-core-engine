@@ -4061,14 +4061,7 @@ class ACEAudioEngine:
                     )
                 elif sink_kind == "OBJECT_PROPERTY":
                     consumers = tuple(str(v) for v in (getattr(intent, "consumer_keys", ()) or ()) if str(v))
-                    if frontend_kind == FRONTEND_KIND_SHADER and proxy_name:
-                        # Recommended shader sink strategy: always write to the
-                        # per-source proxy object so shared-material consumers
-                        # fan out through one property write path.
-                        consumers = (str(proxy_name),)
-                    elif frontend_kind == FRONTEND_KIND_SHADER:
-                        consumers = ()
-                    elif not consumers and frontend_uid in frontends:
+                    if not consumers and frontend_uid in frontends:
                         consumers = tuple(str(v) for v in (frontends[frontend_uid].owner_keys or ()) if str(v))
                     for object_name in consumers:
                         resolved.append(
@@ -4082,22 +4075,10 @@ class ACEAudioEngine:
 
             if not resolved:
                 sink_name = self._resolve_sink_data_name(proxy_name, node_id, output_name, socket_idx)
-                if frontend_kind == FRONTEND_KIND_SHADER and proxy_name:
-                    consumer_names = (str(proxy_name),)
-                    for object_name in consumer_names:
-                        resolved.append(
-                            ACESinkBinding(
-                                sink_kind="OBJECT_PROPERTY",
-                                target_object_name=object_name,
-                                target_data_name=sink_name,
-                                attr_type=attr_type,
-                            )
-                        )
-                elif frontend_kind == FRONTEND_KIND_SHADER:
-                    # Do not fall back to consumer-object writes for shader sinks;
-                    # require a source proxy for deterministic fan-out and stable
-                    # depsgraph behavior.
+                if frontend_kind == FRONTEND_KIND_SHADER:
                     consumer_names = ()
+                    if frontend_uid in frontends:
+                        consumer_names = tuple(str(v) for v in (frontends[frontend_uid].owner_keys or ()) if str(v))
                     for object_name in consumer_names:
                         resolved.append(
                             ACESinkBinding(
@@ -4747,36 +4728,51 @@ class ACEAudioEngine:
                     )
                     socket_map["Attribute ID"] = "0"
 
-            for sock in getattr(bl_node, "inputs", []):
-                socket_key = socket_map.get(str(getattr(sock, "name", "") or ""))
-                if socket_key is None:
-                    continue
-                target = desired_map.get(socket_key, "")
-                current = str(getattr(sock, "default_value", "") or "")
-                if target and target != current:
-                    try:
-                        sock.default_value = target
+            if desired_map:
+                for sock in getattr(bl_node, "inputs", []):
+                    socket_key = socket_map.get(str(getattr(sock, "name", "") or ""))
+                    if socket_key is None:
+                        continue
+                    target = desired_map.get(socket_key, "")
+                    current = str(getattr(sock, "default_value", "") or "")
+                    if target and target != current:
+                        try:
+                            sock.default_value = target
+                            changed = True
+                            changed_node_ids.add(str(abs_node.id))
+                        except Exception:
+                            pass
+                try:
+                    if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
+                        bl_node["ace_auto_attr_topology_json"] = topology_sig
                         changed = True
-                        changed_node_ids.add(str(abs_node.id))
-                    except Exception:
-                        pass
-            try:
-                if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
-                    bl_node["ace_auto_attr_topology_json"] = topology_sig
-                    changed = True
-            except Exception:
-                pass
+                except Exception:
+                    pass
             if shader_factory is not None:
                 try:
+                    _names_by_idx = {int(k): str(v) for k, v in desired_map.items() if v} or None
                     if shader_factory.sync_node_instance_group_bindings(
                         bl_node,
                         proxy_name=proxy_name,
                         scene=scene,
+                        attr_names_by_idx=_names_by_idx,
                     ):
                         changed = True
                         changed_node_ids.add(str(abs_node.id))
                 except Exception:
                     pass
+            # Write computed attr names into abstract tree params so that
+            # _emit_consumer_intents / _resolve_sink_data_name use the same
+            # names that were set on the ShaderNodeAttribute sink nodes.
+            if desired_map:
+                params = dict(getattr(abs_node, "parameters", {}) or {})
+                for out_key, attr_name in desired_map.items():
+                    if attr_name:
+                        params[f"attr_id_out_{out_key}"] = attr_name
+                        params[f"attr_id_custom_out_{out_key}"] = True
+                abs_node.parameters = params
+                changed = True
+                changed_node_ids.add(str(abs_node.id))
         return changed, changed_node_ids
 
     def _create_task_for_node(self, node: ACEAbstractNode, block_size: int) -> Optional[ACEAudioTask]:
