@@ -4642,6 +4642,13 @@ class ACEAudioEngine:
             shader_factory = _ACEShaderNodeFactory
         except Exception:
             shader_factory = None
+        shader_tree_mutations_unsafe = self._unsafe_for_shader_tree_mutations(scene)
+        if shader_factory is not None and not shader_tree_mutations_unsafe:
+            try:
+                if shader_factory.cleanup_tree_helper_nodes(bl_tree):
+                    changed = True
+            except Exception:
+                pass
 
         incoming_by_target: Dict[str, list[tuple[str, int, int]]] = {}
         for link in (getattr(abstract_tree, "links", []) or []):
@@ -4748,7 +4755,7 @@ class ACEAudioEngine:
                         changed = True
                 except Exception:
                     pass
-            if shader_factory is not None:
+            if shader_factory is not None and not shader_tree_mutations_unsafe:
                 try:
                     _names_by_idx = {int(k): str(v) for k, v in desired_map.items() if v} or None
                     if shader_factory.sync_node_instance_group_bindings(
@@ -4763,7 +4770,7 @@ class ACEAudioEngine:
                     pass
             # Write computed attr names into abstract tree params so that
             # _emit_consumer_intents / _resolve_sink_data_name use the same
-            # names that were set on the ShaderNodeAttribute sink nodes.
+            # names that were set on the companion ShaderNodeAttribute helpers.
             if desired_map:
                 params = dict(getattr(abs_node, "parameters", {}) or {})
                 for out_key, attr_name in desired_map.items():
@@ -5197,6 +5204,29 @@ class ACEAudioEngine:
 
         frontends = self.discover_scene_frontends(scene)
         self._last_frontend_membership_signature = self._frontend_membership_signature(frontends)
+        has_shader_frontends = any(
+            str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+            for rec in (frontends or [])
+        )
+        if has_shader_frontends and self._unsafe_for_shader_tree_mutations(scene):
+            target_tree = preferred_tree
+            if str(getattr(target_tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                target_tree = next(
+                    (
+                        rec.tree
+                        for rec in (frontends or [])
+                        if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+                    ),
+                    None,
+                )
+            self.request_recompile(target_tree)
+            self._log_runtime(
+                "shader_tree_preview_deferred",
+                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
+                "WARNING",
+                min_interval=5.0,
+            )
+            return
         sources = list(getattr(getattr(scene, "audiocore", None), "audio_sources", []) or [])
         # Shader driver bindings need concrete proxy object names before the
         # frontend sync stage; ensure proxies are materialized up-front.
@@ -5225,7 +5255,7 @@ class ACEAudioEngine:
                     pass
 
             try:
-                ACEProxyManager.sync_managed_source_tree(tree, sources)
+                ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
             except Exception:
                 pass
 
@@ -5458,6 +5488,46 @@ class ACEAudioEngine:
             return not bool(getattr(getattr(scene, "render", None), "use_lock_interface", False))
         except Exception:
             return True
+
+    @staticmethod
+    def _is_shader_viewport_preview_active() -> bool:
+        """Return True when a 3D viewport is compiling live shader previews."""
+        try:
+            wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+            windows = getattr(wm, "windows", []) if wm else []
+            for window in windows:
+                screen = getattr(window, "screen", None)
+                if screen is None:
+                    continue
+                for area in getattr(screen, "areas", []) or []:
+                    if str(getattr(area, "type", "") or "") != "VIEW_3D":
+                        continue
+                    spaces = getattr(area, "spaces", None)
+                    active_space = getattr(spaces, "active", None) if spaces is not None else None
+                    if active_space is None:
+                        try:
+                            space_iter = list(spaces or [])
+                        except Exception:
+                            space_iter = []
+                    else:
+                        space_iter = [active_space]
+                    for space in space_iter:
+                        if str(getattr(space, "type", "") or "") != "VIEW_3D":
+                            continue
+                        shading = getattr(space, "shading", None)
+                        shading_type = str(getattr(shading, "type", "") or "")
+                        if shading_type in {"RENDERED", "MATERIAL"}:
+                            return True
+        except Exception:
+            return False
+        return False
+
+    @classmethod
+    def _unsafe_for_shader_tree_mutations(cls, scene) -> bool:
+        """Avoid structural ShaderNodeTree edits during renders and live preview."""
+        if cls._unsafe_for_handler_writes(scene):
+            return True
+        return cls._is_shader_viewport_preview_active()
 
     @staticmethod
     def _is_animation_playing() -> bool:
@@ -5786,6 +5856,32 @@ class ACEAudioEngine:
         membership_sig = self._frontend_membership_signature(discovered_frontends)
         membership_changed = membership_sig != getattr(self, "_last_frontend_membership_signature", ())
         if not self._dirty_frontend_uids and not self._pending_scene_rebuild and not membership_changed:
+            return False
+        shader_frontend_uids = {
+            str(rec.frontend_ref.uid or "")
+            for rec in (discovered_frontends or [])
+            if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+        }
+        touches_shader_frontends = bool(
+            any(
+                str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree"
+                for tree in (self._dirty_trees or set())
+                if tree is not None
+            )
+            or (
+                self._pending_tree is not None
+                and str(getattr(self._pending_tree, "bl_idname", "") or "") == "ShaderNodeTree"
+            )
+            or bool(shader_frontend_uids.intersection({str(uid) for uid in (self._dirty_frontend_uids or set())}))
+            or ((self._pending_scene_rebuild or membership_changed) and bool(shader_frontend_uids))
+        )
+        if touches_shader_frontends and self._unsafe_for_shader_tree_mutations(scene):
+            self._log_runtime(
+                "shader_tree_preview_deferred",
+                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
+                "WARNING",
+                min_interval=5.0,
+            )
             return False
         # Require a quiet window and minimum spacing between rebuilds.
         # Exception: bypass the quiet window if dirty state has persisted for >2 s

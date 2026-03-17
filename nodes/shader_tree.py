@@ -17,6 +17,9 @@ class ACEShaderNodeFactory:
     _NODES_CONTENT_HASH: str = ""
     _ATTR_NODE_OUTPUT_IDX_KEY = "ace_shader_output_idx"
     _OUTPUT_NODE_KIND_KEY = "ace_shader_sink_kind"
+    _HELPER_NODE_OWNER_KEY = "ace_shader_helper_owner"
+    _HELPER_ATTR_NAME_KEY = "ace_shader_attr_name"
+    _HELPER_INPUT_PREFIX = "ACE Property"
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
@@ -134,11 +137,28 @@ class ACEShaderNodeFactory:
         return tuple(indices)
 
     @classmethod
+    def _helper_input_name(cls, output_idx: int) -> str:
+        if int(output_idx) <= 0:
+            return cls._HELPER_INPUT_PREFIX
+        return f"{cls._HELPER_INPUT_PREFIX} {int(output_idx + 1)}"
+
+    @classmethod
+    def _helper_input_specs(cls, node_def) -> tuple[tuple[int, str, str], ...]:
+        specs: list[tuple[int, str, str]] = []
+        for output_idx, (sock_type, _sock_name) in enumerate(node_def.get("outputs", [])):
+            if "Bundle" in str(sock_type or ""):
+                continue
+            specs.append((int(output_idx), str(sock_type or "NodeSocketFloat"), cls._helper_input_name(int(output_idx))))
+        return tuple(specs)
+
+    @classmethod
     def _expected_interface_names(cls, node_def, category: str, node_type: str) -> tuple[set[str], set[str]]:
         input_names = {str(name) for _sock_type, name in node_def.get("inputs", [])}
         output_names = {str(name) for _sock_type, name in node_def.get("outputs", [])}
         for _sock_type, extra_name, _default_value in cls._extra_inputs(category, node_type):
             input_names.add(str(extra_name))
+        for _output_idx, _sock_type, helper_name in cls._helper_input_specs(node_def):
+            input_names.add(str(helper_name))
         return input_names, output_names
 
     @classmethod
@@ -156,6 +176,8 @@ class ACEShaderNodeFactory:
             output_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
         for sock_type, sock_name, _default_value in cls._extra_inputs(category, node_type):
             input_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
+        for _output_idx, sock_type, helper_name in cls._helper_input_specs(node_def):
+            input_types[str(helper_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
         return input_types, output_types
 
     @staticmethod
@@ -230,21 +252,6 @@ class ACEShaderNodeFactory:
                     return True
                 if (not allow_math_nodes) and node_type_name in {"MATH", "VECTOR_MATH"}:
                     return True
-            expected_attr_indices = set(cls._expected_attribute_output_indices(node_def))
-            if expected_attr_indices:
-                found_attr_indices: set[int] = set()
-                for node in ng.nodes:
-                    try:
-                        raw_idx = node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, None)
-                    except Exception:
-                        raw_idx = None
-                    try:
-                        if raw_idx is not None:
-                            found_attr_indices.add(int(raw_idx))
-                    except Exception:
-                        pass
-                if not expected_attr_indices.issubset(found_attr_indices):
-                    return True
         except Exception:
             return True
         return False
@@ -281,7 +288,12 @@ class ACEShaderNodeFactory:
         name = str(attr_name or "").strip()
         if not name:
             return changed
-        for prop_name in ("attribute_name", "name"):
+        prop_names = []
+        if hasattr(attr_node, "attribute_name"):
+            prop_names.append("attribute_name")
+        elif hasattr(attr_node, "name"):
+            prop_names.append("name")
+        for prop_name in prop_names:
             if not hasattr(attr_node, prop_name):
                 continue
             try:
@@ -432,6 +444,8 @@ class ACEShaderNodeFactory:
     def _build_group_content(cls, ng, node_def, category: str, node_type: str):
         base_inputs = list(node_def.get("inputs", []))
         base_outputs = list(node_def.get("outputs", []))
+        extra_inputs = list(cls._extra_inputs(category, node_type))
+        helper_inputs = list(cls._helper_input_specs(node_def))
 
         for sock_type_str, sock_name in base_inputs:
             cls._new_socket(ng, str(sock_name), "INPUT", str(sock_type_str))
@@ -474,12 +488,16 @@ class ACEShaderNodeFactory:
                         except Exception:
                             pass
 
-        for sock_type_str, sock_name, default_value in cls._extra_inputs(category, node_type):
+        for sock_type_str, sock_name, default_value in extra_inputs:
             cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
             cls._set_socket_default(ng, sock_name, default_value)
+        for _out_idx, sock_type_str, helper_name in helper_inputs:
+            cls._new_socket(ng, helper_name, "INPUT", sock_type_str)
 
         # Shader groups are mostly strict facades:
         # Group Input/Output + optional passthrough wiring and property reads.
+        # Companion Attribute nodes live in the parent material tree, feeding
+        # these helper inputs per node instance. The group itself stays shared.
         # LUFS adds a tiny control-consumption chain so Window/Overlap Ratio stay active.
         input_node = ng.nodes.new("NodeGroupInput")
         output_node = ng.nodes.new("NodeGroupOutput")
@@ -488,8 +506,16 @@ class ACEShaderNodeFactory:
 
         all_inputs = list(base_inputs) + [
             (sock_type_str, sock_name)
-            for sock_type_str, sock_name, _default_value in cls._extra_inputs(category, node_type)
+            for sock_type_str, sock_name, _default_value in extra_inputs
+        ] + [
+            (sock_type_str, helper_name)
+            for _out_idx, sock_type_str, helper_name in helper_inputs
         ]
+        helper_input_indices = {
+            int(out_idx): int(len(base_inputs) + len(extra_inputs) + helper_idx)
+            for helper_idx, (out_idx, _sock_type, _helper_name) in enumerate(helper_inputs)
+        }
+        helper_input_index_set = set(helper_input_indices.values())
         bundle_input_indices = [
             idx for idx, (sock_type, _name) in enumerate(all_inputs) if "Bundle" in str(sock_type or "")
         ]
@@ -560,6 +586,8 @@ class ACEShaderNodeFactory:
             if input_idx >= len(getattr(input_node, "outputs", [])):
                 continue
             if input_idx == first_bundle_input_idx:
+                continue
+            if input_idx in helper_input_index_set:
                 continue
             source_sock = input_node.outputs[input_idx]
             is_bundle_input = "Bundle" in str(socket_type or "")
@@ -643,26 +671,29 @@ class ACEShaderNodeFactory:
                 except Exception:
                     pass
 
-        # Shader frontends expose stream/spec outputs via ShaderNodeAttribute
-        # nodes in Object mode, reading custom properties from the target object.
-        sink_nodes_by_idx: dict[int, object] = {}
-        for output_idx, (socket_type, socket_name) in enumerate(base_outputs):
+        helper_source_by_idx: dict[int, object] = {}
+        for output_idx, helper_input_idx in helper_input_indices.items():
+            if helper_input_idx < len(getattr(input_node, "outputs", [])):
+                helper_source_by_idx[int(output_idx)] = input_node.outputs[int(helper_input_idx)]
+        for output_idx, (socket_type, _socket_name) in enumerate(base_outputs):
             if "Bundle" in str(socket_type or ""):
                 continue
-            sink_node = cls._create_output_sink_node(
-                ng,
-                output_node,
-                int(output_idx),
-                str(socket_type or ""),
-                str(socket_name or ""),
-            )
-            if sink_node is not None:
-                sink_nodes_by_idx[int(output_idx)] = sink_node
+            if str(category or "") == "stream" and str(node_type or "") == "lufs":
+                continue
+            if output_idx >= len(getattr(output_node, "inputs", [])):
+                continue
+            source_out = helper_source_by_idx.get(int(output_idx))
+            if source_out is None:
+                continue
+            try:
+                ng.links.new(source_out, output_node.inputs[int(output_idx)])
+            except Exception:
+                pass
 
         # LUFS-specific shader equivalent of the GN index-driver trick:
         # (Window + Overlap Ratio) * 0 + 1 multiplies each scalar property output by 1,
         # preserving output values while keeping both controls truly consumed.
-        if str(category or "") == "stream" and str(node_type or "") == "lufs" and sink_nodes_by_idx:
+        if str(category or "") == "stream" and str(node_type or "") == "lufs" and helper_source_by_idx:
             window_idx = next(
                 (idx for idx, (_stype, name) in enumerate(all_inputs) if str(name or "") == "Window (s)"),
                 -1,
@@ -695,7 +726,7 @@ class ACEShaderNodeFactory:
                 add_one.location = (420, -320)
                 ng.links.new(mul_zero.outputs[0], add_one.inputs[0])
 
-                for output_idx, sink_node in sink_nodes_by_idx.items():
+                for output_idx, source_out in helper_source_by_idx.items():
                     if output_idx < 0 or output_idx >= len(base_outputs):
                         continue
                     if output_idx >= len(getattr(output_node, "inputs", [])):
@@ -708,8 +739,6 @@ class ACEShaderNodeFactory:
                             ng.links.remove(link)
                         except Exception:
                             pass
-
-                    source_out = cls._shader_attr_output_socket(sink_node, socket_type)
                     if source_out is None:
                         continue
 
@@ -776,20 +805,9 @@ class ACEShaderNodeFactory:
             }
         return {}
 
-    @staticmethod
-    def _instance_group_suffix(category: str, node_type: str, ace_id: str) -> str:
-        seed = f"{category}|{node_type}|{ace_id}".encode("utf-8")
-        return hashlib.blake2b(seed, digest_size=6).hexdigest()
-
     @classmethod
-    def get_instance_group_name(cls, category: str, node_type: str, ace_id: str) -> str:
-        base = cls.get_group_name(category, node_type)
-        suffix = cls._instance_group_suffix(category, node_type, ace_id)
-        return f"{base}_{suffix}"
-
-    @classmethod
-    def _ensure_instance_group_for_node(cls, node, category: str, node_type: str, ace_id: str):
-        desired_name = cls.get_instance_group_name(category, node_type, ace_id)
+    def _ensure_shared_group_for_node(cls, node, category: str, node_type: str):
+        desired_name = cls.get_group_name(category, node_type)
         current_group = getattr(node, "node_tree", None)
         current_name = str(getattr(current_group, "name", "") or "")
         if current_group is not None and current_name == desired_name:
@@ -797,18 +815,10 @@ class ACEShaderNodeFactory:
 
         group = bpy.data.node_groups.get(desired_name)
         if group is None or str(getattr(group, "bl_idname", "") or "") != "ShaderNodeTree":
-            base_name = cls.get_group_name(category, node_type)
-            base_group = bpy.data.node_groups.get(base_name)
-            if base_group is None or str(getattr(base_group, "bl_idname", "") or "") != "ShaderNodeTree":
-                cls.rebuild_node_group(category, node_type)
-                base_group = bpy.data.node_groups.get(base_name)
-            if base_group is None:
-                return None, False
-            try:
-                group = base_group.copy()
-                group.name = desired_name
-            except Exception:
-                return None, False
+            cls.rebuild_node_group(category, node_type)
+            group = bpy.data.node_groups.get(desired_name)
+        if group is None:
+            return None, False
 
         changed = False
         if current_group != group:
@@ -818,6 +828,261 @@ class ACEShaderNodeFactory:
             except Exception:
                 pass
         return group, changed
+
+    @classmethod
+    def _helper_node_name(cls, ace_id: str, output_idx: int) -> str:
+        return f".ACE_HELPER_{ACEIdManager._clean_string(str(ace_id or 'node'))[:24]}_{int(output_idx)}"
+
+    @classmethod
+    def _find_helper_attr_nodes(cls, tree, ace_id: str) -> dict[int, object]:
+        found: dict[int, object] = {}
+        for helper_node in getattr(tree, "nodes", []) or []:
+            if str(getattr(helper_node, "bl_idname", "") or "") != "ShaderNodeAttribute":
+                continue
+            try:
+                owner = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
+            except Exception:
+                owner = ""
+            if owner != str(ace_id or ""):
+                continue
+            try:
+                out_idx = int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, -1) or -1)
+            except Exception:
+                out_idx = -1
+            if out_idx < 0:
+                continue
+            found[int(out_idx)] = helper_node
+        return found
+
+    @classmethod
+    def _ensure_helper_attr_node(
+        cls,
+        tree,
+        owner_node,
+        ace_id: str,
+        output_idx: int,
+        output_name: str,
+        location: tuple[float, float] | None = None,
+    ):
+        changed = False
+        helper_nodes = cls._find_helper_attr_nodes(tree, ace_id)
+        helper_node = helper_nodes.get(int(output_idx))
+        created = False
+        if helper_node is None:
+            try:
+                helper_node = tree.nodes.new("ShaderNodeAttribute")
+            except Exception:
+                return None, False
+            changed = True
+            created = True
+        try:
+            if str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "") != str(ace_id or ""):
+                helper_node[cls._HELPER_NODE_OWNER_KEY] = str(ace_id or "")
+                changed = True
+        except Exception:
+            pass
+        try:
+            if int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, -1) or -1) != int(output_idx):
+                helper_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
+                changed = True
+        except Exception:
+            pass
+        try:
+            if str(helper_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "") != "TOP_LEVEL_ATTRIBUTE":
+                helper_node[cls._OUTPUT_NODE_KIND_KEY] = "TOP_LEVEL_ATTRIBUTE"
+                changed = True
+        except Exception:
+            pass
+        helper_name = cls._helper_node_name(ace_id, output_idx)
+        try:
+            if str(getattr(helper_node, "name", "") or "") != helper_name:
+                helper_node.name = helper_name
+                changed = True
+        except Exception:
+            pass
+        try:
+            label = f"ACE {str(output_name or f'Out {int(output_idx + 1)}')}"
+            if str(getattr(helper_node, "label", "") or "") != label:
+                helper_node.label = label
+                changed = True
+        except Exception:
+            pass
+        try:
+            helper_node.hide = True
+        except Exception:
+            pass
+        try:
+            if location is not None:
+                helper_node.location = (float(location[0]), float(location[1]))
+            elif created:
+                owner_loc = getattr(owner_node, "location", None)
+                if owner_loc is not None:
+                    helper_node.location = (float(owner_loc.x) - 260.0, float(owner_loc.y) - (int(output_idx) * 120.0))
+        except Exception:
+            pass
+        return helper_node, changed
+
+    @classmethod
+    def _hide_helper_inputs(cls, node, node_def) -> bool:
+        changed = False
+        helper_names = {helper_name for _out_idx, _sock_type, helper_name in cls._helper_input_specs(node_def)}
+        for sock in getattr(node, "inputs", []) or []:
+            if str(getattr(sock, "name", "") or "") not in helper_names:
+                continue
+            if hasattr(sock, "hide"):
+                try:
+                    if not bool(getattr(sock, "hide", False)):
+                        sock.hide = True
+                        changed = True
+                except Exception:
+                    pass
+            if hasattr(sock, "hide_value"):
+                try:
+                    if not bool(getattr(sock, "hide_value", False)):
+                        sock.hide_value = True
+                        changed = True
+                except Exception:
+                    pass
+        return changed
+
+    @classmethod
+    def _ensure_helper_link(cls, tree, helper_node, helper_output, group_node, target_input) -> bool:
+        if helper_node is None or helper_output is None or target_input is None:
+            return False
+        changed = False
+        for link in list(getattr(target_input, "links", []) or []):
+            if getattr(link, "from_node", None) == helper_node and getattr(link, "from_socket", None) == helper_output:
+                return changed
+            try:
+                tree.links.remove(link)
+                changed = True
+            except Exception:
+                pass
+        try:
+            tree.links.new(helper_output, target_input)
+            changed = True
+        except Exception:
+            pass
+        return changed
+
+    @classmethod
+    def _store_helper_attr_name(cls, helper_node, attr_name: str) -> bool:
+        if helper_node is None:
+            return False
+        target_name = str(attr_name or "")
+        try:
+            current_name = str(helper_node.get(cls._HELPER_ATTR_NAME_KEY, "") or "")
+        except Exception:
+            current_name = ""
+        if current_name == target_name:
+            return False
+        try:
+            helper_node[cls._HELPER_ATTR_NAME_KEY] = target_name
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _rebuild_helper_attr_node(
+        cls,
+        tree,
+        helper_node,
+        owner_node,
+        ace_id: str,
+        output_idx: int,
+        output_name: str,
+        socket_type: str,
+        target_name: str,
+    ):
+        if tree is None or helper_node is None:
+            return helper_node, False
+        try:
+            prev_location = (
+                float(getattr(helper_node.location, "x", 0.0)),
+                float(getattr(helper_node.location, "y", 0.0)),
+            )
+        except Exception:
+            prev_location = None
+
+        preserved_links: list[tuple[str, object]] = []
+        for out_sock in list(getattr(helper_node, "outputs", []) or []):
+            out_name = str(getattr(out_sock, "name", "") or "")
+            for link in list(getattr(out_sock, "links", []) or []):
+                target_socket = getattr(link, "to_socket", None)
+                if target_socket is None:
+                    continue
+                preserved_links.append((out_name, target_socket))
+
+        try:
+            tree.nodes.remove(helper_node)
+        except Exception:
+            return helper_node, False
+
+        rebuilt_node, changed = cls._ensure_helper_attr_node(
+            tree,
+            owner_node,
+            ace_id,
+            output_idx,
+            output_name,
+            location=prev_location,
+        )
+        if rebuilt_node is None:
+            return None, True
+        if cls._set_attr_node_defaults(rebuilt_node, target_name):
+            changed = True
+        if cls._store_helper_attr_name(rebuilt_node, target_name):
+            changed = True
+
+        fallback_output = cls._shader_attr_output_socket(rebuilt_node, socket_type)
+        for output_name_token, target_socket in preserved_links:
+            source_socket = next(
+                (
+                    sock
+                    for sock in getattr(rebuilt_node, "outputs", []) or []
+                    if str(getattr(sock, "name", "") or "") == str(output_name_token or "")
+                ),
+                None,
+            )
+            if source_socket is None:
+                source_socket = fallback_output
+            if source_socket is None or target_socket is None:
+                continue
+            try:
+                tree.links.new(source_socket, target_socket)
+                changed = True
+            except Exception:
+                pass
+        return rebuilt_node, changed
+
+    @classmethod
+    def cleanup_tree_helper_nodes(cls, tree) -> bool:
+        if tree is None:
+            return False
+        live_owner_ids: set[str] = set()
+        for node in getattr(tree, "nodes", []) or []:
+            try:
+                ace_id = str(node.get("ace_id", "") or "")
+            except Exception:
+                ace_id = ""
+            if ace_id:
+                live_owner_ids.add(ace_id)
+
+        changed = False
+        for helper_node in list(getattr(tree, "nodes", []) or []):
+            if str(getattr(helper_node, "bl_idname", "") or "") != "ShaderNodeAttribute":
+                continue
+            try:
+                owner_id = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
+            except Exception:
+                owner_id = ""
+            if not owner_id or owner_id in live_owner_ids:
+                continue
+            try:
+                tree.nodes.remove(helper_node)
+                changed = True
+            except Exception:
+                pass
+        return changed
 
     @classmethod
     def sync_node_instance_group_bindings(
@@ -876,22 +1141,26 @@ class ACEShaderNodeFactory:
                 if sanitized:
                     explicit_by_idx[int(out_idx)] = sanitized
 
-        group, changed = cls._ensure_instance_group_for_node(node, category, node_type, ace_id)
+        group, changed = cls._ensure_shared_group_for_node(node, category, node_type)
         if group is None:
             return changed
+        if cls._hide_helper_inputs(node, node_def):
+            changed = True
 
-        output_node = cls._find_group_output_node(group)
-        sink_nodes_by_idx: dict[int, object] = {}
-        for sink_node in getattr(group, "nodes", []) or []:
-            try:
-                raw_idx = sink_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, None)
-            except Exception:
-                raw_idx = None
-            try:
-                if raw_idx is not None:
-                    sink_nodes_by_idx[int(raw_idx)] = sink_node
-            except Exception:
+        tree = getattr(node, "id_data", None)
+        if tree is None:
+            return changed
+        helper_nodes_by_idx = cls._find_helper_attr_nodes(tree, ace_id)
+        expected_idx_set = {int(idx) for idx in expected_indices}
+        for stale_idx, stale_node in list(helper_nodes_by_idx.items()):
+            if int(stale_idx) in expected_idx_set:
                 continue
+            try:
+                tree.nodes.remove(stale_node)
+                changed = True
+            except Exception:
+                pass
+            helper_nodes_by_idx.pop(int(stale_idx), None)
 
         for out_idx in expected_indices:
             if out_idx < 0 or out_idx >= len(output_defs):
@@ -899,39 +1168,6 @@ class ACEShaderNodeFactory:
             sock_type, default_output_name = output_defs[out_idx]
             if "Bundle" in str(sock_type or ""):
                 continue
-            sink_node = sink_nodes_by_idx.get(int(out_idx))
-            if sink_node is None:
-                sink_node = cls._create_output_sink_node(
-                    group,
-                    output_node,
-                    int(out_idx),
-                    str(sock_type or ""),
-                    str(default_output_name or ""),
-                )
-                if sink_node is not None:
-                    changed = True
-                    sink_nodes_by_idx[int(out_idx)] = sink_node
-            if sink_node is None:
-                continue
-            # Migrate legacy driver-based sinks to ShaderNodeAttribute.
-            is_attribute_node = str(getattr(sink_node, "bl_idname", "") or "") == "ShaderNodeAttribute"
-            if not is_attribute_node:
-                try:
-                    group.nodes.remove(sink_node)
-                except Exception:
-                    pass
-                sink_node = cls._create_output_sink_node(
-                    group,
-                    output_node,
-                    int(out_idx),
-                    str(sock_type or ""),
-                    str(default_output_name or ""),
-                )
-                if sink_node is not None:
-                    changed = True
-                    sink_nodes_by_idx[int(out_idx)] = sink_node
-                if sink_node is None:
-                    continue
 
             output_name = str(default_output_name or f"out_{int(out_idx)}")
             node_outputs = list(getattr(node, "outputs", []) or [])
@@ -949,7 +1185,55 @@ class ACEShaderNodeFactory:
             if not target_name:
                 target_name = cls._placeholder_attr_name(int(out_idx), output_name)
 
-            if cls._set_attr_node_defaults(sink_node, target_name):
+            had_existing_helper = int(out_idx) in helper_nodes_by_idx
+            helper_node, helper_changed = cls._ensure_helper_attr_node(
+                tree,
+                node,
+                ace_id,
+                int(out_idx),
+                output_name,
+            )
+            if helper_node is None:
+                continue
+            if helper_changed:
+                changed = True
+                helper_nodes_by_idx[int(out_idx)] = helper_node
+            try:
+                last_target_name = str(helper_node.get(cls._HELPER_ATTR_NAME_KEY, "") or "")
+            except Exception:
+                last_target_name = ""
+            if had_existing_helper and last_target_name != target_name:
+                helper_node, rebuilt_changed = cls._rebuild_helper_attr_node(
+                    tree,
+                    helper_node,
+                    node,
+                    ace_id,
+                    int(out_idx),
+                    output_name,
+                    str(sock_type or ""),
+                    target_name,
+                )
+                if helper_node is None:
+                    continue
+                if rebuilt_changed:
+                    changed = True
+                helper_nodes_by_idx[int(out_idx)] = helper_node
+            elif cls._set_attr_node_defaults(helper_node, target_name):
+                changed = True
+            if cls._store_helper_attr_name(helper_node, target_name):
+                changed = True
+
+            helper_input_name = cls._helper_input_name(int(out_idx))
+            helper_input = next(
+                (
+                    sock
+                    for sock in getattr(node, "inputs", []) or []
+                    if str(getattr(sock, "name", "") or "") == helper_input_name
+                ),
+                None,
+            )
+            helper_output = cls._shader_attr_output_socket(helper_node, str(sock_type or ""))
+            if cls._ensure_helper_link(tree, helper_node, helper_output, node, helper_input):
                 changed = True
 
         return changed

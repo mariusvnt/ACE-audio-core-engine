@@ -488,6 +488,11 @@ class TestRegressionFindings(unittest.TestCase):
         shader_src = _read("shader_tree.py")
         self.assertIn("ShaderNodeAttribute", shader_src)
         self.assertIn("_set_attr_node_defaults", shader_src)
+        self.assertIn("_HELPER_NODE_OWNER_KEY", shader_src)
+        self.assertIn("_HELPER_ATTR_NAME_KEY", shader_src)
+        self.assertIn("cleanup_tree_helper_nodes", shader_src)
+        self.assertIn("_ensure_helper_link", shader_src)
+        self.assertIn("_rebuild_helper_attr_node", shader_src)
         self.assertIn("attribute_type", shader_src)
         self.assertIn("sink_node[cls._OUTPUT_NODE_KIND_KEY]", shader_src)
         # Driver bridge must be fully removed.
@@ -1312,6 +1317,51 @@ class TestRegressionFindings(unittest.TestCase):
         )
         # Must actually be called somewhere in the engine
         self.assertIn("_is_rendering_job()", engine_src)
+
+    def test_shader_viewport_preview_guard_defers_structural_shader_writes(self):
+        engine_src = _read("audio_engine.py")
+        self.assertIn("def _is_shader_viewport_preview_active(", engine_src)
+        self.assertIn("def _unsafe_for_shader_tree_mutations(", engine_src)
+        self.assertIn('"RENDERED"', engine_src)
+        self.assertIn('"MATERIAL"', engine_src)
+        maybe_compile_body = _slice_between(
+            engine_src,
+            "def _maybe_compile_dirty(",
+            "def request_recompile(",
+            label="_maybe_compile_dirty body",
+        )
+        self.assertIn("touches_shader_frontends", maybe_compile_body)
+        self.assertIn("self._unsafe_for_shader_tree_mutations(scene)", maybe_compile_body)
+        compile_body = _slice_between(
+            engine_src,
+            "def compile_scene_frontends(",
+            "def compile_from_blender_tree(",
+            label="compile_scene_frontends body",
+        )
+        self.assertIn("has_shader_frontends", compile_body)
+        self.assertIn("self.request_recompile(target_tree)", compile_body)
+        sync_body = _slice_between(
+            engine_src,
+            "def _sync_shader_output_ids(",
+            "def _create_task_for_node(",
+            label="_sync_shader_output_ids body",
+        )
+        self.assertIn("shader_tree_mutations_unsafe = self._unsafe_for_shader_tree_mutations(scene)", sync_body)
+        self.assertIn("if shader_factory is not None and not shader_tree_mutations_unsafe:", sync_body)
+
+    def test_proxy_and_menu_defer_shader_tree_sync_during_viewport_preview(self):
+        proxy_src = _read("proxy_management.py")
+        self.assertIn("def _shader_tree_writes_are_unsafe(", proxy_src)
+        self.assertIn("def _defer_shader_tree_sync(", proxy_src)
+        self.assertIn("def sync_managed_source_tree(tree: bpy.types.NodeTree, sources, scene=None):", proxy_src)
+        self.assertIn("ACEProxyManager._shader_tree_writes_are_unsafe(scene)", proxy_src)
+        self.assertIn("ACEProxyManager._defer_shader_tree_sync(tree, scene)", proxy_src)
+        self.assertIn("ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)", proxy_src)
+
+        menu_src = _read("gn_menu.py")
+        self.assertIn("ACEAudioEngine._unsafe_for_shader_tree_mutations(scene)", menu_src)
+        self.assertIn("engine.request_recompile(tree)", menu_src)
+        self.assertIn("ACEShaderNodeFactory.sync_node_instance_group_bindings(", menu_src)
 
     def test_parallel_shard_respects_source_groups(self):
         """Gap 4: shard function must accept source_groups and bucket by source."""
