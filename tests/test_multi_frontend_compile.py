@@ -163,6 +163,7 @@ class _FakeAttrNode(dict):
         self.type = "GROUP"
         self.name = ace_id
         self.label = ace_id
+        self.id_data = None
         self.inputs = [
             _FakeSocket(str(name), socket_idx=idx, is_output=False, data_type="NodeSocketString")
             for idx, name in enumerate(input_names or [])
@@ -727,6 +728,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 505)
         shader_tree.nodes = [shader_node]
+        shader_node.id_data = shader_tree
         source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
         source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
         scene = types.SimpleNamespace(
@@ -753,7 +755,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
             }
         )
 
-        changed, changed_node_ids = engine._sync_shader_output_ids(shader_tree, abstract_tree, scene)
+        original_sync = self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings
+        self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = classmethod(
+            lambda cls, node, proxy_name="", scene=None, attr_names_by_idx=None: True
+        )
+        try:
+            changed, changed_node_ids = engine._sync_shader_output_ids(shader_tree, abstract_tree, scene)
+        finally:
+            self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
 
         expected_topology = "[\"src_b\"]|[]"
         expected_name = engine._build_auto_attr_name(
@@ -778,6 +787,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         shader_node.inputs[0].default_value = "ACE_manual_attr"
         shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 506)
         shader_tree.nodes = [shader_node]
+        shader_node.id_data = shader_tree
         source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
         source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
         scene = types.SimpleNamespace(
@@ -910,6 +920,65 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertFalse(any(call[0] == "execute" for call in calls))
         self.assertFalse(any(call[0] == "discover" for call in calls))
         self.assertFalse(any(call[0] == "compile" for call in calls))
+
+    def test_shader_tree_mutations_are_unsafe_in_rendered_viewport_preview(self):
+        bpy_mod = sys.modules["bpy"]
+        original_windows = list(getattr(bpy_mod.context.window_manager, "windows", []) or [])
+        area = types.SimpleNamespace(
+            type="VIEW_3D",
+            spaces=types.SimpleNamespace(
+                active=types.SimpleNamespace(
+                    type="VIEW_3D",
+                    shading=types.SimpleNamespace(type="RENDERED"),
+                )
+            ),
+        )
+        bpy_mod.context.window_manager.windows = [types.SimpleNamespace(screen=types.SimpleNamespace(areas=[area]))]
+        try:
+            scene = types.SimpleNamespace(render=types.SimpleNamespace(use_lock_interface=False))
+            self.assertTrue(self.engine_mod.ACEAudioEngine._unsafe_for_shader_tree_mutations(scene))
+        finally:
+            bpy_mod.context.window_manager.windows = original_windows
+
+    def test_maybe_compile_dirty_defers_shader_rebuild_during_viewport_preview(self):
+        engine = self._engine_shell()
+        shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 909, ace_frontend_uid="ACE_FRONTEND_SHADER")
+        frontend_ref = self.abs_mod.ACEFrontendRef(
+            uid="ACE_FRONTEND_SHADER",
+            kind="SHADER_NODES",
+            tree_name="ACE Shader",
+            tree_bl_idname="ShaderNodeTree",
+            tree_ptr=shader_tree.as_pointer(),
+        )
+        compile_calls = []
+        log_calls = []
+        engine.discover_scene_frontends = lambda _scene: [
+            types.SimpleNamespace(
+                tree=shader_tree,
+                frontend_ref=frontend_ref,
+                consumer_object_names=(),
+            )
+        ]
+        engine._last_frontend_membership_signature = ()
+        engine._dirty_frontend_uids = {"ACE_FRONTEND_SHADER"}
+        engine._pending_scene_rebuild = False
+        engine._dirty_trees = [shader_tree]
+        engine._pending_tree = shader_tree
+        engine._last_dirty_time = 0.0
+        engine._last_compile_time = 0.0
+        engine._is_compiling = False
+        engine._first_dirty_time = 0.0
+        engine._unsafe_for_shader_tree_mutations = lambda _scene: True
+        engine._log_runtime = lambda *args, **kwargs: log_calls.append((args, kwargs))
+        engine.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
+
+        compiled = engine._maybe_compile_dirty(types.SimpleNamespace())
+
+        self.assertFalse(compiled)
+        self.assertFalse(compile_calls)
+        self.assertEqual(engine._dirty_frontend_uids, {"ACE_FRONTEND_SHADER"})
+        self.assertEqual(engine._dirty_trees, [shader_tree])
+        self.assertTrue(log_calls)
 
     def test_parallel_usable_values_accepts_current_frame_payload(self):
         engine = self._engine_shell()

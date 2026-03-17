@@ -63,6 +63,37 @@ class ACEProxyManager:
         return scenes[0] if scenes else None
 
     @staticmethod
+    def _shader_tree_writes_are_unsafe(scene=None) -> bool:
+        scene = ACEProxyManager._resolve_scene(scene)
+        try:
+            from .audio_engine import ACEAudioEngine
+        except Exception:
+            return False
+        try:
+            return bool(ACEAudioEngine._unsafe_for_shader_tree_mutations(scene))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _defer_shader_tree_sync(tree, scene=None) -> None:
+        if tree is None:
+            return
+        try:
+            ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, [])
+        except Exception:
+            pass
+        try:
+            from .audio_engine import ACEAudioEngine
+            resolved_scene = ACEProxyManager._resolve_scene(scene)
+            engine = ACEAudioEngine.get_instance(resolved_scene)
+            if engine is None and resolved_scene is not None:
+                engine = ACEAudioEngine.ensure_instance(resolved_scene)
+            if engine is not None:
+                engine.request_recompile(tree)
+        except Exception:
+            pass
+
+    @staticmethod
     def _ensure_internal_collection(scene=None) -> bpy.types.Collection:
         """Create or retrieve the hidden ACE_Internals collection.
 
@@ -995,7 +1026,7 @@ class ACEProxyManager:
             return None
 
         try:
-            ACEProxyManager.sync_managed_source_tree(tree, sources or [])
+            ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)
         except Exception:
             pass
         return tree
@@ -1029,10 +1060,16 @@ class ACEProxyManager:
         )
 
     @staticmethod
-    def sync_managed_source_tree(tree: bpy.types.NodeTree, sources):
+    def sync_managed_source_tree(tree: bpy.types.NodeTree, sources, scene=None):
         """Sync managed ACE source placeholders in any supported top-level tree."""
         utils.assert_main_thread("sync_managed_source_tree")
         if tree is None:
+            return
+        if (
+            ACEProxyManager._frontend_kind_for_tree(tree) == FRONTEND_KIND_SHADER
+            and ACEProxyManager._shader_tree_writes_are_unsafe(scene)
+        ):
+            ACEProxyManager._defer_shader_tree_sync(tree, scene)
             return
 
         factory_cls = ACEProxyManager._source_group_factory_for_tree(tree)

@@ -422,12 +422,22 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         self._show_attr_id_socket_values(node)
         if tree_type == "ShaderNodeTree":
             try:
-                proxy_name = self._resolve_active_proxy_name(context)
-                ACEShaderNodeFactory.sync_node_instance_group_bindings(
-                    node,
-                    proxy_name=proxy_name,
-                    scene=getattr(context, "scene", None),
-                )
+                from ..core.audio_engine import ACEAudioEngine
+
+                scene = getattr(context, "scene", None)
+                if ACEAudioEngine._unsafe_for_shader_tree_mutations(scene):
+                    engine = ACEAudioEngine.get_instance(scene)
+                    if engine is None and scene is not None:
+                        engine = ACEAudioEngine.ensure_instance(scene)
+                    if engine is not None:
+                        engine.request_recompile(tree)
+                else:
+                    proxy_name = self._resolve_active_proxy_name(context)
+                    ACEShaderNodeFactory.sync_node_instance_group_bindings(
+                        node,
+                        proxy_name=proxy_name,
+                        scene=scene,
+                    )
             except Exception:
                 pass
 
