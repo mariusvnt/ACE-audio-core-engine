@@ -470,7 +470,7 @@ class TestRegressionFindings(unittest.TestCase):
         )
         self.assertIn("shader_factory.sync_node_instance_group_bindings(", body)
 
-    def test_shader_sink_bindings_route_object_properties_to_source_proxy(self):
+    def test_shader_sink_bindings_route_to_consumer_objects(self):
         engine_src = _read("audio_engine.py")
         body = _slice_between(
             engine_src,
@@ -478,29 +478,36 @@ class TestRegressionFindings(unittest.TestCase):
             "@staticmethod\n    def _safe_file_mtime(",
             label="_resolve_sink_bindings_for_graph body",
         )
-        self.assertIn("if frontend_kind == FRONTEND_KIND_SHADER and proxy_name:", body)
-        self.assertIn("consumers = (str(proxy_name),)", body)
+        self.assertIn("OBJECT_PROPERTY", body)
+        self.assertIn("owner_keys", body)
+        # Shader sinks must NOT force-route to proxy — they write to
+        # consumer objects so Attribute nodes in Object mode can read them.
+        self.assertNotIn("consumers = (str(proxy_name),)", body)
 
-    def test_shader_sinks_use_driver_bound_internal_nodes(self):
+    def test_shader_sinks_use_attribute_nodes(self):
         shader_src = _read("shader_tree.py")
-        self.assertIn("ShaderNodeValue", shader_src)
-        self.assertIn("ShaderNodeCombineXYZ", shader_src)
-        self.assertIn("driver_add(\"default_value\")", shader_src)
-        self.assertIn("target_obj.path_from_id", shader_src)
-        self.assertIn("return (\"OBJECT\", target_obj, False)", shader_src)
-        self.assertIn("_ensure_target_object_property(", shader_src)
-        self.assertIn("target.id_type = str(target_id_type or \"OBJECT\")", shader_src)
+        self.assertIn("ShaderNodeAttribute", shader_src)
+        self.assertIn("_set_attr_node_defaults", shader_src)
+        self.assertIn("attribute_type", shader_src)
         self.assertIn("sink_node[cls._OUTPUT_NODE_KIND_KEY]", shader_src)
+        # Driver bridge must be fully removed.
+        self.assertNotIn("driver_add(", shader_src)
+        self.assertNotIn("driver_remove(", shader_src)
+        self.assertNotIn("FLOAT_DRIVER", shader_src)
+        self.assertNotIn("VECTOR_DRIVER", shader_src)
+        self.assertNotIn("COLOR_DRIVER", shader_src)
 
     def test_ui_active_node_list_follows_shader_or_geometry_editor_context(self):
         ui_src = _read("n_panel_ui.py")
         find_body = _slice_between(
             ui_src,
-            "def _find_active_node_tree(context):",
+            "def _find_active_node_tree(context, editor_context_only: bool = False):",
             "def _describe_node(",
             label="_find_active_node_tree body",
         )
         self.assertIn("{'GeometryNodeTree', 'ShaderNodeTree'}", find_body)
+        self.assertIn("_iter_visible_node_editor_trees(context)", find_body)
+        self.assertIn("if editor_context_only:", find_body)
         self.assertIn("get_from_context", find_body)
         self.assertIn("material_slots", find_body)
 
@@ -510,10 +517,19 @@ class TestRegressionFindings(unittest.TestCase):
             "def _refresh_active_source_metadata(",
             label="_sync_ui_dummy_tree body",
         )
+        self.assertIn("_find_active_node_tree(context, editor_context_only=True)", sync_body)
         self.assertIn("if str(getattr(tree, \"bl_idname\", \"\") or \"\") == \"ShaderNodeTree\":", sync_body)
         self.assertIn("reader = ACEShaderTreeReader(tree)", sync_body)
         self.assertIn("reader = ACEDummyTreeReader(tree)", sync_body)
         self.assertIn("no active ACE node tree found", sync_body)
+
+        timer_body = _slice_between(
+            ui_src,
+            "def _ui_sync_timer():",
+            "@persistent",
+            label="_ui_sync_timer body",
+        )
+        self.assertIn("_find_active_node_tree(context, editor_context_only=True)", timer_body)
 
     def test_ui_stream_list_filters_source_management_nodes(self):
         ui_src = _read("n_panel_ui.py")

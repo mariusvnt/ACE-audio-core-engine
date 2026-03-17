@@ -310,136 +310,6 @@ class ACEShaderNodeFactory:
         return None
 
     @classmethod
-    def _clear_socket_driver(cls, socket, array_index: int | None = None):
-        if socket is None:
-            return
-        try:
-            if array_index is None:
-                socket.driver_remove("default_value")
-            else:
-                socket.driver_remove("default_value", int(array_index))
-        except Exception:
-            pass
-
-    @classmethod
-    def _ensure_socket_driver(
-        cls,
-        socket,
-        target_id,
-        data_path: str,
-        array_index: int | None = None,
-        target_id_type: str = "OBJECT",
-    ):
-        if socket is None or target_id is None or not data_path:
-            return False
-        cls._clear_socket_driver(socket, array_index=array_index)
-        try:
-            if array_index is None:
-                fcurve = socket.driver_add("default_value")
-            else:
-                fcurve = socket.driver_add("default_value", int(array_index))
-        except Exception:
-            return False
-        try:
-            driver = fcurve.driver
-            driver.type = "SCRIPTED"
-            driver.expression = "v"
-            while driver.variables:
-                driver.variables.remove(driver.variables[0])
-            var = driver.variables.new()
-            var.name = "v"
-            var.type = "SINGLE_PROP"
-            target = var.targets[0]
-            target.id_type = str(target_id_type or "OBJECT")
-            target.id = target_id
-            target.data_path = str(data_path or "")
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def _escape_prop_name(prop_name: str) -> str:
-        return str(prop_name or "").replace("\\", "\\\\").replace('"', '\\"')
-
-    @classmethod
-    def _driver_prop_path(
-        cls,
-        prop_name: str,
-        component_idx: int | None = None,
-        target_obj=None,
-    ) -> str:
-        escaped_prop = cls._escape_prop_name(prop_name)
-        base = f'["{escaped_prop}"]'
-        if target_obj is not None:
-            try:
-                resolved = str(target_obj.path_from_id(base) or "")
-                if resolved:
-                    base = resolved
-            except Exception:
-                pass
-        if component_idx is None:
-            return base
-        return f"{base}[{int(component_idx)}]"
-
-    @staticmethod
-    def _resolve_driver_target_context(target_obj, scene=None) -> tuple[str, object | None, bool]:
-        return ("OBJECT", target_obj, False)
-
-    @staticmethod
-    def _sink_default_value_for_kind(sink_kind: str):
-        kind = str(sink_kind or "")
-        if kind == "VECTOR_DRIVER":
-            return [0.0, 0.0, 0.0]
-        if kind == "COLOR_DRIVER":
-            return [0.0, 0.0, 0.0, 1.0]
-        return 0.0
-
-    @classmethod
-    def _ensure_target_object_property(cls, target_obj, prop_name: str, sink_kind: str) -> bool:
-        if target_obj is None:
-            return False
-        name = str(prop_name or "").strip()
-        if not name:
-            return False
-        default_value = cls._sink_default_value_for_kind(sink_kind)
-        try:
-            if name in target_obj.keys():
-                try:
-                    current = target_obj.get(name, None)
-                except Exception:
-                    current = None
-                expects_vector = isinstance(default_value, list) and len(default_value) == 3
-                expects_color = isinstance(default_value, list) and len(default_value) == 4
-                if expects_vector and isinstance(current, (list, tuple)) and len(current) >= 3:
-                    return False
-                if expects_color and isinstance(current, (list, tuple)) and len(current) >= 4:
-                    return False
-                if (not expects_vector) and (not expects_color) and isinstance(current, (int, float)):
-                    return False
-        except Exception:
-            pass
-        changed = False
-        try:
-            target_obj[name] = default_value
-            changed = True
-        except Exception:
-            if isinstance(default_value, list):
-                try:
-                    target_obj[name] = tuple(default_value)
-                    changed = True
-                except Exception:
-                    pass
-        if changed:
-            try:
-                target_obj.update_tag(refresh={"OBJECT", "DATA"})
-            except Exception:
-                try:
-                    target_obj.update_tag()
-                except Exception:
-                    pass
-        return changed
-
-    @classmethod
     def _create_output_sink_node(
         cls,
         ng,
@@ -450,39 +320,16 @@ class ACEShaderNodeFactory:
     ):
         if output_node is None or output_idx < 0 or output_idx >= len(getattr(output_node, "inputs", []) or []):
             return None
-        st = str(socket_type or "")
-        sink_node = None
-        sink_kind = "FLOAT_DRIVER"
-        out_sock = None
-
         try:
-            if "Vector" in st:
-                sink_node = ng.nodes.new("ShaderNodeCombineXYZ")
-                sink_kind = "VECTOR_DRIVER"
-                out_sock = sink_node.outputs[0] if len(getattr(sink_node, "outputs", [])) > 0 else None
-            elif "Color" in st or "RGBA" in st:
-                sink_node = ng.nodes.new("ShaderNodeRGB")
-                sink_kind = "COLOR_DRIVER"
-                out_sock = sink_node.outputs[0] if len(getattr(sink_node, "outputs", [])) > 0 else None
-            else:
-                sink_node = ng.nodes.new("ShaderNodeValue")
-                sink_kind = "FLOAT_DRIVER"
-                out_sock = sink_node.outputs[0] if len(getattr(sink_node, "outputs", [])) > 0 else None
+            sink_node = ng.nodes.new("ShaderNodeAttribute")
         except Exception:
-            sink_node = None
-
-        # Fallback path: keep attribute node support for unsupported node types.
-        if sink_node is None:
-            try:
-                sink_node = ng.nodes.new("ShaderNodeAttribute")
-                sink_kind = "ATTRIBUTE"
-                out_sock = cls._shader_attr_output_socket(sink_node, socket_type)
-                cls._set_attr_node_defaults(
-                    sink_node,
-                    cls._placeholder_attr_name(output_idx, socket_name),
-                )
-            except Exception:
-                return None
+            return None
+        sink_kind = "ATTRIBUTE"
+        cls._set_attr_node_defaults(
+            sink_node,
+            cls._placeholder_attr_name(output_idx, socket_name),
+        )
+        out_sock = cls._shader_attr_output_socket(sink_node, socket_type)
 
         sink_node.location = (300, -200 - (int(output_idx) * 150))
         try:
@@ -503,68 +350,6 @@ class ACEShaderNodeFactory:
             except Exception:
                 pass
         return sink_node
-
-    @classmethod
-    def _bind_sink_node_to_object_property(
-        cls,
-        sink_node,
-        sink_kind: str,
-        target_obj,
-        prop_name: str,
-        scene=None,
-    ) -> bool:
-        if sink_node is None:
-            return False
-        changed = False
-        kind = str(sink_kind or "")
-        target_id_type, target_id, _ = cls._resolve_driver_target_context(target_obj, scene=scene)
-        if kind == "FLOAT_DRIVER":
-            outputs = list(getattr(sink_node, "outputs", []) or [])
-            if outputs:
-                changed = cls._ensure_socket_driver(
-                    outputs[0],
-                    target_id,
-                    cls._driver_prop_path(
-                        prop_name,
-                        target_obj=target_obj,
-                    ),
-                    target_id_type=target_id_type,
-                ) or changed
-            return changed
-        if kind == "VECTOR_DRIVER":
-            inputs = list(getattr(sink_node, "inputs", []) or [])
-            for idx in range(min(3, len(inputs))):
-                changed = cls._ensure_socket_driver(
-                    inputs[idx],
-                    target_id,
-                    cls._driver_prop_path(
-                        prop_name,
-                        component_idx=idx,
-                        target_obj=target_obj,
-                    ),
-                    target_id_type=target_id_type,
-                ) or changed
-            return changed
-        if kind == "COLOR_DRIVER":
-            outputs = list(getattr(sink_node, "outputs", []) or [])
-            if not outputs:
-                return False
-            for idx in range(4):
-                changed = cls._ensure_socket_driver(
-                    outputs[0],
-                    target_id,
-                    cls._driver_prop_path(
-                        prop_name,
-                        component_idx=idx,
-                        target_obj=target_obj,
-                    ),
-                    array_index=idx,
-                    target_id_type=target_id_type,
-                ) or changed
-            return changed
-        if kind == "ATTRIBUTE":
-            return cls._set_attr_node_defaults(sink_node, prop_name)
-        return False
 
     @classmethod
     def _set_socket_default(cls, ng, socket_name: str, default_value: str):
@@ -858,8 +643,8 @@ class ACEShaderNodeFactory:
                 except Exception:
                     pass
 
-        # Shader frontends expose stream/spec scalar outputs via driver-backed
-        # sink nodes (fallbacking to Attribute nodes only when needed).
+        # Shader frontends expose stream/spec outputs via ShaderNodeAttribute
+        # nodes in Object mode, reading custom properties from the target object.
         sink_nodes_by_idx: dict[int, object] = {}
         for output_idx, (socket_type, socket_name) in enumerate(base_outputs):
             if "Bundle" in str(socket_type or ""):
@@ -924,17 +709,7 @@ class ACEShaderNodeFactory:
                         except Exception:
                             pass
 
-                    source_out = None
-                    sink_kind = ""
-                    try:
-                        sink_kind = str(sink_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "")
-                    except Exception:
-                        sink_kind = ""
-                    if sink_kind == "FLOAT_DRIVER":
-                        outputs = list(getattr(sink_node, "outputs", []) or [])
-                        source_out = outputs[0] if outputs else None
-                    elif sink_kind == "ATTRIBUTE":
-                        source_out = cls._shader_attr_output_socket(sink_node, socket_type)
+                    source_out = cls._shader_attr_output_socket(sink_node, socket_type)
                     if source_out is None:
                         continue
 
@@ -1045,7 +820,10 @@ class ACEShaderNodeFactory:
         return group, changed
 
     @classmethod
-    def sync_node_instance_group_bindings(cls, node, proxy_name: str = "", scene=None) -> bool:
+    def sync_node_instance_group_bindings(
+        cls, node, proxy_name: str = "", scene=None,
+        attr_names_by_idx: dict[int, str] | None = None,
+    ) -> bool:
         """Ensure shader node instance outputs read the intended object properties."""
         if node is None or str(getattr(node, "type", "") or "") != "GROUP":
             return False
@@ -1075,11 +853,22 @@ class ACEShaderNodeFactory:
         if not expected_indices:
             return False
 
-        socket_to_idx = cls._socket_name_to_output_idx(category, node_type)
+        # Use caller-supplied names first, then fill any gaps from the visible
+        # Attribute ID sockets on the node instance itself.
         explicit_by_idx: dict[int, str] = {}
+        for raw_idx, raw_name in dict(attr_names_by_idx or {}).items():
+            try:
+                out_idx = int(raw_idx)
+            except Exception:
+                continue
+            sanitized = cls._sanitize_explicit_name(str(raw_name or ""))
+            if sanitized:
+                explicit_by_idx[out_idx] = sanitized
+
+        socket_to_idx = cls._socket_name_to_output_idx(category, node_type)
         for sock in getattr(node, "inputs", []) or []:
             out_idx = socket_to_idx.get(str(getattr(sock, "name", "") or ""))
-            if out_idx is None:
+            if out_idx is None or int(out_idx) in explicit_by_idx:
                 continue
             raw_val = getattr(sock, "default_value", None)
             if isinstance(raw_val, str):
@@ -1124,15 +913,9 @@ class ACEShaderNodeFactory:
                     sink_nodes_by_idx[int(out_idx)] = sink_node
             if sink_node is None:
                 continue
-            sink_kind = ""
-            try:
-                sink_kind = str(sink_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "")
-            except Exception:
-                sink_kind = ""
-            if not sink_kind:
-                sink_kind = "ATTRIBUTE" if str(getattr(sink_node, "bl_idname", "") or "") == "ShaderNodeAttribute" else "FLOAT_DRIVER"
-            if sink_kind == "ATTRIBUTE":
-                # Migrate legacy attribute-only sinks to driver-capable sinks.
+            # Migrate legacy driver-based sinks to ShaderNodeAttribute.
+            is_attribute_node = str(getattr(sink_node, "bl_idname", "") or "") == "ShaderNodeAttribute"
+            if not is_attribute_node:
                 try:
                     group.nodes.remove(sink_node)
                 except Exception:
@@ -1147,10 +930,6 @@ class ACEShaderNodeFactory:
                 if sink_node is not None:
                     changed = True
                     sink_nodes_by_idx[int(out_idx)] = sink_node
-                    try:
-                        sink_kind = str(sink_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "")
-                    except Exception:
-                        sink_kind = ""
                 if sink_node is None:
                     continue
 
@@ -1170,33 +949,7 @@ class ACEShaderNodeFactory:
             if not target_name:
                 target_name = cls._placeholder_attr_name(int(out_idx), output_name)
 
-            target_obj = None
-            if proxy_name:
-                try:
-                    target_obj = bpy.data.objects.get(str(proxy_name))
-                except Exception:
-                    target_obj = None
-
-            if not sink_kind:
-                sink_kind = "FLOAT_DRIVER"
-            if target_obj is None and sink_kind != "ATTRIBUTE":
-                continue
-
-            if sink_kind != "ATTRIBUTE":
-                if cls._ensure_target_object_property(
-                    target_obj,
-                    target_name,
-                    sink_kind,
-                ):
-                    changed = True
-
-            if cls._bind_sink_node_to_object_property(
-                sink_node,
-                sink_kind,
-                target_obj,
-                target_name,
-                scene=scene,
-            ):
+            if cls._set_attr_node_defaults(sink_node, target_name):
                 changed = True
 
         return changed
@@ -1226,6 +979,34 @@ class ACEShaderNodeFactory:
         cls._build_group_content(ng, node_def, cat_key, type_key)
 
     @classmethod
+    def _cleanup_legacy_drivers(cls):
+        """Strip stale driver FCurves from ACE shader node groups.
+
+        Legacy scenes may contain driver-based sink nodes (ShaderNodeValue,
+        ShaderNodeCombineXYZ, ShaderNodeRGB with driver FCurves).  This method
+        removes those FCurves so they do not cause evaluation overhead.
+        """
+        try:
+            node_groups = bpy.data.node_groups
+        except AttributeError:
+            return
+        for ng in node_groups:
+            name = str(getattr(ng, "name", "") or "")
+            if not name.startswith(".ACE_SHADER_"):
+                continue
+            anim_data = getattr(ng, "animation_data", None)
+            if anim_data is None:
+                continue
+            drivers = getattr(anim_data, "drivers", None)
+            if drivers is None or len(drivers) == 0:
+                continue
+            for fc in list(drivers):
+                try:
+                    drivers.remove(fc)
+                except Exception:
+                    pass
+
+    @classmethod
     def ensure_node_groups_exist(cls):
         try:
             _ = bpy.data.node_groups
@@ -1235,6 +1016,7 @@ class ACEShaderNodeFactory:
         current_hash = cls._ace_nodes_hash()
         if current_hash and current_hash == cls._NODES_CONTENT_HASH:
             return
+        cls._cleanup_legacy_drivers()
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category.get("nodes", {}).items():
                 group_name = cls.get_group_name(cat_key, type_key)

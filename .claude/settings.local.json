@@ -1,7 +1,42 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pytest tests/test_regression_findings.py -v)"
+      "Bash(python -m pytest tests/test_regression_findings.py -v)",
+      "Bash(find c:UsersmariuDownloadsblender-mainblender-main -type f -name *.cc -path */nodes/*attribute*)",
+      "Bash(find c:UsersmariuDownloadsblender-mainblender-mainsourceblenderpython -name *.c -o -name *.h)",
+      "Bash(find c:UsersmariuDownloadsblender-mainblender-mainsourceblenderblenkernel -name *attribute*)",
+      "Bash(xargs grep:*)",
+      "Bash(xargs basename:*)",
+      "Bash(python -m pytest tests/test_regression_findings.py tests/test_multi_frontend_compile.py -x --tb=short)",
+      "Bash(python -m unittest test_multi_frontend_compile)",
+      "Bash(find /c/Users/mariu/Downloads/blender-main/blender-main -name *node_geometry* -type f)",
+      "Bash(find /c/Users/mariu/Downloads/blender-main/blender-main -name *shader_node* -type f)",
+      "Bash(find /c/Users/mariu/Downloads/blender-main/blender-main -name *shader_attribute* -type f)",
+      "Bash(grep -E \"\\\\.\\(h|hh\\)$\")",
+      "Bash(grep -r \"attr_load\\\\|UNI_ATTR\" /c/Users/mariu/Downloads/blender-main/blender-main/source/blender --include=*.cc --include=*.glsl)",
+      "Bash(grep -E \"\\\\.\\(cc|hh\\)$\")",
+      "Bash(grep -r CD_AUTO_FROM_NAME /c/Users/mariu/Downloads/blender-main/blender-main/source/blender/draw --include=*.cc)",
+      "Bash(find c:/Users/mariu/Downloads/blender-main/blender-main/source/blender/nodes -type f \\\\\\(-name *attribute* \\\\\\))",
+      "Bash(find c:UsersmariuDownloadsblender-mainblender-mainsourceblendergpu -type f \\\\\\(-name *.c -o -name *.cc -o -name *.h -o -name *.hpp \\\\\\))",
+      "Bash(grep -r GPU_uniform_attribute c:UsersmariuDownloadsblender-mainblender-mainsourceblender --include=*.h --include=*.c --include=*.cc)",
+      "Bash(grep -r uniform_attr c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.c --include=*.cc --include=*.h)",
+      "Bash(grep -r \"GPU_material_uniform_attributes\\\\|uniform_attr\\\\|shr_uniform\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdrawengineseevee --include=*.c --include=*.cc --include=*.h)",
+      "Bash(grep -r \"shr_uniform\\\\|object_data\\\\|uniform_attr\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.c --include=*.cc)",
+      "Bash(grep -r \"DRW_object_state\\\\|bind.*uniform\\\\|GPU_uniform_buffer\\\\|BKE_object_property\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.c --include=*.cc)",
+      "Bash(grep -r \"BKE_object_data_is_in_uv_layer\\\\|bke_id_property\\\\|RNA_object\\\\|read.*custom.*property\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.c --include=*.cc)",
+      "Bash(grep -r \"shr_uniform_instances\\\\|GPU_material_uniform_attributes\\\\|uniform_attr_id\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.c --include=*.cc -B 3 -A 3)",
+      "Bash(grep -r \"draw_object_attributes\\\\|ob_attr\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.c --include=*.cc --include=*.h)",
+      "Bash(find c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw -name *object_attribute* -o -name *attributes*)",
+      "Bash(grep -r \"drw_attributes\\\\|DRW_object_data_is\\\\|ob->id\\\\|RNA_id_property\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.cc)",
+      "Bash(grep -r \"shr_uniform_instances\\\\|uniform_instance\\\\|object.*attribute\\\\|OB_ATTR\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.cc --include=*.h)",
+      "Bash(grep -r extract_object_attributes c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.cc --include=*.h -B 3 -A 10)",
+      "Bash(grep -r \"void extract_object_attributes\\\\|^.*extract_object_attributes\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.cc --include=*.h)",
+      "Bash(grep -r \"class.*Manager\\\\|extract_object_attributes\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdrawintern --include=*.h --include=*.cc)",
+      "Bash(grep -r \"attributes_buf\\\\|ObjectAttribute\" c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdrawintern --include=*.h --include=*.cc -B 2 -A 2)",
+      "Bash(find c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw -name *object* -type f)",
+      "Bash(grep -r find_rgba_attribute c:UsersmariuDownloadsblender-mainblender-mainsourceblenderdraw --include=*.cc --include=*.hh -B 2 -A 20)",
+      "Bash(grep -r BKE_object_dupli_find_rgba_attribute c:UsersmariuDownloadsblender-mainblender-mainsourceblender --include=*.c --include=*.cc --include=*.h)",
+      "Bash(grep -r \"ID_RECALC_SHADING\\\\|depsgraph.*property\\\\|custom.*property.*refresh\" c:UsersmariuDownloadsblender-mainblender-mainsourceblender --include=*.c --include=*.h)"
     ]
   }
 }
