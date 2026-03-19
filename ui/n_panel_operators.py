@@ -131,30 +131,27 @@ class ACE_OT_rebuild_audio_engine(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         try:
-            from .n_panel_ui import _find_active_node_tree
-            return bool(_find_active_node_tree(context))
+            scene = getattr(context, "scene", None)
+            if scene is None:
+                return False
+            engine = ACEAudioEngine.ensure_instance(scene)
+            return bool(engine.discover_scene_frontends(scene))
         except Exception:
             return False
     
     def execute(self, context):
-        tree = None
-        try:
-            from .n_panel_ui import _find_active_node_tree
-            tree = _find_active_node_tree(context)
-        except Exception:
-            tree = None
-
-        if not tree:
-            self.report({'ERROR'}, "Select an object with a Geometry Nodes modifier to compile.")
+        scene = getattr(context, "scene", None)
+        if scene is None:
+            self.report({'ERROR'}, "Scene unavailable.")
             return {'CANCELLED'}
 
         try:
-            # 1. Get/Init Engine
-            engine = ACEAudioEngine.ensure_instance(context.scene)
-            
-            # 2. Compile directly from the Blender tree
-            engine.compile_from_blender_tree(tree, context.scene)
-            engine.execute_next_frame(context.scene, force=True)
+            engine = ACEAudioEngine.ensure_instance(scene)
+            if not engine.discover_scene_frontends(scene):
+                self.report({'ERROR'}, "No ACE-managed scene frontends found to compile.")
+                return {'CANCELLED'}
+            engine.compile_scene_frontends(scene)
+            engine.execute_next_frame(scene, force=True)
             
             task_count = sum(len(g.tasks) for g in engine.graphs.values()) if engine.graphs else 0
             self.report({'INFO'}, f"Engine compiled: {task_count} tasks.")
@@ -624,6 +621,48 @@ class ACE_OT_set_audio_math_op(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
+    """Queue non-blocking BPM / beats-per-bar detection for the active file source."""
+    bl_idname = "audiocore.detect_source_tempo_meter"
+    bl_label = "Auto Detect BPM / BPB"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        try:
+            _, active_source = utils._get_active_source(context)
+        except Exception:
+            active_source = None
+        if not active_source:
+            return False
+        if str(getattr(active_source, "source_type", "") or "").upper() != "FILE":
+            return False
+        return bool(str(getattr(active_source, "filepath", "") or "").strip())
+
+    def execute(self, context):
+        try:
+            _, active_source = utils._get_active_source(context)
+        except Exception:
+            active_source = None
+        if not active_source:
+            self.report({'ERROR'}, "No active source selected.")
+            return {'CANCELLED'}
+
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        ok, message = engine.request_source_tempo_detection(active_source)
+        try:
+            engine.flush_source_tempo_detection_updates([active_source])
+        except Exception:
+            pass
+
+        if not ok:
+            self.report({'ERROR'}, message or "Tempo detection could not start.")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, message or "Tempo detection queued.")
+        return {'FINISHED'}
+
+
 class ACE_OT_refresh_stream_list(bpy.types.Operator):
     """Refresh the UI dummy tree list for the active source."""
     bl_idname = "audiocore.refresh_stream_list"
@@ -740,7 +779,11 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
     """Bake the active file source outputs over the scene frame range."""
     bl_idname = "audiocore.bake_active_source"
     bl_label = "Bake Active Source"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER'}
+
+    _timer = None
+    _source_uid: str = ""
+    _source_name: str = ""
 
     @classmethod
     def poll(cls, context):
@@ -753,6 +796,59 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             return False
         source = sources[idx]
         return bool(getattr(source, "source_type", "") == 'FILE')
+
+    @staticmethod
+    def _find_source_by_uid(context, source_uid: str):
+        ace = getattr(getattr(context, "scene", None), "audiocore", None)
+        if not ace:
+            return None
+        for src in getattr(ace, "audio_sources", []) or []:
+            if str(getattr(src, "stable_id", "") or "") == str(source_uid or ""):
+                return src
+        return None
+
+    def _finish_modal(self, context):
+        if self._timer is not None:
+            try:
+                context.window_manager.event_timer_remove(self._timer)
+            except Exception:
+                pass
+            self._timer = None
+
+    def modal(self, context, event):
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        try:
+            engine.flush_bake_results()
+        except Exception:
+            pass
+
+        source = self._find_source_by_uid(context, self._source_uid)
+        if source is None:
+            self._finish_modal(context)
+            self.report({'WARNING'}, "Bake source is no longer available.")
+            return {'CANCELLED'}
+
+        try:
+            status = str(source.get("ace_bake_status", "") or "")
+        except Exception:
+            status = ""
+        if status in {"done", "ready"}:
+            self._finish_modal(context)
+            self.report({'INFO'}, f"Bake completed for '{self._source_name or getattr(source, 'name', 'source')}'.")
+            return {'FINISHED'}
+        if status in {"error", "failed"}:
+            err = ""
+            try:
+                err = str(source.get("ace_bake_error", "") or "")
+            except Exception:
+                err = ""
+            self._finish_modal(context)
+            self.report({'ERROR'}, f"Bake failed: {err or 'Unknown error'}")
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
 
     def execute(self, context):
         ace = getattr(context.scene, "audiocore", None)
@@ -772,25 +868,24 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             self.report({'ERROR'}, "Select a file path before baking.")
             return {'CANCELLED'}
 
-        try:
-            from .n_panel_ui import _find_active_node_tree
-        except Exception:
-            _find_active_node_tree = None  # type: ignore
-
-        tree = _find_active_node_tree(context) if _find_active_node_tree else None
         engine = ACEAudioEngine.ensure_instance(context.scene)
-        if tree:
-            try:
-                engine.compile_from_blender_tree(tree, context.scene)
-            except Exception:
-                pass
-
-        ok = engine.bake_source_to_cache(active_source, tree, scene=context.scene)
+        try:
+            engine.compile_scene_frontends(context.scene)
+        except Exception:
+            pass
+        ok = engine.bake_source_to_cache(active_source, None, scene=context.scene)
         if not ok:
             self.report({'ERROR'}, "Bake request failed.")
             return {'CANCELLED'}
-        self.report({'INFO'}, "Bake completed for active source.")
-        return {'FINISHED'}
+        self._source_uid = str(getattr(active_source, "stable_id", "") or "")
+        self._source_name = str(getattr(active_source, "name", "") or "")
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        self._finish_modal(context)
 
 # --- REGISTRATION ---
 classes = (
@@ -805,6 +900,7 @@ classes = (
     ACE_OT_apply_splitter_ramp,
     ACE_OT_update_audio_math_inputs,
     ACE_OT_set_audio_math_op,
+    ACE_OT_detect_source_tempo_meter,
     ACE_OT_refresh_stream_list,
     ACE_OT_set_target_object,
     ACE_OT_toggle_preview_sink,

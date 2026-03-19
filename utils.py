@@ -11,7 +11,7 @@ from typing import Any
 _preview_collections = {}
 _logo_icon_id = None
 _DEBUG_LOG_ENABLED = False
-_DEBUG_STRICT = False  # When True, assert_main_thread() raises instead of logging (development only).
+_DEBUG_STRICT = True  # Guardrail defaults to hard-fail to block unsafe off-main-thread bpy writes.
 _module_presence_cache = {}
 
 
@@ -20,11 +20,9 @@ def set_debug_strict(enabled: bool) -> None:
     """Enable strict guardrail mode.
 
     When enabled, assert_main_thread() raises RuntimeError on violations instead
-    of logging an ERROR.  Use in test / development builds only — a raised
-    exception from inside a Blender timer or depsgraph handler will crash the
-    host process in production.
+    of logging an ERROR. Disable only for controlled test/debug scenarios.
 
-    Default: False.
+    Default: True.
     """
     global _DEBUG_STRICT
     _DEBUG_STRICT = bool(enabled)
@@ -33,9 +31,9 @@ def set_debug_strict(enabled: bool) -> None:
 def assert_main_thread(context: str = "") -> None:
     """Assert that the current call is on the Blender main thread.
 
-    In strict mode (_DEBUG_STRICT=True): raises RuntimeError so test runs catch
-    violations immediately rather than silently producing undefined behaviour.
-    In production mode (default): logs an ERROR only, to avoid crashing the host.
+    In strict mode (_DEBUG_STRICT=True, default): raises RuntimeError so write
+    paths fail-safe instead of continuing with undefined Blender state.
+    In non-strict mode: logs an ERROR only.
     Call this at the entry points of any function that writes bpy state.
     """
     if threading.current_thread() is not threading.main_thread():
@@ -315,4 +313,3 @@ def _get_active_source(context):
     idx = getattr(ace, "active_audio_source_index", 0)
     if idx < 0 or idx >= len(ace.audio_sources): return ace, None
     return ace, ace.audio_sources[idx]
-

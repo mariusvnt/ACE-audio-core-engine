@@ -5,12 +5,13 @@ Responsibilities:
   - ``ACEAudioEngine``: singleton-per-scene orchestrator that owns the
     compile/execute lifecycle, the parallel DSP worker pool, all
     ``ACEAudioGraph`` instances, and the shared preview monitor.
-  - Stage-A (main thread): frame-change handler calls ``execute_next_frame``,
-    which dispatches parallel jobs and writes results back to proxy attributes.
+  - Stage-A (main thread): discover all managed scene frontends, parse them,
+    merge them into one ``ACEAbstractTree``, and compile one runtime graph per
+    source.
   - Stage-B (subprocess workers): bpy-free evaluation delegated via
     ``evaluate_parallel_job`` from ``parallel_dsp``.
   - Stage-C (main thread): ``ACEProxyManager`` commits Stage-B results to
-    Blender mesh attributes.
+    Blender proxy attributes and object custom properties.
   - Layer-3 preview: ``_ACEPreviewAudioMonitor`` / ``_ACEPreviewFeeder``
     drive a real-time sounddevice output stream fed from the DSP pipeline.
 """
@@ -18,11 +19,13 @@ import json
 import hashlib
 import math
 import os
+import queue
 import tempfile
 import threading
 import time
 import multiprocessing
 import concurrent.futures
+from dataclasses import dataclass
 from collections import deque, OrderedDict
 from typing import Dict, List, Any, Optional
 
@@ -39,7 +42,7 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 
-from .abstract_tree import ACEAbstractTree, ACEAbstractNode
+from .abstract_tree import ACEAbstractTree, ACEAbstractNode, ACEFrontendRef, ACEConsumerIntent
 from .audio_influx import AudioReception, build_live_flow_identifier
 from ..nodes.dummy_tree import ACEDummyTreeReader
 from .id_management import ACEIdManager
@@ -55,13 +58,14 @@ from .audio_tasks_registry import (
     ACEAudioTask,
     SourceTask,
     SourceSpecsTask,
-    SourceScannerTask,
     FrequencySplitterTask,
     MidsideSplitterTask,
     AttackReleaseSplitterTask,
     ChromagramTask,
     AutoComponentSplitterTask,
     RMSTask,
+    LUFSTask,
+    PeakTask,
     PitchTask,
     SpectralCentroidTask,
     SpectralFluxTask,
@@ -71,7 +75,10 @@ from .audio_tasks_registry import (
     StereoBalanceTask,
     StereoVectorTask,
     PreviewSinkTask,
+    RollingAvgTask,
+    StreamAccumulatorTask,
     AudioMathTask,
+    ACESinkBinding,
     _clear_file_open_locks,
     reset_biquad_fallback_warned,
 )
@@ -88,6 +95,29 @@ try:
 except Exception:  # pragma: no cover - runtime/platform dependent
     mp_shared_memory = None
     _SHARED_MEMORY_AVAILABLE = False
+
+
+FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
+FRONTEND_KIND_SHADER = "SHADER_NODES"
+
+
+@dataclass
+class _ACEFrontendDiscovery:
+    tree: Any
+    frontend_ref: ACEFrontendRef
+    consumer_object_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ACECompiledFrontendSnapshot:
+    uid: str
+    kind: str
+    tree_name: str
+    tree_bl_idname: str
+    owner_keys: tuple[str, ...] = ()
+    consumer_object_names: tuple[str, ...] = ()
+    material_name: str = ""
+    tree_ptr: int = 0
 
 
 if _NUMBA_AVAILABLE:
@@ -993,8 +1023,9 @@ class ACEAudioEngine:
     ``ACEAudioGraph`` instances, and the shared ``_ACEPreviewAudioMonitor``.
 
     Architecture overview:
-      - Stage A (main thread): ``compile_from_blender_tree()`` parses the GN
-        tree via ``ACEDummyTreeReader``, builds ``ACEAudioGraph`` objects, and
+      - Stage A (main thread): ``compile_scene_frontends()`` discovers all
+        managed Geometry/Shader frontends in the scene, merges them into one
+        ``ACEAbstractTree``, builds per-source ``ACEAudioGraph`` objects, and
         prepares a serialisable parallel IR for each graph.
       - Stage B (worker processes): numeric DSP (RMS, pitch, centroid, etc.) is
         offloaded via ``evaluate_parallel_job()`` in a
@@ -1033,6 +1064,8 @@ class ACEAudioEngine:
     _PARALLEL_OFFLOAD_STREAM_TYPES = frozenset(
         {
             "rms",
+            "lufs",
+            "peak",
             "pitch",
             "spectral_centroid",
             "spectral_flux",
@@ -1046,7 +1079,9 @@ class ACEAudioEngine:
     _PARALLEL_MAX_INFLIGHT_PER_SOURCE = 2
     _PARALLEL_ATTRS_PER_JOB = 8
     _PARALLEL_WORKER_HEADROOM_CORES = 1
-    _PARALLEL_FUTURE_TIMEOUT_S = 3.0
+    # Hard realtime stale-job budget: jobs older than this are dropped instead
+    # of being allowed to resolve late and contaminate frame determinism.
+    _PARALLEL_STALE_JOB_MAX_MS = 66
     _PARALLEL_RESTART_LIMIT = 3  # Allow up to 3 restarts before disabling; exponential backoff between attempts.
     # Backoff delays (seconds) indexed by restart attempt number (0-based).
     # Attempt 0 → 0.5 s, attempt 1 → 1.0 s, attempt 2 → 2.0 s.
@@ -1075,24 +1110,42 @@ class ACEAudioEngine:
         self.last_scene_frame = -1
         self.writer: Optional[ACEProxyManager] = None
         self.abstract_tree_ref: Optional[ACEAbstractTree] = None
+        # Legacy compatibility slots: keep these unset so the engine never holds
+        # long-lived RNA object references across undo/redo.
         self._pending_tree: Optional[bpy.types.NodeTree] = None
+        self._pending_scene_rebuild: bool = False
         self._last_request_time: float = 0.0
         self._last_compile_time: float = 0.0
         self.effective_sample_rate: int = SAMPLE_RATE
         self._dirty_trees: set[bpy.types.NodeTree] = set()
+        self._dirty_tree_ptrs: set[int] = set()
+        self._dirty_tree_bl_idnames: Dict[int, str] = {}
+        self._dirty_frontend_uids: set[str] = set()
         self._compiled_tree_ref: Optional[bpy.types.NodeTree] = None
+        self._compiled_frontend_refs: Dict[str, Any] = {}
+        self._compiled_frontend_snapshots: Dict[str, _ACECompiledFrontendSnapshot] = {}
+        self._compiled_frontend_ptrs: Dict[str, int] = {}
+        self._compiled_frontend_uids: tuple[str, ...] = ()
+        self._last_frontend_membership_signature: tuple[Any, ...] = ()
         self._last_dirty_time: float = 0.0
         self._is_compiling: bool = False
         self._meta_cache: Dict[str, Dict[str, Any]] = {}
         self._meta_cache_ttl = 30.0  # seconds
         self._last_tree_signature: Optional[Any] = None
+        self._pending_tree_ptr: int = 0
+        self._pending_tree_bl_idname: str = ""
         self._compiled_tree_ptr: int = 0
+        self._compiled_tree_frontend_uid: str = ""
+        self._compiled_tree_bl_idname: str = ""
         self._last_attr_sync_frame: Dict[str, int] = {}
         self._block_size_state: Dict[str, Dict[str, int]] = {}
         self._bootstrap_retry_at: float = 0.0
         self._bootstrap_fail_count: int = 0
         self._runtime_log_last: Dict[str, float] = {}
         self._bake_cache: Dict[str, Dict[str, Any]] = {}
+        self._bake_jobs: Dict[str, Dict[str, Any]] = {}
+        self._bake_result_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._source_specs_task_registry: Dict[tuple[str, float], SourceSpecsTask] = {}
         self._current_delta_frames: float = 1.0
         self._perf_frame_accumulator: Dict[str, float] = {}
         self._perf_history: Dict[str, deque[float]] = {
@@ -1124,10 +1177,12 @@ class ACEAudioEngine:
         self._parallel_payload_slots: Dict[str, Dict[str, Any]] = {}
         self._parallel_payload_slot_refs: Dict[str, int] = {}
         self._parallel_payload_slot_counters: Dict[str, int] = {}
+        self._parallel_payload_free_slots: Dict[str, deque[str]] = {}
         self._parallel_frame_payload_slots: Dict[tuple[str, int, str], str] = {}
         self._parallel_queue_pressure_drops: int = 0
         self._parallel_job_timeouts: int = 0
         self._parallel_job_exceptions: int = 0
+        self._parallel_stale_job_drops: int = 0
         self._parallel_stale_result_drops: int = 0
         self._parallel_result_accepts: int = 0
         self._preview_last_chunk: Optional[AudioChunk] = None
@@ -1148,6 +1203,8 @@ class ACEAudioEngine:
         # Dirty-flag set for attribute schema resync: populated on compile,
         # cleared per-graph after ensure_attributes_exist() runs.
         self._attr_schema_dirty: set[str] = set()
+        self.undo_generation: int = 0
+        self.undo_recovery_until: float = 0.0
 
     @staticmethod
     def _scene_key(scene) -> int:
@@ -1168,6 +1225,61 @@ class ACEAudioEngine:
             return str(getattr(scene, "name_full", "") or getattr(scene, "name", "") or "")
         except Exception:
             return ""
+
+    def _clear_blender_runtime_refs(self) -> None:
+        self.abstract_tree_ref = None
+        self._compiled_tree_ref = None
+        self._compiled_tree_ptr = 0
+        self._compiled_tree_frontend_uid = ""
+        self._compiled_tree_bl_idname = ""
+        self._compiled_frontend_refs.clear()
+        self._compiled_frontend_snapshots.clear()
+        self._compiled_frontend_ptrs.clear()
+        self._compiled_frontend_uids = ()
+        self._dirty_trees.clear()
+        self._dirty_tree_ptrs.clear()
+        self._dirty_tree_bl_idnames.clear()
+        self._dirty_frontend_uids.clear()
+        self._pending_tree = None
+        self._pending_tree_ptr = 0
+        self._pending_tree_bl_idname = ""
+        self._pending_scene_rebuild = False
+        self._last_frontend_membership_signature = ()
+
+    def _clear_probe_runtime_state(self) -> None:
+        with self._probe_thread_lock:
+            self._probe_pending_updates.clear()
+            self._probe_in_flight.clear()
+
+    def _undo_recovery_active(self) -> bool:
+        recovery_until = float(getattr(self, "undo_recovery_until", 0.0) or 0.0)
+        return recovery_until > 0.0 and time.monotonic() < recovery_until
+
+    @classmethod
+    def _undo_recovery_active_for_scene(cls, scene=None) -> bool:
+        engine = cls.get_instance(scene)
+        if engine is None:
+            return False
+        try:
+            return bool(engine._undo_recovery_active())
+        except Exception:
+            return False
+
+    @classmethod
+    def _structural_tree_writes_allowed(
+        cls,
+        scene=None,
+        tree=None,
+        frontend_kind: str = "",
+        tree_bl_idname: str = "",
+    ) -> bool:
+        if cls._undo_recovery_active_for_scene(scene):
+            return False
+        resolved_kind = str(frontend_kind or "")
+        resolved_tree_bl_idname = str(tree_bl_idname or getattr(tree, "bl_idname", "") or "")
+        if resolved_kind == FRONTEND_KIND_SHADER or resolved_tree_bl_idname == "ShaderNodeTree":
+            return not cls._unsafe_for_shader_tree_mutations(scene)
+        return True
 
     @classmethod
     def _instance_for_scene_name(cls, scene_name: str):
@@ -1309,15 +1421,30 @@ class ACEAudioEngine:
 
     @classmethod
     def _scheduler_mode(cls, scene_or_engine_settings=None) -> str:
-        return "demand"
+        settings = cls._engine_settings(scene_or_engine_settings)
+        try:
+            val = str(getattr(settings, "ace_scheduler_mode", "demand") or "demand").strip().lower()
+            return val if val in {"demand", "legacy"} else "demand"
+        except Exception:
+            return "demand"
 
     @classmethod
     def _timeslice_mode(cls, scene_or_engine_settings=None) -> str:
-        return "fixed"
+        settings = cls._engine_settings(scene_or_engine_settings)
+        try:
+            val = str(getattr(settings, "ace_timeslice_mode", "fixed") or "fixed").strip().lower()
+            return val if val in {"fixed", "adaptive"} else "fixed"
+        except Exception:
+            return "fixed"
 
     @classmethod
     def _parallel_mode(cls, scene_or_engine_settings=None) -> str:
-        return "processes_dsp"
+        settings = cls._engine_settings(scene_or_engine_settings)
+        try:
+            val = str(getattr(settings, "ace_parallel_mode", "processes_dsp") or "processes_dsp").strip().lower()
+            return val if val in {"processes_dsp", "threads_io", "off"} else "processes_dsp"
+        except Exception:
+            return "processes_dsp"
 
     @classmethod
     def _preview_block_size(cls, scene_or_engine_settings=None) -> int:
@@ -1570,6 +1697,7 @@ class ACEAudioEngine:
             "parallel_job_timeouts": float(self._parallel_job_timeouts),
             "parallel_job_exceptions": float(self._parallel_job_exceptions),
             "parallel_pool_restarts": float(self._parallel_restart_count),
+            "parallel_stale_job_drops": float(self._parallel_stale_job_drops),
             "parallel_stale_result_drops": float(self._parallel_stale_result_drops),
             "parallel_result_accepts": float(self._parallel_result_accepts),
             "parallel_disabled_sources": float(len(self._parallel_disabled_sources)),
@@ -1589,6 +1717,7 @@ class ACEAudioEngine:
             self._parallel_queue_pressure_drops = 0
             self._parallel_job_timeouts = 0
             self._parallel_job_exceptions = 0
+            self._parallel_stale_job_drops = 0
             self._parallel_stale_result_drops = 0
             self._parallel_result_accepts = 0
             self._geometry_eval_history.clear()
@@ -1753,8 +1882,13 @@ class ACEAudioEngine:
             return False
         category = str(getattr(node, "category", "") or "")
         node_type = str(getattr(node, "type", "") or "")
-        if category == "utilities" and node_type in {"src_specs", "scanner"}:
+        if category == "utilities" and node_type == "src_specs":
             return True
+        if category == "utilities" and node_type == "stream_accumulator":
+            # Stateful running-sum nodes must remain local. Their output should
+            # never jump when the engine temporarily falls back between worker
+            # and main-thread execution paths.
+            return False
         if category != "stream":
             return False
         if node_type in cls._PARALLEL_OFFLOAD_STREAM_TYPES:
@@ -2069,7 +2203,7 @@ class ACEAudioEngine:
             }
             # Inject live scene BPM/FPS into SourceSpecs IR params so the
             # worker replica (_WorkerSourceSpecsPassthroughTask) computes
-            # correct beat-phase and BPF values instead of using hardcoded defaults.
+            # correct beat-phase and frames-per-beat values instead of using hardcoded defaults.
             # Use the graph's own source context so multi-source setups each get
             # their individual BPM, not the engine-wide active-source snapshot.
             if node.category == "utilities" and node.type == "src_specs":
@@ -2337,8 +2471,31 @@ class ACEAudioEngine:
             graph_key = str(meta.get("graph_key", "") or "")
             owner_graph_key = str(meta.get("owner_graph_key", "") or graph_key)
             submit_ts = float(meta.get("submit_ts", now) or now)
+            undo_generation = int(meta.get("undo_generation", getattr(self, "undo_generation", 0)) or 0)
+            if undo_generation != int(getattr(self, "undo_generation", 0) or 0):
+                self._parallel_drop_future(future_obj)
+                continue
+            stale_budget_s = max(float(self._PARALLEL_STALE_JOB_MAX_MS) / 1000.0, 0.001)
+            age_s = max(float(now - submit_ts), 0.0)
+
+            if (not future_obj.done()) and age_s > stale_budget_s:
+                # Hard-realtime contract: never keep over-budget jobs alive in
+                # frame tracking. Drop immediately, regardless of cancel result.
+                if not bool(meta.get("stale_job", False)):
+                    meta["stale_job"] = True
+                    self._parallel_future_meta[future_obj] = dict(meta)
+                    self._parallel_stale_job_drops += 1
+                try:
+                    future_obj.cancel()
+                except Exception:
+                    pass
+                self._parallel_drop_future(future_obj)
+                continue
 
             if future_obj.done():
+                if bool(meta.get("stale_job", False)):
+                    self._parallel_drop_future(future_obj)
+                    continue
                 try:
                     payload = future_obj.result(timeout=0.0)
                 except Exception as e:
@@ -2405,31 +2562,6 @@ class ACEAudioEngine:
                         frame_map.pop(old_frame, None)
                 self._parallel_failures.pop(res_key, None)
                 continue
-
-            if (now - submit_ts) <= self._PARALLEL_FUTURE_TIMEOUT_S:
-                continue
-
-            self._parallel_drop_future(future_obj)
-            fail_key = owner_graph_key or "unknown"
-            fail_count = int(self._parallel_failures.get(fail_key, 0)) + 1
-            self._parallel_failures[fail_key] = fail_count
-            self._parallel_job_timeouts += 1
-            try:
-                future_obj.cancel()
-            except Exception:
-                pass
-            if fail_count <= 1 and self._parallel_restart_count < self._PARALLEL_RESTART_LIMIT:
-                restart_source = fail_key
-                restart_reason = "worker timeout"
-                break
-            if fail_key:
-                self._parallel_disabled_sources.add(fail_key)
-            self._log_runtime(
-                f"parallel_timeout:{fail_key}",
-                f"Parallel job timeout for '{fail_key}', reusing last-valid offload values.",
-                "WARNING",
-                min_interval=0.0,
-            )
 
         if restart_reason:
             self._restart_parallel_pool(scene, restart_reason, source_key=restart_source)
@@ -2547,7 +2679,7 @@ class ACEAudioEngine:
             f"f{int(frame_index)}:"
             f"j{int(self._parallel_job_seq)}"
         )
-        source_payload_ipc, ipc_handles, payload_slot_keys = self._parallel_payload_to_ipc(
+        source_payload_ipc, payload_slot_keys = self._parallel_payload_to_ipc(
             source_payloads,
             graph_key=graph_key,
             frame_index=frame_index,
@@ -2569,17 +2701,6 @@ class ACEAudioEngine:
         try:
             future_obj = self._parallel_executor.submit(evaluate_parallel_job, payload)
         except Exception as e:
-            for shm in ipc_handles:
-                try:
-                    shm.close()
-                except Exception:
-                    pass
-                try:
-                    shm.unlink()
-                except FileNotFoundError:
-                    pass
-                except Exception:
-                    pass
             for slot_key in payload_slot_keys:
                 self._parallel_release_payload_slot(slot_key)
             fail_count = int(self._parallel_failures.get(owner_graph_key, 0)) + 1
@@ -2603,8 +2724,8 @@ class ACEAudioEngine:
             "owner_graph_key": owner_graph_key,
             "frame_id": int(frame_index),
             "generation_id": int(self._parallel_generation_id),
+            "undo_generation": int(getattr(self, "undo_generation", 0) or 0),
             "submit_ts": time.time(),
-            "ipc_handles": ipc_handles,
             "payload_slot_keys": list(payload_slot_keys),
         }
         self._parallel_last_submit_frame = int(frame_index)
@@ -2649,6 +2770,26 @@ class ACEAudioEngine:
                 resolved[attr_key] = self._zero_value_for_attr(attr_key)
         return resolved
 
+    def _parallel_has_usable_values_for_graph_frame(self, graph_key: str, frame_index: int) -> bool:
+        """Return True when Stage-B has usable data for *graph_key* at *frame_index*.
+
+        "Usable" means either fresh values for the current frame or non-empty
+        last-valid values still inside the stale reuse window.
+        """
+        key = str(graph_key or "")
+        frame_map = dict(self._parallel_results.get(key, {}) or {})
+        if dict(frame_map.get(int(frame_index), {}) or {}):
+            return True
+
+        last_vals = dict(self._parallel_last_valid.get(key, {}) or {})
+        if not last_vals:
+            return False
+
+        last_frame = int(self._parallel_last_valid_frame.get(key, -10_000_000) or -10_000_000)
+        fps_now = max(float(self._current_scene_fps), 1.0)
+        stale_window_frames = max(1, int(self._PARALLEL_STALE_REUSE_MS * fps_now / 1000.0 + 0.5))
+        return (int(frame_index) - last_frame) <= stale_window_frames
+
     def compile(self, abstract_tree: ACEAbstractTree, blender_scene):
         """Build one ACEAudioGraph per audio source from the abstract tree.
 
@@ -2666,9 +2807,36 @@ class ACEAudioEngine:
             abstract_tree: Parsed representation of the Geometry Nodes tree.
             blender_scene: The active ``bpy.types.Scene`` object.
         """
+        utils.assert_main_thread("compile")
         self.scene_key = self._scene_key(blender_scene)
         self.scene_name = self._scene_name(blender_scene)
         self._pending_tree = None
+        self._pending_tree_ptr = 0
+        self._pending_tree_bl_idname = ""
+        self._pending_scene_rebuild = False
+        # Preserve stateful utility-node runtime across graph recompiles.
+        stream_accumulator_state: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for graph_key, graph in dict(getattr(self, "graphs", {}) or {}).items():
+            source_key = str(
+                getattr(graph, "source_uid", "")
+                or graph_key
+                or getattr(graph, "proxy_name", "")
+                or ""
+            )
+            if not source_key:
+                continue
+            for node_id, task in dict(getattr(graph, "tasks", {}) or {}).items():
+                if not isinstance(task, StreamAccumulatorTask):
+                    continue
+                export_fn = getattr(task, "export_state", None)
+                if not callable(export_fn):
+                    continue
+                try:
+                    state = dict(export_fn() or {})
+                except Exception:
+                    state = {}
+                if state:
+                    stream_accumulator_state[(source_key, str(node_id))] = state
         self._shutdown_graphs()
         self._parallel_reset_generation()
         self.graphs.clear()
@@ -2678,6 +2846,7 @@ class ACEAudioEngine:
         self.abstract_tree_ref = abstract_tree
 
         self.writer = ACEProxyManager(abstract_tree)
+        sink_writes_allowed = not self._unsafe_for_handler_writes(blender_scene)
         tree_signature = self._compute_tree_signature(abstract_tree)
         self._last_tree_signature = tree_signature
         if not hasattr(blender_scene, "audiocore"):
@@ -2753,6 +2922,21 @@ class ACEAudioEngine:
                 "block_size": block_size,
             })
 
+        manual_preview_winner_id, manual_preview_candidates = self._resolve_global_manual_preview_winner(
+            abstract_tree
+        )
+        has_manual_preview = bool(manual_preview_winner_id)
+        if len(manual_preview_candidates) > 1 and manual_preview_winner_id:
+            self._log_runtime(
+                "preview_conflict_resolution",
+                (
+                    "Multiple Audio Preview nodes are present. "
+                    f"Using the most recent preview sink '{manual_preview_winner_id}' and muting the others."
+                ),
+                "WARNING",
+                min_interval=2.0,
+            )
+
         for runtime in source_runtime:
             source = runtime["source"]
             src_uid = runtime["src_uid"]
@@ -2772,6 +2956,7 @@ class ACEAudioEngine:
             graph.block_size = block_size
             graph.scheduler_mode = scheduler_mode
             graph.timeslice_mode = timeslice_mode
+            graph.proxy_lookup_fn = self._lookup_proxy_object
             for node_id in sorted(required_node_ids):
                 node = abstract_tree.nodes.get(node_id)
                 if node is None:
@@ -2779,7 +2964,26 @@ class ACEAudioEngine:
                 task = self._create_task_for_node(node, block_size)
                 if task:
                     graph.tasks[node_id] = task
+                    if isinstance(task, StreamAccumulatorTask):
+                        restore_source_keys = [
+                            str(src_uid or ""),
+                            str(src_proxy_name or ""),
+                        ]
+                        for restore_source_key in restore_source_keys:
+                            if not restore_source_key:
+                                continue
+                            state = stream_accumulator_state.get((restore_source_key, str(node_id)))
+                            if not state:
+                                continue
+                            import_fn = getattr(task, "import_state", None)
+                            if callable(import_fn):
+                                try:
+                                    import_fn(state)
+                                except Exception:
+                                    pass
+                            break
                     task.engine_ref = self
+                    task.undo_generation = int(getattr(self, "undo_generation", 0) or 0)
                     task.resolve_block_size_fn = (
                         lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self:
                         eng._resolve_block_size(
@@ -2790,7 +2994,7 @@ class ACEAudioEngine:
                             delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
                         )
                     )
-                    if isinstance(task, (SourceTask, SourceSpecsTask, SourceScannerTask)):
+                    if isinstance(task, (SourceTask, SourceSpecsTask)):
                         node_ctx = self._resolve_source_context_for_node(
                             node,
                             source_context_lookup,
@@ -2829,70 +3033,73 @@ class ACEAudioEngine:
                     continue
                 filtered_keys.append(k)
             graph.output_attr_keys = filtered_keys
-            self._rebuild_graph_output_slot_specs(graph)
-            graph.manual_preview_task_ids = sorted(
-                [
-                    node_id
-                    for node_id in graph.tasks.keys()
-                    if (
-                        (abstract_tree.nodes.get(node_id) is not None)
-                        and (abstract_tree.nodes[node_id].category == "utilities")
-                        and (abstract_tree.nodes[node_id].type == "preview_sink")
-                    )
-                ]
+            graph.sink_bindings_by_attr = self._resolve_sink_bindings_for_graph(
+                graph,
+                abstract_tree,
+                source_uid=src_uid,
+                proxy_name=src_proxy_name,
+                single_source_mode=single_source_mode,
             )
+            self._rebuild_graph_output_slot_specs(graph)
+            graph.manual_preview_task_ids = []
+            if has_manual_preview and manual_preview_winner_id in graph.tasks:
+                graph.manual_preview_task_ids = [str(manual_preview_winner_id)]
 
             auto_preview_task_ids: list[str] = []
             auto_preview_passthrough_specs: list[tuple[str, int]] = []
-            auto_preview_specs = self._group_output_preview_specs_for_source(
-                abstract_tree,
-                src_uid,
-                src_proxy_name,
-                single_source_mode,
-            )
-            for upstream_node_id, upstream_sock_idx in auto_preview_specs:
-                upstream_task = graph.tasks.get(upstream_node_id)
-                if upstream_task is None:
-                    continue
-                upstream_node = abstract_tree.nodes.get(upstream_node_id)
-                if (
-                    isinstance(upstream_task, SourceTask)
-                    and upstream_node is not None
-                    and str(getattr(upstream_node, "category", "")) == "source_mngmt"
-                    and str(getattr(upstream_node, "type", "")) == "src"
-                ):
-                    auto_preview_passthrough_specs.append((str(upstream_node_id), int(upstream_sock_idx)))
-                    continue
-                auto_task_id = f"__ace_auto_preview__{upstream_node_id}_{int(upstream_sock_idx)}"
-                if auto_task_id in graph.tasks:
-                    continue
-                preview_task = PreviewSinkTask(auto_task_id, {"preview_enabled": True}, int(preview_block_size))
-                preview_task.engine_ref = self
-                preview_task.resolve_block_size_fn = (
-                    lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self:
-                    eng._resolve_block_size(
-                        sr or src_sr,
-                        fps_val,
-                        source_type=src_type,
-                        timeslice_mode=getattr(g, "timeslice_mode", eng._timeslice_mode()),
-                        delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
+            if not has_manual_preview:
+                auto_preview_specs = self._group_output_preview_specs_for_source(
+                    abstract_tree,
+                    src_uid,
+                    src_proxy_name,
+                    single_source_mode,
+                )
+                for upstream_node_id, upstream_sock_idx in auto_preview_specs:
+                    upstream_task = graph.tasks.get(upstream_node_id)
+                    if upstream_task is None:
+                        continue
+                    upstream_node = abstract_tree.nodes.get(upstream_node_id)
+                    if (
+                        isinstance(upstream_task, SourceTask)
+                        and upstream_node is not None
+                        and str(getattr(upstream_node, "category", "")) == "source_mngmt"
+                        and str(getattr(upstream_node, "type", "")) == "src"
+                    ):
+                        auto_preview_passthrough_specs.append((str(upstream_node_id), int(upstream_sock_idx)))
+                        continue
+                    auto_task_id = f"__ace_auto_preview__{upstream_node_id}_{int(upstream_sock_idx)}"
+                    if auto_task_id in graph.tasks:
+                        continue
+                    preview_task = PreviewSinkTask(auto_task_id, {"preview_enabled": True}, int(preview_block_size))
+                    preview_task.engine_ref = self
+                    preview_task.resolve_block_size_fn = (
+                        lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self:
+                        eng._resolve_block_size(
+                            sr or src_sr,
+                            fps_val,
+                            source_type=src_type,
+                            timeslice_mode=getattr(g, "timeslice_mode", eng._timeslice_mode()),
+                            delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
+                        )
                     )
-                )
-                preview_task.scene_fps = fps
-                preview_task.scene_frame_start = int(getattr(blender_scene, "frame_start", 1) or 1)
-                preview_task.engine_settings = engine_settings
-                preview_task.connect_input(
-                    input_idx=0,
-                    target_task=upstream_task,
-                    target_output_idx=int(upstream_sock_idx),
-                )
-                graph.tasks[auto_task_id] = preview_task
-                auto_preview_task_ids.append(auto_task_id)
+                    preview_task.scene_fps = fps
+                    preview_task.scene_frame_start = int(getattr(blender_scene, "frame_start", 1) or 1)
+                    preview_task.engine_settings = engine_settings
+                    preview_task.connect_input(
+                        input_idx=0,
+                        target_task=upstream_task,
+                        target_output_idx=int(upstream_sock_idx),
+                    )
+                    graph.tasks[auto_task_id] = preview_task
+                    auto_preview_task_ids.append(auto_task_id)
 
             graph.auto_preview_task_ids = sorted(auto_preview_task_ids)
             graph.auto_preview_passthrough_specs = sorted(set(auto_preview_passthrough_specs))
-            # Manual Audio Preview nodes intentionally override automatic Group Output preview taps.
-            graph.preview_task_ids = list(graph.manual_preview_task_ids or graph.auto_preview_task_ids)
+            # A single manual Audio Preview node wins globally; otherwise use per-graph auto taps.
+            if has_manual_preview:
+                graph.preview_task_ids = list(graph.manual_preview_task_ids)
+            else:
+                graph.preview_task_ids = list(graph.auto_preview_task_ids)
             source_task_ids: list[str] = []
             live_source_task_ids: list[str] = []
             file_source_task_ids: list[str] = []
@@ -2918,21 +3125,43 @@ class ACEAudioEngine:
             self.graphs[src_uid] = graph
             self._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
 
-            proxy = graph.get_proxy_object()
-            if proxy:
-                self.writer.ensure_attributes_exist(
-                    proxy,
-                    abstract_tree,
-                    active_keys=set(graph.output_attr_keys),
-                    prune_existing=True,
+            if self.writer is not None and sink_writes_allowed:
+                try:
+                    self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
+                    self._last_attr_sync_frame[src_uid] = int(self.current_frame)
+                except Exception:
+                    pass
+            elif self.writer is not None and self._is_rendering_job():
+                self._log_runtime(
+                    "render_lock_interface_compile_stage_c",
+                    "Skipping ACE sink layout writes during render. Enable Render > Lock Interface for safe handler updates.",
+                    "WARNING",
+                    min_interval=5.0,
                 )
-                self._last_attr_sync_frame[src_uid] = int(self.current_frame)
+
+        # Prune stale ACE_* custom properties from consumer objects.
+        # After all graphs' sink bindings are resolved, build the active set
+        # and remove any ACE_ props that are no longer written by the engine.
+        if self.writer is not None and sink_writes_allowed:
+            try:
+                active_props_by_object: Dict[str, Set[str]] = {}
+                for g in self.graphs.values():
+                    for bindings in getattr(g, "sink_bindings_by_attr", {}).values():
+                        for binding in (bindings or []):
+                            if str(getattr(binding, "sink_kind", "") or "") != "OBJECT_PROPERTY":
+                                continue
+                            obj_name = str(getattr(binding, "target_object_name", "") or "")
+                            prop_name = str(getattr(binding, "target_data_name", "") or "")
+                            if obj_name and prop_name:
+                                active_props_by_object.setdefault(obj_name, set()).add(prop_name)
+                self.writer.prune_consumer_objects(active_props_by_object)
+            except Exception:
+                pass
 
         try:
             ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
         except Exception:
             pass
-        import time
         self._last_compile_time = time.time()
 
     def _log_runtime(self, key: str, message: str, level: str = "ERROR", min_interval: float = 2.0):
@@ -2941,7 +3170,6 @@ class ACEAudioEngine:
         Prevents log spam from hot paths (frame handlers, parallel pollers) where
         the same error condition can recur every frame.
         """
-        import time
         now = time.time()
         last = self._runtime_log_last.get(key, 0.0)
         if (now - last) < min_interval:
@@ -2996,19 +3224,20 @@ class ACEAudioEngine:
         """Schedule a background file-metadata probe. Thread-safe; no-op if already in flight."""
         if not fp:
             return
+        undo_generation = int(getattr(self, "undo_generation", 0) or 0)
         with self._probe_thread_lock:
             if fp in self._probe_in_flight or fp in self._probe_pending_updates:
                 return
             self._probe_in_flight.add(fp)
         t = threading.Thread(
             target=self._run_probe_in_bg,
-            args=(fp,),
+            args=(fp, undo_generation),
             name="ACEProbeThread",
             daemon=True,
         )
         t.start()
 
-    def _run_probe_in_bg(self, fp: str):
+    def _run_probe_in_bg(self, fp: str, undo_generation: int):
         """Worker: open the file, read metadata, write to _probe_pending_updates (no bpy access)."""
         try:
             import os as _os, time as _time
@@ -3031,12 +3260,15 @@ class ACEAudioEngine:
                     except Exception:
                         pass
                 with self._probe_thread_lock:
+                    if int(undo_generation) != int(getattr(self, "undo_generation", 0) or 0):
+                        return
                     self._probe_pending_updates[fp] = {
                         "sample_rate": native_sr,
                         "native_sample_rate": native_sr,
                         "duration": duration,
                         "mtime": mtime,
                         "ts": _time.time(),
+                        "undo_generation": int(undo_generation),
                     }
         except Exception:
             pass
@@ -3044,7 +3276,7 @@ class ACEAudioEngine:
             with self._probe_thread_lock:
                 self._probe_in_flight.discard(fp)
 
-    def _flush_probe_updates(self, sources, bl_tree=None) -> bool:
+    def _flush_probe_updates(self, sources, scene=None, preferred_tree_ptr: int = 0) -> bool:
         """
         Flush background-probe results into bpy source props and meta_cache.
         Must be called from the main thread. Returns True if any update was applied
@@ -3056,6 +3288,7 @@ class ACEAudioEngine:
             updates = dict(self._probe_pending_updates)
             self._probe_pending_updates.clear()
         any_updated = False
+        active_generation = int(getattr(self, "undo_generation", 0) or 0)
         for source in (sources or []):
             if getattr(source, "source_type", "") != "FILE":
                 continue
@@ -3063,6 +3296,8 @@ class ACEAudioEngine:
             if not fp or fp not in updates:
                 continue
             result = updates[fp]
+            if int(result.get("undo_generation", active_generation) or active_generation) != active_generation:
+                continue
             try:
                 native_sr = int(result.get("native_sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
                 source.native_sample_rate = native_sr
@@ -3081,11 +3316,134 @@ class ACEAudioEngine:
                 for stale_key, _ in stale_keys:
                     self._meta_cache.pop(stale_key, None)
             any_updated = True
-        if any_updated and bl_tree is not None:
+        if any_updated:
             try:
-                self.request_recompile(bl_tree)
+                preferred_tree = self._resolve_preferred_tree_from_discoveries(
+                    self.discover_scene_frontends(scene) if scene is not None else [],
+                    frontend_uid=str(getattr(self, "_compiled_tree_frontend_uid", "") or ""),
+                    tree_ptr=int(preferred_tree_ptr or 0),
+                    tree_bl_idname=str(getattr(self, "_compiled_tree_bl_idname", "") or ""),
+                )
+                self.request_recompile(preferred_tree)
             except Exception:
                 pass
+        return any_updated
+
+    def _apply_tempo_detection_to_source(self, source: ACEAudioSource, detected: Dict[str, Any]) -> bool:
+        bpm = float(detected.get("bpm", 0.0) or 0.0)
+        beats_per_bar = int(detected.get("beats_per_bar", 0) or 0)
+        if bpm <= 0.0 or beats_per_bar <= 0:
+            return False
+        try:
+            source["ace_bpm_auto"] = float(bpm)
+            source["ace_meter_auto"] = int(beats_per_bar)
+            source.bpm = float(bpm)
+            source.beats_per_bar = int(beats_per_bar)
+            source["ace_bpm_user_override"] = False
+            source["ace_meter_user_override"] = False
+            source["ace_tempo_detect_status"] = "ready"
+            source["ace_tempo_detect_message"] = f"Detected {float(bpm):.2f} BPM / {int(beats_per_bar)} BPB"
+            return True
+        except Exception:
+            return False
+
+    def request_source_tempo_detection(self, source: Optional[ACEAudioSource]) -> tuple[bool, str]:
+        """Queue non-blocking BPM / beats-per-bar detection for a FILE source."""
+        utils.assert_main_thread("request_source_tempo_detection")
+        if source is None:
+            return False, "No source selected."
+
+        target = SourceSpecsTask.resolve_analysis_target(source)
+        if target is None:
+            try:
+                source["ace_tempo_detect_status"] = "failed"
+                source["ace_tempo_detect_message"] = "Select a valid file source before detecting tempo."
+            except Exception:
+                pass
+            return False, "Select a valid file source before detecting tempo."
+
+        filepath, mtime = target
+        try:
+            source["ace_tempo_detect_status"] = "pending"
+            source["ace_tempo_detect_message"] = "Analyzing source tempo in the background..."
+            source["ace_tempo_detect_filepath"] = str(filepath)
+            source["ace_tempo_detect_mtime"] = float(mtime)
+        except Exception:
+            pass
+
+        cached = SourceSpecsTask.get_cached_analysis(target)
+        if cached:
+            if cached.get("bpm", None) is not None and self._apply_tempo_detection_to_source(source, cached):
+                return True, "Tempo detection updated from cache."
+            error_msg = str(cached.get("error", "") or "Tempo analysis failed.")
+            try:
+                source["ace_tempo_detect_status"] = "failed"
+                source["ace_tempo_detect_message"] = error_msg
+            except Exception:
+                pass
+            return False, error_msg
+
+        queued = SourceSpecsTask._queue_background_analysis(target)
+        if not queued:
+            try:
+                source["ace_tempo_detect_status"] = "failed"
+                source["ace_tempo_detect_message"] = "Tempo analysis queue is full. Try again in a moment."
+            except Exception:
+                pass
+            return False, "Tempo analysis queue is full. Try again in a moment."
+
+        return True, "Tempo detection queued."
+
+    def flush_source_tempo_detection_updates(self, sources) -> bool:
+        """Apply finished background tempo detections to FILE source properties."""
+        utils.assert_main_thread("flush_source_tempo_detection_updates")
+        any_updated = False
+        for source in (sources or []):
+            if getattr(source, "source_type", "") != "FILE":
+                continue
+            try:
+                status = str(source.get("ace_tempo_detect_status", "") or "")
+            except Exception:
+                status = ""
+            if status != "pending":
+                continue
+
+            try:
+                filepath = str(source.get("ace_tempo_detect_filepath", "") or "")
+                mtime = float(source.get("ace_tempo_detect_mtime", 0.0) or 0.0)
+            except Exception:
+                filepath = ""
+                mtime = 0.0
+            if not filepath or mtime <= 0.0:
+                continue
+
+            current_target = SourceSpecsTask.resolve_analysis_target(source)
+            if current_target is None or str(current_target[0]) != filepath or abs(float(current_target[1]) - mtime) > 1e-6:
+                try:
+                    source["ace_tempo_detect_status"] = "failed"
+                    source["ace_tempo_detect_message"] = "Source changed. Run tempo detection again."
+                except Exception:
+                    pass
+                any_updated = True
+                continue
+
+            cached = SourceSpecsTask.get_cached_analysis((filepath, mtime))
+            if not cached:
+                continue
+
+            if cached.get("bpm", None) is None:
+                try:
+                    source["ace_tempo_detect_status"] = "failed"
+                    source["ace_tempo_detect_message"] = str(
+                        cached.get("error", "") or "Tempo analysis failed."
+                    )
+                except Exception:
+                    pass
+                any_updated = True
+                continue
+
+            if self._apply_tempo_detection_to_source(source, cached):
+                any_updated = True
         return any_updated
 
     def _collect_sample_rate_floor(self, sources, engine_settings, fps: float, allow_io: bool = True) -> int:
@@ -3194,7 +3552,18 @@ class ACEAudioEngine:
             inputs = tuple(sorted((s.socket_idx, s.data_type, s.name) for s in node.inputs))
             outputs = tuple(sorted((s.socket_idx, s.data_type, s.name) for s in node.outputs))
             roots = tuple(sorted(node.root_sources)) if getattr(node, "root_sources", None) else ()
-            node_sig.append((nid, node.category, node.type, params, inputs, outputs, roots))
+            node_sig.append((
+                nid,
+                node.category,
+                node.type,
+                params,
+                inputs,
+                outputs,
+                roots,
+                str(getattr(node, "frontend_uid", "") or ""),
+                str(getattr(node, "frontend_kind", "") or ""),
+                str(getattr(node, "source_binding_id", "") or ""),
+            ))
         links = tuple(sorted((l.source_node_id, l.source_socket_idx, l.target_node_id, l.target_socket_idx) for l in abstract_tree.links))
         output_links = tuple(
             sorted(
@@ -3203,11 +3572,57 @@ class ACEAudioEngine:
                     int(getattr(l, "source_socket_idx", 0)),
                     int(getattr(l, "target_socket_idx", 0)),
                     str(getattr(l, "target_socket_name", "") or ""),
+                    str(getattr(l, "frontend_uid", "") or ""),
+                    str(getattr(l, "frontend_kind", "") or ""),
                 )
                 for l in (getattr(abstract_tree, "group_output_links", []) or [])
             )
         )
-        return (tuple(node_sig), links, output_links)
+        frontend_sig = tuple(
+            sorted(
+                (
+                    str(uid),
+                    str(getattr(frontend, "kind", "") or ""),
+                    str(getattr(frontend, "tree_name", "") or ""),
+                    str(getattr(frontend, "tree_bl_idname", "") or ""),
+                    tuple(getattr(frontend, "owner_keys", ()) or ()),
+                    str(getattr(frontend, "material_name", "") or ""),
+                    int(getattr(frontend, "tree_ptr", 0) or 0),
+                )
+                for uid, frontend in (getattr(abstract_tree, "frontends", {}) or {}).items()
+            )
+        )
+        frontends_by_uid = dict(getattr(abstract_tree, "frontends", {}) or {})
+        consumer_sig = tuple(
+            sorted(
+                (
+                    str(getattr(intent, "frontend_uid", "") or ""),
+                    str(
+                        getattr(
+                            frontends_by_uid.get(str(getattr(intent, "frontend_uid", "") or "")),
+                            "kind",
+                            "",
+                        )
+                        or ""
+                    ),
+                    str(getattr(intent, "node_id", "") or ""),
+                    int(getattr(intent, "socket_idx", 0) or 0),
+                    str(getattr(intent, "sink_kind", "") or ""),
+                    str(getattr(intent, "source_token", "") or ""),
+                    tuple(
+                        sorted(
+                            str(v)
+                            for v in (getattr(intent, "consumer_keys", ()) or ())
+                            if str(v)
+                        )
+                    ),
+                    str(getattr(intent, "output_name", "") or ""),
+                    str(getattr(intent, "explicit_name", "") or ""),
+                )
+                for intent in (getattr(abstract_tree, "consumer_intents", []) or [])
+            )
+        )
+        return (tuple(node_sig), links, output_links, frontend_sig, consumer_sig)
 
     @staticmethod
     def _build_auto_attr_name(
@@ -3234,10 +3649,283 @@ class ACEAudioEngine:
         return lookup
 
     @staticmethod
+    def _lookup_proxy_object(proxy_name: str):
+        if not proxy_name:
+            return None
+        try:
+            return bpy.data.objects.get(str(proxy_name))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resolve_proxy_name_for_output_node(
+        node: Optional[ACEAbstractNode],
+        source_lookup: Dict[str, str],
+        unique_proxies: list[str] | tuple[str, ...],
+    ) -> str:
+        if node is None:
+            return ""
+        for root in sorted(set(getattr(node, "root_sources", set()) or set())):
+            proxy_name = str(source_lookup.get(str(root), "") or "")
+            if proxy_name:
+                return proxy_name
+        if len(unique_proxies) == 1:
+            return str(unique_proxies[0] or "")
+        return ""
+
+    @staticmethod
+    def _tree_frontend_uid(tree) -> str:
+        if tree is None:
+            return ""
+        try:
+            return str(tree.get("ace_frontend_uid", "") or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _tree_is_internal_ace_group(tree) -> bool:
+        if tree is None:
+            return False
+        name = str(getattr(tree, "name", "") or "")
+        return bool(name.startswith(".ACE_"))
+
+    @classmethod
+    def _tree_is_ace_managed(cls, tree) -> bool:
+        return bool(cls._tree_frontend_uid(tree) or cls._tree_has_ace_nodes(tree))
+
+    @staticmethod
+    def _frontend_membership_signature(frontends: list[_ACEFrontendDiscovery]) -> tuple[Any, ...]:
+        return tuple(
+            sorted(
+                (
+                    str(rec.frontend_ref.uid),
+                    str(rec.frontend_ref.kind),
+                    str(rec.frontend_ref.tree_name),
+                    int(rec.frontend_ref.tree_ptr),
+                    tuple(rec.frontend_ref.owner_keys),
+                    str(rec.frontend_ref.material_name),
+                    tuple(rec.consumer_object_names),
+                )
+                for rec in (frontends or [])
+            )
+        )
+
+    @staticmethod
+    def _compiled_snapshot_from_discovery(rec: _ACEFrontendDiscovery) -> _ACECompiledFrontendSnapshot:
+        frontend_ref = rec.frontend_ref
+        return _ACECompiledFrontendSnapshot(
+            uid=str(frontend_ref.uid or ""),
+            kind=str(frontend_ref.kind or ""),
+            tree_name=str(frontend_ref.tree_name or ""),
+            tree_bl_idname=str(frontend_ref.tree_bl_idname or ""),
+            owner_keys=tuple(str(v) for v in tuple(frontend_ref.owner_keys or ()) if str(v)),
+            consumer_object_names=tuple(str(v) for v in tuple(rec.consumer_object_names or ()) if str(v)),
+            material_name=str(frontend_ref.material_name or ""),
+            tree_ptr=int(frontend_ref.tree_ptr or 0),
+        )
+
+    @staticmethod
+    def _resolve_preferred_tree_from_discoveries(
+        frontends: list[_ACEFrontendDiscovery],
+        frontend_uid: str = "",
+        tree_ptr: int = 0,
+        tree_bl_idname: str = "",
+    ):
+        uid_token = str(frontend_uid or "")
+        ptr_token = int(tree_ptr or 0)
+        type_token = str(tree_bl_idname or "")
+        if uid_token:
+            for rec in frontends or []:
+                if str(getattr(getattr(rec, "frontend_ref", None), "uid", "") or "") == uid_token:
+                    return getattr(rec, "tree", None)
+        if ptr_token:
+            for rec in frontends or []:
+                rec_ptr = int(getattr(getattr(rec, "frontend_ref", None), "tree_ptr", 0) or 0)
+                if rec_ptr == ptr_token:
+                    return getattr(rec, "tree", None)
+        if type_token:
+            for rec in frontends or []:
+                if str(getattr(getattr(rec, "frontend_ref", None), "tree_bl_idname", "") or "") == type_token:
+                    return getattr(rec, "tree", None)
+        return None
+
+    @staticmethod
+    def _refresh_consumer_intents_from_nodes(abstract_tree: ACEAbstractTree):
+        for intent in getattr(abstract_tree, "consumer_intents", []) or []:
+            node = abstract_tree.nodes.get(str(getattr(intent, "node_id", "") or ""))
+            if node is None:
+                continue
+            socket_idx = int(getattr(intent, "socket_idx", 0) or 0)
+            outputs = list(getattr(node, "outputs", []) or [])
+            if 0 <= socket_idx < len(outputs):
+                intent.output_name = str(getattr(outputs[socket_idx], "name", "") or "")
+            params = dict(getattr(node, "parameters", {}) or {})
+            explicit_name = str(params.get(f"attr_id_out_{socket_idx}", "") or "")
+            intent.explicit_name = explicit_name
+
+    @staticmethod
+    def _preview_node_sort_key(
+        node: Optional[ACEAbstractNode],
+        abstract_tree: Optional[ACEAbstractTree],
+    ) -> tuple[int, int, str, str]:
+        if node is None:
+            return (-1, -1, "", "")
+        frontends = dict(getattr(abstract_tree, "frontends", {}) or {}) if abstract_tree is not None else {}
+        frontend_uid = str(getattr(node, "frontend_uid", "") or "")
+        frontend = frontends.get(frontend_uid)
+        discovery_index = int(getattr(frontend, "discovery_index", 0) or 0)
+        params = dict(getattr(node, "parameters", {}) or {})
+        frontend_node_index = int(params.get("frontend_node_index", -1) or -1)
+        return (
+            discovery_index,
+            frontend_node_index,
+            frontend_uid,
+            str(getattr(node, "id", "") or ""),
+        )
+
+    def _resolve_global_manual_preview_winner(self, abstract_tree: Optional[ACEAbstractTree]) -> tuple[str, list[str]]:
+        candidates: list[str] = []
+        if abstract_tree is None:
+            return "", candidates
+        for node_id, node in (getattr(abstract_tree, "nodes", {}) or {}).items():
+            if str(getattr(node, "category", "") or "") != "utilities":
+                continue
+            if str(getattr(node, "type", "") or "") != "preview_sink":
+                continue
+            candidates.append(str(node_id))
+        if not candidates:
+            return "", []
+        winner_id = max(
+            candidates,
+            key=lambda node_id: self._preview_node_sort_key(
+                abstract_tree.nodes.get(str(node_id)),
+                abstract_tree,
+            ),
+        )
+        return str(winner_id or ""), sorted(
+            candidates,
+            key=lambda node_id: self._preview_node_sort_key(
+                abstract_tree.nodes.get(str(node_id)),
+                abstract_tree,
+            ),
+        )
+
+    def discover_scene_frontends(self, scene) -> list[_ACEFrontendDiscovery]:
+        """Discover managed ACE frontends used by the scene."""
+        from ..nodes.dummy_tree import ensure_frontend_uid as _ensure_frontend_uid
+        from ..nodes.shader_tree import ACEShaderTreeReader
+
+        utils.assert_main_thread("discover_scene_frontends")
+
+        if scene is None:
+            return []
+
+        by_ptr: Dict[int, Dict[str, Any]] = {}
+
+        def _register_tree(tree, frontend_kind: str, owner_keys, material_name: str = "", consumer_object_names=()):
+            if tree is None or self._tree_is_internal_ace_group(tree):
+                return
+            tree_type = str(getattr(tree, "bl_idname", "") or "")
+            is_shader = str(frontend_kind or "") == FRONTEND_KIND_SHADER or tree_type == "ShaderNodeTree"
+            if is_shader:
+                managed = bool(ACEShaderTreeReader.is_managed_tree(tree) or self._tree_is_ace_managed(tree))
+            else:
+                managed = self._tree_is_ace_managed(tree)
+            if not managed:
+                return
+            tree_ptr = self._node_tree_pointer(tree)
+            owner_keys_tuple = tuple(sorted(str(v) for v in (owner_keys or []) if str(v)))
+            consumer_keys_tuple = tuple(sorted(str(v) for v in (consumer_object_names or []) if str(v)))
+            existing = by_ptr.get(tree_ptr)
+            if existing is None:
+                by_ptr[tree_ptr] = {
+                    "tree": tree,
+                    "frontend_kind": str(frontend_kind or ""),
+                    "discovery_index": len(by_ptr),
+                    "owner_keys": set(owner_keys_tuple),
+                    "consumer_keys": set(consumer_keys_tuple),
+                    "material_name": str(material_name or ""),
+                }
+                return
+            existing["owner_keys"].update(owner_keys_tuple)
+            existing["consumer_keys"].update(consumer_keys_tuple)
+            if material_name and not existing.get("material_name"):
+                existing["material_name"] = str(material_name)
+
+        def _frontend_record_sort_key(rec: Dict[str, Any]) -> tuple[Any, ...]:
+            tree = rec.get("tree")
+            return (
+                str(rec.get("frontend_kind", "") or ""),
+                str(getattr(tree, "bl_idname", "") or ""),
+                str(getattr(tree, "name", "") or ""),
+                str(rec.get("material_name", "") or ""),
+                tuple(sorted(str(v) for v in rec.get("owner_keys", set()) if str(v))),
+                tuple(sorted(str(v) for v in rec.get("consumer_keys", set()) if str(v))),
+                int(self._node_tree_pointer(tree)),
+            )
+
+        for obj in getattr(scene, "objects", []) or []:
+            obj_name = str(getattr(obj, "name", "") or "")
+            for mod in getattr(obj, "modifiers", []) or []:
+                if getattr(mod, "type", None) != "NODES":
+                    continue
+                tree = getattr(mod, "node_group", None)
+                if tree is None:
+                    continue
+                _register_tree(
+                    tree,
+                    FRONTEND_KIND_GEOMETRY,
+                    owner_keys=(f"{obj_name}:{getattr(mod, 'name', '')}",),
+                )
+            for slot in getattr(obj, "material_slots", []) or []:
+                material = getattr(slot, "material", None)
+                tree = getattr(material, "node_tree", None) if material is not None else None
+                if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                    continue
+                _register_tree(
+                    tree,
+                    FRONTEND_KIND_SHADER,
+                    owner_keys=(obj_name,),
+                    material_name=str(getattr(material, "name", "") or ""),
+                    consumer_object_names=(obj_name,),
+                )
+
+        discovered: list[_ACEFrontendDiscovery] = []
+        existing_uids: list[str] = []
+        for rec in sorted(by_ptr.values(), key=_frontend_record_sort_key):
+            tree = rec.get("tree")
+            frontend_kind = str(rec.get("frontend_kind", "") or "")
+            frontend_uid = _ensure_frontend_uid(tree, frontend_kind, existing_uids)
+            if not frontend_uid:
+                continue
+            if frontend_uid not in existing_uids:
+                existing_uids.append(frontend_uid)
+            owner_keys = tuple(sorted(str(v) for v in rec.get("owner_keys", set()) if str(v)))
+            consumer_keys = tuple(sorted(str(v) for v in rec.get("consumer_keys", set()) if str(v)))
+            discovered.append(
+                _ACEFrontendDiscovery(
+                    tree=tree,
+                    frontend_ref=ACEFrontendRef(
+                        uid=frontend_uid,
+                        kind=frontend_kind,
+                        tree_name=str(getattr(tree, "name", "") or ""),
+                        tree_bl_idname=str(getattr(tree, "bl_idname", "") or ""),
+                        owner_keys=owner_keys,
+                        material_name=str(rec.get("material_name", "") or ""),
+                        tree_ptr=int(self._node_tree_pointer(tree)),
+                        discovery_index=int(rec.get("discovery_index", 0) or 0),
+                    ),
+                    consumer_object_names=consumer_keys,
+                )
+            )
+
+        return sorted(discovered, key=lambda rec: str(rec.frontend_ref.uid or ""))
+
+    @staticmethod
     def _is_output_node(node: ACEAbstractNode) -> bool:
         is_specs = bool(
             node
-            and node.type in {'src_specs', 'scanner'}
+            and node.type in {'src_specs', 'util_rolling_avg', 'stream_accumulator'}
             and node.category == 'utilities'
         )
         return bool(
@@ -3404,7 +4092,7 @@ class ACEAudioEngine:
         if str(scheduler_mode or "legacy").strip().lower() == "legacy":
             for node in abstract_tree.nodes.values():
                 # Legacy mode keeps source nodes active each frame even when no
-                # stream/spec/scanner branch requests them.
+                # stream/spec branch requests them.
                 if not (node.category == 'source_mngmt' and node.type == 'src'):
                     continue
                 if self._node_matches_source(node, source_uid, proxy_name, single_source_mode):
@@ -3462,6 +4150,126 @@ class ACEAudioEngine:
             if src is not None:
                 return src
         return default_source
+
+    @staticmethod
+    def _resolve_sink_data_name(proxy_name: str, node_id: str, output_name: str, socket_idx: int, explicit_name: str = "") -> str:
+        explicit = str(explicit_name or "").strip()
+        if explicit:
+            if not explicit.startswith(ACEIdManager.PREFIX):
+                explicit = ACEIdManager.PREFIX + ACEIdManager._clean_string(explicit)
+            return explicit[:63]
+        return ACEIdManager.generate_compact_attr_name(proxy_name, node_id, output_name, socket_idx)
+
+    def _resolve_sink_bindings_for_graph(
+        self,
+        graph: ACEAudioGraph,
+        abstract_tree: ACEAbstractTree,
+        source_uid: str,
+        proxy_name: str,
+        single_source_mode: bool,
+    ) -> Dict[str, List[ACESinkBinding]]:
+        bindings_by_attr: Dict[str, List[ACESinkBinding]] = {}
+        source_aliases = {str(v) for v in (source_uid, proxy_name) if str(v)}
+        consumer_intents = list(getattr(abstract_tree, "consumer_intents", []) or [])
+        frontends = dict(getattr(abstract_tree, "frontends", {}) or {})
+
+        for attr_key in list(getattr(graph, "output_attr_keys", []) or []):
+            info = self.writer.output_defs.get(attr_key, {}) if self.writer else {}
+            node_id = str(info.get("node_id", "") or "")
+            socket_idx = int(info.get("socket_idx", 0) or 0)
+            node = abstract_tree.nodes.get(node_id)
+            if node is None:
+                bindings_by_attr[attr_key] = []
+                continue
+            frontend_uid = str(getattr(node, "frontend_uid", "") or info.get("frontend_uid", "") or "")
+            frontend_kind = str(getattr(node, "frontend_kind", "") or "")
+            output_name = str(info.get("output_name", "") or "")
+            attr_type = str(info.get("type", "FLOAT") or "FLOAT")
+            resolved: list[ACESinkBinding] = []
+
+            for intent in consumer_intents:
+                if str(getattr(intent, "node_id", "") or "") != node_id:
+                    continue
+                if int(getattr(intent, "socket_idx", 0) or 0) != socket_idx:
+                    continue
+                intent_frontend_uid = str(getattr(intent, "frontend_uid", "") or "")
+                if intent_frontend_uid and frontend_uid and intent_frontend_uid != frontend_uid:
+                    continue
+                source_token = str(getattr(intent, "source_token", "") or "")
+                if (not single_source_mode) and source_token and source_token not in source_aliases:
+                    continue
+                sink_kind = str(getattr(intent, "sink_kind", "") or "")
+                explicit_name = str(getattr(intent, "explicit_name", "") or "")
+                sink_name = self._resolve_sink_data_name(
+                    proxy_name,
+                    node_id,
+                    str(getattr(intent, "output_name", "") or output_name),
+                    socket_idx,
+                    explicit_name=explicit_name,
+                )
+                if sink_kind == "PROXY_ATTRIBUTE":
+                    resolved.append(
+                        ACESinkBinding(
+                            sink_kind="PROXY_ATTRIBUTE",
+                            target_object_name=proxy_name,
+                            target_data_name=sink_name,
+                            attr_type=attr_type,
+                        )
+                    )
+                elif sink_kind == "OBJECT_PROPERTY":
+                    consumers = tuple(str(v) for v in (getattr(intent, "consumer_keys", ()) or ()) if str(v))
+                    if not consumers and frontend_uid in frontends:
+                        consumers = tuple(str(v) for v in (frontends[frontend_uid].owner_keys or ()) if str(v))
+                    for object_name in consumers:
+                        resolved.append(
+                            ACESinkBinding(
+                                sink_kind="OBJECT_PROPERTY",
+                                target_object_name=str(object_name),
+                                target_data_name=sink_name,
+                                attr_type=attr_type,
+                            )
+                        )
+
+            if not resolved:
+                sink_name = self._resolve_sink_data_name(proxy_name, node_id, output_name, socket_idx)
+                if frontend_kind == FRONTEND_KIND_SHADER:
+                    consumer_names = ()
+                    if frontend_uid in frontends:
+                        consumer_names = tuple(str(v) for v in (frontends[frontend_uid].owner_keys or ()) if str(v))
+                    for object_name in consumer_names:
+                        resolved.append(
+                            ACESinkBinding(
+                                sink_kind="OBJECT_PROPERTY",
+                                target_object_name=object_name,
+                                target_data_name=sink_name,
+                                attr_type=attr_type,
+                            )
+                        )
+                else:
+                    resolved.append(
+                        ACESinkBinding(
+                            sink_kind="PROXY_ATTRIBUTE",
+                            target_object_name=proxy_name,
+                            target_data_name=sink_name,
+                            attr_type=attr_type,
+                        )
+                    )
+
+            deduped: list[ACESinkBinding] = []
+            seen: set[tuple[str, str, str, str]] = set()
+            for binding in resolved:
+                key = (
+                    str(getattr(binding, "sink_kind", "") or ""),
+                    str(getattr(binding, "target_object_name", "") or ""),
+                    str(getattr(binding, "target_data_name", "") or ""),
+                    str(getattr(binding, "attr_type", "") or ""),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(binding)
+            bindings_by_attr[attr_key] = deduped
+        return bindings_by_attr
 
     @staticmethod
     def _safe_file_mtime(filepath: str) -> Optional[float]:
@@ -3803,17 +4611,11 @@ class ACEAudioEngine:
 
             is_stream = abs_node.category == "stream"
             is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
-            is_scanner = abs_node.type == "scanner" and abs_node.category == "utilities"
-            if not (is_stream or is_specs or is_scanner):
+            is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
+            if not (is_stream or is_specs or is_stream_accumulator):
                 continue
 
-            proxy_name = ""
-            for root in sorted(abs_node.root_sources):
-                if root in source_lookup:
-                    proxy_name = source_lookup[root]
-                    break
-            if not proxy_name and len(unique_proxies) == 1:
-                proxy_name = unique_proxies[0]
+            proxy_name = self._resolve_proxy_name_for_output_node(abs_node, source_lookup, unique_proxies)
             if not proxy_name:
                 continue
 
@@ -3824,19 +4626,20 @@ class ACEAudioEngine:
             desired_map: Dict[str, str] = {}
             socket_map: Dict[str, str] = {}
             if is_stream and len(abs_node.outputs) > 0:
-                desired_map["0"] = self._build_auto_attr_name(
-                    proxy_name,
-                    abs_node.id,
-                    abs_node.outputs[0].name,
-                    0,
-                    topology_sig=topology_sig,
-                )
-                socket_map["Attribute ID"] = "0"
+                for out_idx, out_sock in enumerate(abs_node.outputs):
+                    desired_map[str(out_idx)] = self._build_auto_attr_name(
+                        proxy_name,
+                        abs_node.id,
+                        out_sock.name,
+                        out_idx,
+                        topology_sig=topology_sig,
+                    )
+                    socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
+                    socket_map[socket_name] = str(out_idx)
             elif is_specs:
                 specs_socket_map = (
-                    ("BPF Attribute ID", 0),
-                    ("Time Signature Attribute ID", 1),
-                    ("Beat Phase Attribute ID", 2),
+                    ("Frames per Beat Attribute ID", 0),
+                    ("Beat Phase Attribute ID", 1),
                 )
                 for socket_name, out_idx in specs_socket_map:
                     if out_idx >= len(abs_node.outputs):
@@ -3849,16 +4652,15 @@ class ACEAudioEngine:
                         topology_sig=topology_sig,
                     )
                     socket_map[socket_name] = str(out_idx)
-            elif is_scanner:
-                if len(abs_node.outputs) > 0:
-                    desired_map["0"] = self._build_auto_attr_name(
-                        proxy_name,
-                        abs_node.id,
-                        abs_node.outputs[0].name,
-                        0,
-                        topology_sig=topology_sig,
-                    )
-                    socket_map["Latency Attribute ID"] = "0"
+            elif is_stream_accumulator and len(abs_node.outputs) > 0:
+                desired_map["0"] = self._build_auto_attr_name(
+                    proxy_name,
+                    abs_node.id,
+                    abs_node.outputs[0].name,
+                    0,
+                    topology_sig=topology_sig,
+                )
+                socket_map["Attribute ID"] = "0"
 
             if not desired_map:
                 continue
@@ -3911,14 +4713,20 @@ class ACEAudioEngine:
 
     @staticmethod
     def _attribute_socket_to_output_index(sock_name: str) -> Optional[int]:
+        name = str(sock_name or "").strip()
+        if name == "Attribute ID":
+            return 0
+        if name.startswith("Attribute ID "):
+            suffix = name[len("Attribute ID "):].strip()
+            if suffix.isdigit():
+                idx = int(suffix) - 1
+                if idx >= 0:
+                    return int(idx)
         mapping = {
-            "Attribute ID": 0,
-            "BPF Attribute ID": 0,
-            "Time Signature Attribute ID": 1,
-            "Beat Phase Attribute ID": 2,
-            "Latency Attribute ID": 0,
+            "Frames per Beat Attribute ID": 0,
+            "Beat Phase Attribute ID": 1,
         }
-        return mapping.get(sock_name)
+        return mapping.get(name)
 
     def _refresh_abstract_attr_params_from_tree(
         self,
@@ -3973,6 +4781,179 @@ class ACEAudioEngine:
 
             abs_node.parameters = params
 
+    def _sync_shader_output_ids(
+        self,
+        bl_tree: bpy.types.NodeTree,
+        abstract_tree: ACEAbstractTree,
+        scene,
+    ) -> tuple[bool, set[str]]:
+        """Best-effort shader-side output-name sync for editable ID sockets."""
+        utils.assert_main_thread("_sync_shader_output_ids")
+        changed = False
+        changed_node_ids: set[str] = set()
+        source_lookup = self._build_source_proxy_lookup(scene)
+        unique_proxies = list(dict.fromkeys(source_lookup.values()))
+        shader_tree_mutations_unsafe = not self._structural_tree_writes_allowed(
+            scene,
+            tree=bl_tree,
+            frontend_kind=FRONTEND_KIND_SHADER,
+        )
+        shader_factory = None
+        try:
+            from ..nodes.shader_tree import ACEShaderNodeFactory as _ACEShaderNodeFactory
+            shader_factory = _ACEShaderNodeFactory
+        except Exception:
+            shader_factory = None
+        if shader_factory is not None and not shader_tree_mutations_unsafe:
+            try:
+                if shader_factory.cleanup_tree_helper_nodes(bl_tree):
+                    changed = True
+            except Exception:
+                pass
+
+        incoming_by_target: Dict[str, list[tuple[str, int, int]]] = {}
+        for link in (getattr(abstract_tree, "links", []) or []):
+            source_node_id = str(getattr(link, "source_node_id", "") or "")
+            target_node_id = str(getattr(link, "target_node_id", "") or "")
+            if not source_node_id or not target_node_id:
+                continue
+            incoming_by_target.setdefault(target_node_id, []).append(
+                (
+                    source_node_id,
+                    int(getattr(link, "source_socket_idx", 0) or 0),
+                    int(getattr(link, "target_socket_idx", 0) or 0),
+                )
+            )
+
+        for bl_node in getattr(bl_tree, "nodes", []):
+            try:
+                ace_id = str(bl_node.get("ace_id", "") or "")
+            except Exception:
+                ace_id = ""
+            if not ace_id:
+                continue
+            abs_node = abstract_tree.nodes.get(ace_id)
+            if abs_node is None:
+                continue
+            is_stream = abs_node.category == "stream"
+            is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
+            is_rolling_avg = abs_node.type == "util_rolling_avg" and abs_node.category == "utilities"
+            is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
+            if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator):
+                continue
+
+            root_sig = json.dumps(sorted(set(getattr(abs_node, "root_sources", set()) or set())))
+            upstream_sig = json.dumps(sorted(incoming_by_target.get(abs_node.id, [])))
+            topology_sig = f"{root_sig}|{upstream_sig}"
+            proxy_name = self._resolve_proxy_name_for_output_node(abs_node, source_lookup, unique_proxies)
+
+            desired_map: Dict[str, str] = {}
+            socket_map: Dict[str, str] = {}
+            if proxy_name:
+                # Shader sinks write to consumer object custom properties — one
+                # per node instance — so topology_sig is NOT needed for
+                # disambiguation and must be omitted to keep the name stable.
+                # Using topology_sig here creates a mismatch with
+                # _resolve_sink_bindings_for_graph's fallback path (which also
+                # omits it) and with the initial gn_menu sync.
+                if is_stream and len(abs_node.outputs) > 0:
+                    for out_idx, out_sock in enumerate(abs_node.outputs):
+                        desired_map[str(out_idx)] = self._build_auto_attr_name(
+                            proxy_name,
+                            abs_node.id,
+                            out_sock.name,
+                            out_idx,
+                            topology_sig="",
+                        )
+                        socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
+                        socket_map[socket_name] = str(out_idx)
+                elif is_specs:
+                    specs_socket_map = (
+                        ("Frames per Beat Attribute ID", 0),
+                        ("Beat Phase Attribute ID", 1),
+                    )
+                    for socket_name, out_idx in specs_socket_map:
+                        if out_idx >= len(abs_node.outputs):
+                            continue
+                        desired_map[str(out_idx)] = self._build_auto_attr_name(
+                            proxy_name,
+                            abs_node.id,
+                            abs_node.outputs[out_idx].name,
+                            out_idx,
+                            topology_sig="",
+                        )
+                        socket_map[socket_name] = str(out_idx)
+                elif is_rolling_avg and len(abs_node.outputs) > 0:
+                    desired_map["0"] = self._build_auto_attr_name(
+                        proxy_name,
+                        abs_node.id,
+                        abs_node.outputs[0].name,
+                        0,
+                        topology_sig="",
+                    )
+                    socket_map["Attribute ID"] = "0"
+                elif is_stream_accumulator and len(abs_node.outputs) > 0:
+                    desired_map["0"] = self._build_auto_attr_name(
+                        proxy_name,
+                        abs_node.id,
+                        abs_node.outputs[0].name,
+                        0,
+                        topology_sig="",
+                    )
+                    socket_map["Attribute ID"] = "0"
+
+            if desired_map:
+                for sock in getattr(bl_node, "inputs", []):
+                    socket_key = socket_map.get(str(getattr(sock, "name", "") or ""))
+                    if socket_key is None:
+                        continue
+                    target = desired_map.get(socket_key, "")
+                    current = str(getattr(sock, "default_value", "") or "")
+                    if target and target != current:
+                        try:
+                            sock.default_value = target
+                            changed = True
+                            changed_node_ids.add(str(abs_node.id))
+                        except Exception:
+                            pass
+                try:
+                    if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
+                        bl_node["ace_auto_attr_topology_json"] = topology_sig
+                        changed = True
+                except Exception:
+                    pass
+            # Allow sync during viewport Material Preview / Rendered view —
+            # only a full render job (use_lock_interface=False) is truly unsafe.
+            # Viewport renders re-sync Cycles per frame anyway, so updating the
+            # ShaderNodeAttribute attribute_name or creating a missing helper
+            # node during viewport render is safe and necessary.
+            if shader_factory is not None and not shader_tree_mutations_unsafe:
+                try:
+                    _names_by_idx = {int(k): str(v) for k, v in desired_map.items() if v} or None
+                    if shader_factory.sync_node_instance_group_bindings(
+                        bl_node,
+                        proxy_name=proxy_name,
+                        scene=scene,
+                        attr_names_by_idx=_names_by_idx,
+                    ):
+                        changed = True
+                        changed_node_ids.add(str(abs_node.id))
+                except Exception:
+                    pass
+            # Write computed attr names into abstract tree params so that
+            # _emit_consumer_intents / _resolve_sink_data_name use the same
+            # names that were set on the companion ShaderNodeAttribute helpers.
+            if desired_map:
+                params = dict(getattr(abs_node, "parameters", {}) or {})
+                for out_key, attr_name in desired_map.items():
+                    if attr_name:
+                        params[f"attr_id_out_{out_key}"] = attr_name
+                        params[f"attr_id_custom_out_{out_key}"] = True
+                abs_node.parameters = params
+                changed = True
+                changed_node_ids.add(str(abs_node.id))
+        return changed, changed_node_ids
+
     def _create_task_for_node(self, node: ACEAbstractNode, block_size: int) -> Optional[ACEAudioTask]:
         cat = node.category
         typ = node.type
@@ -3983,12 +4964,14 @@ class ACEAudioEngine:
         elif cat == 'utilities':
             if typ == 'src_specs':
                 return SourceSpecsTask(node.id, node.parameters, block_size)
-            if typ == 'scanner':
-                return SourceScannerTask(node.id, node.parameters, block_size)
             if typ == 'preview_sink':
                 return PreviewSinkTask(node.id, node.parameters, block_size)
             if typ == 'audio_math':
                 return AudioMathTask(node.id, node.parameters, block_size)
+            if typ == 'util_rolling_avg':
+                return RollingAvgTask(node.id, node.parameters, block_size)
+            if typ == 'stream_accumulator':
+                return StreamAccumulatorTask(node.id, node.parameters, block_size)
         elif cat == 'delta':
             if typ == 'frequency_splitter':
                 return FrequencySplitterTask(node.id, node.parameters, block_size)
@@ -4003,6 +4986,10 @@ class ACEAudioEngine:
         elif cat == 'stream':
             if typ == 'rms':
                 return RMSTask(node.id, node.parameters, block_size)
+            if typ == 'lufs':
+                return LUFSTask(node.id, node.parameters, block_size)
+            if typ == 'peak':
+                return PeakTask(node.id, node.parameters, block_size)
             if typ == 'pitch':
                 return PitchTask(node.id, node.parameters, block_size)
             if typ == 'spectral_centroid':
@@ -4028,20 +5015,7 @@ class ACEAudioEngine:
         slot_keys = list(meta.pop("payload_slot_keys", []) or [])
         for slot_key in slot_keys:
             self._parallel_release_payload_slot(str(slot_key))
-        handles = meta.pop("ipc_handles", None)
-        if not handles:
-            return
-        for shm in handles:
-            try:
-                shm.close()
-            except Exception:
-                pass
-            try:
-                shm.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
+        meta.pop("ipc_handles", None)
 
     @staticmethod
     def _parallel_close_unlink_shm(shm_obj):
@@ -4061,6 +5035,12 @@ class ACEAudioEngine:
     def _parallel_destroy_payload_slot(self, slot_key: str):
         key = str(slot_key)
         self._parallel_payload_slot_refs.pop(key, None)
+        prefix = key.split("#", 1)[0]
+        free_list = self._parallel_payload_free_slots.get(prefix)
+        if isinstance(free_list, deque):
+            self._parallel_payload_free_slots[prefix] = deque(v for v in free_list if str(v) != key)
+            if not self._parallel_payload_free_slots[prefix]:
+                self._parallel_payload_free_slots.pop(prefix, None)
         for frame_key, mapped_slot in list(self._parallel_frame_payload_slots.items()):
             if str(mapped_slot) == key:
                 self._parallel_frame_payload_slots.pop(frame_key, None)
@@ -4106,6 +5086,10 @@ class ACEAudioEngine:
         for frame_key, mapped_slot in list(self._parallel_frame_payload_slots.items()):
             if str(mapped_slot) == key:
                 self._parallel_frame_payload_slots.pop(frame_key, None)
+        prefix = key.split("#", 1)[0]
+        free_list = self._parallel_payload_free_slots.setdefault(prefix, deque())
+        if key not in free_list:
+            free_list.append(key)
 
     def _parallel_release_payload_slots(self):
         if not self._parallel_payload_slots:
@@ -4113,6 +5097,7 @@ class ACEAudioEngine:
         slot_keys = list(self._parallel_payload_slots.keys())
         for slot_key in slot_keys:
             self._parallel_destroy_payload_slot(slot_key)
+        self._parallel_payload_free_slots.clear()
 
     def _parallel_reserve_payload_slot(
         self,
@@ -4129,15 +5114,15 @@ class ACEAudioEngine:
             return str(existing), False
 
         slot_prefix = f"{graph_key}:{src_key}"
+        free = self._parallel_payload_free_slots.get(slot_prefix)
         chosen_slot = ""
-        prefix_marker = f"{slot_prefix}#"
-        for candidate_key in sorted(self._parallel_payload_slots.keys()):
-            if not str(candidate_key).startswith(prefix_marker):
-                continue
-            if int(self._parallel_payload_slot_refs.get(candidate_key, 0) or 0) > 0:
-                continue
-            chosen_slot = str(candidate_key)
-            break
+        if free:
+            while free and not chosen_slot:
+                candidate = str(free.popleft())
+                if candidate in self._parallel_payload_slots:
+                    chosen_slot = candidate
+            if free is not None and not free:
+                self._parallel_payload_free_slots.pop(slot_prefix, None)
         if not chosen_slot:
             slot_index = int(self._parallel_payload_slot_counters.get(slot_prefix, 0) or 0)
             chosen_slot = f"{slot_prefix}#{slot_index}"
@@ -4185,15 +5170,14 @@ class ACEAudioEngine:
         source_payloads: Dict[str, Dict[str, Any]],
         graph_key: str,
         frame_index: int,
-    ) -> tuple[Dict[str, Any], list[Any], list[str]]:
+    ) -> tuple[Dict[str, Any], list[str]]:
         payload_chunks = {
             str(src_id): dict(src_payload or {})
             for src_id, src_payload in dict(source_payloads or {}).items()
         }
         if not _SHARED_MEMORY_AVAILABLE:
-            return {"source_chunks": payload_chunks}, [], []
+            return {"source_chunks": payload_chunks}, []
 
-        handles: list[Any] = []
         slot_keys: list[str] = []
         shm_map: Dict[str, Dict[str, Any]] = {}
         try:
@@ -4243,7 +5227,7 @@ class ACEAudioEngine:
             packed = {"source_chunks": payload_chunks}
             if shm_map:
                 packed["source_chunks_shm"] = shm_map
-            return packed, handles, slot_keys
+            return packed, slot_keys
         except Exception as e:
             for slot_key in slot_keys:
                 self._parallel_release_payload_slot(slot_key)
@@ -4253,7 +5237,7 @@ class ACEAudioEngine:
                 "WARNING",
                 min_interval=4.0,
             )
-            return {"source_chunks": payload_chunks}, [], []
+            return {"source_chunks": payload_chunks}, []
 
     def _clear_bake_cache(self):
         for source_id in list(self._bake_cache.keys()):
@@ -4274,15 +5258,27 @@ class ACEAudioEngine:
                         pass
         self.graphs.clear()
         self._block_size_state.clear()
-        self._compiled_tree_ptr = 0
-        self._dirty_trees.clear()
-        self._pending_tree = None
+        self._clear_blender_runtime_refs()
+        self._pending_geometry_events.clear()
+        self._clear_probe_runtime_state()
+        self._last_tree_signature = None
+        self._attr_schema_dirty.clear()
+        self._last_attr_sync_frame.clear()
+        self._source_specs_task_registry.clear()
         self.writer = None
         self._preview_last_chunk = None
         self._preview_last_eval_frame = -1
         self._preview_next_eval_ts = 0.0
         if clear_bake_cache:
             self._clear_bake_cache()
+        self._bake_jobs.clear()
+        try:
+            while True:
+                self._bake_result_queue.get_nowait()
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
 
     def invalidate_runtime_caches(self):
         writer = self.writer
@@ -4293,12 +5289,52 @@ class ACEAudioEngine:
         except Exception:
             pass
 
+    def begin_undo_recovery(self, scene=None, cooldown_s: float = 0.75) -> None:
+        self.undo_generation = int(getattr(self, "undo_generation", 0) or 0) + 1
+        self.undo_recovery_until = time.monotonic() + max(float(cooldown_s), 0.0)
+        try:
+            self.invalidate_runtime_caches()
+        except Exception:
+            pass
+        try:
+            SourceSpecsTask.shutdown_background_worker()
+        except Exception:
+            pass
+        self._shutdown_graphs(wait_parallel_pool=False, clear_bake_cache=False)
+        now = time.time()
+        self._pending_scene_rebuild = True
+        self._last_dirty_time = now
+        self._first_dirty_time = now
+        self._last_request_time = now
+        if scene is not None:
+            self.scene_key = self._scene_key(scene)
+            self.scene_name = self._scene_name(scene)
+
     @staticmethod
     def _tree_has_ace_nodes(tree: bpy.types.NodeTree | None) -> bool:
         if not tree:
             return False
         try:
-            return any(getattr(n, "get", lambda k, d=None: None)("ace_id") for n in getattr(tree, "nodes", []))
+            if bool(tree.get("ace_frontend_uid", "")):
+                return True
+        except Exception:
+            pass
+        try:
+            for node in getattr(tree, "nodes", []) or []:
+                get_prop = getattr(node, "get", lambda _k, d=None: d)
+                if bool(get_prop("ace_id")):
+                    return True
+                source_id = str(get_prop("ace_source_id", "") or "")
+                if source_id and ACEIdManager.parse_node_id(source_id):
+                    return True
+                if str(getattr(node, "type", "") or "") != "GROUP":
+                    continue
+                group = getattr(node, "node_tree", None)
+                group_name = str(getattr(group, "name", "") or "")
+                norm_group_name = group_name.lstrip(".")
+                if group_name.startswith(".ACE_") or norm_group_name.startswith("ACE_"):
+                    return True
+            return False
         except Exception:
             return False
 
@@ -4350,51 +5386,158 @@ class ACEAudioEngine:
             )
         return sonar_fallback
 
+    def compile_scene_frontends(self, scene, preferred_tree=None):
+        """Discover, parse, merge, and compile all ACE frontends in the scene."""
+        utils.assert_main_thread("compile_scene_frontends")
+        if scene is None:
+            return
+        if self._undo_recovery_active():
+            self.request_recompile(None)
+            return
+
+        frontends = self.discover_scene_frontends(scene)
+        self._last_frontend_membership_signature = self._frontend_membership_signature(frontends)
+        has_shader_frontends = any(
+            str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+            for rec in (frontends or [])
+        )
+        if has_shader_frontends and not self._structural_tree_writes_allowed(
+            scene,
+            tree=preferred_tree,
+            frontend_kind=FRONTEND_KIND_SHADER,
+        ):
+            target_tree = preferred_tree
+            if str(getattr(target_tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                target_tree = next(
+                    (
+                        rec.tree
+                        for rec in (frontends or [])
+                        if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+                    ),
+                    None,
+                )
+            self.request_recompile(target_tree)
+            self._log_runtime(
+                "shader_tree_preview_deferred",
+                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
+                "WARNING",
+                min_interval=5.0,
+            )
+            return
+        sources = list(getattr(getattr(scene, "audiocore", None), "audio_sources", []) or [])
+        # Shader driver bindings need concrete proxy object names before the
+        # frontend sync stage; ensure proxies are materialized up-front.
+        for source in sources:
+            try:
+                ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
+            except Exception:
+                pass
+        reserved_node_ids: set[str] = set()
+        merged_tree = ACEAbstractTree()
+
+        for frontend in frontends:
+            tree = frontend.tree
+            frontend_uid = str(frontend.frontend_ref.uid or "")
+            frontend_kind = str(frontend.frontend_ref.kind or "")
+            if not tree or not frontend_uid:
+                continue
+
+            if frontend_kind == FRONTEND_KIND_GEOMETRY:
+                try:
+                    from ..nodes.dummy_tree import ACEDummyNodeFactory
+                    removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
+                    if removed:
+                        utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
+                except Exception:
+                    pass
+
+            try:
+                ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
+            except Exception:
+                pass
+
+            if frontend_kind == FRONTEND_KIND_SHADER:
+                from ..nodes.shader_tree import ACEShaderTreeReader
+                reader = ACEShaderTreeReader(
+                    tree,
+                    frontend_uid=frontend_uid,
+                    frontend_kind=frontend_kind,
+                    reserved_node_ids=reserved_node_ids,
+                    consumer_keys=frontend.consumer_object_names,
+                )
+            else:
+                reader = ACEDummyTreeReader(
+                    tree,
+                    frontend_uid=frontend_uid,
+                    frontend_kind=frontend_kind,
+                    reserved_node_ids=reserved_node_ids,
+                    consumer_keys=frontend.consumer_object_names,
+                )
+
+            partial_tree = reader.build()
+            changed = False
+            changed_node_ids: set[str] = set()
+            try:
+                if frontend_kind == FRONTEND_KIND_SHADER:
+                    changed, changed_node_ids = self._sync_shader_output_ids(tree, partial_tree, scene)
+                else:
+                    changed, changed_node_ids = self._sync_auto_attr_ids(tree, partial_tree, scene)
+            except Exception:
+                changed = False
+                changed_node_ids = set()
+            if changed:
+                self._refresh_abstract_attr_params_from_tree(partial_tree, tree, changed_node_ids)
+            self._refresh_consumer_intents_from_nodes(partial_tree)
+            partial_tree.frontends[frontend_uid] = frontend.frontend_ref
+            merged_tree.merge_from(partial_tree)
+
+        self.compile(merged_tree, scene)
+        self._compiled_frontend_refs.clear()
+        self._compiled_frontend_snapshots = {
+            rec.frontend_ref.uid: self._compiled_snapshot_from_discovery(rec)
+            for rec in frontends
+        }
+        self._compiled_frontend_ptrs = {
+            rec.frontend_ref.uid: int(self._node_tree_pointer(rec.tree))
+            for rec in frontends
+            if rec.tree is not None
+        }
+        self._compiled_frontend_uids = tuple(rec.frontend_ref.uid for rec in frontends)
+        resolved_preferred_tree = preferred_tree or (frontends[0].tree if frontends else None)
+        self._compiled_tree_ref = None
+        self._compiled_tree_ptr = self._node_tree_pointer(resolved_preferred_tree) if resolved_preferred_tree else 0
+        self._compiled_tree_frontend_uid = self._tree_frontend_uid(resolved_preferred_tree)
+        self._compiled_tree_bl_idname = str(getattr(resolved_preferred_tree, "bl_idname", "") or "")
+        self._pending_scene_rebuild = False
+        self._dirty_frontend_uids.clear()
+
     def compile_from_blender_tree(
         self,
         bl_tree: bpy.types.NodeTree,
         scene,
     ):
-        """Parse the Geometry Nodes tree and rebuild all DSP graphs.
+        """Compatibility wrapper for scene-scoped frontend compilation.
 
-        Runs the full Stage-A pipeline:
-          1. Prune orphaned ACE source nodes from the tree.
-          2. Build an ``ACEAbstractTree`` via ``ACEDummyTreeReader``.
-          3. Sync auto-generated attribute IDs onto node inputs.
-          4. Refresh abstract node parameters from the updated socket values.
-          5. Call ``compile()`` to instantiate all graphs and tasks.
+        Public operators and older call sites still pass a specific Blender
+        tree here. The actual compile path is now scene-wide:
+          1. Discover all managed Geometry Nodes and Shader frontends.
+          2. Parse and merge them into one ``ACEAbstractTree``.
+          3. Compile one ``ACEAudioGraph`` per source.
 
         Must be called from the main thread (asserted via ``utils.assert_main_thread``).
 
         Args:
-            bl_tree: The Blender ``GeometryNodeTree`` to compile.
+            bl_tree: Preferred frontend tree for compatibility bookkeeping.
             scene: The active ``bpy.types.Scene``.
         """
         utils.assert_main_thread("compile_from_blender_tree")
-        if not bl_tree or not scene:
+        if not scene:
             return
-        # Stage A (main thread): prune orphaned source nodes, then parse dummy GN tree.
-        try:
-            from ..nodes.dummy_tree import ACEDummyNodeFactory
-            removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(bl_tree, scene)
-            if removed:
-                utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{bl_tree.name}'", "INFO")
-        except Exception:
-            pass
-        reader = ACEDummyTreeReader(bl_tree)
-        abstract_tree = reader.build()
-        changed = False
-        changed_node_ids: set[str] = set()
-        try:
-            changed, changed_node_ids = self._sync_auto_attr_ids(bl_tree, abstract_tree, scene)
-        except Exception:
-            changed = False
-            changed_node_ids = set()
-        if changed:
-            self._refresh_abstract_attr_params_from_tree(abstract_tree, bl_tree, changed_node_ids)
-        self.compile(abstract_tree, scene)
-        self._compiled_tree_ref = bl_tree
-        self._compiled_tree_ptr = self._node_tree_pointer(bl_tree)
+        self.compile_scene_frontends(scene, preferred_tree=bl_tree)
+        self._compiled_tree_ref = None
+        self._compiled_tree_ptr = self._node_tree_pointer(bl_tree) if bl_tree else 0
+        self._compiled_tree_frontend_uid = self._tree_frontend_uid(bl_tree)
+        self._compiled_tree_bl_idname = str(getattr(bl_tree, "bl_idname", "") or "")
 
     def adjust_graph_block_size_for_task(self, task: ACEAudioTask, new_block_size: int):
         """Update the block size for all tasks in the graph that owns *task*.
@@ -4553,6 +5696,46 @@ class ACEAudioEngine:
             return True
 
     @staticmethod
+    def _is_shader_viewport_preview_active() -> bool:
+        """Return True when a 3D viewport is compiling live shader previews."""
+        try:
+            wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+            windows = getattr(wm, "windows", []) if wm else []
+            for window in windows:
+                screen = getattr(window, "screen", None)
+                if screen is None:
+                    continue
+                for area in getattr(screen, "areas", []) or []:
+                    if str(getattr(area, "type", "") or "") != "VIEW_3D":
+                        continue
+                    spaces = getattr(area, "spaces", None)
+                    active_space = getattr(spaces, "active", None) if spaces is not None else None
+                    if active_space is None:
+                        try:
+                            space_iter = list(spaces or [])
+                        except Exception:
+                            space_iter = []
+                    else:
+                        space_iter = [active_space]
+                    for space in space_iter:
+                        if str(getattr(space, "type", "") or "") != "VIEW_3D":
+                            continue
+                        shading = getattr(space, "shading", None)
+                        shading_type = str(getattr(shading, "type", "") or "")
+                        if shading_type in {"RENDERED", "MATERIAL"}:
+                            return True
+        except Exception:
+            return False
+        return False
+
+    @classmethod
+    def _unsafe_for_shader_tree_mutations(cls, scene) -> bool:
+        """Avoid structural ShaderNodeTree edits during renders and live preview."""
+        if cls._unsafe_for_handler_writes(scene):
+            return True
+        return cls._is_shader_viewport_preview_active()
+
+    @staticmethod
     def _is_animation_playing() -> bool:
         """Return True if any Blender window is currently playing back animation."""
         try:
@@ -4667,9 +5850,18 @@ class ACEAudioEngine:
             return None
         if mix_count > 1:
             mixed *= (1.0 / float(mix_count))
-        peak = float(np.max(np.abs(mixed))) if mixed.size > 0 else 0.0
-        if peak > 0.98:
-            mixed *= (0.98 / peak)
+        # Instant-attack vectorized limiter: match PreviewSinkTask behavior.
+        ceiling = 0.98
+        n_frames = int(mixed.shape[0])
+        peaks = np.max(np.abs(mixed.reshape(n_frames, -1)), axis=1).astype(np.float64)
+        desired = np.where(
+            peaks > 1e-9,
+            np.minimum(1.0, ceiling / np.where(peaks > 1e-9, peaks, 1.0)),
+            1.0,
+        )
+        gains = np.minimum.accumulate(desired).astype(np.float32)
+        mixed *= gains.reshape(-1, 1)
+        np.clip(mixed, -ceiling, ceiling, out=mixed)
 
         stereo = mixed.T.astype(np.float32, copy=False)
         mono = (0.5 * (mixed[:, 0] + mixed[:, 1])).astype(np.float32, copy=False)
@@ -4855,7 +6047,7 @@ class ACEAudioEngine:
         return True
 
     def _maybe_compile_dirty(self, scene) -> bool:
-        """Recompile the dirty tree if the quiet window and minimum spacing are met.
+        """Recompile the dirty scene frontends if the quiet window is met.
 
         Requires ``_last_dirty_time`` to have been stable for 350 ms AND
         ``_last_compile_time`` to be at least 350 ms ago.  Both guards are
@@ -4865,9 +6057,43 @@ class ACEAudioEngine:
         Returns:
             True if a recompile was performed, False otherwise.
         """
-        import time
+        if self._undo_recovery_active():
+            return False
         now = time.time()
-        if not self._dirty_trees and not self._pending_tree:
+        discovered_frontends = self.discover_scene_frontends(scene)
+        discovered_by_uid = {
+            str(rec.frontend_ref.uid or ""): rec
+            for rec in (discovered_frontends or [])
+        }
+        membership_sig = self._frontend_membership_signature(discovered_frontends)
+        membership_changed = membership_sig != getattr(self, "_last_frontend_membership_signature", ())
+        if not self._dirty_frontend_uids and not self._pending_scene_rebuild and not membership_changed:
+            return False
+        shader_frontend_uids = {
+            str(rec.frontend_ref.uid or "")
+            for rec in (discovered_frontends or [])
+            if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+        }
+        touches_shader_frontends = bool(
+            any(
+                str(self._dirty_tree_bl_idnames.get(int(tree_ptr), "") or "") == "ShaderNodeTree"
+                for tree_ptr in (self._dirty_tree_ptrs or set())
+            )
+            or str(getattr(self, "_pending_tree_bl_idname", "") or "") == "ShaderNodeTree"
+            or bool(shader_frontend_uids.intersection({str(uid) for uid in (self._dirty_frontend_uids or set())}))
+            or ((self._pending_scene_rebuild or membership_changed) and bool(shader_frontend_uids))
+        )
+        if touches_shader_frontends and not self._structural_tree_writes_allowed(
+            scene,
+            frontend_kind=FRONTEND_KIND_SHADER,
+            tree_bl_idname="ShaderNodeTree",
+        ):
+            self._log_runtime(
+                "shader_tree_preview_deferred",
+                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
+                "WARNING",
+                min_interval=5.0,
+            )
             return False
         # Require a quiet window and minimum spacing between rebuilds.
         # Exception: bypass the quiet window if dirty state has persisted for >2 s
@@ -4880,15 +6106,32 @@ class ACEAudioEngine:
             return False
         if self._is_compiling:
             return False
-        tree = self._pending_tree or (next(iter(self._dirty_trees)) if self._dirty_trees else None)
-        if tree is None:
+        if self._pending_scene_rebuild and not self._dirty_frontend_uids and not membership_changed:
+            self._pending_scene_rebuild = False
+            self._first_dirty_time = 0.0
             return False
+        preferred_tree = None
+        if self._dirty_frontend_uids:
+            dirty_uid = next(iter(self._dirty_frontend_uids))
+            preferred_tree = getattr(discovered_by_uid.get(dirty_uid), "tree", None)
+        if preferred_tree is None:
+            preferred_tree = self._resolve_preferred_tree_from_discoveries(
+                discovered_frontends,
+                tree_ptr=int(getattr(self, "_pending_tree_ptr", 0) or 0),
+                tree_bl_idname=str(getattr(self, "_pending_tree_bl_idname", "") or ""),
+            )
         self._pending_tree = None
+        self._pending_tree_ptr = 0
+        self._pending_tree_bl_idname = ""
         self._dirty_trees.clear()
+        self._dirty_tree_ptrs.clear()
+        self._dirty_tree_bl_idnames.clear()
+        self._dirty_frontend_uids.clear()
+        self._pending_scene_rebuild = False
         self._is_compiling = True
         compiled = False
         try:
-            self.compile_from_blender_tree(tree, scene)
+            self.compile_scene_frontends(scene, preferred_tree=preferred_tree)
             compiled = True
         finally:
             self._is_compiling = False
@@ -4896,27 +6139,40 @@ class ACEAudioEngine:
         return compiled
 
     def request_recompile(self, bl_tree: bpy.types.NodeTree | None):
-        """Mark a tree as needing recompilation on the next ``_maybe_compile_dirty`` call.
+        """Mark scene frontends as needing recompilation on the next compile poll.
 
         Rate-limited: multiple calls within 150 ms of each other update only
         ``_last_dirty_time`` without re-triggering the cooldown so rapid source
         property edits do not spam recompiles.
 
         Args:
-            bl_tree: Tree to mark dirty, or None to reuse ``_compiled_tree_ref``.
+            bl_tree: Tree to mark dirty, or None to request a scene-wide rebuild.
         """
-        import time
         now = time.time()
+        if self._undo_recovery_active():
+            self._pending_scene_rebuild = True
+            self._pending_tree = None
+            self._pending_tree_ptr = 0
+            self._pending_tree_bl_idname = ""
+            self._last_dirty_time = now
+            self._first_dirty_time = now
+            return
         if bl_tree is None:
-            try:
-                candidate = getattr(self, "_compiled_tree_ref", None)
-                if candidate is not None and getattr(candidate, "bl_idname", "") == 'GeometryNodeTree':
-                    bl_tree = candidate
-            except Exception:
-                bl_tree = None
+            self._pending_scene_rebuild = True
         if bl_tree:
-            self._dirty_trees.add(bl_tree)
-            self._pending_tree = bl_tree
+            frontend_uid = self._tree_frontend_uid(bl_tree)
+            tree_ptr = int(self._node_tree_pointer(bl_tree) or 0)
+            tree_bl_idname = str(getattr(bl_tree, "bl_idname", "") or "")
+            if frontend_uid:
+                self._dirty_frontend_uids.add(frontend_uid)
+            else:
+                self._pending_scene_rebuild = True
+            self._dirty_trees.add(tree_ptr)
+            self._dirty_tree_ptrs.add(tree_ptr)
+            self._dirty_tree_bl_idnames[tree_ptr] = tree_bl_idname
+            self._pending_tree = None
+            self._pending_tree_ptr = tree_ptr
+            self._pending_tree_bl_idname = tree_bl_idname
         # Track when dirty state first appeared so _maybe_compile_dirty can enforce
         # a max wait (2 s) even when rapid changes keep resetting _last_dirty_time.
         if not getattr(self, "_first_dirty_time", 0.0):
@@ -4926,6 +6182,19 @@ class ACEAudioEngine:
             return
         self._last_dirty_time = now
         self._last_request_time = now
+
+    def _refresh_source_specs_task_registry(self) -> None:
+        """Rebuild the lookup used to flush SourceSpecsTask main-thread ctx writes."""
+        registry: Dict[tuple[str, float], SourceSpecsTask] = {}
+        for graph in (self.graphs or {}).values():
+            for task in (getattr(graph, "tasks", {}) or {}).values():
+                if not isinstance(task, SourceSpecsTask):
+                    continue
+                target = getattr(task, "_long_term_target", None)
+                if target is None:
+                    continue
+                registry[target] = task
+        self._source_specs_task_registry = registry
 
     def execute_next_frame(self, scene, force: bool = False):
         """Evaluate all graphs for the current scene frame and write results to proxies.
@@ -4951,12 +6220,42 @@ class ACEAudioEngine:
         self.scene_key = self._scene_key(scene)
         if scene is not None:
             self.scene_name = self._scene_name(scene)
+        if self._undo_recovery_active():
+            return
+        if self._unsafe_for_handler_writes(scene):
+            self._log_runtime(
+                "render_lock_interface_execute",
+                "Skipping ACE frame writes during render. Enable Render > Lock Interface for safe handler updates.",
+                "WARNING",
+                min_interval=5.0,
+            )
+            return
+        # Flush async bake progress/completions and any deferred SourceSpecs ctx writes.
+        self.flush_bake_results()
+        self._refresh_source_specs_task_registry()
+        SourceSpecsTask.flush_pending_ctx_writes(self._source_specs_task_registry)
+        if self._bake_jobs:
+            # Bake worker evaluates the live graph/task set; suspend frame-runtime
+            # evaluation while a bake is active to avoid cross-thread task mutation.
+            self._log_runtime(
+                "bake_runtime_pause",
+                "ACE runtime graph evaluation paused while offline bake is active.",
+                "INFO",
+                min_interval=2.0,
+            )
+            return
         scene_frame = getattr(scene, "frame_current", None)
         if scene_frame is None:
             scene_frame = self.current_frame + 1
 
         prev_scene_frame = int(self.last_scene_frame)
-        if (not force) and scene_frame == prev_scene_frame and not self._pending_tree:
+        if (
+            (not force)
+            and scene_frame == prev_scene_frame
+            and not self._pending_tree_ptr
+            and not self._pending_scene_rebuild
+            and not self._dirty_frontend_uids
+        ):
             return
 
         try:
@@ -4980,7 +6279,7 @@ class ACEAudioEngine:
             fps = 24.0
         self._current_scene_fps = max(float(fps), 1.0)
 
-        # Capture BPM and time-signature from the active source so they can be
+        # Capture BPM and beats-per-bar from the active source so they can be
         # injected into worker graph IRs for SourceSpecs beat-phase computation.
         try:
             ace = getattr(scene, "audiocore", None)
@@ -5008,9 +6307,13 @@ class ACEAudioEngine:
         try:
             ace = getattr(scene, "audiocore", None)
             sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
-            target_tree = self._compiled_tree_ref or self._find_scene_target_tree(scene)
-            if self._flush_probe_updates(sources, bl_tree=target_tree):
+            if self._flush_probe_updates(
+                sources,
+                scene=scene,
+                preferred_tree_ptr=int(getattr(self, "_compiled_tree_ptr", 0) or 0),
+            ):
                 pass  # recompile already requested inside _flush_probe_updates
+            self.flush_source_tempo_detection_updates(sources)
         except Exception:
             pass
 
@@ -5156,8 +6459,6 @@ class ACEAudioEngine:
                     if source_proxy and source_proxy != getattr(graph, "proxy_name", ""):
                         graph.proxy_name = source_proxy
                         proxy = graph.get_proxy_object()
-                if not proxy:
-                    continue
                 if not graph.output_attr_keys:
                     recovered: list[str] = []
                     if self.writer and self.abstract_tree_ref:
@@ -5167,7 +6468,9 @@ class ACEAudioEngine:
                                 continue
                             is_output_node = (
                                 node.category == 'stream'
-                                or (node.type in {'src_specs', 'scanner'} and node.category == 'utilities')
+                                or (node.type == 'src_specs' and node.category == 'utilities')
+                                or (node.type == 'util_rolling_avg' and node.category == 'utilities')
+                                or (node.type == 'stream_accumulator' and node.category == 'utilities')
                                 or (node.category == 'utilities' and node.type == 'preview_sink')
                             )
                             if not is_output_node:
@@ -5180,14 +6483,22 @@ class ACEAudioEngine:
                                     recovered.append(key)
                     if recovered:
                         graph.output_attr_keys = sorted(set(recovered))
+                        graph.sink_bindings_by_attr = self._resolve_sink_bindings_for_graph(
+                            graph,
+                            self.abstract_tree_ref,
+                            source_uid=str(getattr(graph, "source_uid", "") or ""),
+                            proxy_name=str(getattr(graph, "proxy_name", "") or ""),
+                            single_source_mode=bool(len(self.graphs) <= 1),
+                        )
                         self._rebuild_graph_output_slot_specs(graph)
                         if self.abstract_tree_ref is not None:
                             self._prepare_parallel_graph_ir(graph, self.abstract_tree_ref)
                         try:
                             t0 = time.perf_counter()
-                            self.writer.ensure_attributes_exist(proxy, self.abstract_tree_ref, active_keys=set(graph.output_attr_keys))
+                            touched = self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
                             self._perf_add("proxy_write", time.perf_counter() - t0)
-                            geometry_proxy_names.add(str(getattr(proxy, "name", "") or ""))
+                            if isinstance(touched, set):
+                                geometry_proxy_names.update({str(v) for v in touched if str(v)})
                         except Exception as e:
                             self._log_runtime(f"attr_ensure_recover:{graph_key}", f"Attribute ensure after recovery failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
                         self._log_runtime(
@@ -5216,9 +6527,10 @@ class ACEAudioEngine:
                 if schema_dirty:
                     try:
                         t0 = time.perf_counter()
-                        self.writer.ensure_attributes_exist(proxy, self.abstract_tree_ref, active_keys=set(graph.output_attr_keys))
+                        touched = self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
                         self._perf_add("proxy_write", time.perf_counter() - t0)
-                        geometry_proxy_names.add(str(getattr(proxy, "name", "") or ""))
+                        if isinstance(touched, set):
+                            geometry_proxy_names.update({str(v) for v in touched if str(v)})
                     except Exception as e:
                         self._log_runtime(f"attr_ensure:{graph_key}", f"Attribute ensure failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
                     self._attr_schema_dirty.discard(graph_key)
@@ -5228,9 +6540,10 @@ class ACEAudioEngine:
                 if baked_results is not None:
                     try:
                         t0 = time.perf_counter()
-                        self.writer.update_proxy_object(proxy, baked_results, active_keys=set(graph.output_attr_keys))
+                        touched = self.writer.commit_results(graph, baked_results, active_keys=set(graph.output_attr_keys))
                         self._perf_add("proxy_write", time.perf_counter() - t0)
-                        geometry_proxy_names.add(str(getattr(proxy, "name", "") or ""))
+                        if isinstance(touched, set):
+                            geometry_proxy_names.update({str(v) for v in touched if str(v)})
                     except Exception as e:
                         self._log_runtime(f"attr_write_baked:{graph_key}", f"Baked attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
                     continue
@@ -5325,13 +6638,28 @@ class ACEAudioEngine:
                 if parallel_offload_graph:
                     # Stage B: asynchronous numeric DSP worker path (fresh -> stale -> zero).
                     local_keys = list(getattr(graph, "parallel_local_attr_keys", []) or [])
-                    results = self._collect_graph_results_for_frame(graph, self.current_frame, attr_keys=local_keys)
-                    parallel_values = self._parallel_values_for_graph_frame(
-                        graph=graph,
-                        graph_key=parallel_graph_key,
-                        frame_index=int(self.current_frame),
+                    has_parallel_values = self._parallel_has_usable_values_for_graph_frame(
+                        parallel_graph_key,
+                        int(self.current_frame),
                     )
-                    results.update(parallel_values)
+                    if not has_parallel_values or not parallel_submit_enabled:
+                        # Hard fallback: if worker values are not yet usable OR jobs
+                        # cannot be submitted this frame (disabled source, pool
+                        # unavailable), compute offloaded keys locally so stream
+                        # outputs never stall at zero.
+                        local_keys = list(
+                            dict.fromkeys(
+                                local_keys + list(getattr(graph, "parallel_offload_attr_keys", []) or [])
+                            )
+                        )
+                    results = self._collect_graph_results_for_frame(graph, self.current_frame, attr_keys=local_keys)
+                    if has_parallel_values and parallel_submit_enabled:
+                        parallel_values = self._parallel_values_for_graph_frame(
+                            graph=graph,
+                            graph_key=parallel_graph_key,
+                            frame_index=int(self.current_frame),
+                        )
+                        results.update(parallel_values)
                 else:
                     results = self._collect_graph_results_for_frame(graph, self.current_frame)
 
@@ -5400,11 +6728,12 @@ class ACEAudioEngine:
                                     preview_pushed = True
 
                 try:
-                    # Stage C (main thread only): commit numeric results into Blender proxy attributes.
+                    # Stage C (main thread only): commit numeric results into resolved sinks.
                     t0 = time.perf_counter()
-                    self.writer.update_proxy_object(proxy, results, active_keys=set(graph.output_attr_keys))
+                    touched = self.writer.commit_results(graph, results, active_keys=set(graph.output_attr_keys))
                     self._perf_add("proxy_write", time.perf_counter() - t0)
-                    geometry_proxy_names.add(str(getattr(proxy, "name", "") or ""))
+                    if isinstance(touched, set):
+                        geometry_proxy_names.update({str(v) for v in touched if str(v)})
                 except Exception as e:
                     self._log_runtime(f"attr_write:{graph_key}", f"Attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
 
@@ -5438,95 +6767,21 @@ class ACEAudioEngine:
                 self._mark_geometry_eval_pending(scene, proxy_names=geometry_proxy_names)
             self._perf_finalize_frame()
 
-    def bake_source_to_cache(self, source, tree=None, scene=None):
-        """Precompute stream/spec outputs for a file source and cache them in memory.
-
-        Iterates over every frame in the scene range, runs the full DSP graph
-        offline, and stores the results.  Large payloads (≥ 16 MB) are spilled to
-        a compressed ``.npz`` file in the system temp directory to cap RAM usage.
-
-        During bake, ``source["ace_bake_status"]`` is set to ``"baking"``.  On
-        completion it becomes ``"ready"``; on failure it is set to ``"failed"``
-        with an error message in ``source["ace_bake_error"]``.
-
-        Args:
-            source: An ACEAudioSource property group for a FILE source.
-            tree: Optional Blender NodeTree; auto-detected from the scene if None.
-            scene: Optional ``bpy.types.Scene``; uses ``bpy.context.scene`` if None.
-
-        Returns:
-            True on success, False if the source, graph, or file is unavailable.
-        """
-        if not source or getattr(source, "source_type", "") != "FILE":
-            return False
-        if scene is None:
-            scene = getattr(getattr(bpy, "context", None), "scene", None)
-        if scene is None:
-            return False
-        filepath = getattr(source, "filepath", "") or ""
-        if not filepath or not os.path.isfile(filepath):
-            try:
-                source["ace_bake_status"] = "failed"
-                source["ace_bake_error"] = "Missing source file."
-            except Exception:
-                pass
-            return False
-
-        target_tree = tree if tree and self._tree_has_ace_nodes(tree) else self._find_scene_target_tree(scene)
-        if target_tree and self._tree_has_ace_nodes(target_tree):
-            try:
-                self.compile_from_blender_tree(target_tree, scene)
-            except Exception as e:
-                self._log_runtime("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
-                return False
-
-        ace = getattr(scene, "audiocore", None)
-        existing_ids = [getattr(s, "stable_id", "") for s in getattr(ace, "audio_sources", []) if getattr(s, "stable_id", "")]
-        src_uid = ACEIdManager.ensure_source_uid(source, existing_ids=existing_ids)
-        graph = self.graphs.get(src_uid)
-        if graph is None:
-            src_proxy = getattr(source, "proxy_object_name", "")
-            graph = next((g for g in self.graphs.values() if getattr(g, "proxy_name", "") == src_proxy), None)
-        if not self.writer:
-            return False
-        if graph is None:
-            try:
-                source["ace_bake_status"] = "failed"
-                source["ace_bake_error"] = "Source graph unavailable."
-            except Exception:
-                pass
-            return False
-        if not graph.output_attr_keys:
-            try:
-                source["ace_bake_status"] = "failed"
-                source["ace_bake_error"] = "No stream/spec outputs to bake."
-            except Exception:
-                pass
-            return False
-
-        frame_start = int(getattr(scene, "frame_start", 1))
-        frame_end = int(getattr(scene, "frame_end", frame_start))
-        if frame_end < frame_start:
-            frame_start, frame_end = frame_end, frame_start
-
-        try:
-            source["ace_bake_status"] = "baking"
-            source["ace_bake_error"] = ""
-        except Exception:
-            pass
-
-        prev_entry = self._bake_cache.get(src_uid)
-        if isinstance(prev_entry, dict):
-            self._cleanup_bake_entry(prev_entry)
-
-        baked_values: Dict[str, List[Any]] = {k: [] for k in graph.output_attr_keys}
-        for frame_idx in range(frame_start, frame_end + 1):
-            frame_results = self._collect_graph_results_for_frame(graph, frame_idx)
-            for attr_key in graph.output_attr_keys:
-                baked_values[attr_key].append(frame_results.get(attr_key, self._zero_value_for_attr(attr_key)))
+    def _finalise_bake_arrays(self, src_uid: str, baked_values: Dict[str, List[Any]]) -> None:
+        """Finalize completed bake payloads and commit to _bake_cache on main thread."""
+        job = self._bake_jobs.get(str(src_uid))
+        if not isinstance(job, dict):
+            return
+        source = job.get("source")
+        graph = job.get("graph")
+        scene = job.get("scene")
+        target_tree = job.get("target_tree")
+        filepath = str(job.get("filepath", "") or "")
+        frame_start = int(job.get("frame_start", 0) or 0)
+        frame_end = int(job.get("frame_end", frame_start) or frame_start)
 
         baked_arrays: Dict[str, np.ndarray] = {}
-        for attr_key, series in baked_values.items():
+        for attr_key, series in dict(baked_values or {}).items():
             if not series:
                 baked_arrays[attr_key] = np.zeros(0, dtype=np.float32)
                 continue
@@ -5546,7 +6801,18 @@ class ACEAudioEngine:
             try:
                 cache_dir = os.path.join(tempfile.gettempdir(), "ace_bake_cache")
                 os.makedirs(cache_dir, exist_ok=True)
-                sig = abs(hash((src_uid, frame_start, frame_end, self._last_tree_signature))) & 0xFFFFFFFF
+                sig_seed = json.dumps(
+                    {
+                        "source_uid": str(src_uid or ""),
+                        "frame_start": int(frame_start),
+                        "frame_end": int(frame_end),
+                        "tree_signature": self._last_tree_signature,
+                    },
+                    sort_keys=True,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                sig = int.from_bytes(hashlib.blake2b(sig_seed, digest_size=4).digest(), byteorder="big")
                 npz_path = os.path.join(cache_dir, f"ace_bake_{sig:08x}.npz")
                 payload: Dict[str, np.ndarray] = {}
                 for idx, (attr_key, arr) in enumerate(baked_arrays.items()):
@@ -5561,7 +6827,7 @@ class ACEAudioEngine:
                 values_store = dict(baked_arrays)
                 self._log_runtime("bake_spill", f"Could not spill bake cache to disk: {e}", "WARNING", min_interval=0.0)
 
-        self._bake_cache[src_uid] = {
+        self._bake_cache[str(src_uid)] = {
             "tree_signature": self._last_tree_signature,
             "block_size": int(getattr(graph, "block_size", 0)),
             "frame_start": frame_start,
@@ -5575,20 +6841,176 @@ class ACEAudioEngine:
         }
 
         try:
-            source["ace_bake_status"] = "ready"
+            source["ace_bake_status"] = "done"
+            source["ace_bake_error"] = ""
+            source["ace_bake_progress"] = 1.0
             source["ace_bake_frame_start"] = frame_start
             source["ace_bake_frame_end"] = frame_end
-            source["ace_bake_samples"] = (frame_end - frame_start + 1)
+            source["ace_bake_samples"] = max(frame_end - frame_start + 1, 0)
         except Exception:
             pass
 
         # Reset runtime tasks after offline bake so live playback state remains stable.
-        if target_tree and self._tree_has_ace_nodes(target_tree):
-            try:
-                self.compile_from_blender_tree(target_tree, scene)
-            except Exception as e:
-                self._log_runtime("bake_recompile", f"Post-bake recompile failed: {e}", "ERROR", min_interval=0.0)
+        try:
+            if scene is not None:
+                self.compile_scene_frontends(scene, preferred_tree=target_tree)
+        except Exception as e:
+            self._log_runtime("bake_recompile", f"Post-bake recompile failed: {e}", "ERROR", min_interval=0.0)
+        finally:
+            self._bake_jobs.pop(str(src_uid), None)
 
+    def flush_bake_results(self) -> None:
+        """Drain completed async bake events and write results on the main thread."""
+        q = getattr(self, "_bake_result_queue", None)
+        if q is None:
+            return
+        try:
+            while True:
+                event = q.get_nowait()
+                if not isinstance(event, tuple) or len(event) < 3:
+                    continue
+                kind = str(event[0] or "")
+                src_uid = str(event[1] or "")
+                payload = event[2]
+                if not src_uid:
+                    continue
+                job = self._bake_jobs.get(src_uid)
+                source = job.get("source") if isinstance(job, dict) else None
+
+                if kind == "progress":
+                    if source is not None:
+                        try:
+                            source["ace_bake_progress"] = float(max(0.0, min(float(payload), 1.0)))
+                        except Exception:
+                            pass
+                    continue
+
+                if kind == "error":
+                    if source is not None:
+                        try:
+                            source["ace_bake_status"] = "error"
+                            source["ace_bake_error"] = str(payload or "Bake failed.")
+                        except Exception:
+                            pass
+                    self._bake_jobs.pop(src_uid, None)
+                    continue
+
+                if kind == "done" and isinstance(payload, dict):
+                    self._finalise_bake_arrays(src_uid, payload)
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+
+    def bake_source_to_cache(self, source, tree=None, scene=None):
+        """Precompute stream/spec outputs for a file source and cache them in memory."""
+        if not source or getattr(source, "source_type", "") != "FILE":
+            return False
+        if scene is None:
+            scene = getattr(getattr(bpy, "context", None), "scene", None)
+        if scene is None:
+            return False
+        filepath = getattr(source, "filepath", "") or ""
+        if not filepath or not os.path.isfile(filepath):
+            try:
+                source["ace_bake_status"] = "error"
+                source["ace_bake_error"] = "Missing source file."
+            except Exception:
+                pass
+            return False
+
+        target_tree = tree if tree and self._tree_has_ace_nodes(tree) else None
+        try:
+            self.compile_scene_frontends(scene, preferred_tree=target_tree)
+        except Exception as e:
+            self._log_runtime("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
+            return False
+
+        ace = getattr(scene, "audiocore", None)
+        existing_ids = [getattr(s, "stable_id", "") for s in getattr(ace, "audio_sources", []) if getattr(s, "stable_id", "")]
+        src_uid = ACEIdManager.ensure_source_uid(source, existing_ids=existing_ids)
+        if str(src_uid) in self._bake_jobs:
+            return True
+        graph = self.graphs.get(src_uid)
+        if graph is None:
+            src_proxy = getattr(source, "proxy_object_name", "")
+            graph = next((g for g in self.graphs.values() if getattr(g, "proxy_name", "") == src_proxy), None)
+        if not self.writer:
+            return False
+        if graph is None:
+            try:
+                source["ace_bake_status"] = "error"
+                source["ace_bake_error"] = "Source graph unavailable."
+            except Exception:
+                pass
+            return False
+        if not graph.output_attr_keys:
+            try:
+                source["ace_bake_status"] = "error"
+                source["ace_bake_error"] = "No stream/spec outputs to bake."
+            except Exception:
+                pass
+            return False
+
+        frame_start = int(getattr(scene, "frame_start", 1))
+        frame_end = int(getattr(scene, "frame_end", frame_start))
+        if frame_end < frame_start:
+            frame_start, frame_end = frame_end, frame_start
+        total_frames = max(frame_end - frame_start + 1, 1)
+        output_attr_keys = list(graph.output_attr_keys)
+
+        try:
+            source["ace_bake_status"] = "baking"
+            source["ace_bake_error"] = ""
+            source["ace_bake_progress"] = 0.0
+        except Exception:
+            pass
+
+        prev_entry = self._bake_cache.get(src_uid)
+        if isinstance(prev_entry, dict):
+            self._cleanup_bake_entry(prev_entry)
+
+        self._bake_jobs[str(src_uid)] = {
+            "source": source,
+            "graph": graph,
+            "scene": scene,
+            "target_tree": target_tree,
+            "filepath": filepath,
+            "frame_start": int(frame_start),
+            "frame_end": int(frame_end),
+        }
+
+        engine_ref = self
+
+        def _bake_worker():
+            baked_values: Dict[str, List[Any]] = {k: [] for k in output_attr_keys}
+            try:
+                for i, frame_idx in enumerate(range(frame_start, frame_end + 1)):
+                    frame_results = engine_ref._collect_graph_results_for_frame(graph, frame_idx)
+                    for attr_key in output_attr_keys:
+                        baked_values[attr_key].append(
+                            frame_results.get(attr_key, engine_ref._zero_value_for_attr(attr_key))
+                        )
+                    try:
+                        engine_ref._bake_result_queue.put_nowait(
+                            ("progress", str(src_uid), float(i + 1) / float(total_frames))
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                try:
+                    engine_ref._bake_result_queue.put_nowait(("error", str(src_uid), str(exc)))
+                except Exception:
+                    pass
+                return
+
+            try:
+                engine_ref._bake_result_queue.put_nowait(("done", str(src_uid), baked_values))
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_bake_worker, name=f"ACE_BakeWorker_{src_uid}", daemon=True)
+        t.start()
         return True
 
 
@@ -5612,19 +7034,7 @@ def _undo_redo_invalidate_engine_caches(_dummy):
     """
     for engine in ACEAudioEngine.iter_instances():
         try:
-            engine.invalidate_runtime_caches()
-        except Exception:
-            pass
-        # Drop in-flight parallel futures so stale SHM handles can't write into
-        # bpy attributes that may have been removed/remapped by the undo.
-        try:
-            engine._parallel_clear_runtime_state(keep_last_valid=False)
-        except Exception:
-            pass
-        # Mark the compiled graph dirty so it is rebuilt on the next frame,
-        # picking up any node tree changes that undo may have introduced.
-        try:
-            engine.request_recompile(None)
+            engine.begin_undo_recovery(getattr(getattr(bpy, "context", None), "scene", None))
         except Exception:
             pass
 
@@ -5645,6 +7055,8 @@ def frame_change_handler(scene):
     engine = ACEAudioEngine.ensure_instance(scene)
     if not engine:
         return
+    if engine._undo_recovery_active():
+        return
     is_rendering = engine._is_rendering_job()
     if engine._unsafe_for_handler_writes(scene):
         engine._log_runtime(
@@ -5655,15 +7067,14 @@ def frame_change_handler(scene):
         )
         return
     if not engine.graphs:
-        import time
         now = time.time()
         if now < getattr(engine, "_bootstrap_retry_at", 0.0):
             engine.execute_next_frame(scene, force=is_rendering)
             return
         try:
-            tree = engine._find_scene_target_tree(scene)
-            if engine._tree_has_ace_nodes(tree):
-                engine.compile_from_blender_tree(tree, scene)
+            frontends = engine.discover_scene_frontends(scene)
+            if frontends:
+                engine.compile_scene_frontends(scene)
                 engine._bootstrap_fail_count = 0
                 engine._bootstrap_retry_at = now + 0.25
             else:
@@ -5687,6 +7098,9 @@ def frame_change_post_handler(scene):
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
+        return
+    engine = ACEAudioEngine.get_instance(scene)
+    if engine is not None and engine._undo_recovery_active():
         return
     is_rendering = ACEAudioEngine._is_rendering_job()
     if not is_rendering:
@@ -5720,9 +7134,8 @@ def render_pre_handler(scene):
         return
     if not engine.graphs:
         try:
-            tree = engine._find_scene_target_tree(scene)
-            if engine._tree_has_ace_nodes(tree):
-                engine.compile_from_blender_tree(tree, scene)
+            if engine.discover_scene_frontends(scene):
+                engine.compile_scene_frontends(scene)
         except Exception as e:
             engine._log_runtime("render_pre_compile", f"Render pre compile failed: {e}", "ERROR", min_interval=1.5)
     try:
@@ -5776,12 +7189,47 @@ def depsgraph_update_handler(scene, depsgraph):
     interval.
     """
     engine = ACEAudioEngine.get_instance(scene)
+    ace = getattr(scene, "audiocore", None)
+    engine_settings = getattr(ace, "engine_settings", None)
+    auto_compile_enabled = bool(ace and engine_settings and engine_settings.auto_compile)
+
+    def _update_touches_ace_tree(update_id) -> bool:
+        bl_idname = str(getattr(update_id, "bl_idname", "") or "")
+        if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
+            return bool(ACEAudioEngine._tree_is_ace_managed(update_id))
+        if bl_idname == "Material":
+            tree = getattr(update_id, "node_tree", None) if update_id is not None else None
+            return bool(ACEAudioEngine._tree_is_ace_managed(tree))
+        if bl_idname == "Object":
+            obj = update_id
+            for mod in getattr(obj, "modifiers", []) or []:
+                tree_ref = getattr(mod, "node_group", None)
+                if getattr(mod, "type", None) == "NODES" and ACEAudioEngine._tree_is_ace_managed(tree_ref):
+                    return True
+            for slot in getattr(obj, "material_slots", []) or []:
+                material = getattr(slot, "material", None)
+                tree = getattr(material, "node_tree", None) if material is not None else None
+                if ACEAudioEngine._tree_is_ace_managed(tree):
+                    return True
+        return False
+
+    if engine is not None and engine._undo_recovery_active():
+        if auto_compile_enabled:
+            for update in getattr(depsgraph, "updates", []) or []:
+                if _update_touches_ace_tree(getattr(update, "id", None)):
+                    try:
+                        engine.request_recompile(None)
+                    except Exception:
+                        pass
+                    break
+        return
+
     if engine is not None:
         engine._consume_geometry_eval_updates(scene, depsgraph)
         # Early-probe: pre-warm file metadata for any FILE source missing sr/duration so
         # that _flush_probe_updates() can populate native_sample_rate before the next
         # compile cycle reads it — eliminating the cold-start sample-rate race.
-        _ace_data = getattr(scene, "audiocore", None)
+        _ace_data = ace
         for _src in getattr(_ace_data, "audio_sources", []):
             if getattr(_src, "source_type", "") == "FILE":
                 _fp = getattr(_src, "filepath", "")
@@ -5790,23 +7238,90 @@ def depsgraph_update_handler(scene, depsgraph):
                     or float(getattr(_src, "duration", 0.0) or 0.0) <= 0.0
                 ):
                     engine._dispatch_async_probe(_fp)
-    ace = getattr(scene, "audiocore", None)
-    engine_settings = getattr(ace, "engine_settings", None)
-    if not ace or not engine_settings or not engine_settings.auto_compile:
+    if not auto_compile_enabled:
         return
+
+    engine = engine or ACEAudioEngine.ensure_instance(scene)
+    if engine is None:
+        return
+
+    recompile_targets: list = []
+    seen_targets: set[int] = set()
+
+    def _queue_recompile_target(tree_obj) -> None:
+        if tree_obj is None:
+            return
+        try:
+            key = int(tree_obj.as_pointer())
+        except Exception:
+            key = id(tree_obj)
+        if key in seen_targets:
+            return
+        seen_targets.add(key)
+        recompile_targets.append(tree_obj)
+
+    compiled_frontend_snapshots = dict(getattr(engine, "_compiled_frontend_snapshots", {}) or {})
+    discovered_frontends_by_uid = None
 
     for update in getattr(depsgraph, "updates", []):
         _id = getattr(update, "id", None)
-        # Fast-path: check bl_idname string before the more expensive isinstance()
-        # call. On complex scenes with hundreds of animated objects this loop runs
-        # every depsgraph evaluation and the isinstance check is measurable overhead.
-        if getattr(_id, "bl_idname", "") != 'GeometryNodeTree':
+        bl_idname = str(getattr(_id, "bl_idname", "") or "")
+
+        if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
+            if ACEAudioEngine._tree_is_ace_managed(_id):
+                _queue_recompile_target(_id)
             continue
-        if not ACEAudioEngine._tree_has_ace_nodes(_id):
+
+        if bl_idname == "Material":
+            tree = getattr(_id, "node_tree", None) if _id is not None else None
+            if ACEAudioEngine._tree_is_ace_managed(tree):
+                _queue_recompile_target(tree)
             continue
-        engine = ACEAudioEngine.ensure_instance(scene)
-        engine.request_recompile(_id)
-        break
+
+        if bl_idname == "Object":
+            obj = _id
+            has_update_flags = any(
+                hasattr(update, token)
+                for token in ("is_updated_geometry", "is_updated_shading", "is_updated_transform")
+            )
+            if has_update_flags and not (
+                bool(getattr(update, "is_updated_geometry", False))
+                or bool(getattr(update, "is_updated_shading", False))
+            ):
+                continue
+
+            obj_name = str(getattr(obj, "name", "") or "")
+            if obj_name and compiled_frontend_snapshots:
+                if discovered_frontends_by_uid is None:
+                    discovered_frontends_by_uid = {
+                        str(rec.frontend_ref.uid or ""): getattr(rec, "tree", None)
+                        for rec in (engine.discover_scene_frontends(scene) or [])
+                    }
+                for frontend_uid, frontend_snapshot in compiled_frontend_snapshots.items():
+                    owners = {
+                        str(v)
+                        for v in tuple(getattr(frontend_snapshot, "owner_keys", ()) or ())
+                        if str(v)
+                    }
+                    if obj_name not in owners:
+                        continue
+                    tree_ref = discovered_frontends_by_uid.get(str(frontend_uid))
+                    if tree_ref is not None:
+                        _queue_recompile_target(tree_ref)
+
+            for mod in getattr(obj, "modifiers", []) or []:
+                tree_ref = getattr(mod, "node_group", None)
+                if getattr(mod, "type", None) == "NODES" and ACEAudioEngine._tree_is_ace_managed(tree_ref):
+                    _queue_recompile_target(tree_ref)
+
+            for slot in getattr(obj, "material_slots", []) or []:
+                material = getattr(slot, "material", None)
+                tree = getattr(material, "node_tree", None) if material is not None else None
+                if ACEAudioEngine._tree_is_ace_managed(tree):
+                    _queue_recompile_target(tree)
+
+    for target in recompile_targets:
+        engine.request_recompile(target)
 
 
 def auto_compile_timer():
@@ -5827,6 +7342,8 @@ def auto_compile_timer():
         settings = getattr(ace, "engine_settings", None)
         if ace and settings and settings.auto_compile:
             engine = ACEAudioEngine.ensure_instance(scene)
+            if engine._undo_recovery_active():
+                return 0.25
             if engine._unsafe_for_handler_writes(scene):
                 return 0.25
             compiled = engine._maybe_compile_dirty(scene)
@@ -5845,14 +7362,24 @@ def _shm_drain_timer():
     when the scene is paused indefinitely (no frame change events), completed
     futures hold their SHM handles until the next frame event.  On platforms
     with a small /dev/shm limit (Linux default 64 MB) this can exhaust shared
-    memory for multi-source sessions.  This timer fires unconditionally so SHM
-    is reclaimed within ~2 s of job completion even during playback pause.
+    memory for multi-source sessions.
+
+    During active playback the per-frame execute_next_frame() already drains
+    futures every frame; firing the drain here too causes redundant IPC pipe
+    reads (future_obj.result(timeout=0.0) on a ProcessPoolExecutor) which add
+    measurable latency on Windows and can produce periodic stutters that match
+    the 2 s timer interval.  Skip the drain while the animation is playing.
     """
     try:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         engine = ACEAudioEngine.get_instance(scene) if scene is not None else None
         if engine is not None and engine._parallel_future_meta:
-            engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
+            if engine._undo_recovery_active():
+                return 2.0
+            # Only drain when the scene is NOT actively playing — during playback
+            # execute_next_frame() handles all future draining every frame.
+            if not engine._is_animation_playing():
+                engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
     except Exception as _exc:
         try:
             utils.log(

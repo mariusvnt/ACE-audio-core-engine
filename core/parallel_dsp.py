@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections import OrderedDict as _OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -33,6 +34,8 @@ from .audio_tasks_registry import (
     ChromagramTask,
     AutoComponentSplitterTask,
     RMSTask,
+    LUFSTask,
+    PeakTask,
     PitchTask,
     SpectralCentroidTask,
     SpectralFluxTask,
@@ -41,13 +44,14 @@ from .audio_tasks_registry import (
     StereoWidthTask,
     StereoBalanceTask,
     StereoVectorTask,
+    StreamAccumulatorTask,
     AudioMathTask,
 )
 
 
 _WORKER_CACHE_MAX = 64
 # Keyed by (generation_id, graph_uid, block_size, graph_ir_digest).
-_WORKER_GRAPH_CACHE: Dict[Tuple[int, str, int, str], "_CompiledWorkerGraph"] = {}
+_WORKER_GRAPH_CACHE: "_OrderedDict[Tuple[int, str, int, str], _CompiledWorkerGraph]" = _OrderedDict()
 _WORKER_LAST_GENERATION: Optional[int] = None
 # Per-source shared-memory attachment cache; keyed by "<src_id>:mono" / "<src_id>:stereo".
 _WORKER_SHM_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -109,26 +113,11 @@ class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
         beats_per_bar = float(self.parameters.get("scene_beats_per_bar", 4.0) or 4.0)
         fps           = float(self.parameters.get("scene_fps", 24.0) or 24.0)
         beats_per_frame = float(bpm / max(60.0 * fps, 1e-6))
+        frames_per_beat = float(1.0 / beats_per_frame) if beats_per_frame > 1e-6 else 0.0
         frame_idx = int(getattr(chunk_in, "frame_index", 0) or 0)
         pos_in_measure = (float(frame_idx) * beats_per_frame) % beats_per_bar
-        ts_vec = (float(pos_in_measure), float(beats_per_bar), 0.0)
         beat_phase = float(pos_in_measure / beats_per_bar) if beats_per_bar > 0.0 else 0.0
-        return (float(beats_per_frame), ts_vec, float(beat_phase), chunk_in)
-
-
-class _WorkerSourceScannerPassthroughTask(ACEAudioTask):
-    """
-    Worker-safe replacement for SourceScannerTask:
-    reports latency estimate and forwards audio chunk.
-    """
-
-    def process(self, inputs):
-        chunk_in = _coerce_worker_audio_chunk(inputs.get(0), self.block_size)
-        latency_ms = float(getattr(chunk_in, "latency_ms", 0.0) or 0.0)
-        if latency_ms <= 0.0:
-            sr = float(max(getattr(chunk_in, "sample_rate", SAMPLE_RATE), 1.0))
-            latency_ms = (float(self.block_size) / sr) * 1000.0
-        return (float(max(latency_ms, 0.0)), chunk_in)
+        return (float(frames_per_beat), float(beat_phase), chunk_in)
 
 
 class _WorkerSourceProvider:
@@ -425,10 +414,10 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
     if cat == "utilities":
         if typ == "src_specs":
             return _WorkerSourceSpecsPassthroughTask(node_id, params, bs)
-        if typ == "scanner":
-            return _WorkerSourceScannerPassthroughTask(node_id, params, bs)
         if typ == "audio_math":
             return AudioMathTask(node_id, params, bs)
+        if typ == "stream_accumulator":
+            return StreamAccumulatorTask(node_id, params, bs)
 
     if cat == "delta":
         if typ == "frequency_splitter":
@@ -445,6 +434,10 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
     if cat == "stream":
         if typ == "rms":
             return RMSTask(node_id, params, bs)
+        if typ == "lufs":
+            return LUFSTask(node_id, params, bs)
+        if typ == "peak":
+            return PeakTask(node_id, params, bs)
         if typ == "pitch":
             return PitchTask(node_id, params, bs)
         if typ == "spectral_centroid":
@@ -580,12 +573,9 @@ def _normalize_worker_value(attr_type: str, value: Any):
 
 
 def _trim_worker_cache():
-    """Evict oldest entries from _WORKER_GRAPH_CACHE when capacity is exceeded."""
-    if len(_WORKER_GRAPH_CACHE) <= _WORKER_CACHE_MAX:
-        return
-    drop_count = len(_WORKER_GRAPH_CACHE) - _WORKER_CACHE_MAX
-    for key in list(_WORKER_GRAPH_CACHE.keys())[:drop_count]:
-        graph = _WORKER_GRAPH_CACHE.pop(key, None)
+    """Evict least-recently-used entries from _WORKER_GRAPH_CACHE."""
+    while len(_WORKER_GRAPH_CACHE) > _WORKER_CACHE_MAX:
+        _key, graph = _WORKER_GRAPH_CACHE.popitem(last=False)
         if graph is not None:
             graph.close()
 
@@ -672,7 +662,7 @@ def _resolve_worker_shm_array(cache_key: str, spec: Dict[str, Any]) -> Optional[
     return arr
 
 
-def _resolve_source_payloads(job: Dict[str, Any]) -> tuple[Dict[str, Dict[str, Any]], list[Any]]:
+def _resolve_source_payloads(job: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Extract per-source audio payloads from a job dict, resolving SHM references.
 
     Handles both the legacy single-source ``"source_chunk"`` key and the
@@ -684,9 +674,7 @@ def _resolve_source_payloads(job: Dict[str, Any]) -> tuple[Dict[str, Dict[str, A
         job: The raw job dict received by evaluate_parallel_job().
 
     Returns:
-        A (payloads, attached_shm) tuple where *payloads* maps source node ID
-        to a resolved payload dict and *attached_shm* is an empty list (SHM
-        segments are cached in _WORKER_SHM_CACHE rather than returned here).
+        Mapping from source node ID to resolved payload dict.
 
     Raises:
         RuntimeError: If shared-memory segment resolution fails.
@@ -700,11 +688,11 @@ def _resolve_source_payloads(job: Dict[str, Any]) -> tuple[Dict[str, Dict[str, A
         for src_id, payload in source_chunks_raw.items()
     }
     if not _SHARED_MEMORY_AVAILABLE:
-        return source_chunks, []
+        return source_chunks
 
     shm_map = job.get("source_chunks_shm")
     if not isinstance(shm_map, dict):
-        return source_chunks, []
+        return source_chunks
 
     resolved = {str(src_id): dict(payload or {}) for src_id, payload in source_chunks.items()}
     try:
@@ -728,7 +716,7 @@ def _resolve_source_payloads(job: Dict[str, Any]) -> tuple[Dict[str, Dict[str, A
                     src_payload["stereo"] = stereo_arr
             else:
                 _close_worker_shm_cache_entry(f"{src_key}:stereo")
-        return resolved, []
+        return resolved
     except Exception as e:
         _close_worker_shm_cache()
         raise RuntimeError(f"source payload shared-memory resolve failed: {e}")
@@ -766,7 +754,9 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     cache_key = (generation_id, graph_uid, block_size, graph_ir_digest)
     graph = _WORKER_GRAPH_CACHE.get(cache_key)
-    if graph is None:
+    if graph is not None:
+        _WORKER_GRAPH_CACHE.move_to_end(cache_key)
+    else:
         if not graph_ir:
             # Worker does not have this graph yet: ask main process to resend IR once.
             return {
@@ -781,43 +771,34 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
         _WORKER_GRAPH_CACHE[cache_key] = graph
         _trim_worker_cache()
 
-    resolved_payloads: Dict[str, Dict[str, Any]] = {}
-    attached_shm = []
-    try:
-        resolved_payloads, attached_shm = _resolve_source_payloads(job)
-        graph.set_source_payloads(
-            payloads=resolved_payloads,
-            frame_id=frame_id,
-            block_size=block_size,
-        )
+    resolved_payloads = _resolve_source_payloads(job)
+    graph.set_source_payloads(
+        payloads=resolved_payloads,
+        frame_id=frame_id,
+        block_size=block_size,
+    )
 
-        values: Dict[str, Any] = {}
-        if output_keys:
-            output_iter = [(key, graph.output_specs.get(key)) for key in output_keys]
-        else:
-            output_iter = list(graph.output_specs.items())
-        for attr_key, spec in output_iter:
-            if not isinstance(spec, dict):
-                continue
-            node_id = str(spec.get("node_id", "") or "")
-            socket_idx = int(spec.get("socket_idx", 0) or 0)
-            attr_type = str(spec.get("attr_type", "FLOAT") or "FLOAT")
-            task = graph.tasks.get(node_id)
-            if task is None:
-                continue
-            try:
-                raw_val = task.get_output(frame_id, socket_idx)
-            except Exception:
-                continue
-            if raw_val is None:
-                continue
-            values[str(attr_key)] = _normalize_worker_value(attr_type, raw_val)
-    finally:
-        for shm in attached_shm:
-            try:
-                shm.close()
-            except Exception:
-                pass
+    values: Dict[str, Any] = {}
+    if output_keys:
+        output_iter = [(key, graph.output_specs.get(key)) for key in output_keys]
+    else:
+        output_iter = list(graph.output_specs.items())
+    for attr_key, spec in output_iter:
+        if not isinstance(spec, dict):
+            continue
+        node_id = str(spec.get("node_id", "") or "")
+        socket_idx = int(spec.get("socket_idx", 0) or 0)
+        attr_type = str(spec.get("attr_type", "FLOAT") or "FLOAT")
+        task = graph.tasks.get(node_id)
+        if task is None:
+            continue
+        try:
+            raw_val = task.get_output(frame_id, socket_idx)
+        except Exception:
+            continue
+        if raw_val is None:
+            continue
+        values[str(attr_key)] = _normalize_worker_value(attr_type, raw_val)
 
     return {
         "generation_id": generation_id,

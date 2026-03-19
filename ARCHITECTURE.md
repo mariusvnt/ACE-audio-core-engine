@@ -8,7 +8,7 @@ Primary language: Python (Blender add-on)
 Target host: Blender 5.0+  
 
 ## 2. Purpose and Scope
-AudioCore Engine (ACE) is a Blender add-on that enables audio-reactive procedural animation by converting file or live audio streams into per-frame data attributes consumed by Geometry Nodes.
+AudioCore Engine (ACE) is a Blender add-on that enables audio-reactive procedural animation by converting file or live audio streams into per-frame data outputs consumed by Geometry Nodes and object-bound shader materials.
 
 This document specifies:
 the runtime architecture
@@ -23,18 +23,18 @@ external DAW integration protocol specs beyond current parser behavior
 
 ## 3. Architectural Overview
 ACE uses a dual-graph model:
-the visible Geometry Nodes graph acts as the user authoring surface
-the backend task graph performs real DSP/analysis and writes results to proxy attributes
+scene frontends (top-level Geometry Nodes modifier trees and object-bound Shader node trees) act as the user authoring surface
+the backend task graph performs real DSP/analysis and writes results to proxy attributes or object custom properties
 
 Core principle:
-Geometry node groups are primarily interface contracts; backend tasks execute analysis.
+frontend node groups are primarily interface contracts; backend tasks execute analysis.
 
 High-level flow:
 1. User configures sources and ACE nodes.
-2. ACE parses the Blender GN tree into an abstract graph.
+2. ACE discovers all managed scene frontends and parses them into a merged abstract graph.
 3. ACE compiles one runtime task graph per source.
-4. Each frame, ACE reads audio blocks, computes outputs, and writes named attributes to source proxies.
-5. Geometry Nodes read those attributes and drive scene behavior.
+4. Each frame, ACE reads audio blocks, computes outputs, and writes named attributes to source proxies or object properties.
+5. Geometry Nodes and shader materials read those values and drive scene behavior.
 
 ## 4. System Context
 External dependencies:
@@ -49,6 +49,7 @@ Blender integration points:
 `frame_change_pre`, `depsgraph_update_post`, `load_post` handlers
 persistent timer-based auto-compile and UI synchronization
 Geometry Nodes add menu and 3D View N-panel
+object-bound material Shader node trees
 
 ## 5. Component Architecture
 ### 5.1 Bootstrap and Module Orchestration
@@ -86,14 +87,15 @@ compact attribute key generation under Blender limits
 Primary modules:
 `id_management.py`
 
-### 5.4 Dummy GN Node Group Factory and Reader
+### 5.4 Frontend Node Group Factories and Readers
 Responsibilities:
-build ACE GN group datablocks
+build ACE Geometry Nodes and Shader node group datablocks
 maintain dynamic group variants
-translate Blender GN tree to abstract graph
+translate Blender scene frontends to abstract graph fragments
 
 Primary modules:
 `dummy_tree.py`
+`shader_tree.py`
 `dynamic_audio_operators.py`
 `abstract_tree.py`
 `gn_menu.py`
@@ -122,8 +124,8 @@ Primary modules:
 ### 5.7 Proxy and Attribute Writer
 Responsibilities:
 proxy object lifecycle
-attribute schema synchronization
-value write/update path
+sink schema synchronization
+proxy attribute and object property write path
 ACE_Sonar management
 
 Primary modules:
@@ -146,6 +148,7 @@ Primary modules:
 ### 6.1 Stable IDs
 Every ACE node has an `ace_id` with category/type semantics and UUID suffix.
 Every source has `stable_id`.
+Source placeholder nodes keep `source_binding_id` / `ace_source_id` separate from their frontend-scoped `ace_id`.
 Source proxy names are deterministic hashes of source identity.
 
 ### 6.2 Abstract Graph
@@ -153,6 +156,8 @@ Source proxy names are deterministic hashes of source identity.
 nodes (`ACEAbstractNode`)
 links (`ACEAbstractLink`)
 group-output audio links (`ACEAbstractOutputLink`)
+frontends (`ACEFrontendRef`)
+consumer intents (`ACEConsumerIntent`)
 
 `root_sources` propagation on abstract nodes is used to partition runtime graphs per source.
 
@@ -165,8 +170,8 @@ lineage/spectrum token
 band constraints (`band_indices`, `band_hz_bounds`, `band_index_fft_size`)
 analysis operation metadata (`analysis_ops`)
 
-### 6.4 Proxy Attribute Contract
-Outputs are written to proxy mesh point-domain attributes:
+### 6.4 Sink Contract
+Outputs are written to concrete sink bindings. In V1 those are either proxy mesh point-domain attributes or object custom properties:
 FLOAT
 FLOAT_VECTOR
 FLOAT_COLOR
@@ -190,18 +195,18 @@ optional user override via Attribute ID sockets for supported nodes
 5. Engine recompilation requested/triggered.
 
 ### 7.3 Compilation Lifecycle
-1. Active ACE GN tree located.
-2. GN tree parsed into abstract graph.
-3. Auto attribute IDs synchronized to current topology.
-4. Abstract graph rebuilt after synchronization.
-5. One `ACEAudioGraph` compiled per source with only required upstream tasks.
-6. Output attributes ensured on source proxy.
+1. Managed scene frontends are discovered from Geometry Nodes modifiers and object-bound shader materials.
+2. Geometry frontends synchronize managed source placeholders.
+3. Each frontend is parsed into a partial abstract graph and local sink IDs are synchronized.
+4. Partial frontend graphs are merged into one scene-scoped `ACEAbstractTree`.
+5. One `ACEAudioGraph` is compiled per source with only required upstream tasks.
+6. Each graph resolves concrete sink bindings for proxy attributes and object properties.
 
 ### 7.4 Frame Execution Lifecycle
 1. Frame handler invokes engine execution.
 2. Source tasks fetch the next block (file/live).
 3. Downstream task graph computes outputs.
-4. Output values written to proxy attributes.
+4. Output values are fanned out to proxy attributes and/or object properties on the main thread.
 5. Preview chunks mixed and optionally emitted to output monitor during timeline playback.
 
 ### 7.5 Shutdown Lifecycle
@@ -238,8 +243,7 @@ This design keeps branch expansion lightweight.
 Stream tasks terminate branches with float/vector values (RMS, centroid, flux, onset, pitch, stereo descriptors).
 
 ### 8.6 Utility Nodes
-`src_specs` exposes tempo/measure metadata plus passthrough audio.
-`scanner` exposes estimated branch/source latency plus passthrough audio.
+`src_specs` exposes frames-per-beat and beat-phase metadata plus passthrough audio.
 `audio_math` combines multiple branch audios.
 `preview_sink` reconstructs preview audio for monitoring and supports optional accelerated paths.
 
@@ -300,7 +304,7 @@ optional Numba acceleration is gated by capability and user settings
 Test coverage includes:
 ID generation and parsing invariants
 audio input parser/backends behavior
-task semantics and regression checks for splitters/preview/math/scanner/specs
+task semantics and regression checks for splitters/preview/math/rolling-average/specs
 Blender integration smoke tests for handlers/source lifecycle/ACE_Sonar synchronization
 
 Primary test modules:

@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
 from ..core.id_management import ACEIdManager
 from ..core.audio_engine import ACEAudioEngine
 from ..nodes.dummy_tree import ACEDummyTreeReader
+from ..nodes.shader_tree import ACEShaderTreeReader
 from ..vars import ACE_NODES
 from .. import utils
 
@@ -51,6 +52,48 @@ _ui_tree_cache = {
     "nodes": (),
     "lookup_ids": {},
 }
+_ui_label_icon_ids: set[str] | None = None
+_has_ace_nodes_in_trees: bool = False
+
+
+# --- ACE node presence detection (for Active ACE Instances panel) ---
+
+def _tree_has_ace_nodes(tree) -> bool:
+    """Return True if *tree* contains at least one node with an ``ace_id`` custom property."""
+    if tree is None:
+        return False
+    for node in getattr(tree, "nodes", []) or []:
+        if node.get("ace_id"):
+            return True
+    return False
+
+
+def _refresh_ace_nodes_in_trees_flag(scene) -> None:
+    """Update the module-level ``_has_ace_nodes_in_trees`` flag.
+
+    Scans all GN modifiers and shader material trees attached to objects in
+    *scene* for the presence of any ACE node (identified by the ``ace_id``
+    custom property).  Designed to be called from the UI sync timer so the
+    expensive scene walk is not repeated every redraw.
+    """
+    global _has_ace_nodes_in_trees
+    if scene is None:
+        _has_ace_nodes_in_trees = False
+        return
+    for obj in getattr(scene, "objects", []) or []:
+        for mod in getattr(obj, "modifiers", []) or []:
+            if getattr(mod, "type", None) != "NODES":
+                continue
+            if _tree_has_ace_nodes(getattr(mod, "node_group", None)):
+                _has_ace_nodes_in_trees = True
+                return
+        for slot in getattr(obj, "material_slots", []) or []:
+            mat = getattr(slot, "material", None)
+            tree = getattr(mat, "node_tree", None) if mat is not None else None
+            if _tree_has_ace_nodes(tree):
+                _has_ace_nodes_in_trees = True
+                return
+    _has_ace_nodes_in_trees = False
 
 
 # --- Deal-breaker handling ---
@@ -81,73 +124,209 @@ def _ui_is_blocked(context):
 
 
 # --- Active UI Dummy Tree Helpers ---
-def _find_active_node_tree(context):
-    """Return the most relevant active GeometryNodeTree for the current context.
+def _iter_visible_node_editor_trees(context):
+    """Yield unique supported trees from visible Node Editor areas.
+
+    The 3D View N-panel runs outside a node editor context, so this helper
+    inspects open windows/screens for visible ``NODE_EDITOR`` areas and yields
+    their active ``edit_tree``/``node_tree`` values.
+    """
+    seen_tree_ptrs: set[int] = set()
+    seen_area_ptrs: set[int] = set()
+
+    def _tree_from_space(space):
+        if getattr(space, "type", "") != "NODE_EDITOR":
+            return
+        for tree in (getattr(space, "edit_tree", None), getattr(space, "node_tree", None)):
+            tree_type = str(getattr(tree, "bl_idname", "") or "")
+            if tree_type not in {'GeometryNodeTree', 'ShaderNodeTree'}:
+                continue
+            tree_ptr = _tree_pointer(tree)
+            if tree_ptr in seen_tree_ptrs:
+                continue
+            seen_tree_ptrs.add(tree_ptr)
+            yield tree
+
+    # Current context space first when already in a node editor.
+    for tree in _tree_from_space(getattr(context, "space_data", None)):
+        yield tree
+
+    wm = getattr(context, "window_manager", None)
+    windows = list(getattr(wm, "windows", []) or [])
+    current_window = getattr(context, "window", None)
+    if current_window is not None:
+        windows = [current_window] + [win for win in windows if win is not current_window]
+
+    for window in windows:
+        screen = getattr(window, "screen", None)
+        for area in getattr(screen, "areas", []) or []:
+            if getattr(area, "type", "") != "NODE_EDITOR":
+                continue
+            try:
+                area_ptr = int(area.as_pointer())
+            except Exception:
+                area_ptr = id(area)
+            if area_ptr in seen_area_ptrs:
+                continue
+            seen_area_ptrs.add(area_ptr)
+            spaces = getattr(area, "spaces", None)
+            active_space = getattr(spaces, "active", None) if spaces is not None else None
+            if active_space is None:
+                continue
+            for tree in _tree_from_space(active_space):
+                yield tree
+
+
+def _find_active_node_tree(context, editor_context_only: bool = False):
+    """Return the most relevant active ACE authoring tree for the current context.
 
     Priority order:
-    1. Node Editor tree when it contains ACE nodes.
-    2. GN Target Object modifier tree (from audiocore settings).
-    3. Active object modifier tree.
-    4. ACE_Sonar fallback object.
+    1. Active node-editor context tree (when currently in a Node Editor).
+    2. Trees visible in open Node Editor areas (current window first).
+    3. Broad scene/object fallback (unless ``editor_context_only=True``).
 
     Returns the first found ACE-node tree, or a non-ACE fallback if nothing
-    else is available (so the UI remains visible even on empty GN trees).
+    else is available.
+
+    Args:
+        context: Blender context.
+        editor_context_only: When True, only resolve from visible/editor
+            context trees and skip object/material fallbacks. This is used by
+            the N-panel active-node list so it tracks editor context.
     """
     scene = getattr(context, "scene", None)
     ace = getattr(scene, "audiocore", None)
     target_obj = getattr(ace, "gn_target_object", None) if ace else None
 
-    def _tree_from_object(obj):
+    def _is_supported_tree(tree):
+        return str(getattr(tree, "bl_idname", "") or "") in {'GeometryNodeTree', 'ShaderNodeTree'}
+
+    def _tree_from_object_modifiers(obj):
         if not obj:
-            return None
+            return (None, None)
         fallback = None
-        for mod in getattr(obj, "modifiers", []):
+        for mod in getattr(obj, "modifiers", []) or []:
             if getattr(mod, "type", None) == 'NODES' and getattr(mod, "node_group", None):
                 tree = mod.node_group
+                if not _is_supported_tree(tree):
+                    continue
                 if fallback is None:
                     fallback = tree
                 if ACEAudioEngine._tree_has_ace_nodes(tree):
-                    return tree
-        return fallback
+                    return (tree, fallback)
+        return (None, fallback)
+
+    def _tree_from_object_materials(obj):
+        if not obj:
+            return (None, None)
+        fallback = None
+        seen_ptrs: set[int] = set()
+        materials = []
+        active_material = getattr(obj, "active_material", None)
+        if active_material is not None:
+            materials.append(active_material)
+        for slot in getattr(obj, "material_slots", []) or []:
+            material = getattr(slot, "material", None)
+            if material is not None:
+                materials.append(material)
+        for material in materials:
+            tree = getattr(material, "node_tree", None)
+            if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                continue
+            tree_ptr = _tree_pointer(tree)
+            if tree_ptr in seen_ptrs:
+                continue
+            seen_ptrs.add(tree_ptr)
+            if fallback is None:
+                fallback = tree
+            if ACEAudioEngine._tree_has_ace_nodes(tree):
+                return (tree, fallback)
+        return (None, fallback)
 
     fallback = None
 
-    # Prefer the node editor tree when available so UI follows what user edits.
+    def _consider_tree(tree):
+        nonlocal fallback
+        if tree is None or not _is_supported_tree(tree):
+            return None
+        if ACEAudioEngine._tree_has_ace_nodes(tree):
+            return tree
+        if fallback is None:
+            fallback = tree
+        return None
+
+    # Respect Blender's context resolver only when currently in the Node Editor.
     space = getattr(context, "space_data", None)
     if getattr(space, "type", "") == 'NODE_EDITOR':
-        tree = getattr(space, "node_tree", None)
-        if getattr(tree, "bl_idname", "") == 'GeometryNodeTree':
-            if ACEAudioEngine._tree_has_ace_nodes(tree):
-                return tree
-            fallback = tree
+        try:
+            resolver = getattr(getattr(bpy, "types", None), "NodeTree", None)
+            if resolver is not None and hasattr(resolver, "get_from_context"):
+                resolved = resolver.get_from_context(context)
+                if isinstance(resolved, (list, tuple)):
+                    tree = resolved[0] if resolved else None
+                else:
+                    tree = resolved
+                chosen = _consider_tree(tree)
+                if chosen is not None:
+                    return chosen
+        except Exception:
+            pass
+        for tree in (getattr(space, "edit_tree", None), getattr(space, "node_tree", None)):
+            chosen = _consider_tree(tree)
+            if chosen is not None:
+                return chosen
 
-    if target_obj:
-        tree = _tree_from_object(target_obj)
-        if tree:
-            if ACEAudioEngine._tree_has_ace_nodes(tree):
-                return tree
-            if fallback is None:
-                fallback = tree
+    for tree in _iter_visible_node_editor_trees(context):
+        chosen = _consider_tree(tree)
+        if chosen is not None:
+            return chosen
+
+    if editor_context_only:
+        return fallback
 
     obj = getattr(context, "active_object", None)
     if obj:
-        tree = _tree_from_object(obj)
-        if tree:
-            if ACEAudioEngine._tree_has_ace_nodes(tree):
-                return tree
-            if fallback is None:
-                fallback = tree
+        tree, tree_fallback = _tree_from_object_materials(obj)
+        if tree is not None:
+            return tree
+        if fallback is None and tree_fallback is not None:
+            fallback = tree_fallback
+
+    if target_obj:
+        tree, tree_fallback = _tree_from_object_materials(target_obj)
+        if tree is not None:
+            return tree
+        if fallback is None and tree_fallback is not None:
+            fallback = tree_fallback
+        tree, tree_fallback = _tree_from_object_modifiers(target_obj)
+        if tree is not None:
+            return tree
+        if fallback is None and tree_fallback is not None:
+            fallback = tree_fallback
+
+    if obj:
+        tree, tree_fallback = _tree_from_object_modifiers(obj)
+        if tree is not None:
+            return tree
+        if fallback is None and tree_fallback is not None:
+            fallback = tree_fallback
 
     # Fallback: try ACE_Sonar object if present
     sonar = bpy.data.objects.get("ACE_Sonar")
     if sonar:
-        for mod in getattr(sonar, "modifiers", []):
+        for mod in getattr(sonar, "modifiers", []) or []:
             if getattr(mod, "type", None) == 'NODES' and getattr(mod, "node_group", None):
                 tree = mod.node_group
-                if ACEAudioEngine._tree_has_ace_nodes(tree):
-                    return tree
-                if fallback is None:
-                    fallback = tree
+                chosen = _consider_tree(tree)
+                if chosen is not None:
+                    return chosen
+    if fallback is None and scene is not None:
+        for scene_obj in getattr(scene, "objects", []) or []:
+            tree, tree_fallback = _tree_from_object_materials(scene_obj)
+            if tree is not None:
+                return tree
+            if fallback is None and tree_fallback is not None:
+                fallback = tree_fallback
     return fallback
 
 
@@ -157,6 +336,198 @@ def _describe_node(cat: str, typ: str) -> str:
         return ACE_NODES[cat]["nodes"][typ]["description"]
     except Exception:
         return ""
+
+
+def _compiled_abstract_tree(scene):
+    """Return the last compiled ACEAbstractTree for *scene*, or None."""
+    if scene is None:
+        return None
+    engine = ACEAudioEngine.get_instance(scene)
+    if engine is None:
+        return None
+    return getattr(engine, "abstract_tree_ref", None)
+
+
+def _scene_audio_sources_by_id(scene) -> dict[str, object]:
+    """Return a stable-id keyed lookup of scene audio source properties."""
+    ace = getattr(scene, "audiocore", None) if scene is not None else None
+    sources = getattr(ace, "audio_sources", []) if ace is not None else []
+    return {
+        str(getattr(source, "stable_id", "") or ""): source
+        for source in (sources or [])
+        if str(getattr(source, "stable_id", "") or "")
+    }
+
+
+def _source_display_name(source_prop, source_node) -> str:
+    """Return the preferred display name for a source ledger row."""
+    if source_prop is not None:
+        name = str(getattr(source_prop, "name", "") or "").strip()
+        if name:
+            return name
+    if source_node is not None:
+        name = str(getattr(source_node, "name", "") or "").strip()
+        if name:
+            return name
+    return "Unnamed Source"
+
+
+def _source_list_icon(source_prop) -> str:
+    """Return the same source icon policy used by ACE_UL_source_list rows."""
+    if source_prop is None:
+        return "SPEAKER"
+    proxy_name = str(getattr(source_prop, "proxy_object_name", "") or "")
+    proxy = bpy.data.objects.get(proxy_name) if proxy_name else None
+    if not proxy:
+        return "ERROR"
+    source_type = str(getattr(source_prop, "source_type", "") or "").strip().upper()
+    if source_type == "FILE":
+        return "FILE"
+    return "SPEAKER"
+
+
+def _frontend_object_name(frontend_ref) -> str:
+    """Return the object name hosting *frontend_ref* (without modifier suffix)."""
+    owner_keys = tuple(getattr(frontend_ref, "owner_keys", ()) or ())
+    if not owner_keys:
+        return "Unknown Object"
+    owner_key = str(owner_keys[0] or "").strip()
+    if not owner_key:
+        return "Unknown Object"
+    object_name = owner_key.rsplit(":", 1)[0].strip()
+    return object_name or owner_key
+
+
+def _frontend_instance_type(frontend_kind: str) -> str:
+    """Return a compact instance-type label for Active ACE Instances rows."""
+    kind = str(frontend_kind or "").strip().upper()
+    if kind == "GEOMETRY_NODES":
+        return "Geometry"
+    if kind == "SHADER_NODES":
+        return "Shader"
+    return "Unknown"
+
+
+def _label_icon_supported(icon_name: str) -> bool:
+    """Return True when ``UILayout.label`` supports *icon_name*."""
+    global _ui_label_icon_ids
+    icon_name = str(icon_name or "").strip()
+    if not icon_name:
+        return False
+    if _ui_label_icon_ids is None:
+        try:
+            label_fn = bpy.types.UILayout.bl_rna.functions.get("label")
+            icon_param = label_fn.parameters.get("icon") if label_fn else None
+            enum_items = getattr(icon_param, "enum_items", None) if icon_param else None
+            _ui_label_icon_ids = {
+                str(getattr(item, "identifier", "") or "")
+                for item in (enum_items or [])
+                if str(getattr(item, "identifier", "") or "")
+            }
+        except Exception:
+            _ui_label_icon_ids = set()
+    return icon_name in (_ui_label_icon_ids or set())
+
+
+def _frontend_kind_icon(frontend_kind: str) -> str:
+    """Return a robust icon id for frontend rows in N-panel ledgers."""
+    kind = str(frontend_kind or "").strip().upper()
+    if kind == "GEOMETRY_NODES":
+        if _label_icon_supported("GEOMETRY_NODES"):
+            return "GEOMETRY_NODES"
+        if _label_icon_supported("MOD_NODES"):
+            return "MOD_NODES"
+        return "NODETREE"
+    return "SHADING_RENDERED"
+
+
+def _compiled_source_instance_rows(scene):
+    """Build the read-only source-to-frontend ledger from compiled IR."""
+    abstract_tree = _compiled_abstract_tree(scene)
+    if abstract_tree is None:
+        return None
+
+    nodes = dict(getattr(abstract_tree, "nodes", {}) or {})
+    frontends = dict(getattr(abstract_tree, "frontends", {}) or {})
+    consumer_intents = list(getattr(abstract_tree, "consumer_intents", []) or [])
+    source_props_by_id = _scene_audio_sources_by_id(scene)
+
+    source_nodes_by_token: dict[str, object] = {}
+    for node in nodes.values():
+        if str(getattr(node, "category", "") or "") != "source_mngmt":
+            continue
+        if str(getattr(node, "type", "") or "") != "src":
+            continue
+        source_token = str(getattr(node, "source_binding_id", "") or "").strip()
+        if not source_token:
+            roots = sorted({str(v) for v in (getattr(node, "root_sources", set()) or set()) if str(v)})
+            source_token = roots[0] if roots else ""
+        if not source_token:
+            continue
+        if source_token not in source_nodes_by_token:
+            source_nodes_by_token[source_token] = node
+
+    if not source_nodes_by_token:
+        return []
+
+    frontend_uids_by_source: dict[str, set[str]] = {
+        token: set() for token in source_nodes_by_token.keys()
+    }
+    for intent in consumer_intents:
+        source_token = str(getattr(intent, "source_token", "") or "").strip()
+        frontend_uid = str(getattr(intent, "frontend_uid", "") or "").strip()
+        if not source_token or not frontend_uid:
+            continue
+        if source_token in frontend_uids_by_source:
+            frontend_uids_by_source[source_token].add(frontend_uid)
+
+    for node in nodes.values():
+        frontend_uid = str(getattr(node, "frontend_uid", "") or "").strip()
+        if not frontend_uid or str(getattr(node, "category", "") or "") == "source_mngmt":
+            continue
+        for source_token in sorted({str(v) for v in (getattr(node, "root_sources", set()) or set()) if str(v)}):
+            if source_token in frontend_uids_by_source and not frontend_uids_by_source[source_token]:
+                frontend_uids_by_source[source_token].add(frontend_uid)
+
+    ordered_tokens = sorted(
+        source_nodes_by_token.keys(),
+        key=lambda token: (
+            next(
+                (
+                    idx for idx, src in enumerate(
+                        getattr(getattr(scene, "audiocore", None), "audio_sources", []) or []
+                    )
+                    if str(getattr(src, "stable_id", "") or "") == token
+                ),
+                999999,
+            ),
+            _source_display_name(source_props_by_id.get(token), source_nodes_by_token.get(token)).lower(),
+            token,
+        ),
+    )
+
+    ledger_rows = []
+    for source_token in ordered_tokens:
+        source_node = source_nodes_by_token.get(source_token)
+        source_prop = source_props_by_id.get(source_token)
+        frontend_uids = sorted(
+            frontend_uids_by_source.get(source_token, set()) or set(),
+            key=lambda uid: (
+                int(getattr(frontends.get(uid), "discovery_index", 0) or 0),
+                str(getattr(frontends.get(uid), "tree_name", "") or "").lower(),
+                str(uid),
+            ),
+        )
+        ledger_rows.append(
+            {
+                "source_token": source_token,
+                "source_node": source_node,
+                "source_prop": source_prop,
+                "display_name": _source_display_name(source_prop, source_node),
+                "frontend_refs": [frontends[uid] for uid in frontend_uids if uid in frontends],
+            }
+        )
+    return ledger_rows
 
 
 def _source_display_sample_rate(source) -> int:
@@ -377,7 +748,7 @@ def _resolve_ui_list_selected_node(context):
     if not node_id:
         return None, None
 
-    tree = _find_active_node_tree(context)
+    tree = _find_active_node_tree(context, editor_context_only=True)
     node, parsed = _find_tree_node_by_ace_id(tree, node_id)
     if node and parsed:
         return node, parsed
@@ -442,6 +813,7 @@ def _parsed_node_has_operator_settings(parsed) -> bool:
         ("delta", "frequency_splitter"),
         ("utilities", "audio_math"),
         ("utilities", "preview_sink"),
+        ("utilities", "util_rolling_avg"),
     }
 
 
@@ -564,6 +936,20 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                     icon="ERROR",
                 )
 
+    if parsed.get("category") == "utilities" and parsed.get("type") == "util_rolling_avg":
+        drew_settings = True
+        box = layout.box()
+        box.label(text="Rolling Average", icon="DRIVER")
+        frames_sock = next(
+            (sock for sock in getattr(node, "inputs", []) if getattr(sock, "name", "") == "Number of Frames"),
+            None,
+        )
+        if frames_sock is not None:
+            row = box.row(align=True)
+            row.prop(frames_sock, "default_value", text="Number of Frames")
+        else:
+            box.label(text="Number of Frames input is unavailable.", icon="INFO")
+
     return drew_settings
 
 
@@ -596,7 +982,7 @@ def _draw_bake_controls(layout, context):
     if not status:
         layout.label(text="Bake stream outputs over the scene frame range.", icon="INFO")
         return
-    if status == "failed":
+    if status in {"failed", "error"}:
         err = ""
         try:
             err = str(active_source.get("ace_bake_error", "") or "")
@@ -605,12 +991,18 @@ def _draw_bake_controls(layout, context):
         warn = layout.row()
         warn.alert = True
         warn.label(text=f"Bake failed: {err or 'Unknown error'}", icon="ERROR")
-    elif status == "ready":
+    elif status in {"ready", "done"}:
         start = int(active_source.get("ace_bake_frame_start", 0))
         end = int(active_source.get("ace_bake_frame_end", -1))
         layout.label(text=f"Bake ready: frames {start} -> {end}", icon="CHECKMARK")
     elif status == "baking":
-        layout.label(text="Baking in progress...", icon="TIME")
+        progress = 0.0
+        try:
+            progress = float(active_source.get("ace_bake_progress", 0.0) or 0.0)
+        except Exception:
+            progress = 0.0
+        pct = int(max(0.0, min(progress, 1.0)) * 100.0)
+        layout.label(text=f"Baking in progress... {pct}%", icon="TIME")
 
 
 def _splitter_node_signature(node, scene) -> str:
@@ -636,12 +1028,20 @@ def _ensure_splitter_ramp_texture():
     Returns an RNA owner that exposes a `color_ramp` property for
     `layout.template_color_ramp(...)`.
     """
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
     try:
         node_groups = bpy.data.node_groups
     except Exception:
         return None
 
     tree = node_groups.get(_SPLITTER_RAMP_NODETREE_NAME)
+    if ACEAudioEngine._undo_recovery_active_for_scene(scene):
+        if tree is None:
+            return None
+        ramp_node = tree.nodes.get(_SPLITTER_RAMP_NODE_NAME)
+        if ramp_node is None or getattr(ramp_node, "bl_idname", "") != 'ShaderNodeValToRGB':
+            return None
+        return ramp_node
     if tree is None:
         try:
             tree = node_groups.new(_SPLITTER_RAMP_NODETREE_NAME, 'ShaderNodeTree')
@@ -773,10 +1173,8 @@ def _ui_tree_topology_signature(tree) -> str:
 
     attr_socket_names = {
         "Attribute ID",
-        "BPF Attribute ID",
-        "Time Signature Attribute ID",
+        "Frames per Beat Attribute ID",
         "Beat Phase Attribute ID",
-        "Latency Attribute ID",
     }
     node_tokens = []
     for node in getattr(tree, "nodes", []):
@@ -927,7 +1325,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         utils.log("UI sync skipped: active_source has no ui_nodes property.", "DEBUG")
         return
 
-    tree = _find_active_node_tree(context)
+    tree = _find_active_node_tree(context, editor_context_only=True)
     source_uid = getattr(active_source, "stable_id", "") or ""
     source_proxy = getattr(active_source, "proxy_object_name", "") or ""
     tree_ptr = _tree_pointer(tree)
@@ -944,14 +1342,26 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
     engine_abstract = None
     engine_tree_ready = False
     if tree and engine:
-        pending_tree = getattr(engine, "_pending_tree", None)
-        dirty_trees = getattr(engine, "_dirty_trees", set()) or set()
-        dirty_tree_match = bool((pending_tree == tree) or (tree in dirty_trees))
+        tree_ptr = 0
+        try:
+            tree_ptr = int(tree.as_pointer())
+        except Exception:
+            tree_ptr = 0
+        pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
+        dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
+        dirty_tree_match = bool((tree_ptr and pending_tree_ptr == tree_ptr) or (tree_ptr and tree_ptr in dirty_tree_ptrs))
         if allow_dirty_rebuild:
             tree_dirty_hint = tree_dirty_hint or dirty_tree_match
         if not tree_dirty_hint:
             compiled_ptr = int(getattr(engine, "_compiled_tree_ptr", 0) or 0)
-            if compiled_ptr == int(tree_ptr):
+            # In Multiple-Trees-Support, _compiled_tree_ptr only tracks the
+            # preferred (first) tree. Check all compiled frontend pointers so
+            # any compiled tree gets engine_tree_ready = True and uses the
+            # merged abstract tree directly instead of falling back to reader.build().
+            compiled_frontend_ptrs = set(
+                (getattr(engine, "_compiled_frontend_ptrs", {}) or {}).values()
+            )
+            if compiled_ptr == int(tree_ptr) or int(tree_ptr) in compiled_frontend_ptrs:
                 engine_abstract = getattr(engine, "abstract_tree_ref", None)
                 engine_tree_ready = bool(engine_abstract)
 
@@ -967,7 +1377,11 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
     if tree:
         if rebuild_topology:
             if engine_tree_ready and engine is not None:
-                topology_sig = f"eng:{hash(str(getattr(engine, '_last_tree_signature', None)))}"
+                # Avoid Python's process-randomized hash() so UI topology cache
+                # keys remain stable across sessions.
+                engine_sig_seed = str(getattr(engine, "_last_tree_signature", None)).encode("utf-8")
+                engine_sig = hashlib.blake2b(engine_sig_seed, digest_size=8).hexdigest()
+                topology_sig = f"eng:{engine_sig}"
             else:
                 topology_sig = _ui_tree_topology_signature(tree)
         else:
@@ -992,7 +1406,10 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             abstract = engine_abstract
             node_lookup_ids = _build_ui_node_lookup_ids(tree)
         else:
-            reader = ACEDummyTreeReader(tree)
+            if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
+                reader = ACEShaderTreeReader(tree)
+            else:
+                reader = ACEDummyTreeReader(tree)
             abstract = reader.build()
             node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
         nodes = list(abstract.nodes.values())
@@ -1012,6 +1429,11 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
                 return _bl_order.get(resolved, _bl_order.get(n.id, 999999))
 
             nodes.sort(key=_creation_sort_key)
+            nodes = [
+                node
+                for node in nodes
+                if str(getattr(node, "category", "") or "") != "source_mngmt"
+            ]
         _ui_tree_cache = {
             "tree_ptr": int(tree_ptr),
             "topology_sig": topology_sig,
@@ -1032,9 +1454,14 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             "lookup_ids": {},
         }
 
+    nodes = [
+        node
+        for node in nodes
+        if str(getattr(node, "category", "") or "") != "source_mngmt"
+    ]
     if not nodes:
         if not tree:
-            utils.log("UI sync skipped: no active Geometry Node tree found.", "DEBUG")
+            utils.log("UI sync skipped: no active ACE node tree found.", "DEBUG")
             try:
                 active_source.ui_nodes.clear()
             except Exception as e:
@@ -1211,24 +1638,32 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
         tree: The currently viewed GeometryNodeTree, or None.
 
     Returns:
-        True if the engine's pending_tree matches *tree* or if *tree* is in
-        the engine's dirty_trees set.
+        True if the engine has a pending rebuild for *tree* or if *tree* is in
+        the engine's dirty tree-pointer set.
     """
     engine = ACEAudioEngine.get_instance(scene)
     if not engine:
         return False
 
-    pending_tree = getattr(engine, "_pending_tree", None)
-    dirty_trees = getattr(engine, "_dirty_trees", set()) or set()
+    pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
+    dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
 
-    if pending_tree is not None:
-        if tree is None or pending_tree == tree:
+    if pending_tree_ptr:
+        if tree is None:
             return True
-    if not dirty_trees:
+        try:
+            if int(tree.as_pointer()) == pending_tree_ptr:
+                return True
+        except Exception:
+            pass
+    if not dirty_tree_ptrs:
         return False
     if tree is None:
         return True
-    return tree in dirty_trees
+    try:
+        return int(tree.as_pointer()) in dirty_tree_ptrs
+    except Exception:
+        return False
 
 
 def _engine_latency_metrics(context) -> dict[str, float | bool]:
@@ -1400,7 +1835,8 @@ def _ui_sync_timer():
         if _ui_is_blocked(context):
             return _UI_SYNC_TIMER_INTERVAL_IDLE
 
-        tree = _find_active_node_tree(context)
+        _refresh_ace_nodes_in_trees_flag(scene)
+        tree = _find_active_node_tree(context, editor_context_only=True)
         quick_key = _ui_quick_state_key(context, scene, tree)
         now = time.monotonic()
         engine_dirty = _ui_has_pending_engine_changes(scene, tree)
@@ -1419,6 +1855,13 @@ def _ui_sync_timer():
         allow_dirty_rebuild = bool(force_sync)
 
         _refresh_active_source_metadata(scene, now=now)
+        try:
+            engine = ACEAudioEngine.ensure_instance(scene)
+            ace = getattr(scene, "audiocore", None)
+            sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
+            engine.flush_source_tempo_detection_updates(sources)
+        except Exception:
+            pass
 
         if key_changed or engine_dirty or ((now - _ui_timer_last_sync_ts) >= target_interval):
             t0 = time.perf_counter()
@@ -1446,12 +1889,13 @@ def _ui_sync_timer():
 @persistent
 def _ui_load_post(_dummy):
     """Blender load_post handler: reset all UI state caches after a file load."""
-    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache
+    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees
     _ui_sync_last_ts = 0.0
     _ui_sync_last_key = ""
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
     _ui_timer_last_dirty_rebuild_ts = 0.0
+    _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
         "scene_key": 0,
@@ -1478,16 +1922,8 @@ class ACE_UL_source_list(bpy.types.UIList):
     """
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        # Status Icons
-        proxy = bpy.data.objects.get(item.proxy_object_name) if hasattr(item, "proxy_object_name") else None
-        
-        if not proxy:
-            icon = 'ERROR'
-        elif item.source_type == 'FILE':
-            icon = 'FILE'
-        else:
-            icon = 'SPEAKER' # Live/Flow
-            
+        # Status icon policy is shared with the Active ACE Instances panel.
+        icon = _source_list_icon(item)
         layout.prop(item, "name", text="", emboss=False, icon=icon)
 
 class ACE_UL_dummy_tree(bpy.types.UIList):
@@ -1588,12 +2024,12 @@ class ACE_PT_project_settings(bpy.types.Panel):
         pending_changes = _ui_has_pending_engine_changes(context.scene, tree)
         auto_compile_enabled = bool(getattr(eng_settings, "auto_compile", True)) if eng_settings else True
         is_playing = bool(engine and ACEAudioEngine._is_animation_playing())
-        is_refreshing = bool(engine and getattr(engine, "_is_compiling", False))
-        if (not is_refreshing) and auto_compile_enabled and pending_changes:
-            is_refreshing = True
+        is_compiling = bool(engine and getattr(engine, "_is_compiling", False))
+        if (not is_compiling) and auto_compile_enabled and pending_changes:
+            is_compiling = True
         has_runtime_graph = bool(engine and getattr(engine, "graphs", None))
-        if is_refreshing:
-            status_text = "Refreshing"
+        if is_compiling:
+            status_text = "Compiling..."
             status_icon = "FILE_REFRESH"
         elif has_runtime_graph and is_playing:
             status_text = "Active"
@@ -1601,6 +2037,9 @@ class ACE_PT_project_settings(bpy.types.Panel):
         else:
             status_text = "Idle"
             status_icon = "PAUSE"
+
+        status_row = layout.row(align=True)
+        status_row.label(text=status_text, icon=status_icon)
 
         if not auto_compile_enabled:
             action_row = layout.row()
@@ -1611,8 +2050,6 @@ class ACE_PT_project_settings(bpy.types.Panel):
                 text="Refresh Engine",
             )
 
-        layout.label(text=status_text, icon=status_icon)
-
         latency_metrics = _engine_latency_metrics(context)
         render = getattr(context.scene, "render", None)
         raw_fps = float(getattr(render, "fps", 24.0) or 24.0)
@@ -1620,7 +2057,7 @@ class ACE_PT_project_settings(bpy.types.Panel):
         scene_fps = raw_fps / fps_base if fps_base > 0.0 else raw_fps
         frame_budget_ms = 1000.0 / max(scene_fps, 1e-6)
         performance_box = layout.box()
-        performance_box.label(text="Engine Performance", icon="FUND")
+        performance_box.label(text="Engine Performance", icon="DRIVER")
         performance_row = performance_box.row(align=True)
         current_col = performance_row.column(align=True)
         current_col.label(text="Current Latency")
@@ -1660,6 +2097,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
     bl_parent_id = "ACE_PT_project_settings"
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -1677,7 +2115,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
         sample_rate_row = layout.row(align=True)
         sample_rate_row.label(text="Sample Rate")
         sample_rate_buttons = sample_rate_row.row(align=True)
-        for option in ("24000", "48000", "96000"):
+        for option in ("22050", "44100", "48000", "96000"):
             sample_rate_buttons.prop_enum(eng_settings, "ace_file_working_sample_rate", option)
         if src:
             layout.prop(src, "enable_preprocessing", text="Enable Source Preprocessing")
@@ -1691,7 +2129,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
             right = split.column(align=True)
             right.prop(src, "freq_max", text="Max Hz")
             right.prop(src, "envelope_release", text="Release (ms)")
-        layout.prop(eng_settings, "auto_compile", text="Auto-Compile on Tree Updates")
+        layout.prop(eng_settings, "auto_compile", text="Auto-Compile Graph Changes")
 
 
 class ACE_PT_audio_sources(bpy.types.Panel):
@@ -1769,6 +2207,13 @@ class ACE_PT_audio_sources(bpy.types.Panel):
                 icon="ERROR",
             )
 
+        # File-format error from filepath validation or failed SourceTask._load_source().
+        file_error = str(getattr(active_source, "ace_source_error", "") or "")
+        if file_error and str(getattr(active_source, "source_type", "FILE")) == "FILE":
+            err_row = layout.row()
+            err_row.alert = True
+            err_row.label(text=file_error, icon="ERROR")
+
         # Analysis Data — only shown when the source is actually linked to audio.
         src_type = str(getattr(active_source, "source_type", "") or "").upper()
         filepath = str(getattr(active_source, "filepath", "") or "").strip()
@@ -1790,14 +2235,15 @@ class ACE_PT_audio_sources(bpy.types.Panel):
                 col.label(text="Metadata unavailable for the selected source.", icon="INFO")
 
 class ACE_PT_sub_tempo_meter(bpy.types.Panel):
-    """Sub-panel for per-source BPM and time-signature settings."""
+    """Sub-panel for per-source BPM and beats-per-bar settings."""
 
     bl_label = "Tempo & Meter"
     bl_idname = "ACE_PT_sub_tempo_meter"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
-    bl_parent_id = "ACE_PT_audio_sources" 
+    bl_parent_id = "ACE_PT_audio_sources"
+    bl_options = {'HIDE_HEADER'}
 
     @classmethod
     def poll(cls, context):
@@ -1813,7 +2259,44 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
         if not src:
             layout.label(text="No Source Selected")
             return
-        
+
+        panel_prop = getattr(layout, "panel_prop", None)
+        if callable(panel_prop):
+            try:
+                header, panel = panel_prop(src, "tempo_meter_panel_open")
+                header.label(text=self.bl_label)
+                if panel is None:
+                    return
+                layout = panel
+            except Exception:
+                pass
+
+        trigger_row = layout.row()
+        trigger_row.enabled = bool(
+            str(getattr(src, "source_type", "") or "").upper() == "FILE"
+            and str(getattr(src, "filepath", "") or "").strip()
+        )
+        trigger_row.operator(
+            "audiocore.detect_source_tempo_meter",
+            text="Auto Detect BPM / BPB",
+            icon="FILE_REFRESH",
+        )
+
+        try:
+            detect_status = str(src.get("ace_tempo_detect_status", "") or "")
+            detect_message = str(src.get("ace_tempo_detect_message", "") or "")
+        except Exception:
+            detect_status = ""
+            detect_message = ""
+        if detect_status == "pending":
+            layout.label(text=detect_message or "Tempo detection in progress...", icon="TIME")
+        elif detect_status == "ready":
+            layout.label(text=detect_message or "Tempo detection updated the active source.", icon="CHECKMARK")
+        elif detect_status == "failed":
+            warn = layout.row()
+            warn.alert = True
+            warn.label(text=detect_message or "Tempo detection failed.", icon="ERROR")
+
         row = layout.row(align=True)
         row.prop(src, "bpm", text="BPM")
         row.prop(src, "beats_per_bar", text="Beats/Bar")
@@ -1822,7 +2305,7 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
 class ACE_PT_information_streams(bpy.types.Panel):
     """Panel listing all ACE graph nodes for the active source with live values."""
 
-    bl_label = "Information Streams"
+    bl_label = "Active Operators"
     bl_idname = "ACE_PT_information_streams"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1837,17 +2320,18 @@ class ACE_PT_information_streams(bpy.types.Panel):
         from ..utils import _get_active_source
         layout = self.layout
         _, active_source = _get_active_source(context)
-        layout.label(text="Active Operators:", icon="NODETREE")
         if not active_source:
             return
-        
-        row = layout.row()
-        row.template_list(
+
+        refresh_row = layout.row(align=True)
+        refresh_row.operator("audiocore.refresh_stream_list", icon="FILE_REFRESH", text="Refresh Active Node List")
+
+        list_col = layout.column()
+        list_col.template_list(
             "ACE_UL_dummy_tree", "",
             active_source, "ui_nodes",
             active_source, "active_ui_node_index"
         )
-        row.operator("audiocore.refresh_stream_list", icon="FILE_REFRESH", text="")
         if _selected_node_has_operator_settings(context):
             _draw_selected_node_operator_settings(layout, context)
 
@@ -1893,30 +2377,55 @@ class ACE_PT_capture_influx(bpy.types.Panel):
 
 
 class ACE_PT_stream_confluence(bpy.types.Panel):
-    """Panel for selecting the Geometry Nodes target object that hosts the ACE tree."""
+    """Read-only ledger of compiled source-to-frontend routing."""
 
-    bl_label = "Geometry Target"
+    bl_label = "Active ACE Instances"
     bl_idname = "ACE_PT_stream_confluence"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
     bl_order = 5
-    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
-        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
+        return (
+            hasattr(context.scene, "audiocore")
+            and not _ui_is_blocked(context)
+            and _has_ace_nodes_in_trees
+        )
 
     def draw(self, context):
         layout = self.layout
-        ace = getattr(context.scene, "audiocore", None)
-        if not ace:
-            layout.label(text="AudioCore settings unavailable.", icon="ERROR")
+        ledger_rows = _compiled_source_instance_rows(getattr(context, "scene", None))
+        if ledger_rows is None or not ledger_rows:
+            layout.label(text="Engine offline or no sources found.")
             return
-        layout.prop(ace, "gn_target_object", text="GN Target")
-        row = layout.row(align=True)
-        row.operator("audiocore.set_target_object", text="Use Active", icon="RESTRICT_SELECT_OFF").target = 'ACTIVE'
-        row.operator("audiocore.set_target_object", text="Use ACE_Sonar", icon="OUTLINER_OB_EMPTY").target = 'SONAR'
+        for entry in ledger_rows:
+            source_box = layout.box()
+            header = source_box.row(align=True)
+            source_icon = _source_list_icon(entry.get("source_prop"))
+            header.label(text=str(entry.get("display_name", "") or "Unnamed Source"), icon=source_icon)
+
+            frontend_refs = list(entry.get("frontend_refs", []) or [])
+            if not frontend_refs:
+                empty_row = source_box.row(align=True)
+                empty_row.separator(factor=2.0)
+                empty_row.label(text="No connected instances")
+                continue
+
+            for frontend_ref in frontend_refs:
+                frontend_row = source_box.row(align=True)
+                frontend_row.separator(factor=2.0)
+                frontend_kind = str(getattr(frontend_ref, "kind", "") or "")
+                split = frontend_row.split(factor=0.62, align=True)
+                object_col = split.row(align=True)
+                object_col.label(text=_frontend_object_name(frontend_ref), icon='OBJECT_DATA')
+                type_col = split.row(align=True)
+                type_col.alignment = 'RIGHT'
+                type_col.label(
+                    text=_frontend_instance_type(frontend_kind),
+                    icon=_frontend_kind_icon(frontend_kind),
+                )
 
 
 # --- REGISTRATION ---
@@ -1947,10 +2456,11 @@ def register():
 
 def unregister():
     """Unregister all N-panel UI classes, stop the sync timer, and clear UI caches."""
-    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache
+    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
     _ui_timer_last_dirty_rebuild_ts = 0.0
+    _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
         "scene_key": 0,

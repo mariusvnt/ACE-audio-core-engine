@@ -4,15 +4,17 @@ from typing import Dict, Set, Any
 
 from .id_management import ACEIdManager
 from .abstract_tree import ACEAbstractTree
-from ..nodes.dummy_tree import ACEDummyNodeFactory
+from ..nodes.dummy_tree import ACEDummyNodeFactory, ensure_frontend_uid, FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER
+from .. import utils
 
 class ACEProxyManager:
-    """Manage proxy objects and write DSP results as Blender mesh attributes.
+    """Manage concrete Stage-C sinks for compiled ACE outputs.
 
     A proxy object is a single-vertex mesh stored in the hidden ACE_Internals
     collection.  Stream analysis results (floats, vectors, colors) are written
-    to named point-domain attributes on the proxy mesh each frame so Geometry
-    Nodes can read them via Named Attribute nodes.
+    either to named point-domain attributes on the proxy mesh each frame or to
+    object custom properties so Geometry Nodes and Shader Attribute nodes can
+    read them passively.
 
     The manager caches attribute RNA handles and last-written values to avoid
     redundant Blender API calls on frames where values have not changed.
@@ -23,12 +25,16 @@ class ACEProxyManager:
     SONAR_OBJECT_NAME = "ACE_Sonar"
     SONAR_MODIFIER_NAME = "ACE_Sonar_Mod"
     SONAR_TREE_NAME = "ACE_Sonar_Tree"
+    SONAR_SHADER_MATERIAL_NAME = "ACE_Sonar_Material"
+    _MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA = False
 
     def __init__(self, abstract_tree: ACEAbstractTree | None = None):
         self.abstract_tree = abstract_tree
-        self.output_defs: Dict[str, Dict[str, str]] = {}
+        self.output_defs: Dict[str, Dict[str, Any]] = {}
         self._attr_cache: Dict[str, Dict[str, Any]] = {}
         self._last_values: Dict[str, Dict[str, Any]] = {}
+        self._object_prop_cache: Dict[str, Any] = {}
+        self._last_object_prop_values: Dict[str, Dict[str, Any]] = {}
         self._write_buffer_cache: Dict[str, Dict[str, np.ndarray]] = {}
         if abstract_tree:
             self._cache_output_defs()
@@ -57,6 +63,43 @@ class ACEProxyManager:
         return scenes[0] if scenes else None
 
     @staticmethod
+    def _shader_tree_writes_are_unsafe(scene=None) -> bool:
+        scene = ACEProxyManager._resolve_scene(scene)
+        try:
+            from .audio_engine import ACEAudioEngine
+        except Exception:
+            return False
+        try:
+            return not bool(
+                ACEAudioEngine._structural_tree_writes_allowed(
+                    scene,
+                    frontend_kind=FRONTEND_KIND_SHADER,
+                    tree_bl_idname="ShaderNodeTree",
+                )
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _defer_shader_tree_sync(tree, scene=None) -> None:
+        if tree is None:
+            return
+        try:
+            ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, [])
+        except Exception:
+            pass
+        try:
+            from .audio_engine import ACEAudioEngine
+            resolved_scene = ACEProxyManager._resolve_scene(scene)
+            engine = ACEAudioEngine.get_instance(resolved_scene)
+            if engine is None and resolved_scene is not None:
+                engine = ACEAudioEngine.ensure_instance(resolved_scene)
+            if engine is not None:
+                engine.request_recompile(tree)
+        except Exception:
+            pass
+
+    @staticmethod
     def _ensure_internal_collection(scene=None) -> bpy.types.Collection:
         """Create or retrieve the hidden ACE_Internals collection.
 
@@ -71,6 +114,7 @@ class ACEProxyManager:
         Returns:
             The ACE_Internals bpy.types.Collection.
         """
+        utils.assert_main_thread("_ensure_internal_collection")
         if ACEProxyManager.COLLECTION_NAME in bpy.data.collections:
             col = bpy.data.collections[ACEProxyManager.COLLECTION_NAME]
         else:
@@ -111,6 +155,7 @@ class ACEProxyManager:
         Returns:
             The proxy Blender Object.  Also writes source_prop.proxy_object_name.
         """
+        utils.assert_main_thread("ensure_proxy_for_source")
         try:
             ACEIdManager.ensure_source_uid(source_prop)
         except Exception:
@@ -165,6 +210,7 @@ class ACEProxyManager:
             obj: The bpy.types.Object to relocate.
             scene: Optional Blender scene; forwarded to _ensure_internal_collection().
         """
+        utils.assert_main_thread("_move_to_internal_collection")
         target_col = ACEProxyManager._ensure_internal_collection(scene=scene)
         if obj.name in target_col.objects:
             return
@@ -185,6 +231,7 @@ class ACEProxyManager:
             source_prop: An ACEAudioSource property-group instance whose
                 proxy_object_name identifies the object to delete.
         """
+        utils.assert_main_thread("delete_proxy_for_source")
         if not source_prop.proxy_object_name:
             return
 
@@ -213,12 +260,15 @@ class ACEProxyManager:
         """
         self.abstract_tree = abstract_tree
         self.output_defs.clear()
+        self._object_prop_cache.clear()
+        self._last_object_prop_values.clear()
         self._cache_output_defs()
 
     def _cache_output_defs(self):
         """Precompute attribute slugs and Blender data types for all writeable outputs.
 
-        Iterates over stream, source_specs, and scanner nodes in the abstract tree.
+        Iterates over stream, source_specs, util_rolling_avg, and stream_accumulator
+        nodes in the abstract tree.
         For each non-bundle output socket, builds a dict entry keyed by
         ``"<node_id>:<socket_idx>"`` containing the derived attribute name slug,
         Blender attribute type, and any user-supplied Attribute ID overrides.
@@ -231,8 +281,9 @@ class ACEProxyManager:
         for node in self.abstract_tree.nodes.values():
             is_stream = node.category == 'stream'
             is_source_specs = node.type == 'src_specs' and node.category == 'utilities'
-            is_scanner = node.type == 'scanner' and node.category == 'utilities'
-            if not (is_stream or is_source_specs or is_scanner):
+            is_rolling_avg = node.type == 'util_rolling_avg' and node.category == 'utilities'
+            is_stream_accumulator = node.type == 'stream_accumulator' and node.category == 'utilities'
+            if not (is_stream or is_source_specs or is_rolling_avg or is_stream_accumulator):
                 continue
 
             for sock in node.outputs:
@@ -256,6 +307,8 @@ class ACEProxyManager:
                     "output_name": sock.name,
                     "attr_id": attr_id,
                     "attr_custom": attr_custom,
+                    "frontend_uid": str(getattr(node, "frontend_uid", "") or ""),
+                    "frontend_kind": str(getattr(node, "frontend_kind", "") or ""),
                 }
 
     @staticmethod
@@ -339,6 +392,7 @@ class ACEProxyManager:
             prune_existing: When True, also remove ACE attributes not in the
                 required set even for a scoped (non-None active_keys) sync.
         """
+        utils.assert_main_thread("ensure_attributes_exist")
         mesh = getattr(proxy, "data", None)
         if not mesh:
             return
@@ -425,7 +479,308 @@ class ACEProxyManager:
         """
         self._attr_cache.clear()
         self._last_values.clear()
+        self._object_prop_cache.clear()
+        self._last_object_prop_values.clear()
         self._write_buffer_cache.clear()
+
+    @staticmethod
+    def _zero_value_for_type(attr_type: str):
+        if attr_type == "FLOAT_VECTOR":
+            return [0.0, 0.0, 0.0]
+        if attr_type == "FLOAT_COLOR":
+            return [0.0, 0.0, 0.0, 1.0]
+        return 0.0
+
+    @staticmethod
+    def _values_equal(prev, curr) -> bool:
+        if isinstance(prev, (int, float)) and isinstance(curr, (int, float)):
+            return abs(float(prev) - float(curr)) <= 1e-6
+        if isinstance(prev, np.ndarray):
+            prev = prev.tolist()
+        if isinstance(curr, np.ndarray):
+            curr = curr.tolist()
+        if isinstance(prev, (list, tuple)) and isinstance(curr, (list, tuple)):
+            try:
+                return bool(np.allclose(np.asarray(prev, dtype=np.float32), np.asarray(curr, dtype=np.float32), atol=1e-6))
+            except Exception:
+                return False
+        return prev == curr
+
+    @staticmethod
+    def _normalize_object_prop_value(value, attr_type: str):
+        if attr_type == "FLOAT":
+            try:
+                return float(value)
+            except Exception:
+                return 0.0
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        if not isinstance(value, (list, tuple)):
+            value = [float(value)] if isinstance(value, (int, float)) else []
+        target_len = 4 if attr_type == "FLOAT_COLOR" else 3
+        flat = np.zeros(target_len, dtype=np.float32)
+        arr = np.asarray(list(value), dtype=np.float32).ravel() if value else np.zeros(0, dtype=np.float32)
+        if arr.size > 0:
+            flat[: min(target_len, arr.size)] = arr[:target_len]
+        if attr_type == "FLOAT_COLOR" and arr.size < 4:
+            flat[3] = 1.0
+        return [float(v) for v in flat.tolist()]
+
+    @staticmethod
+    def _mesh_data_idblock(obj):
+        if obj is None:
+            return None
+        data = getattr(obj, "data", None)
+        if data is None:
+            return None
+        if not hasattr(data, "keys"):
+            return None
+        return data
+
+    @staticmethod
+    def prune_object_ace_properties(obj, active_prop_names: set[str]) -> bool:
+        """Remove stale ACE_* custom properties from *obj* not in *active_prop_names*.
+
+        Called once per compile after all active bindings are known, preventing
+        accumulation of properties from nodes that were disconnected or deleted.
+
+        Returns True if any properties were removed.
+        """
+        stale = [
+            k for k in list(obj.keys() if hasattr(obj, "keys") else [])
+            if str(k).startswith(ACEIdManager.PREFIX) and str(k) not in active_prop_names
+        ]
+        if not stale:
+            return False
+        for k in stale:
+            try:
+                del obj[k]
+            except Exception:
+                pass
+        try:
+            obj.update_tag(refresh={"OBJECT"})
+        except Exception:
+            try:
+                obj.update_tag()
+            except Exception:
+                pass
+        return True
+
+    def ensure_object_property_sinks(self, object_name: str, bindings, prune: bool = False) -> bool:
+        utils.assert_main_thread("ensure_object_property_sinks")
+        obj = self._object_prop_cache.get(object_name)
+        if obj is not None and str(getattr(obj, "name", "") or "") != str(object_name or ""):
+            obj = None
+        if obj is None:
+            obj = bpy.data.objects.get(object_name)
+            if obj is None:
+                return False
+            self._object_prop_cache[object_name] = obj
+        mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
+        mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
+        active_prop_names: set[str] = set()
+        layout_changed = False
+        for binding in bindings or []:
+            prop_name = str(getattr(binding, "target_data_name", "") or "")
+            if not prop_name:
+                continue
+            active_prop_names.add(prop_name)
+            zero_value = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
+            already_exists = prop_name in obj.keys()
+            if not already_exists:
+                try:
+                    obj[prop_name] = zero_value
+                    layout_changed = True
+                except Exception:
+                    pass
+            if mesh_data is not None:
+                try:
+                    if prop_name not in mesh_data.keys():
+                        mesh_data[prop_name] = zero_value
+                        layout_changed = True
+                except Exception:
+                    pass
+        if prune:
+            if self.prune_object_ace_properties(obj, active_prop_names):
+                layout_changed = True
+        if layout_changed:
+            try:
+                if mirror_to_data:
+                    obj.update_tag(refresh={"OBJECT", "DATA"})
+                else:
+                    obj.update_tag(refresh={"OBJECT"})
+            except Exception:
+                try:
+                    obj.update_tag()
+                except Exception:
+                    pass
+        return True
+
+    def update_object_property_sinks(self, object_name: str, prop_values: Dict[str, Any], prop_types: Dict[str, str]) -> bool:
+        utils.assert_main_thread("update_object_property_sinks")
+        if not prop_values:
+            return True
+        obj = self._object_prop_cache.get(object_name)
+        if obj is not None and str(getattr(obj, "name", "") or "") != str(object_name or ""):
+            obj = None
+        if obj is None:
+            obj = bpy.data.objects.get(object_name)
+            if obj is None:
+                return False
+            self._object_prop_cache[object_name] = obj
+        mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
+        mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
+        last_vals = self._last_object_prop_values.setdefault(object_name, {})
+        changed_specs: list[tuple[str, str, Any]] = []
+        for prop_name, raw_value in prop_values.items():
+            if not prop_name:
+                continue
+            attr_type = str((prop_types or {}).get(prop_name, "FLOAT") or "FLOAT")
+            norm_value = self._normalize_object_prop_value(raw_value, attr_type)
+            prev_value = last_vals.get(prop_name)
+            if self._values_equal(prev_value, norm_value):
+                continue
+            changed_specs.append((prop_name, attr_type, norm_value))
+        if not changed_specs:
+            return True
+
+        changed_values: Dict[str, Any] = {}
+        for prop_name, attr_type, norm_value in changed_specs:
+            wrote = False
+            try:
+                obj[prop_name] = norm_value
+                wrote = True
+            except Exception:
+                try:
+                    zero_value = self._zero_value_for_type(attr_type)
+                    obj[prop_name] = zero_value
+                    norm_value = zero_value
+                    wrote = True
+                except Exception:
+                    pass
+            if wrote:
+                changed_values[prop_name] = norm_value
+
+        if mesh_data is not None and changed_values:
+            for prop_name, norm_value in changed_values.items():
+                try:
+                    current_val = mesh_data.get(prop_name, None)
+                except Exception:
+                    current_val = None
+                if self._values_equal(current_val, norm_value):
+                    continue
+                try:
+                    mesh_data[prop_name] = norm_value
+                except Exception:
+                    pass
+
+        if changed_values:
+            last_vals.update(changed_values)
+            try:
+                if mirror_to_data:
+                    obj.update_tag(refresh={"OBJECT", "DATA"})
+                else:
+                    obj.update_tag(refresh={"OBJECT"})
+            except Exception:
+                try:
+                    obj.update_tag()
+                except Exception:
+                    pass
+        return True
+
+    def prune_consumer_objects(self, active_props_by_object: Dict[str, Set[str]]) -> bool:
+        """Remove stale ACE_* properties from all consumer objects in the scene.
+
+        *active_props_by_object* maps object name → set of currently-active ACE
+        property names for that object.  Objects that had ACE properties in a
+        previous compile but no longer appear in *active_props_by_object* get
+        all their ACE_* properties removed.  Objects that appear but have fewer
+        active properties get the extras removed (handled by prune_object_ace_properties).
+
+        Called once per engine compile cycle after all sink layouts are resolved.
+        """
+        utils.assert_main_thread("prune_consumer_objects")
+        changed = False
+        try:
+            all_objects = bpy.data.objects
+        except AttributeError:
+            return False
+        for obj in all_objects:
+            obj_name = str(getattr(obj, "name", "") or "")
+            try:
+                ace_props = [k for k in list(obj.keys()) if str(k).startswith(ACEIdManager.PREFIX)]
+            except Exception:
+                ace_props = []
+            if not ace_props:
+                continue
+            active = active_props_by_object.get(obj_name, set())
+            if self.prune_object_ace_properties(obj, active):
+                changed = True
+        return changed
+
+    def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):
+        """Ensure all concrete sink targets for *graph* exist."""
+        utils.assert_main_thread("ensure_sink_layout")
+        proxy_keys_by_object: Dict[str, Set[str]] = {}
+        object_bindings: Dict[str, list[Any]] = {}
+        keys = set(self.output_defs.keys()) if active_keys is None else set(active_keys)
+        for attr_key in keys:
+            for binding in list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or []):
+                sink_kind = str(getattr(binding, "sink_kind", "") or "")
+                target_obj_name = str(getattr(binding, "target_object_name", "") or "")
+                if sink_kind == "PROXY_ATTRIBUTE" and target_obj_name:
+                    proxy_keys_by_object.setdefault(target_obj_name, set()).add(attr_key)
+                elif sink_kind == "OBJECT_PROPERTY" and target_obj_name:
+                    object_bindings.setdefault(target_obj_name, []).append(binding)
+
+        geometry_proxy_names: set[str] = set()
+        for proxy_name, attr_keys in proxy_keys_by_object.items():
+            proxy = bpy.data.objects.get(proxy_name)
+            if proxy is None:
+                continue
+            self.ensure_attributes_exist(proxy, self.abstract_tree, active_keys=set(attr_keys), prune_existing=True)
+            geometry_proxy_names.add(str(proxy_name))
+        for object_name, bindings in object_bindings.items():
+            self.ensure_object_property_sinks(object_name, bindings, prune=True)
+        return geometry_proxy_names
+
+    def commit_results(self, graph, results: Dict[str, Any], active_keys: Set[str] | None = None):
+        """Fan out compiled graph results into concrete sink targets."""
+        utils.assert_main_thread("commit_results")
+        keys = set(results.keys()) if active_keys is None else set(active_keys)
+        proxy_results: Dict[str, Dict[str, Any]] = {}
+        object_prop_values: Dict[str, Dict[str, Any]] = {}
+        object_prop_types: Dict[str, Dict[str, str]] = {}
+        for attr_key in keys:
+            if attr_key not in results:
+                continue
+            value = results[attr_key]
+            for binding in list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or []):
+                sink_kind = str(getattr(binding, "sink_kind", "") or "")
+                object_name = str(getattr(binding, "target_object_name", "") or "")
+                if not object_name:
+                    continue
+                if sink_kind == "PROXY_ATTRIBUTE":
+                    proxy_results.setdefault(object_name, {})[attr_key] = value
+                elif sink_kind == "OBJECT_PROPERTY":
+                    prop_name = str(getattr(binding, "target_data_name", "") or "")
+                    if not prop_name:
+                        continue
+                    object_prop_values.setdefault(object_name, {})[prop_name] = value
+                    object_prop_types.setdefault(object_name, {})[prop_name] = str(getattr(binding, "attr_type", "FLOAT") or "FLOAT")
+
+        geometry_proxy_names: set[str] = set()
+        for proxy_name, proxy_values in proxy_results.items():
+            proxy = bpy.data.objects.get(proxy_name)
+            if proxy is None:
+                continue
+            self.update_proxy_object(proxy, proxy_values, active_keys=set(proxy_values.keys()))
+            geometry_proxy_names.add(str(proxy_name))
+        for object_name, prop_values in object_prop_values.items():
+            self.update_object_property_sinks(object_name, prop_values, object_prop_types.get(object_name, {}))
+        return geometry_proxy_names
 
     def update_proxy_object(self, proxy: bpy.types.Object, results: Dict[str, Any], active_keys: Set[str] | None = None):
         """Write DSP result values into the proxy mesh's named attributes.
@@ -449,6 +804,7 @@ class ACEProxyManager:
             active_keys: Optional subset of keys to process.  None means all keys
                 present in results.
         """
+        utils.assert_main_thread("update_proxy_object")
         mesh = getattr(proxy, "data", None)
         if not mesh:
             return
@@ -526,7 +882,7 @@ class ACEProxyManager:
                         attr.data[0].vector = tuple(float(x) for x in vec.tolist())
                     else:
                         buf = self._get_write_buffer(mesh.name, attr_name, count * 3)
-                        buf.reshape(count, 3)[:] = vec
+                        np.copyto(buf.reshape(count, 3), vec)
                         attr.data.foreach_set("vector", buf)
                 elif dtype == 'FLOAT_COLOR':
                     col = last_vals.get(attr_name)
@@ -536,7 +892,7 @@ class ACEProxyManager:
                         attr.data[0].color = tuple(float(x) for x in col.tolist())
                     else:
                         buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
-                        buf.reshape(count, 4)[:] = col
+                        np.copyto(buf.reshape(count, 4), col)
                         attr.data.foreach_set("color", buf)
             except Exception:
                 # Fallback to zeroing on failure
@@ -651,6 +1007,7 @@ class ACEProxyManager:
 
         if tree:
             ACEProxyManager._sync_sonar_tree(tree, sources or [])
+        ACEProxyManager.ensure_sonar_shader_setup(scene, sources, obj=obj)
         try:
             ace = getattr(scene, "audiocore", None)
             if ace and not getattr(ace, "gn_target_object", None):
@@ -682,11 +1039,271 @@ class ACEProxyManager:
         return obj
 
     @staticmethod
+    def ensure_sonar_shader_setup(scene, sources, obj=None):
+        """Create or refresh a managed shader frontend material on ACE_Sonar."""
+        if scene is None:
+            return None
+
+        if obj is None:
+            obj = bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME)
+        if obj is None:
+            return None
+
+        material = None
+        for slot in getattr(obj, "material_slots", []) or []:
+            slot_mat = getattr(slot, "material", None)
+            if slot_mat is None:
+                continue
+            if str(getattr(slot_mat, "name", "") or "") == ACEProxyManager.SONAR_SHADER_MATERIAL_NAME:
+                material = slot_mat
+                break
+
+        if material is None and sources:
+            material = bpy.data.materials.get(ACEProxyManager.SONAR_SHADER_MATERIAL_NAME)
+            if material is None:
+                material = bpy.data.materials.new(ACEProxyManager.SONAR_SHADER_MATERIAL_NAME)
+
+            obj_materials = getattr(getattr(obj, "data", None), "materials", None)
+            linked = False
+            if obj_materials is not None:
+                for candidate in obj_materials:
+                    if candidate == material:
+                        linked = True
+                        break
+                if not linked:
+                    try:
+                        obj_materials.append(material)
+                        linked = True
+                    except Exception:
+                        pass
+            if not linked:
+                try:
+                    obj.active_material = material
+                except Exception:
+                    pass
+
+        if material is None:
+            return None
+
+        try:
+            if not bool(getattr(material, "use_nodes", False)):
+                material.use_nodes = True
+        except Exception:
+            pass
+
+        tree = getattr(material, "node_tree", None)
+        if tree is None:
+            return None
+
+        try:
+            ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)
+        except Exception:
+            pass
+        return tree
+
+    @staticmethod
+    def _frontend_kind_for_tree(tree) -> str:
+        tree_type = str(getattr(tree, "bl_idname", "") or "")
+        if tree_type == "ShaderNodeTree":
+            return FRONTEND_KIND_SHADER
+        return FRONTEND_KIND_GEOMETRY
+
+    @staticmethod
+    def _source_group_factory_for_tree(tree):
+        frontend_kind = ACEProxyManager._frontend_kind_for_tree(tree)
+        if frontend_kind == FRONTEND_KIND_SHADER:
+            from ..nodes.shader_tree import ACEShaderNodeFactory
+            return ACEShaderNodeFactory
+        return ACEDummyNodeFactory
+
+    @staticmethod
+    def _source_group_node_type_for_tree(tree) -> str:
+        return "ShaderNodeGroup" if ACEProxyManager._frontend_kind_for_tree(tree) == FRONTEND_KIND_SHADER else "GeometryNodeGroup"
+
+    @staticmethod
+    def _managed_source_ace_id(frontend_uid: str, source_id: str, existing_ids=None) -> str:
+        return ACEIdManager.generate_node_id(
+            "source_mngmt",
+            "src",
+            existing_ids=list(existing_ids or []),
+            deterministic_seed=f"{frontend_uid}:source:{source_id}",
+        )
+
+    @staticmethod
+    def sync_managed_source_tree(tree: bpy.types.NodeTree, sources, scene=None):
+        """Sync managed ACE source placeholders in any supported top-level tree."""
+        utils.assert_main_thread("sync_managed_source_tree")
+        if tree is None:
+            return
+        if (
+            ACEProxyManager._frontend_kind_for_tree(tree) == FRONTEND_KIND_SHADER
+            and ACEProxyManager._shader_tree_writes_are_unsafe(scene)
+        ):
+            ACEProxyManager._defer_shader_tree_sync(tree, scene)
+            return
+
+        factory_cls = ACEProxyManager._source_group_factory_for_tree(tree)
+        try:
+            factory_cls.ensure_node_groups_exist()
+        except Exception:
+            pass
+
+        frontend_kind = ACEProxyManager._frontend_kind_for_tree(tree)
+        frontend_uid = ensure_frontend_uid(tree, frontend_kind, [])
+        base_group_name = factory_cls.get_group_name("source_mngmt", "src")
+        base_group = bpy.data.node_groups.get(base_group_name)
+        group_node_type = ACEProxyManager._source_group_node_type_for_tree(tree)
+
+        desired_sources: list[tuple[str, str, Any]] = []
+        existing_source_ids: list[str] = [
+            str(node.get("ace_source_id") or "")
+            for node in getattr(tree, "nodes", [])
+            if getattr(node, "get", None) and node.get("ace_source_id")
+        ]
+        for src in sources or []:
+            try:
+                src_id = ACEIdManager.ensure_source_uid(src, existing_ids=existing_source_ids)
+            except Exception:
+                src_id = getattr(src, "stable_id", "") or getattr(src, "name", "Source")
+            if src_id and src_id not in existing_source_ids:
+                existing_source_ids.append(src_id)
+            desired_sources.append((str(src_id or ""), getattr(src, "name", "Source"), src))
+
+        def _is_managed_source_node(node: bpy.types.Node) -> bool:
+            if getattr(node, "type", "") != "GROUP":
+                return False
+            try:
+                if node.get("ace_source_id"):
+                    return True
+            except Exception:
+                pass
+            ace_id = ""
+            try:
+                ace_id = str(node.get("ace_id", "") or "")
+            except Exception:
+                ace_id = ""
+            parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
+            if not parsed:
+                return False
+            if parsed.get("category") != "source_mngmt" or parsed.get("type") != "src":
+                return False
+            node_tree = getattr(node, "node_tree", None)
+            return bool(base_group and node_tree == base_group)
+
+        managed_nodes: list[bpy.types.Node] = [n for n in getattr(tree, "nodes", []) if _is_managed_source_node(n)]
+        node_by_source_id: Dict[str, bpy.types.Node] = {}
+        unassigned_nodes: list[bpy.types.Node] = []
+        duplicate_nodes: list[bpy.types.Node] = []
+        for node in managed_nodes:
+            try:
+                src_id = str(node.get("ace_source_id", "") or "")
+            except Exception:
+                src_id = ""
+            if src_id:
+                if src_id in node_by_source_id:
+                    duplicate_nodes.append(node)
+                else:
+                    node_by_source_id[src_id] = node
+            else:
+                unassigned_nodes.append(node)
+        for node in duplicate_nodes:
+            try:
+                tree.nodes.remove(node)
+            except Exception:
+                pass
+
+        desired_ids = {src_id for src_id, _src_name, _src in desired_sources if src_id}
+        for src_id, node in list(node_by_source_id.items()):
+            if src_id in desired_ids:
+                continue
+            try:
+                tree.nodes.remove(node)
+            except Exception:
+                pass
+            node_by_source_id.pop(src_id, None)
+
+        def _take_reusable() -> bpy.types.Node | None:
+            if not unassigned_nodes:
+                return None
+            return unassigned_nodes.pop(0)
+
+        existing_node_ids = [
+            str(node.get("ace_id") or "")
+            for node in getattr(tree, "nodes", [])
+            if getattr(node, "get", None) and node.get("ace_id")
+        ]
+
+        for idx, (src_id, src_name, src) in enumerate(desired_sources):
+            node = node_by_source_id.get(src_id)
+            created_node = False
+            if node is None:
+                node = _take_reusable()
+            if node is None:
+                node = tree.nodes.new(group_node_type)
+                created_node = True
+            if base_group and getattr(node, "node_tree", None) != base_group:
+                node.node_tree = base_group
+            elif not getattr(node, "node_tree", None):
+                node.node_tree = base_group
+
+            ace_id = ACEProxyManager._managed_source_ace_id(frontend_uid, src_id, existing_ids=existing_node_ids)
+            if ace_id and ace_id not in existing_node_ids:
+                existing_node_ids.append(ace_id)
+            try:
+                node["ace_id"] = ace_id
+            except Exception:
+                pass
+            try:
+                node["ace_source_id"] = src_id
+            except Exception:
+                pass
+            try:
+                node["ace_source_name"] = src_name
+            except Exception:
+                pass
+            node.label = src_name
+            node.name = src_name
+            if created_node:
+                try:
+                    node.location = (0, -220 * idx)
+                except Exception:
+                    pass
+
+            if frontend_kind == FRONTEND_KIND_GEOMETRY:
+                try:
+                    proxy_obj = bpy.data.objects.get(getattr(src, "proxy_object_name", ""))
+                    proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
+                    if proxy_obj and proxy_socket:
+                        proxy_socket.default_value = proxy_obj
+                except Exception:
+                    pass
+            elif frontend_kind == FRONTEND_KIND_SHADER:
+                try:
+                    proxy_name = str(getattr(src, "proxy_object_name", "") or "")
+                    proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
+                    if proxy_socket and proxy_name:
+                        try:
+                            current = getattr(proxy_socket, "default_value", None)
+                        except Exception:
+                            current = None
+                        if isinstance(current, str):
+                            proxy_socket.default_value = proxy_name
+                except Exception:
+                    pass
+
+        for node in unassigned_nodes:
+            try:
+                tree.nodes.remove(node)
+            except Exception:
+                pass
+
+    @staticmethod
     def _sync_sonar_tree(tree: bpy.types.NodeTree, sources):
         """
         Incrementally updates the sonar GN tree to include one managed ACE source
         node per audio source without touching user processing nodes.
         """
+        utils.assert_main_thread("_sync_sonar_tree")
         if tree is None:
             return
 
@@ -731,179 +1348,7 @@ class ACEProxyManager:
                 tree.links.new(input_node.outputs["Geometry"], geom_out_sock)
             except Exception:
                 pass
-
-        desired_sources: list[tuple[str, str, Any]] = []
-        existing_ids: list[str] = [
-            node.get('ace_source_id')
-            for node in tree.nodes
-            if getattr(node, "get", None) and node.get('ace_source_id')
-        ]
-        for src in sources or []:
-            try:
-                src_id = ACEIdManager.ensure_source_uid(src, existing_ids=existing_ids)
-            except Exception:
-                src_id = getattr(src, "stable_id", "") or getattr(src, "name", "Source")
-            if src_id and src_id not in existing_ids:
-                existing_ids.append(src_id)
-            desired_sources.append((src_id, getattr(src, "name", "Source"), src))
-
-        def _is_managed_source_node(node: bpy.types.Node) -> bool:
-            if node.type != 'GROUP':
-                return False
-            try:
-                if node.get("ace_source_id"):
-                    return True
-            except Exception:
-                pass
-
-            ace_id = ""
-            try:
-                ace_id = node.get("ace_id", "")
-            except Exception:
-                ace_id = ""
-            parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
-            if not parsed:
-                return False
-            if parsed.get("category") != "source_mngmt" or parsed.get("type") != "src":
-                return False
-
-            node_tree = getattr(node, "node_tree", None)
-            if node_tree is None:
-                return False
-            return bool(base_group and node_tree == base_group)
-
-        managed_nodes: list[bpy.types.Node] = [n for n in tree.nodes if _is_managed_source_node(n)]
-
-        node_by_id: Dict[str, bpy.types.Node] = {}
-        unassigned_nodes: list[bpy.types.Node] = []
-        seen_unassigned_names: Set[str] = set()
-        duplicate_nodes: list[bpy.types.Node] = []
-        for node in managed_nodes:
-            src_id = ""
-            try:
-                src_id = str(node.get("ace_source_id", "") or "")
-            except Exception:
-                src_id = ""
-            if src_id:
-                if src_id in node_by_id:
-                    duplicate_nodes.append(node)
-                    continue
-                node_by_id[src_id] = node
-                continue
-
-            source_name = ""
-            try:
-                source_name = str(node.get("ace_source_name", "") or node.label or "")
-            except Exception:
-                source_name = ""
-            if source_name and source_name in seen_unassigned_names:
-                duplicate_nodes.append(node)
-                continue
-            if source_name:
-                seen_unassigned_names.add(source_name)
-            unassigned_nodes.append(node)
-
-        for node in duplicate_nodes:
-            try:
-                tree.nodes.remove(node)
-            except Exception:
-                pass
-
-        desired_ids = {sid for sid, _, _ in desired_sources if sid}
-        desired_names = {name for _, name, _ in desired_sources}
-
-        # Remove stale managed source nodes only.
-        for node_id, node in list(node_by_id.items()):
-            if node_id in desired_ids:
-                continue
-            try:
-                tree.nodes.remove(node)
-            except Exception:
-                pass
-            node_by_id.pop(node_id, None)
-
-        reusable_nodes: list[bpy.types.Node] = []
-        for node in unassigned_nodes:
-            source_name = ""
-            try:
-                source_name = str(node.get("ace_source_name", "") or node.label or "")
-            except Exception:
-                source_name = ""
-            if source_name and source_name not in desired_names:
-                try:
-                    tree.nodes.remove(node)
-                except Exception:
-                    pass
-                continue
-            reusable_nodes.append(node)
-
-        def _take_reusable(preferred_name: str) -> bpy.types.Node | None:
-            for i, node in enumerate(reusable_nodes):
-                source_name = ""
-                try:
-                    source_name = str(node.get("ace_source_name", "") or node.label or "")
-                except Exception:
-                    source_name = ""
-                if source_name == preferred_name:
-                    return reusable_nodes.pop(i)
-            if reusable_nodes:
-                return reusable_nodes.pop(0)
-            return None
-
-        # Add or update source placeholders for current sources.
-        for idx, (src_id, src_name, src) in enumerate(desired_sources):
-            node = node_by_id.get(src_id)
-            created_node = False
-            if node is None:
-                node = _take_reusable(src_name)
-            if node is None:
-                node = tree.nodes.new('GeometryNodeGroup')
-                node.location = (0, -220 * idx)
-                created_node = True
-
-            if base_group and node.node_tree != base_group:
-                node.node_tree = base_group
-            elif not node.node_tree:
-                node.node_tree = base_group
-
-            try:
-                node['ace_id'] = src_id
-            except Exception:
-                pass
-            try:
-                node['ace_source_id'] = src_id
-            except Exception:
-                pass
-            try:
-                node['ace_source_name'] = src_name
-            except Exception:
-                pass
-            node.label = src_name
-            node.name = src_name
-            node_by_id[src_id] = node
-
-            if created_node:
-                try:
-                    node.location.y = -220 * idx
-                except Exception:
-                    pass
-
-            try:
-                proxy_obj = bpy.data.objects.get(getattr(src, "proxy_object_name", ""))
-                proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-                if proxy_obj and proxy_socket:
-                    proxy_socket.default_value = proxy_obj
-            except Exception:
-                pass
-
-        for node in reusable_nodes:
-            try:
-                tree.nodes.remove(node)
-            except Exception:
-                pass
-
-        # Preserve user-authored Group Output sockets and links.
-        # Geometry passthrough above remains guaranteed for the sonar object.
+        ACEProxyManager.sync_managed_source_tree(tree, sources or [])
 
     # =========================================================================
     # 5. UTILS

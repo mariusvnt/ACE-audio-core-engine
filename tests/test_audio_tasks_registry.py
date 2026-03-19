@@ -400,7 +400,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertIsNone(chunk)
         self.assertEqual(task.source_context.live_status, task.last_error)
 
-    def test_source_specs_outputs_beats_per_frame(self):
+    def test_source_specs_outputs_frames_per_beat(self):
         class DummyCtx:
             source_type = "FILE"
             filepath = ""
@@ -418,57 +418,79 @@ class TestAudioTasksRegistry(unittest.TestCase):
         task.engine_ref = DummyEngine()
 
         chunk = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
-        bpf, ts_vec, beat_phase, _ = task.process({0: chunk})
+        frames_per_beat, beat_phase, _ = task.process({0: chunk})
 
-        self.assertAlmostEqual(float(bpf), 120.0 / (60.0 * 24.0), places=6)
-        self.assertAlmostEqual(float(ts_vec[0]), 1.0, places=6)
+        self.assertAlmostEqual(float(frames_per_beat), (60.0 * 24.0) / 120.0, places=6)
         self.assertAlmostEqual(float(beat_phase), 0.25, places=6)
 
-    def test_source_scanner_reports_latency_and_passthrough(self):
-        class DummyCtx:
-            source_type = "LIVE"
-            live_latency_ms = 50
-            sample_rate = 48000
+    def test_rolling_average_uses_fixed_frame_count(self):
+        task = atr.RollingAvgTask("rolling_node", {"in_1": 3}, block_size=128)
 
-        task = atr.SourceScannerTask("scanner_node", {}, block_size=480)
-        task.source_context = DummyCtx()
-        chunk = atr.AudioChunk(np.ones(480, dtype=np.float32), None, 48000, lineage=("src",))
+        self.assertAlmostEqual(float(task.process({0: 1.0})), 1.0, places=6)
+        self.assertAlmostEqual(float(task.process({0: 2.0})), 1.5, places=6)
+        self.assertAlmostEqual(float(task.process({0: 3.0})), 2.0, places=6)
+        self.assertAlmostEqual(float(task.process({0: 9.0})), (2.0 + 3.0 + 9.0) / 3.0, places=6)
+        self.assertAlmostEqual(float(task.process({0: 5.0, 1: 2})), 7.0, places=6)
 
-        latency_ms, out_chunk = task.process({0: chunk})
-        self.assertAlmostEqual(float(latency_ms), 60.0, places=4)
-        self.assertIs(out_chunk, chunk)
+    def test_stream_accumulator_persists_and_resets_on_timeline_rewind(self):
+        task = atr.StreamAccumulatorTask("accum_node", {}, block_size=128)
+        task.scene_frame_start = 1
 
-    def test_source_scanner_reports_block_latency_for_file_sources(self):
-        class DummyCtx:
-            source_type = "FILE"
-            sample_rate = 48000
+        task._current_frame_request = 1
+        self.assertAlmostEqual(float(task.process({0: 1.25})), 1.25, places=6)
+        task._current_frame_request = 2
+        self.assertAlmostEqual(float(task.process({0: 2.75})), 4.0, places=6)
+        task._current_frame_request = 3
+        self.assertAlmostEqual(float(task.process({0: -1.0})), 3.0, places=6)
 
-        task = atr.SourceScannerTask("scanner_node", {}, block_size=480)
-        task.source_context = DummyCtx()
-        chunk = atr.AudioChunk(np.ones(480, dtype=np.float32), None, 48000, lineage=("src",))
+        # Rewind to frame 1: accumulator should reset before adding the new value.
+        task._current_frame_request = 1
+        self.assertAlmostEqual(float(task.process({0: 5.0})), 5.0, places=6)
 
-        latency_ms, out_chunk = task.process({0: chunk})
-        self.assertAlmostEqual(float(latency_ms), 10.0, places=4)
-        self.assertIs(out_chunk, chunk)
+    def test_stream_accumulator_supports_vector_inputs(self):
+        task = atr.StreamAccumulatorTask("accum_vec_node", {}, block_size=64)
+        task.scene_frame_start = 1
 
-    def test_source_scanner_accumulates_chromagram_branch_latency(self):
-        sr = 48000
-        n = 960
-        base_chunk = atr.AudioChunk(
-            np.ones(n, dtype=np.float32),
-            None,
-            sr,
-            latency_ms=12.5,
-            lineage=("src",),
-        )
-        splitter = atr.FrequencySplitterTask("split_node", {"in_1": 400.0}, block_size=1024)
-        low_band = splitter.process({0: base_chunk})[0]
-        chroma = atr.ChromagramTask("chroma_node", {}, block_size=1024)
-        chroma_a = chroma.process({0: low_band})[9]
+        task._current_frame_request = 1
+        out_a = task.process({0: (1.0, 2.0, 3.0)})
+        self.assertTrue(np.allclose(np.asarray(out_a, dtype=np.float32), np.array([1.0, 2.0, 3.0], dtype=np.float32)))
 
-        scanner = atr.SourceScannerTask("scanner_node", {}, block_size=1024)
-        latency_ms, _ = scanner.process({0: chroma_a})
-        self.assertAlmostEqual(float(latency_ms), 22.5, places=4)
+        task._current_frame_request = 2
+        out_b = task.process({0: np.array([0.5, -1.0, 2.0], dtype=np.float32)})
+        self.assertTrue(np.allclose(np.asarray(out_b, dtype=np.float32), np.array([1.5, 1.0, 5.0], dtype=np.float32)))
+
+    def test_stream_accumulator_state_roundtrip_preserves_running_sum(self):
+        task_a = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
+        task_a.scene_frame_start = 1
+        task_a._current_frame_request = 1
+        self.assertAlmostEqual(float(task_a.process({0: 1.0})), 1.0, places=6)
+        task_a._current_frame_request = 2
+        self.assertAlmostEqual(float(task_a.process({0: 2.0})), 3.0, places=6)
+
+        snapshot = dict(task_a.export_state() or {})
+        self.assertIn("accumulator", snapshot)
+
+        task_b = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
+        task_b.scene_frame_start = 1
+        restored = task_b.import_state(snapshot)
+        self.assertTrue(restored)
+        task_b._current_frame_request = 3
+        self.assertAlmostEqual(float(task_b.process({0: 0.5})), 3.5, places=6)
+
+    def test_stream_accumulator_state_roundtrip_preserves_vector_sum(self):
+        task_a = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
+        task_a.scene_frame_start = 1
+        task_a._current_frame_request = 1
+        _ = task_a.process({0: np.array([1.0, 2.0], dtype=np.float32)})
+        task_a._current_frame_request = 2
+        _ = task_a.process({0: np.array([0.5, -1.0], dtype=np.float32)})
+
+        task_b = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
+        task_b.scene_frame_start = 1
+        self.assertTrue(task_b.import_state(dict(task_a.export_state() or {})))
+        task_b._current_frame_request = 3
+        out = np.asarray(task_b.process({0: np.array([0.25, 0.75], dtype=np.float32)}), dtype=np.float32)
+        self.assertTrue(np.allclose(out, np.array([1.75, 1.75], dtype=np.float32)))
 
     def test_masked_rms_prefers_provider_feature_path(self):
         calls = []
@@ -520,6 +542,67 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertTrue(np.isfinite(float(vec_val[0])))
         self.assertTrue(np.isfinite(float(vec_val[1])))
         self.assertTrue(np.isfinite(float(vec_val[2])))
+
+    def test_lufs_task_reports_floor_for_silence(self):
+        task = atr.LUFSTask("lufs_node", {}, block_size=512)
+        chunk = atr.AudioChunk(np.zeros(512, dtype=np.float32), None, 48000, lineage=("src",))
+        loudness = task.process({0: chunk})
+        self.assertAlmostEqual(float(loudness), 0.0, places=6)
+
+    def test_lufs_task_increases_with_signal_level(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        low = 0.05 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        high = 0.5 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        task = atr.LUFSTask("lufs_node", {}, block_size=n)
+
+        task._current_frame_request = 1
+        low_lufs = task.process({0: atr.AudioChunk(low, None, sr, lineage=("src", "low"))})
+        task._current_frame_request = 2
+        high_lufs = task.process({0: atr.AudioChunk(high, None, sr, lineage=("src", "high"))})
+
+        self.assertGreater(float(high_lufs), float(low_lufs))
+
+    def test_lufs_task_accepts_window_and_overlap_inputs(self):
+        n = 1024
+        sr = 44100
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        signal = 0.25 * np.sin(2.0 * np.pi * 1000.0 * t).astype(np.float32)
+        task = atr.LUFSTask("lufs_node", {}, block_size=n)
+        loudness = task.process(
+            {
+                0: atr.AudioChunk(signal, None, sr, lineage=("src",)),
+                1: 0.8,   # window seconds
+                2: 0.2,   # overlap ratio (0..1)
+            }
+        )
+        self.assertTrue(np.isfinite(float(loudness)))
+        self.assertGreaterEqual(float(loudness), 0.0)
+        self.assertLessEqual(float(loudness), 1.0)
+
+    def test_peak_task_reports_floor_for_silence(self):
+        task = atr.PeakTask("peak_node", {}, block_size=512)
+        chunk = atr.AudioChunk(np.zeros(512, dtype=np.float32), None, 48000, lineage=("src",))
+        peak = task.process({0: chunk})
+        self.assertAlmostEqual(float(peak), 0.0, places=6)
+
+    def test_peak_task_increases_with_signal_level(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        low = 0.05 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        high = 0.5 * np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        task = atr.PeakTask("peak_node", {}, block_size=n)
+
+        task._current_frame_request = 1
+        low_peak = task.process({0: atr.AudioChunk(low, None, sr, lineage=("src", "low"))})
+        task._current_frame_request = 2
+        high_peak = task.process({0: atr.AudioChunk(high, None, sr, lineage=("src", "high"))})
+
+        self.assertGreater(float(high_peak), float(low_peak))
+        self.assertGreaterEqual(float(high_peak), 0.0)
+        self.assertLessEqual(float(high_peak), 1.0)
 
     def test_preview_sink_audibly_masks_frequency_band(self):
         sr = 48000

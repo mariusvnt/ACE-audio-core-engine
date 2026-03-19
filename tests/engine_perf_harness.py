@@ -151,6 +151,13 @@ def _install_fake_bpy():
 
 
 def _install_engine_import_stubs():
+    core_pkg = types.ModuleType(f"{PKG_NAME}.core")
+    core_pkg.__path__ = []  # type: ignore[attr-defined]
+    sys.modules.setdefault(f"{PKG_NAME}.core", core_pkg)
+    nodes_pkg = types.ModuleType(f"{PKG_NAME}.nodes")
+    nodes_pkg.__path__ = []  # type: ignore[attr-defined]
+    sys.modules.setdefault(f"{PKG_NAME}.nodes", nodes_pkg)
+
     properties_mod = types.ModuleType(f"{PKG_NAME}.properties")
 
     class ACEAudioSource:  # pragma: no cover - type placeholder for imports
@@ -159,17 +166,31 @@ def _install_engine_import_stubs():
     properties_mod.ACEAudioSource = ACEAudioSource
     sys.modules[f"{PKG_NAME}.properties"] = properties_mod
 
-    dummy_tree_mod = types.ModuleType(f"{PKG_NAME}.dummy_tree")
+    dummy_tree_mod = types.ModuleType(f"{PKG_NAME}.nodes.dummy_tree")
 
     class ACEDummyTreeReader:  # pragma: no cover - compile path not used here
-        @staticmethod
-        def from_blender_tree(_tree):
+        def __init__(self, *_args, **_kwargs):
+            self.bl_tree = _kwargs.get("blender_node_tree")
+
+        def build(self):
             return None
 
     dummy_tree_mod.ACEDummyTreeReader = ACEDummyTreeReader
+    dummy_tree_mod.ensure_frontend_uid = lambda tree, _kind, _existing: getattr(tree, "ace_frontend_uid", "")
+    dummy_tree_mod.FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
+    dummy_tree_mod.FRONTEND_KIND_SHADER = "SHADER_NODES"
+    sys.modules[f"{PKG_NAME}.nodes.dummy_tree"] = dummy_tree_mod
     sys.modules[f"{PKG_NAME}.dummy_tree"] = dummy_tree_mod
 
-    proxy_mod = types.ModuleType(f"{PKG_NAME}.proxy_management")
+    shader_tree_mod = types.ModuleType(f"{PKG_NAME}.nodes.shader_tree")
+
+    class ACEShaderTreeReader(ACEDummyTreeReader):
+        pass
+
+    shader_tree_mod.ACEShaderTreeReader = ACEShaderTreeReader
+    sys.modules[f"{PKG_NAME}.nodes.shader_tree"] = shader_tree_mod
+
+    proxy_mod = types.ModuleType(f"{PKG_NAME}.core.proxy_management")
 
     class ACEProxyManager:  # pragma: no cover - runtime harness uses a dedicated writer stub
         COLLECTION_NAME = "ACE_Internals"
@@ -194,10 +215,17 @@ def _install_engine_import_stubs():
         def update_proxy_object(self, _proxy, _results, active_keys=None):  # noqa: ARG002
             return None
 
+        def ensure_sink_layout(self, _graph, active_keys=None):  # noqa: ARG002
+            return set()
+
+        def commit_results(self, _graph, _results, active_keys=None):  # noqa: ARG002
+            return set()
+
         def clear_runtime_caches(self):
             return None
 
     proxy_mod.ACEProxyManager = ACEProxyManager
+    sys.modules[f"{PKG_NAME}.core.proxy_management"] = proxy_mod
     sys.modules[f"{PKG_NAME}.proxy_management"] = proxy_mod
 
 
@@ -205,10 +233,16 @@ def _load_engine_stack():
     _install_fake_bpy()
     _install_engine_import_stubs()
     for name in (
+        "core.audio_engine",
+        "core.audio_tasks_registry",
+        "core.parallel_dsp",
+        "core.audio_influx",
+        "core.abstract_tree",
         "audio_engine",
         "audio_tasks_registry",
         "parallel_dsp",
         "audio_influx",
+        "abstract_tree",
     ):
         sys.modules.pop(f"{PKG_NAME}.{name}", None)
     ae = load_module("audio_engine")
@@ -287,6 +321,13 @@ class _WriterStub:
 
     def update_proxy_object(self, _proxy, results, active_keys=None):  # noqa: ARG002
         self._last = dict(results or {})
+
+    def ensure_sink_layout(self, _graph, active_keys=None):  # noqa: ARG002
+        return set()
+
+    def commit_results(self, _graph, results, active_keys=None):  # noqa: ARG002
+        self._last = dict(results or {})
+        return set()
 
     def clear_runtime_caches(self):
         self._last = {}
