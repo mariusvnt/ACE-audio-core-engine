@@ -425,7 +425,11 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 from ..core.audio_engine import ACEAudioEngine
 
                 scene = getattr(context, "scene", None)
-                if ACEAudioEngine._unsafe_for_shader_tree_mutations(scene):
+                if not ACEAudioEngine._structural_tree_writes_allowed(
+                    scene,
+                    tree=tree,
+                    frontend_kind="SHADER_NODES",
+                ):
                     engine = ACEAudioEngine.get_instance(scene)
                     if engine is None and scene is not None:
                         engine = ACEAudioEngine.ensure_instance(scene)

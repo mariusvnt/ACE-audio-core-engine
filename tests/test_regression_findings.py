@@ -487,12 +487,15 @@ class TestRegressionFindings(unittest.TestCase):
     def test_shader_sinks_use_attribute_nodes(self):
         shader_src = _read("shader_tree.py")
         self.assertIn("ShaderNodeAttribute", shader_src)
+        self.assertIn("NodeFrame", shader_src)
         self.assertIn("_set_attr_node_defaults", shader_src)
         self.assertIn("_HELPER_NODE_OWNER_KEY", shader_src)
         self.assertIn("_HELPER_ATTR_NAME_KEY", shader_src)
+        self.assertIn("_HELPER_FRAME_OWNER_KEY", shader_src)
         self.assertIn("cleanup_tree_helper_nodes", shader_src)
         self.assertIn("_ensure_helper_link", shader_src)
         self.assertIn("_rebuild_helper_attr_node", shader_src)
+        self.assertIn("_sync_helper_node_layout", shader_src)
         self.assertIn("attribute_type", shader_src)
         self.assertIn("sink_node[cls._OUTPUT_NODE_KIND_KEY]", shader_src)
         # Driver bridge must be fully removed.
@@ -1331,7 +1334,7 @@ class TestRegressionFindings(unittest.TestCase):
             label="_maybe_compile_dirty body",
         )
         self.assertIn("touches_shader_frontends", maybe_compile_body)
-        self.assertIn("self._unsafe_for_shader_tree_mutations(scene)", maybe_compile_body)
+        self.assertIn("self._structural_tree_writes_allowed(", maybe_compile_body)
         compile_body = _slice_between(
             engine_src,
             "def compile_scene_frontends(",
@@ -1346,7 +1349,7 @@ class TestRegressionFindings(unittest.TestCase):
             "def _create_task_for_node(",
             label="_sync_shader_output_ids body",
         )
-        self.assertIn("shader_tree_mutations_unsafe = self._unsafe_for_shader_tree_mutations(scene)", sync_body)
+        self.assertIn("shader_tree_mutations_unsafe = not self._structural_tree_writes_allowed(", sync_body)
         self.assertIn("if shader_factory is not None and not shader_tree_mutations_unsafe:", sync_body)
 
     def test_proxy_and_menu_defer_shader_tree_sync_during_viewport_preview(self):
@@ -1359,7 +1362,7 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)", proxy_src)
 
         menu_src = _read("gn_menu.py")
-        self.assertIn("ACEAudioEngine._unsafe_for_shader_tree_mutations(scene)", menu_src)
+        self.assertIn("ACEAudioEngine._structural_tree_writes_allowed(", menu_src)
         self.assertIn("engine.request_recompile(tree)", menu_src)
         self.assertIn("ACEShaderNodeFactory.sync_node_instance_group_bindings(", menu_src)
 

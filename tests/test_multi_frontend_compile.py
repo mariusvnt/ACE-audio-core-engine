@@ -128,6 +128,17 @@ class _FakeScene:
         self.objects = list(objects or [])
 
 
+class _FakePropertyCtx(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:  # pragma: no cover - test convenience fallback
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
 class _FakeSocket:
     def __init__(self, name: str, socket_idx: int = 0, is_output: bool = False, data_type: str = "NodeSocketFloat"):
         self.name = name
@@ -178,6 +189,60 @@ class _FakeAttrNode(dict):
         return id(self)
 
 
+class _FakeLayoutNode(dict):
+    def __init__(self, bl_idname: str, node_type: str, ace_id: str = "", output_names=None):
+        super().__init__()
+        self.bl_idname = bl_idname
+        self.type = node_type
+        self.name = bl_idname
+        self.label = bl_idname
+        self.location = (0.0, 0.0)
+        self.dimensions = (0.0, 0.0)
+        self.parent = None
+        self.hide = False
+        self.width_hidden = 0.0
+        self.shrink = False
+        self.inputs = []
+        self.outputs = [
+            _FakeSocket(str(name), socket_idx=idx, is_output=True, data_type="NodeSocketFloat")
+            for idx, name in enumerate(output_names or [])
+        ]
+        if ace_id:
+            self["ace_id"] = ace_id
+
+
+class _FakeLayoutNodes(list):
+    def __init__(self, tree):
+        super().__init__()
+        self._tree = tree
+
+    def new(self, bl_idname: str):
+        if bl_idname == "NodeFrame":
+            node = _FakeLayoutNode("NodeFrame", "FRAME")
+        elif bl_idname == "ShaderNodeAttribute":
+            node = _FakeLayoutNode(
+                "ShaderNodeAttribute",
+                "ATTRIBUTE",
+                output_names=["Factor", "Vector", "Color"],
+            )
+            node.attribute_type = "GEOMETRY"
+            node.attribute_name = ""
+        else:  # pragma: no cover - only the helper layout node types are used here
+            raise ValueError(f"Unsupported fake node type: {bl_idname}")
+        node.id_data = self._tree
+        self.append(node)
+        return node
+
+    def remove(self, node):
+        super().remove(node)
+
+
+class _FakeLayoutTree(_FakeTree):
+    def __init__(self, name: str, bl_idname: str, ptr: int):
+        super().__init__(name, bl_idname, ptr)
+        self.nodes = _FakeLayoutNodes(self)
+
+
 class TestMultiFrontendCompile(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -197,6 +262,79 @@ class TestMultiFrontendCompile(unittest.TestCase):
     def _engine_shell(self):
         engine = object.__new__(self.engine_mod.ACEAudioEngine)
         engine.writer = types.SimpleNamespace(output_defs={})
+        engine.graphs = {}
+        engine.current_frame = 0
+        engine.last_scene_frame = -1
+        engine.abstract_tree_ref = None
+        engine._pending_tree = None
+        engine._pending_tree_ptr = 0
+        engine._pending_tree_bl_idname = ""
+        engine._pending_scene_rebuild = False
+        engine._last_request_time = 0.0
+        engine._last_compile_time = 0.0
+        engine._dirty_trees = set()
+        engine._dirty_tree_ptrs = set()
+        engine._dirty_tree_bl_idnames = {}
+        engine._dirty_frontend_uids = set()
+        engine._compiled_tree_ref = None
+        engine._compiled_tree_ptr = 0
+        engine._compiled_tree_frontend_uid = ""
+        engine._compiled_tree_bl_idname = ""
+        engine._compiled_frontend_refs = {}
+        engine._compiled_frontend_snapshots = {}
+        engine._compiled_frontend_ptrs = {}
+        engine._compiled_frontend_uids = ()
+        engine._last_frontend_membership_signature = ()
+        engine._is_compiling = False
+        engine._meta_cache = {}
+        engine._meta_cache_ttl = 30.0
+        engine._last_tree_signature = None
+        engine._last_attr_sync_frame = {}
+        engine._block_size_state = {}
+        engine._bootstrap_retry_at = 0.0
+        engine._bootstrap_fail_count = 0
+        engine._runtime_log_last = {}
+        engine._bake_cache = {}
+        engine._bake_jobs = {}
+        import queue as _queue
+        engine._bake_result_queue = _queue.Queue()
+        engine._source_specs_task_registry = {}
+        engine._current_delta_frames = 1.0
+        engine._pending_geometry_events = []
+        engine._parallel_future_meta = {}
+        engine._parallel_inflight = {}
+        engine._parallel_results = {}
+        engine._parallel_last_valid = {}
+        engine._parallel_last_valid_frame = {}
+        engine._parallel_failures = {}
+        engine._parallel_disabled_sources = set()
+        engine._parallel_graph_ir_required = set()
+        engine._parallel_payload_slots = {}
+        engine._parallel_payload_slot_refs = {}
+        engine._parallel_payload_slot_counters = {}
+        engine._parallel_payload_free_slots = {}
+        engine._parallel_frame_payload_slots = {}
+        engine._parallel_generation_id = 0
+        engine._parallel_job_seq = 0
+        engine._parallel_executor = None
+        engine._parallel_pool_failed = False
+        engine._parallel_last_submit_frame = -1
+        engine._preview_last_chunk = None
+        engine._preview_last_eval_frame = -1
+        engine._preview_next_eval_ts = 0.0
+        engine._preview_worker_stop = False
+        engine._preview_worker_cond = threading.Condition()
+        engine._preview_worker_queue = []
+        engine._preview_worker_thread = None
+        engine._probe_pending_updates = {}
+        engine._probe_in_flight = set()
+        engine._probe_thread_lock = threading.Lock()
+        engine._attr_schema_dirty = set()
+        engine._last_attr_sync_frame = {}
+        engine.scene_key = 0
+        engine.scene_name = ""
+        engine.undo_generation = 0
+        engine.undo_recovery_until = 0.0
         return engine
 
     def test_merge_from_rejects_duplicate_frontend_and_node_ids(self):
@@ -843,6 +981,47 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertIsNone(calls[0]["attr_names_by_idx"])
         self.assertEqual(shader_node.inputs[0].default_value, "ACE_manual_attr")
 
+    def test_shader_helper_layout_groups_helper_under_owner_in_frame(self):
+        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[])
+        tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1501)
+        owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
+        owner.location = (140.0, 320.0)
+        tree.nodes.append(owner)
+        helper = tree.nodes.new("ShaderNodeAttribute")
+
+        changed = self.shader_tree_mod.ACEShaderNodeFactory._sync_helper_node_layout(
+            tree,
+            owner,
+            helper,
+            ace_id,
+            0,
+        )
+
+        self.assertTrue(changed)
+        self.assertIsNotNone(owner.parent)
+        self.assertIs(owner.parent, helper.parent)
+        self.assertEqual(owner.parent.bl_idname, "NodeFrame")
+        self.assertEqual(owner.parent.get("ace_shader_helper_frame_owner"), ace_id)
+        self.assertTrue(owner.parent.shrink)
+        self.assertEqual(owner.location, (0.0, 0.0))
+        self.assertEqual(helper.location, (0.0, -146.0))
+        self.assertTrue(helper.hide)
+        self.assertEqual(helper.width_hidden, 150.0)
+
+    def test_cleanup_tree_helper_nodes_removes_empty_managed_helper_frame(self):
+        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[])
+        tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1502)
+        owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
+        tree.nodes.append(owner)
+        helper_frame = tree.nodes.new("NodeFrame")
+        helper_frame["ace_shader_helper_frame_owner"] = ace_id
+
+        changed = self.shader_tree_mod.ACEShaderNodeFactory.cleanup_tree_helper_nodes(tree)
+
+        self.assertTrue(changed)
+        self.assertIn(owner, tree.nodes)
+        self.assertNotIn(helper_frame, tree.nodes)
+
     def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
         engine = types.SimpleNamespace(
             requested=[],
@@ -968,7 +1147,11 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._last_compile_time = 0.0
         engine._is_compiling = False
         engine._first_dirty_time = 0.0
-        engine._unsafe_for_shader_tree_mutations = lambda _scene: True
+        engine._dirty_tree_ptrs = {shader_tree.as_pointer()}
+        engine._dirty_tree_bl_idnames = {shader_tree.as_pointer(): "ShaderNodeTree"}
+        engine._pending_tree_ptr = shader_tree.as_pointer()
+        engine._pending_tree_bl_idname = "ShaderNodeTree"
+        engine._structural_tree_writes_allowed = lambda *_args, **_kwargs: False
         engine._log_runtime = lambda *args, **kwargs: log_calls.append((args, kwargs))
         engine.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
 
@@ -977,8 +1160,147 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertFalse(compiled)
         self.assertFalse(compile_calls)
         self.assertEqual(engine._dirty_frontend_uids, {"ACE_FRONTEND_SHADER"})
-        self.assertEqual(engine._dirty_trees, [shader_tree])
+        self.assertEqual(engine._dirty_tree_ptrs, {shader_tree.as_pointer()})
         self.assertTrue(log_calls)
+
+    def test_begin_undo_recovery_clears_cached_frontend_refs_and_sets_recovery_window(self):
+        engine = self._engine_shell()
+        engine.abstract_tree_ref = object()
+        engine._compiled_tree_ref = object()
+        engine._compiled_tree_ptr = 123
+        engine._compiled_tree_frontend_uid = "frontend_a"
+        engine._compiled_frontend_refs = {"frontend_a": object()}
+        engine._compiled_frontend_snapshots = {"frontend_a": object()}
+        engine._compiled_frontend_ptrs = {"frontend_a": 123}
+        engine._compiled_frontend_uids = ("frontend_a",)
+        engine._pending_tree_ptr = 456
+        engine._pending_tree_bl_idname = "ShaderNodeTree"
+        engine._dirty_tree_ptrs = {456}
+        engine._dirty_tree_bl_idnames = {456: "ShaderNodeTree"}
+        engine._dirty_frontend_uids = {"frontend_a"}
+        engine._pending_scene_rebuild = False
+        engine._probe_pending_updates = {"file.wav": {"undo_generation": 0}}
+        engine._probe_in_flight = {"file.wav"}
+        engine._pending_geometry_events = [{"frame": 1}]
+        engine._preview_worker_thread = None
+        engine._parallel_executor = None
+        engine.invalidate_runtime_caches = lambda: None
+        scene = types.SimpleNamespace(name="Scene")
+        original_monotonic = self.engine_mod.time.monotonic
+        original_shutdown_bg = self.tasks_mod.SourceSpecsTask.shutdown_background_worker
+        try:
+            self.engine_mod.time.monotonic = lambda: 10.0
+            self.tasks_mod.SourceSpecsTask.shutdown_background_worker = classmethod(lambda cls: None)
+            engine.begin_undo_recovery(scene)
+        finally:
+            self.engine_mod.time.monotonic = original_monotonic
+            self.tasks_mod.SourceSpecsTask.shutdown_background_worker = original_shutdown_bg
+
+        self.assertEqual(engine.undo_generation, 1)
+        self.assertEqual(engine.undo_recovery_until, 10.75)
+        self.assertIsNone(engine.abstract_tree_ref)
+        self.assertIsNone(engine._compiled_tree_ref)
+        self.assertEqual(engine._compiled_tree_ptr, 0)
+        self.assertEqual(engine._compiled_tree_frontend_uid, "")
+        self.assertEqual(engine._compiled_frontend_snapshots, {})
+        self.assertEqual(engine._compiled_frontend_ptrs, {})
+        self.assertEqual(engine._pending_tree_ptr, 0)
+        self.assertEqual(engine._dirty_tree_ptrs, set())
+        self.assertEqual(engine._probe_pending_updates, {})
+        self.assertEqual(engine._probe_in_flight, set())
+        self.assertEqual(engine._pending_geometry_events, [])
+        self.assertTrue(engine._pending_scene_rebuild)
+
+    def test_depsgraph_handler_during_undo_recovery_marks_scene_rebuild_only(self):
+        engine = types.SimpleNamespace(
+            requested=[],
+            _undo_recovery_active=lambda: True,
+            request_recompile=lambda tree: engine.requested.append(tree),
+        )
+        settings = types.SimpleNamespace(auto_compile=True)
+        scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
+        geometry_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 808, ace_frontend_uid="ACE_FRONTEND_GN")
+
+        orig_get = self.engine_mod.ACEAudioEngine.get_instance
+        try:
+            self.engine_mod.ACEAudioEngine.get_instance = classmethod(lambda cls, _scene=None: engine)
+            self.engine_mod.depsgraph_update_handler(
+                scene,
+                types.SimpleNamespace(updates=[types.SimpleNamespace(id=geometry_tree)]),
+            )
+        finally:
+            self.engine_mod.ACEAudioEngine.get_instance = orig_get
+
+        self.assertEqual(engine.requested, [None])
+
+    def test_auto_compile_timer_skips_compile_during_undo_recovery(self):
+        scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=types.SimpleNamespace(auto_compile=True)))
+        engine = types.SimpleNamespace(
+            _undo_recovery_active=lambda: True,
+            _unsafe_for_handler_writes=lambda _scene: False,
+            _maybe_compile_dirty=lambda _scene: self.fail("_maybe_compile_dirty should be skipped"),
+        )
+        bpy_mod = sys.modules["bpy"]
+        original_scene = bpy_mod.context.scene
+        orig_ensure = self.engine_mod.ACEAudioEngine.ensure_instance
+        try:
+            bpy_mod.context.scene = scene
+            self.engine_mod.ACEAudioEngine.ensure_instance = classmethod(lambda cls, _scene=None: engine)
+            self.assertEqual(self.engine_mod.auto_compile_timer(), 0.25)
+        finally:
+            bpy_mod.context.scene = original_scene
+            self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
+
+    def test_source_task_flush_pending_ctx_writes_ignores_stale_generation(self):
+        task = self.tasks_mod.SourceTask("src", {}, 64)
+        task.source_context = _FakePropertyCtx()
+        task.engine_ref = types.SimpleNamespace(undo_generation=4)
+        task.undo_generation = 3
+        task._pending_ctx_writes["sample_rate"] = 48000
+
+        task._flush_pending_ctx_writes()
+
+        self.assertNotIn("sample_rate", task.source_context)
+        self.assertEqual(task._pending_ctx_writes, {})
+
+    def test_source_specs_flush_pending_ctx_writes_ignores_stale_generation(self):
+        self.tasks_mod.SourceSpecsTask.clear_pending_ctx_writes_queue()
+        ctx = _FakePropertyCtx(bpm=120.0, beats_per_bar=4)
+        task = types.SimpleNamespace(
+            source_context=ctx,
+            _auto_bpm_key="ace_bpm_auto",
+            _auto_meter_key="ace_meter_auto",
+            undo_generation=3,
+            engine_ref=types.SimpleNamespace(undo_generation=4),
+        )
+        self.tasks_mod.SourceSpecsTask._PENDING_CTX_WRITES.put_nowait((("file.wav", 1.0), 128.0, 7, 3))
+
+        self.tasks_mod.SourceSpecsTask.flush_pending_ctx_writes({("file.wav", 1.0): task})
+
+        self.assertEqual(ctx["bpm"], 120.0)
+        self.assertEqual(ctx["beats_per_bar"], 4)
+        self.tasks_mod.SourceSpecsTask.clear_pending_ctx_writes_queue()
+
+    def test_flush_probe_updates_ignores_results_from_stale_undo_generation(self):
+        engine = self._engine_shell()
+        engine.undo_generation = 5
+        engine._probe_pending_updates = {
+            "/tmp/a.wav": {
+                "sample_rate": 48000,
+                "native_sample_rate": 48000,
+                "duration": 1.0,
+                "undo_generation": 4,
+            }
+        }
+        source = _FakePropertyCtx(source_type="FILE", filepath="/tmp/a.wav", sample_rate=0, native_sample_rate=0, duration=0.0)
+        engine.discover_scene_frontends = lambda _scene: []
+        engine.request_recompile = lambda *_args, **_kwargs: self.fail("request_recompile should be skipped for stale probes")
+
+        updated = engine._flush_probe_updates([source], scene=types.SimpleNamespace())
+
+        self.assertFalse(updated)
+        self.assertEqual(source["native_sample_rate"], 0)
+        self.assertEqual(source["duration"], 0.0)
 
     def test_parallel_usable_values_accepts_current_frame_payload(self):
         engine = self._engine_shell()

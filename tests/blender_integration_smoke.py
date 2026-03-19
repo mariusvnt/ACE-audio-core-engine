@@ -117,11 +117,11 @@ def main():
 
         engine.compile_scene_frontends(scene)
         _assert(
-            "ACE_SMOKE_FRONTEND_GN" in getattr(engine, "_compiled_frontend_refs", {}),
+            "ACE_SMOKE_FRONTEND_GN" in getattr(engine, "_compiled_frontend_snapshots", {}),
             "Scene compile missed the GN frontend",
         )
         _assert(
-            "ACE_SMOKE_FRONTEND_SHADER" in getattr(engine, "_compiled_frontend_refs", {}),
+            "ACE_SMOKE_FRONTEND_SHADER" in getattr(engine, "_compiled_frontend_snapshots", {}),
             "Scene compile missed the shader frontend",
         )
     finally:

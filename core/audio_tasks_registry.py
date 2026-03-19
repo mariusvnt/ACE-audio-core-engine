@@ -1309,6 +1309,7 @@ class ACEAudioTask:
         self.parameters = parameters
         self.block_size = block_size
         self.engine_ref = None
+        self.undo_generation: int = 0
         self.resolve_block_size_fn = None
         
         self.inputs: Dict[int, TaskConnection] = {} 
@@ -1592,6 +1593,12 @@ class SourceTask(ACEAudioTask):
     def _flush_pending_ctx_writes(self) -> None:
         """Apply deferred PropertyGroup writes. Call only from the main thread."""
         if not self._pending_ctx_writes:
+            return
+        engine = getattr(self, "engine_ref", None)
+        engine_generation = int(getattr(engine, "undo_generation", getattr(self, "undo_generation", 0)) or 0)
+        task_generation = int(getattr(self, "undo_generation", engine_generation) or engine_generation)
+        if task_generation != engine_generation:
+            self._pending_ctx_writes.clear()
             return
         ctx = self.source_context
         if ctx is None:
@@ -2649,6 +2656,16 @@ class SourceSpecsTask(ACEAudioTask):
                 cls._BG_TASK_QUEUE.task_done()
         except Empty:
             pass
+        cls.clear_pending_ctx_writes_queue()
+
+    @classmethod
+    def clear_pending_ctx_writes_queue(cls) -> None:
+        try:
+            while True:
+                cls._PENDING_CTX_WRITES.get_nowait()
+                cls._PENDING_CTX_WRITES.task_done()
+        except Empty:
+            pass
 
     @classmethod
     def flush_pending_ctx_writes(cls, task_registry: dict) -> None:
@@ -2659,10 +2676,23 @@ class SourceSpecsTask(ACEAudioTask):
         utils.assert_main_thread("SourceSpecsTask.flush_pending_ctx_writes")
         try:
             while True:
-                target, bpm_val, beats_per_bar = cls._PENDING_CTX_WRITES.get_nowait()
+                payload = cls._PENDING_CTX_WRITES.get_nowait()
+                if len(payload) >= 4:
+                    target, bpm_val, beats_per_bar, generation_id = payload[:4]
+                else:
+                    target, bpm_val, beats_per_bar = payload
+                    generation_id = None
                 task = task_registry.get(target)
                 ctx = getattr(task, "source_context", None) if task else None
                 if ctx is None:
+                    continue
+                task_generation = int(getattr(task, "undo_generation", 0) or 0)
+                engine_generation = int(
+                    getattr(getattr(task, "engine_ref", None), "undo_generation", task_generation) or task_generation
+                )
+                if generation_id is not None and int(generation_id or 0) != engine_generation:
+                    continue
+                if task_generation != engine_generation:
                     continue
                 if cls._user_overrode_tempo(ctx):
                     continue
@@ -2899,7 +2929,12 @@ class SourceSpecsTask(ACEAudioTask):
             if target is not None:
                 try:
                     SourceSpecsTask._PENDING_CTX_WRITES.put_nowait(
-                        (target, float(bpm_val), int(max(1, beats_per_bar)))
+                        (
+                            target,
+                            float(bpm_val),
+                            int(max(1, beats_per_bar)),
+                            int(getattr(self, "undo_generation", 0) or 0),
+                        )
                     )
                 except Exception:
                     pass

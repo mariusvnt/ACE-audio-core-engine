@@ -70,7 +70,13 @@ class ACEProxyManager:
         except Exception:
             return False
         try:
-            return bool(ACEAudioEngine._unsafe_for_shader_tree_mutations(scene))
+            return not bool(
+                ACEAudioEngine._structural_tree_writes_allowed(
+                    scene,
+                    frontend_kind=FRONTEND_KIND_SHADER,
+                    tree_bl_idname="ShaderNodeTree",
+                )
+            )
         except Exception:
             return False
 
@@ -533,7 +539,36 @@ class ACEProxyManager:
             return None
         return data
 
-    def ensure_object_property_sinks(self, object_name: str, bindings) -> bool:
+    @staticmethod
+    def prune_object_ace_properties(obj, active_prop_names: set[str]) -> bool:
+        """Remove stale ACE_* custom properties from *obj* not in *active_prop_names*.
+
+        Called once per compile after all active bindings are known, preventing
+        accumulation of properties from nodes that were disconnected or deleted.
+
+        Returns True if any properties were removed.
+        """
+        stale = [
+            k for k in list(obj.keys() if hasattr(obj, "keys") else [])
+            if str(k).startswith(ACEIdManager.PREFIX) and str(k) not in active_prop_names
+        ]
+        if not stale:
+            return False
+        for k in stale:
+            try:
+                del obj[k]
+            except Exception:
+                pass
+        try:
+            obj.update_tag(refresh={"OBJECT"})
+        except Exception:
+            try:
+                obj.update_tag()
+            except Exception:
+                pass
+        return True
+
+    def ensure_object_property_sinks(self, object_name: str, bindings, prune: bool = False) -> bool:
         utils.assert_main_thread("ensure_object_property_sinks")
         obj = self._object_prop_cache.get(object_name)
         if obj is not None and str(getattr(obj, "name", "") or "") != str(object_name or ""):
@@ -545,11 +580,13 @@ class ACEProxyManager:
             self._object_prop_cache[object_name] = obj
         mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
         mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
+        active_prop_names: set[str] = set()
         layout_changed = False
         for binding in bindings or []:
             prop_name = str(getattr(binding, "target_data_name", "") or "")
             if not prop_name:
                 continue
+            active_prop_names.add(prop_name)
             zero_value = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
             already_exists = prop_name in obj.keys()
             if not already_exists:
@@ -565,6 +602,9 @@ class ACEProxyManager:
                         layout_changed = True
                 except Exception:
                     pass
+        if prune:
+            if self.prune_object_ace_properties(obj, active_prop_names):
+                layout_changed = True
         if layout_changed:
             try:
                 if mirror_to_data:
@@ -650,6 +690,36 @@ class ACEProxyManager:
                     pass
         return True
 
+    def prune_consumer_objects(self, active_props_by_object: Dict[str, Set[str]]) -> bool:
+        """Remove stale ACE_* properties from all consumer objects in the scene.
+
+        *active_props_by_object* maps object name → set of currently-active ACE
+        property names for that object.  Objects that had ACE properties in a
+        previous compile but no longer appear in *active_props_by_object* get
+        all their ACE_* properties removed.  Objects that appear but have fewer
+        active properties get the extras removed (handled by prune_object_ace_properties).
+
+        Called once per engine compile cycle after all sink layouts are resolved.
+        """
+        utils.assert_main_thread("prune_consumer_objects")
+        changed = False
+        try:
+            all_objects = bpy.data.objects
+        except AttributeError:
+            return False
+        for obj in all_objects:
+            obj_name = str(getattr(obj, "name", "") or "")
+            try:
+                ace_props = [k for k in list(obj.keys()) if str(k).startswith(ACEIdManager.PREFIX)]
+            except Exception:
+                ace_props = []
+            if not ace_props:
+                continue
+            active = active_props_by_object.get(obj_name, set())
+            if self.prune_object_ace_properties(obj, active):
+                changed = True
+        return changed
+
     def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):
         """Ensure all concrete sink targets for *graph* exist."""
         utils.assert_main_thread("ensure_sink_layout")
@@ -673,7 +743,7 @@ class ACEProxyManager:
             self.ensure_attributes_exist(proxy, self.abstract_tree, active_keys=set(attr_keys), prune_existing=True)
             geometry_proxy_names.add(str(proxy_name))
         for object_name, bindings in object_bindings.items():
-            self.ensure_object_property_sinks(object_name, bindings)
+            self.ensure_object_property_sinks(object_name, bindings, prune=True)
         return geometry_proxy_names
 
     def commit_results(self, graph, results: Dict[str, Any], active_keys: Set[str] | None = None):

@@ -19,7 +19,13 @@ class ACEShaderNodeFactory:
     _OUTPUT_NODE_KIND_KEY = "ace_shader_sink_kind"
     _HELPER_NODE_OWNER_KEY = "ace_shader_helper_owner"
     _HELPER_ATTR_NAME_KEY = "ace_shader_attr_name"
+    _HELPER_FRAME_OWNER_KEY = "ace_shader_helper_frame_owner"
+    _HELPER_FRAME_KIND_KEY = "ace_shader_helper_frame_kind"
     _HELPER_INPUT_PREFIX = "ACE Property"
+    _HELPER_FALLBACK_OWNER_HEIGHT = 128.0
+    _HELPER_VERTICAL_GAP = 18.0
+    _HELPER_VERTICAL_STEP = 62.0
+    _HELPER_HIDDEN_WIDTH = 150.0
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
@@ -248,10 +254,49 @@ class ACEShaderNodeFactory:
             for node in ng.nodes:
                 bl_idname = str(getattr(node, "bl_idname", "") or "")
                 node_type_name = str(getattr(node, "type", "") or "")
+                # Bundle manipulation nodes crash Cycles' ShaderNodesInliner.
+                if bl_idname in {"NodeSeparateBundle", "NodeCombineBundle"}:
+                    return True
+                if node_type_name in {"SEPARATE_BUNDLE", "COMBINE_BUNDLE"}:
+                    return True
                 if (not allow_math_nodes) and bl_idname in {"ShaderNodeMath", "ShaderNodeVectorMath"}:
                     return True
                 if (not allow_math_nodes) and node_type_name in {"MATH", "VECTOR_MATH"}:
                     return True
+            # Detect wrong wiring: a bundle-type socket feeding a non-bundle output.
+            # This happens when GroupInput.outputs indices were computed incorrectly
+            # (e.g. assuming bundle sockets always appear in GroupInput.outputs).
+            for node in ng.nodes:
+                if str(getattr(node, "type", "") or "") != "GROUP_OUTPUT":
+                    continue
+                for inp in getattr(node, "inputs", []) or []:
+                    inp_type = str(getattr(inp, "type", "") or "").upper()
+                    if inp_type in ("BUNDLE", "CUSTOM", ""):
+                        continue
+                    for link in getattr(inp, "links", []) or []:
+                        from_sock = getattr(link, "from_socket", None)
+                        if from_sock is None:
+                            continue
+                        from_type = str(getattr(from_sock, "type", "") or "").upper()
+                        if from_type in ("BUNDLE", "CUSTOM"):
+                            return True
+
+            # Detect missing wiring: non-bundle GROUP_OUTPUT inputs with no links.
+            # For stream / utility property-output nodes every non-bundle output
+            # must be driven by a helper (ACE Property) GroupInput socket.
+            # A missing link means the old build failed silently and the node
+            # will output zero even when a source is connected.
+            is_property_node = cls._is_property_output_node(category, node_type)
+            if is_property_node:
+                for node in ng.nodes:
+                    if str(getattr(node, "type", "") or "") != "GROUP_OUTPUT":
+                        continue
+                    for inp in getattr(node, "inputs", []) or []:
+                        inp_type = str(getattr(inp, "type", "") or "").upper()
+                        if inp_type in ("BUNDLE", "CUSTOM", ""):
+                            continue
+                        if not list(getattr(inp, "links", []) or []):
+                            return True
         except Exception:
             return True
         return False
@@ -494,11 +539,11 @@ class ACEShaderNodeFactory:
         for _out_idx, sock_type_str, helper_name in helper_inputs:
             cls._new_socket(ng, helper_name, "INPUT", sock_type_str)
 
-        # Shader groups are mostly strict facades:
-        # Group Input/Output + optional passthrough wiring and property reads.
-        # Companion Attribute nodes live in the parent material tree, feeding
-        # these helper inputs per node instance. The group itself stays shared.
-        # LUFS adds a tiny control-consumption chain so Window/Overlap Ratio stay active.
+        # Shader groups are strict facades: Group Input/Output + direct wiring.
+        # NO NodeSeparateBundle / NodeCombineBundle inside shader groups —
+        # Cycles' ShaderNodesInliner cannot handle them and crashes (null deref).
+        # Bundle sockets pass through directly; helper inputs wire to outputs.
+        # Companion Attribute nodes live in the parent material tree.
         input_node = ng.nodes.new("NodeGroupInput")
         output_node = ng.nodes.new("NodeGroupOutput")
         input_node.location = (-760, 0)
@@ -511,170 +556,59 @@ class ACEShaderNodeFactory:
             (sock_type_str, helper_name)
             for _out_idx, sock_type_str, helper_name in helper_inputs
         ]
-        helper_input_indices = {
-            int(out_idx): int(len(base_inputs) + len(extra_inputs) + helper_idx)
-            for helper_idx, (out_idx, _sock_type, _helper_name) in enumerate(helper_inputs)
-        }
-        helper_input_index_set = set(helper_input_indices.values())
-        bundle_input_indices = [
-            idx for idx, (sock_type, _name) in enumerate(all_inputs) if "Bundle" in str(sock_type or "")
-        ]
         bundle_output_indices = [
             idx for idx, (sock_type, _name) in enumerate(base_outputs) if "Bundle" in str(sock_type or "")
         ]
-        first_bundle_input_idx = int(bundle_input_indices[0]) if bundle_input_indices else -1
 
-        sep_bundle = None
-        proxy_from_bundle_socket = None
-        if first_bundle_input_idx >= 0:
-            try:
-                sep_bundle = ng.nodes.new("NodeSeparateBundle")
-                sep_bundle.location = (-420, 120)
-                proxy_item = cls._safe_bundle_item(
-                    sep_bundle,
-                    "Proxy Object",
-                    ("STRING", "TEXT", "VALUE"),
-                )
-                ng.links.new(input_node.outputs[first_bundle_input_idx], sep_bundle.inputs[0])
-                if proxy_item is not None:
-                    try:
-                        proxy_from_bundle_socket = sep_bundle.outputs[proxy_item.name]
-                    except Exception:
-                        proxy_from_bundle_socket = sep_bundle.outputs[0] if len(sep_bundle.outputs) > 0 else None
-            except Exception:
-                sep_bundle = None
-                proxy_from_bundle_socket = None
+        # GroupInput.outputs may omit NodeSocketBundle entries in ShaderNodeTree —
+        # Blender's shader backend does not always expose bundle sockets on GroupInput.
+        # Using index-based access (all_inputs[i] == input_node.outputs[i]) is
+        # therefore unreliable.  Look up every socket by NAME instead.
+        input_sock_by_name: dict[str, object] = {}
+        for _s in getattr(input_node, "outputs", []) or []:
+            _sn = str(getattr(_s, "name", "") or "")
+            if _sn and _sn not in input_sock_by_name:
+                input_sock_by_name[_sn] = _s
 
-        consume_bundle = None
-        consume_bundle_has_primary = False
-        try:
-            consume_bundle = ng.nodes.new("NodeCombineBundle")
-            consume_bundle.location = (120, 120)
-        except Exception:
-            consume_bundle = None
+        # Helper inputs: map output_idx → the named GroupInput socket
+        helper_source_by_idx: dict[int, object] = {}
+        for _out_idx, _sock_type, _helper_name in helper_inputs:
+            _s = input_sock_by_name.get(str(_helper_name))
+            if _s is not None:
+                helper_source_by_idx[int(_out_idx)] = _s
+        helper_socket_names = {str(_hn) for _oi, _st, _hn in helper_inputs}
 
-        if consume_bundle is not None and first_bundle_input_idx >= 0:
-            primary_item = cls._safe_bundle_item(
-                consume_bundle,
-                "Audio",
-                ("BUNDLE", "VALUE", "FLOAT"),
-            )
-            if primary_item is not None and first_bundle_input_idx < len(getattr(input_node, "outputs", [])):
-                try:
-                    ng.links.new(input_node.outputs[first_bundle_input_idx], consume_bundle.inputs[primary_item.name])
-                    consume_bundle_has_primary = True
-                except Exception:
-                    consume_bundle_has_primary = False
+        # First bundle input name (for passthrough and consume-skip logic)
+        first_bundle_name: str | None = next(
+            (str(_sn) for _st, _sn in all_inputs if "Bundle" in str(_st or "")),
+            None,
+        )
 
-        if consume_bundle is not None and proxy_from_bundle_socket is not None:
-            proxy_out_item = cls._safe_bundle_item(
-                consume_bundle,
-                "Proxy Object",
-                ("STRING", "TEXT", "VALUE"),
-            )
-            if proxy_out_item is not None:
-                try:
-                    ng.links.new(proxy_from_bundle_socket, consume_bundle.inputs[proxy_out_item.name])
-                except Exception:
-                    try:
-                        ng.links.new(proxy_from_bundle_socket, consume_bundle.inputs[-1])
-                    except Exception:
-                        pass
-
-        # Consume every input socket so UI sockets stay active/non-grey.
-        for input_idx, (socket_type, socket_name) in enumerate(all_inputs):
-            if input_idx >= len(getattr(input_node, "outputs", [])):
-                continue
-            if input_idx == first_bundle_input_idx:
-                continue
-            if input_idx in helper_input_index_set:
-                continue
-            source_sock = input_node.outputs[input_idx]
-            is_bundle_input = "Bundle" in str(socket_type or "")
-            if is_bundle_input:
-                cls._link_or_consume_reroute(ng, source_sock, -120, -160 - (input_idx * 90))
-                continue
-            linked = False
-            if consume_bundle is not None:
-                bundle_item = cls._safe_bundle_item(
-                    consume_bundle,
-                    str(socket_name),
-                    cls._bundle_item_candidates_for_socket(str(socket_type)),
-                )
-                if bundle_item is not None:
-                    try:
-                        ng.links.new(source_sock, consume_bundle.inputs[bundle_item.name])
-                        linked = True
-                    except Exception:
+        # Direct bundle passthrough: link first bundle input straight to bundle outputs.
+        if bundle_output_indices and first_bundle_name:
+            _bundle_in = input_sock_by_name.get(first_bundle_name)
+            if _bundle_in is not None:
+                for output_idx in bundle_output_indices:
+                    if output_idx < len(getattr(output_node, "inputs", [])):
                         try:
-                            ng.links.new(source_sock, consume_bundle.inputs[-1])
-                            linked = True
-                        except Exception:
-                            linked = False
-            if not linked:
-                cls._link_or_consume_reroute(ng, source_sock, -120, -160 - (input_idx * 90))
-
-        # Source groups seed the bundle with the proxy object token.
-        if category == "source_mngmt" and node_type == "src":
-            proxy_idx = next(
-                (
-                    idx
-                    for idx, (_stype, name) in enumerate(all_inputs)
-                    if str(name or "") == "Proxy Object"
-                ),
-                -1,
-            )
-            if consume_bundle is not None and proxy_idx >= 0 and proxy_idx < len(getattr(input_node, "outputs", [])):
-                proxy_item = cls._safe_bundle_item(
-                    consume_bundle,
-                    "Proxy Object",
-                    ("STRING", "TEXT", "VALUE"),
-                )
-                if proxy_item is not None:
-                    try:
-                        ng.links.new(input_node.outputs[proxy_idx], consume_bundle.inputs[proxy_item.name])
-                    except Exception:
-                        try:
-                            ng.links.new(input_node.outputs[proxy_idx], consume_bundle.inputs[-1])
+                            ng.links.new(_bundle_in, output_node.inputs[int(output_idx)])
                         except Exception:
                             pass
 
-        if bundle_output_indices:
-            bundle_source = None
-            if first_bundle_input_idx >= 0 and first_bundle_input_idx < len(getattr(input_node, "outputs", [])):
-                non_bundle_inputs = [
-                    idx
-                    for idx, (sock_type, _name) in enumerate(all_inputs)
-                    if idx != first_bundle_input_idx and "Bundle" not in str(sock_type or "")
-                ]
-                if (
-                    non_bundle_inputs
-                    and consume_bundle is not None
-                    and consume_bundle_has_primary
-                    and len(getattr(consume_bundle, "outputs", [])) > 0
-                ):
-                    # If this group has extra controls, route through a combine bundle
-                    # so the audio payload and auxiliary controls are packed together.
-                    bundle_source = consume_bundle.outputs[0]
-                else:
-                    # Pure audio passthrough groups stay direct.
-                    bundle_source = input_node.outputs[first_bundle_input_idx]
-            elif consume_bundle is not None and len(getattr(consume_bundle, "outputs", [])) > 0:
-                # Source-like nodes without bundle input still emit a seeded bundle.
-                bundle_source = consume_bundle.outputs[0]
-            for output_idx in bundle_output_indices:
-                if output_idx >= len(getattr(output_node, "inputs", [])):
-                    continue
-                try:
-                    if bundle_source is not None:
-                        ng.links.new(bundle_source, output_node.inputs[int(output_idx)])
-                except Exception:
-                    pass
+        # Consume every non-helper, non-primary-bundle input via reroute.
+        for _ci, (socket_type, socket_name) in enumerate(all_inputs):
+            _s = input_sock_by_name.get(str(socket_name))
+            if _s is None:
+                continue
+            if str(socket_name) in helper_socket_names:
+                continue
+            if "Bundle" in str(socket_type or ""):
+                # Primary bundle already handled above; others get a reroute.
+                if str(socket_name) != first_bundle_name:
+                    cls._link_or_consume_reroute(ng, _s, -120, -160 - (_ci * 90))
+                continue
+            cls._link_or_consume_reroute(ng, _s, -120, -160 - (_ci * 90))
 
-        helper_source_by_idx: dict[int, object] = {}
-        for output_idx, helper_input_idx in helper_input_indices.items():
-            if helper_input_idx < len(getattr(input_node, "outputs", [])):
-                helper_source_by_idx[int(output_idx)] = input_node.outputs[int(helper_input_idx)]
         for output_idx, (socket_type, _socket_name) in enumerate(base_outputs):
             if "Bundle" in str(socket_type or ""):
                 continue
@@ -694,25 +628,15 @@ class ACEShaderNodeFactory:
         # (Window + Overlap Ratio) * 0 + 1 multiplies each scalar property output by 1,
         # preserving output values while keeping both controls truly consumed.
         if str(category or "") == "stream" and str(node_type or "") == "lufs" and helper_source_by_idx:
-            window_idx = next(
-                (idx for idx, (_stype, name) in enumerate(all_inputs) if str(name or "") == "Window (s)"),
-                -1,
-            )
-            overlap_idx = next(
-                (idx for idx, (_stype, name) in enumerate(all_inputs) if str(name or "") == "Overlap Ratio"),
-                -1,
-            )
-            if (
-                window_idx >= 0
-                and overlap_idx >= 0
-                and window_idx < len(getattr(input_node, "outputs", []))
-                and overlap_idx < len(getattr(input_node, "outputs", []))
-            ):
+            # Use name-based lookup — bundle sockets may shift numeric indices.
+            window_sock = input_sock_by_name.get("Window (s)")
+            overlap_sock = input_sock_by_name.get("Overlap Ratio")
+            if window_sock is not None and overlap_sock is not None:
                 add_node = ng.nodes.new("ShaderNodeMath")
                 add_node.operation = "ADD"
                 add_node.location = (20, -320)
-                ng.links.new(input_node.outputs[int(window_idx)], add_node.inputs[0])
-                ng.links.new(input_node.outputs[int(overlap_idx)], add_node.inputs[1])
+                ng.links.new(window_sock, add_node.inputs[0])
+                ng.links.new(overlap_sock, add_node.inputs[1])
 
                 mul_zero = ng.nodes.new("ShaderNodeMath")
                 mul_zero.operation = "MULTIPLY"
@@ -834,8 +758,249 @@ class ACEShaderNodeFactory:
         return f".ACE_HELPER_{ACEIdManager._clean_string(str(ace_id or 'node'))[:24]}_{int(output_idx)}"
 
     @classmethod
+    def _helper_frame_name(cls, ace_id: str) -> str:
+        return f".ACE_HELPER_FRAME_{ACEIdManager._clean_string(str(ace_id or 'node'))[:24]}"
+
+    @staticmethod
+    def _coerce_xy(raw_value) -> tuple[float, float]:
+        if raw_value is None:
+            return 0.0, 0.0
+        try:
+            return (
+                float(getattr(raw_value, "x")),
+                float(getattr(raw_value, "y")),
+            )
+        except Exception:
+            pass
+        try:
+            return float(raw_value[0]), float(raw_value[1])
+        except Exception:
+            return 0.0, 0.0
+
+    @classmethod
+    def _node_local_location(cls, node) -> tuple[float, float]:
+        return cls._coerce_xy(getattr(node, "location", None))
+
+    @classmethod
+    def _node_dimensions(cls, node) -> tuple[float, float]:
+        return cls._coerce_xy(getattr(node, "dimensions", None))
+
+    @classmethod
+    def _node_height(cls, node, fallback: float = 0.0) -> float:
+        _width, height = cls._node_dimensions(node)
+        resolved = abs(float(height))
+        if resolved > 1.0:
+            return resolved
+        return float(fallback)
+
+    @classmethod
+    def _node_absolute_location(cls, node) -> tuple[float, float]:
+        if node is None:
+            return 0.0, 0.0
+        abs_loc = getattr(node, "location_absolute", None)
+        if abs_loc is not None:
+            abs_x, abs_y = cls._coerce_xy(abs_loc)
+            if abs_x or abs_y or getattr(node, "parent", None) is not None:
+                return abs_x, abs_y
+        x, y = cls._node_local_location(node)
+        visited: set[int] = set()
+        parent = getattr(node, "parent", None)
+        while parent is not None:
+            ptr = id(parent)
+            if ptr in visited:
+                break
+            visited.add(ptr)
+            parent_x, parent_y = cls._node_local_location(parent)
+            x += parent_x
+            y += parent_y
+            parent = getattr(parent, "parent", None)
+        return x, y
+
+    @classmethod
+    def _set_node_location(cls, node, location: tuple[float, float]) -> bool:
+        if node is None:
+            return False
+        target_x, target_y = float(location[0]), float(location[1])
+        current_x, current_y = cls._node_local_location(node)
+        if abs(current_x - target_x) <= 0.5 and abs(current_y - target_y) <= 0.5:
+            return False
+        try:
+            node.location = (target_x, target_y)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_frame_node(node) -> bool:
+        if node is None:
+            return False
+        return bool(
+            str(getattr(node, "bl_idname", "") or "") == "NodeFrame"
+            or str(getattr(node, "type", "") or "") == "FRAME"
+        )
+
+    @classmethod
+    def _ensure_helper_node_compact_display(cls, helper_node) -> bool:
+        if helper_node is None:
+            return False
+        changed = False
+        if hasattr(helper_node, "hide"):
+            try:
+                if not bool(getattr(helper_node, "hide", False)):
+                    helper_node.hide = True
+                    changed = True
+            except Exception:
+                pass
+        if hasattr(helper_node, "width_hidden"):
+            try:
+                current = float(getattr(helper_node, "width_hidden", 0.0) or 0.0)
+                target = float(cls._HELPER_HIDDEN_WIDTH)
+                if abs(current - target) > 0.5:
+                    helper_node.width_hidden = target
+                    changed = True
+            except Exception:
+                pass
+        return changed
+
+    @classmethod
+    def _parent_node_preserve_absolute(cls, node, parent) -> bool:
+        if node is None:
+            return False
+        if getattr(node, "parent", None) == parent:
+            return False
+        abs_x, abs_y = cls._node_absolute_location(node)
+        try:
+            node.parent = parent
+        except Exception:
+            return False
+        if parent is None:
+            cls._set_node_location(node, (abs_x, abs_y))
+            return True
+        parent_abs_x, parent_abs_y = cls._node_absolute_location(parent)
+        cls._set_node_location(node, (abs_x - parent_abs_x, abs_y - parent_abs_y))
+        return True
+
+    @classmethod
+    def _find_helper_frame_node(cls, tree, ace_id: str):
+        target_owner = str(ace_id or "")
+        for helper_node in getattr(tree, "nodes", []) or []:
+            if not cls._is_frame_node(helper_node):
+                continue
+            try:
+                owner = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
+            except Exception:
+                owner = ""
+            if owner == target_owner:
+                return helper_node
+        return None
+
+    @classmethod
+    def _ensure_helper_frame(cls, tree, owner_node, ace_id: str):
+        if tree is None or owner_node is None:
+            return None, False
+
+        changed = False
+        owner_parent = getattr(owner_node, "parent", None)
+        if cls._is_frame_node(owner_parent):
+            try:
+                parent_owner = str(owner_parent.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
+            except Exception:
+                parent_owner = ""
+            if not parent_owner or parent_owner == str(ace_id or ""):
+                return owner_parent, False
+
+        frame_node = cls._find_helper_frame_node(tree, ace_id)
+        created = False
+        if frame_node is None:
+            try:
+                frame_node = tree.nodes.new("NodeFrame")
+            except Exception:
+                return None, False
+            created = True
+            changed = True
+            cls._set_node_location(frame_node, cls._node_absolute_location(owner_node))
+
+        try:
+            if str(frame_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "") != str(ace_id or ""):
+                frame_node[cls._HELPER_FRAME_OWNER_KEY] = str(ace_id or "")
+                changed = True
+        except Exception:
+            pass
+        try:
+            if str(frame_node.get(cls._HELPER_FRAME_KIND_KEY, "") or "") != "ATTRIBUTE_CLUSTER":
+                frame_node[cls._HELPER_FRAME_KIND_KEY] = "ATTRIBUTE_CLUSTER"
+                changed = True
+        except Exception:
+            pass
+        frame_name = cls._helper_frame_name(ace_id)
+        try:
+            if str(getattr(frame_node, "name", "") or "") != frame_name:
+                frame_node.name = frame_name
+                changed = True
+        except Exception:
+            pass
+        try:
+            if str(getattr(frame_node, "label", "") or "") != "":
+                frame_node.label = ""
+                changed = True
+        except Exception:
+            pass
+        if hasattr(frame_node, "shrink"):
+            try:
+                if not bool(getattr(frame_node, "shrink", False)):
+                    frame_node.shrink = True
+                    changed = True
+            except Exception:
+                pass
+        if created or getattr(owner_node, "parent", None) != frame_node:
+            if cls._parent_node_preserve_absolute(owner_node, frame_node):
+                changed = True
+        return frame_node, changed
+
+    @classmethod
+    def _sync_helper_node_layout(cls, tree, owner_node, helper_node, ace_id: str, output_idx: int) -> bool:
+        if tree is None or owner_node is None or helper_node is None:
+            return False
+        changed = False
+        container = getattr(owner_node, "parent", None)
+
+        frame_node, frame_changed = cls._ensure_helper_frame(tree, owner_node, ace_id)
+        if frame_node is not None:
+            container = frame_node
+            if frame_changed:
+                changed = True
+
+        if cls._parent_node_preserve_absolute(helper_node, container):
+            changed = True
+
+        if cls._ensure_helper_node_compact_display(helper_node):
+            changed = True
+
+        if container is not None and getattr(owner_node, "parent", None) == container:
+            owner_x, owner_y = cls._node_local_location(owner_node)
+        else:
+            owner_x, owner_y = cls._node_absolute_location(owner_node)
+        owner_height = cls._node_height(owner_node, cls._HELPER_FALLBACK_OWNER_HEIGHT)
+
+        helper_target = (
+            float(owner_x),
+            float(owner_y) - owner_height - cls._HELPER_VERTICAL_GAP - (int(output_idx) * cls._HELPER_VERTICAL_STEP),
+        )
+        if cls._set_node_location(helper_node, helper_target):
+            changed = True
+        return changed
+
+    @classmethod
     def _find_helper_attr_nodes(cls, tree, ace_id: str) -> dict[int, object]:
         found: dict[int, object] = {}
+        target_ace_id = str(ace_id or "")
+        # Pre-compute expected node names so we can match by name when
+        # _HELPER_NODE_OWNER_KEY is stale or unset (e.g. after an ace_id
+        # scheme change).  Name-based matching prevents _ensure_helper_attr_node
+        # from creating a duplicate alongside the existing node.
+        expected_name_to_idx: dict[str, int] = {
+            cls._helper_node_name(target_ace_id, i): i for i in range(16)
+        }
         for helper_node in getattr(tree, "nodes", []) or []:
             if str(getattr(helper_node, "bl_idname", "") or "") != "ShaderNodeAttribute":
                 continue
@@ -843,12 +1008,21 @@ class ACEShaderNodeFactory:
                 owner = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
             except Exception:
                 owner = ""
-            if owner != str(ace_id or ""):
-                continue
+            matched_by_owner = bool(target_ace_id and owner == target_ace_id)
+            if not matched_by_owner:
+                # Fallback: match by deterministic node name.  This handles nodes
+                # whose owner key was written with a stale id or was never set.
+                node_name = str(getattr(helper_node, "name", "") or "")
+                if node_name not in expected_name_to_idx:
+                    continue
             try:
                 out_idx = int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, -1) or -1)
             except Exception:
                 out_idx = -1
+            if out_idx < 0:
+                # Derive index from the node name if the custom property is missing.
+                node_name = str(getattr(helper_node, "name", "") or "")
+                out_idx = expected_name_to_idx.get(node_name, -1)
             if out_idx < 0:
                 continue
             found[int(out_idx)] = helper_node
@@ -907,17 +1081,11 @@ class ACEShaderNodeFactory:
                 changed = True
         except Exception:
             pass
-        try:
-            helper_node.hide = True
-        except Exception:
-            pass
+        if cls._ensure_helper_node_compact_display(helper_node):
+            changed = True
         try:
             if location is not None:
                 helper_node.location = (float(location[0]), float(location[1]))
-            elif created:
-                owner_loc = getattr(owner_node, "location", None)
-                if owner_loc is not None:
-                    helper_node.location = (float(owner_loc.x) - 260.0, float(owner_loc.y) - (int(output_idx) * 120.0))
         except Exception:
             pass
         return helper_node, changed
@@ -997,10 +1165,7 @@ class ACEShaderNodeFactory:
         if tree is None or helper_node is None:
             return helper_node, False
         try:
-            prev_location = (
-                float(getattr(helper_node.location, "x", 0.0)),
-                float(getattr(helper_node.location, "y", 0.0)),
-            )
+            prev_location = cls._node_local_location(helper_node)
         except Exception:
             prev_location = None
 
@@ -1059,6 +1224,7 @@ class ACEShaderNodeFactory:
         if tree is None:
             return False
         live_owner_ids: set[str] = set()
+        live_node_names: set[str] = set()
         for node in getattr(tree, "nodes", []) or []:
             try:
                 ace_id = str(node.get("ace_id", "") or "")
@@ -1066,17 +1232,49 @@ class ACEShaderNodeFactory:
                 ace_id = ""
             if ace_id:
                 live_owner_ids.add(ace_id)
+                # Pre-compute the expected helper/frame names for this live node so
+                # we can catch orphans whose owner key is gone but whose name still
+                # matches the pattern (e.g. left over from a previous ace_id scheme).
+                for out_idx in range(16):
+                    live_node_names.add(cls._helper_node_name(ace_id, out_idx))
+                live_node_names.add(cls._helper_frame_name(ace_id))
 
         changed = False
         for helper_node in list(getattr(tree, "nodes", []) or []):
-            if str(getattr(helper_node, "bl_idname", "") or "") != "ShaderNodeAttribute":
+            bl_idname = str(getattr(helper_node, "bl_idname", "") or "")
+            owner_id = ""
+            if bl_idname == "ShaderNodeAttribute":
+                try:
+                    owner_id = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
+                except Exception:
+                    owner_id = ""
+            elif cls._is_frame_node(helper_node):
+                try:
+                    owner_id = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
+                except Exception:
+                    owner_id = ""
+                if owner_id:
+                    has_children = any(getattr(node, "parent", None) == helper_node for node in getattr(tree, "nodes", []) or [])
+                    if has_children and owner_id in live_owner_ids:
+                        continue
+                    try:
+                        tree.nodes.remove(helper_node)
+                        changed = True
+                    except Exception:
+                        pass
+                    continue
+            else:
                 continue
-            try:
-                owner_id = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
-            except Exception:
-                owner_id = ""
-            if not owner_id or owner_id in live_owner_ids:
+            node_name = str(getattr(helper_node, "name", "") or "")
+            # Primary check: owner key points at a live ace_id.
+            if owner_id and owner_id in live_owner_ids:
                 continue
+            # Fallback: the node's name is one of the expected helper names — keep it.
+            # This handles nodes whose owner key was written with an old id scheme but
+            # whose name still matches the current live node.
+            if node_name and node_name in live_node_names:
+                continue
+            # Neither check passed — orphan, remove it.
             try:
                 tree.nodes.remove(helper_node)
                 changed = True
@@ -1097,6 +1295,16 @@ class ACEShaderNodeFactory:
                 scene = getattr(getattr(bpy, "context", None), "scene", None)
             except Exception:
                 scene = None
+        try:
+            from ..core.audio_engine import ACEAudioEngine
+            if not ACEAudioEngine._structural_tree_writes_allowed(
+                scene,
+                tree=getattr(node, "id_data", None),
+                frontend_kind=FRONTEND_KIND_SHADER,
+            ):
+                return False
+        except Exception:
+            pass
         try:
             ace_id = str(node.get("ace_id", "") or "")
         except Exception:
@@ -1185,7 +1393,6 @@ class ACEShaderNodeFactory:
             if not target_name:
                 target_name = cls._placeholder_attr_name(int(out_idx), output_name)
 
-            had_existing_helper = int(out_idx) in helper_nodes_by_idx
             helper_node, helper_changed = cls._ensure_helper_attr_node(
                 tree,
                 node,
@@ -1198,27 +1405,11 @@ class ACEShaderNodeFactory:
             if helper_changed:
                 changed = True
                 helper_nodes_by_idx[int(out_idx)] = helper_node
-            try:
-                last_target_name = str(helper_node.get(cls._HELPER_ATTR_NAME_KEY, "") or "")
-            except Exception:
-                last_target_name = ""
-            if had_existing_helper and last_target_name != target_name:
-                helper_node, rebuilt_changed = cls._rebuild_helper_attr_node(
-                    tree,
-                    helper_node,
-                    node,
-                    ace_id,
-                    int(out_idx),
-                    output_name,
-                    str(sock_type or ""),
-                    target_name,
-                )
-                if helper_node is None:
-                    continue
-                if rebuilt_changed:
-                    changed = True
-                helper_nodes_by_idx[int(out_idx)] = helper_node
-            elif cls._set_attr_node_defaults(helper_node, target_name):
+            # Update attribute_name in place — never rebuild (remove + recreate) the node.
+            # Rebuilding is both unnecessary (only attribute_name needs to change) and
+            # dangerous: if the removal is interrupted the old node stays while a new one
+            # is also inserted, causing accumulation.
+            if cls._set_attr_node_defaults(helper_node, target_name):
                 changed = True
             if cls._store_helper_attr_name(helper_node, target_name):
                 changed = True
@@ -1234,6 +1425,8 @@ class ACEShaderNodeFactory:
             )
             helper_output = cls._shader_attr_output_socket(helper_node, str(sock_type or ""))
             if cls._ensure_helper_link(tree, helper_node, helper_output, node, helper_input):
+                changed = True
+            if cls._sync_helper_node_layout(tree, node, helper_node, ace_id, int(out_idx)):
                 changed = True
 
         return changed
