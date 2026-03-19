@@ -129,8 +129,9 @@ class ACEIdManager:
     def ensure_source_uid(source_prop, existing_ids: Optional[list[str]] = None) -> str:
         """Guarantee that an audio source has a stable internal identifier.
 
-        Returns the existing stable_id if present, otherwise generates a new
-        one via generate_node_id and writes it back to source_prop.stable_id.
+        Returns the existing stable_id when it is a valid source ACE ID.
+        Otherwise generates a replacement ID via generate_node_id and writes
+        it back to source_prop.stable_id.
 
         Args:
             source_prop: An ACEAudioSource property-group instance.  None is
@@ -141,10 +142,35 @@ class ACEIdManager:
         Returns:
             The stable ID string assigned to *source_prop*.
         """
-        sid = getattr(source_prop, "stable_id", "") if source_prop else ""
+        sid = str(getattr(source_prop, "stable_id", "") or "") if source_prop else ""
         if sid:
-            return sid
-        sid = ACEIdManager.generate_node_id("source_mngmt", "src", existing_ids=existing_ids)
+            parsed = ACEIdManager.parse_node_id(sid)
+            if (
+                parsed
+                and parsed.get("category") == "source_mngmt"
+                and parsed.get("type") == "src"
+            ):
+                return sid
+
+        # Legacy migration path: replace invalid persisted IDs with a valid
+        # source ACE ID so source nodes are not pruned during graph traversal.
+        legacy_seed = sid
+        existing = [str(v) for v in (existing_ids or []) if str(v) and str(v) != sid]
+        if source_prop and not legacy_seed:
+            source_name = str(getattr(source_prop, "name", "") or "")
+            source_type = str(getattr(source_prop, "source_type", "") or "")
+            source_path = str(getattr(source_prop, "filepath", "") or "")
+            source_flow = str(getattr(source_prop, "flow_identifier", "") or "")
+            legacy_seed = "|".join(
+                token for token in (source_type, source_name, source_path, source_flow) if token
+            )
+
+        sid = ACEIdManager.generate_node_id(
+            "source_mngmt",
+            "src",
+            existing_ids=existing,
+            deterministic_seed=f"source:{legacy_seed or 'default'}",
+        )
         try:
             source_prop.stable_id = sid  # type: ignore[attr-defined]
         except Exception:
@@ -257,6 +283,34 @@ class ACEIdManager:
         short_hash = hashlib.blake2b(f"{node_id}:{int(socket_idx)}".encode("utf-8"), digest_size=4).hexdigest()[:6]
         return f"{ACEIdManager.PREFIX}{metric_hint}_{source_hint}{short_hash}"[:63]
 
+    @staticmethod
+    def generate_error_state_attr_name(proxy_name: str, node_id: str) -> str:
+        """Generate the attribute name for an error-state signal output.
+
+        The GN proxy attribute named by this function should be written with
+        ``-1.0`` when the associated source is in an unrecoverable error state,
+        and ``0.0`` otherwise.  This lets GN-side drivers detect broken sources
+        deterministically without polling ``ace_source_error``.
+
+        Format: ``ACE_errst_<srchint><hash6>``
+        Example: ``ACE_errst_guit1a2b3c``
+
+        Args:
+            proxy_name: The proxy object name (used for the source hint).
+            node_id: The ACE node ID (hashed with "errst" suffix for uniqueness).
+
+        Returns:
+            A compact mesh attribute name string with the ACE prefix.
+        """
+        source_id = proxy_name
+        if source_id.startswith(ACEIdManager.PREFIX):
+            source_id = source_id[len(ACEIdManager.PREFIX):]
+        source_hint = ACEIdManager._clean_string(source_id.split("_", 1)[0]).lower()[:4] or "src"
+        short_hash = hashlib.blake2b(
+            f"{node_id}:errst".encode("utf-8"), digest_size=4
+        ).hexdigest()[:6]
+        return f"{ACEIdManager.PREFIX}errst_{source_hint}{short_hash}"[:63]
+
     # -------------------------------------------------------------------------
     # HELPERS
     # -------------------------------------------------------------------------
@@ -277,5 +331,4 @@ class ACEIdManager:
             A string containing only [a-zA-Z0-9] characters.
         """
         return re.sub(r'[^a-zA-Z0-9]', '', input_str)
-
 

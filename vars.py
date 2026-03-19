@@ -138,6 +138,27 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'RMS')],
             },
+            "lufs": {
+            "label": "Loudness (LUFS)",
+            "icon": "DRIVER_DISTANCE",
+            "description": (
+                "Normalized loudness output in 0..1 "
+                "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
+                "Window sets averaging time: larger values are smoother/slower, "
+                "smaller values react faster. "
+                "Overlap Ratio (0..1) controls update density: "
+                "0 = stepped window updates, 1 = maximally smooth updates."
+            ),
+            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)'), ('NodeSocketFloat', 'Overlap Ratio')],
+            "outputs": [('NodeSocketFloat', 'Loudness')],
+            },
+            "peak": {
+            "label": "Peak",
+            "icon": "DRIVER_DISTANCE",
+            "description": "Normalized K-weighted peak level in 0..1 (0 = silence, 1 = 0 dB full scale).",
+            "inputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [('NodeSocketFloat', 'Peak')],
+            },
             "spectral_centroid": {
             "label": "Spectral Centroid",
             "icon": "CURVE_NCIRCLE",
@@ -210,19 +231,8 @@ ACE_NODES: dict[str, Category] = {
             "description": "Long-term specs and passing through the audio.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [
-                ('NodeSocketFloat', 'BPF'),
-                ('NodeSocketVector', 'Time Signature'),
+                ('NodeSocketFloat', 'Frames per Beat'),
                 ('NodeSocketFloat', 'Beat Phase'),
-                ('NodeSocketBundle', 'Audio')
-            ],
-            },
-            "scanner": {
-            "label": "Latency Tracker",
-            "icon": "",
-            "description": "Tracks branch/source latency in milliseconds while passing audio through.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [
-                ('NodeSocketFloat', 'Latency ms'),
                 ('NodeSocketBundle', 'Audio')
             ],
             },
@@ -239,6 +249,20 @@ ACE_NODES: dict[str, Category] = {
             "description": "Audio operations: add, subtract, multiply.",
             "inputs": [('NodeSocketBundle', 'Audio')], # dynamic
             "outputs": [('NodeSocketBundle', 'Audio')], # dynamic
+            },
+            "util_rolling_avg": {
+            "label": "Rolling Average",
+            "icon": "",
+            "description": "Smooths a scalar attribute stream over a fixed number of scene frames.",
+            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
+            "outputs": [('NodeSocketFloat', 'Rolling Avg')],
+            },
+            "stream_accumulator": {
+            "label": "Stream Accumulator",
+            "icon": "",
+            "description": "Maintains a running sum of the input stream values.",
+            "inputs": [('NodeSocketFloat', 'Value')],
+            "outputs": [('NodeSocketFloat', 'Accumulated')],
             },
         },
     },

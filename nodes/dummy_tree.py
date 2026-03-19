@@ -23,9 +23,54 @@ from ..core.abstract_tree import (
     ACEAbstractSocket,
     ACEAbstractLink,
     ACEAbstractOutputLink,
+    ACEFrontendRef,
+    ACEConsumerIntent,
 )
 from ..core.id_management import ACEIdManager
 from .. import utils
+
+FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
+FRONTEND_KIND_SHADER = "SHADER_NODES"
+
+
+def _tree_pointer(tree) -> int:
+    try:
+        return int(tree.as_pointer())
+    except Exception:
+        return id(tree)
+
+
+def ensure_frontend_uid(tree, frontend_kind: str, existing_uids) -> str:
+    """Guarantee a persistent, unique frontend UID on a top-level node tree."""
+    if tree is None:
+        return ""
+    existing = {str(v) for v in (existing_uids or []) if str(v)}
+    current_uid = ""
+    try:
+        current_uid = str(tree.get("ace_frontend_uid", "") or "")
+    except Exception:
+        current_uid = ""
+    if current_uid and current_uid not in existing:
+        return current_uid
+
+    kind_token = ACEIdManager._clean_string(str(frontend_kind or "frontend")).lower()[:10] or "frontend"
+    tree_name = str(getattr(tree, "name", "") or "Tree")
+    tree_type = str(getattr(tree, "bl_idname", "") or "")
+    max_attempts = max(len(existing) + 64, 256)
+    for salt in range(max_attempts):
+        suffix = hashlib.blake2b(
+            f"{frontend_kind}:{tree_type}:{tree_name}:{salt}".encode("utf-8"),
+            digest_size=4,
+        ).hexdigest()[:6]
+        candidate = f"ACE_FRONTEND_{kind_token}_{suffix}"
+        if candidate in existing:
+            continue
+        try:
+            tree["ace_frontend_uid"] = candidate
+        except Exception:
+            pass
+        return candidate
+    return current_uid
 
 class ACEDummyNodeFactory:
     """Creates and manages Blender node groups based on the ACE_NODES registry.
@@ -98,10 +143,11 @@ class ACEDummyNodeFactory:
                     ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
                     ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
 
-        # 2. Dynamic Splitter default variant (2 bands) is ensured separately to keep sockets consistent.
+        # 2. Dynamic variants are ensured separately to keep sockets consistent.
         try:
-            from .dynamic_audio_operators import ACESplitterManager
-            ACESplitterManager.refresh_existing_variants()
+            from .dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+            ACESplitterManager.refresh_existing_variants("GeometryNodeTree")
+            ACEAudioMathManager.refresh_existing_variants("GeometryNodeTree")
         except Exception:
             pass
 
@@ -144,7 +190,7 @@ class ACEDummyNodeFactory:
     @staticmethod
     def prune_orphaned_ace_nodes(tree, scene) -> int:
         """
-        Remove nodes from *tree* whose 'ace_id' property no longer corresponds
+        Remove nodes from *tree* whose 'ace_source_id' property no longer corresponds
         to any active audio source in the scene.  Called once per compile so
         the node graph stays clean when sources are deleted.
 
@@ -163,14 +209,14 @@ class ACEDummyNodeFactory:
         removed = 0
         try:
             for node in list(getattr(tree, "nodes", [])):
-                ace_id = getattr(node, "get", lambda k, d=None: None)("ace_id")
-                if not ace_id:
+                source_id = getattr(node, "get", lambda k, d=None: None)("ace_source_id")
+                if not source_id:
                     continue
-                # Source management nodes carry the source stable_id as their ace_id.
                 from ..core.id_management import ACEIdManager
-                parsed = ACEIdManager.parse_node_id(ace_id)
+                ace_id = getattr(node, "get", lambda k, d=None: None)("ace_id")
+                parsed = ACEIdManager.parse_node_id(str(ace_id or ""))
                 if parsed and parsed.get("category") == "source_mngmt" and parsed.get("type") == "src":
-                    if ace_id not in live_source_ids:
+                    if source_id not in live_source_ids:
                         tree.nodes.remove(node)
                         removed += 1
         except Exception as exc:
@@ -190,12 +236,13 @@ class ACEDummyNodeFactory:
             required_outputs = {"Audio"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
         if node_type == "src_specs":
-            required_inputs = {"Audio", "BPF Attribute ID", "Time Signature Attribute ID", "Beat Phase Attribute ID"}
-            required_outputs = {"BPF", "Time Signature", "Beat Phase", "Audio"}
-            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
-        if node_type == "scanner":
-            required_inputs = {"Audio", "Latency Attribute ID"}
-            required_outputs = {"Latency ms", "Audio"}
+            required_inputs = {
+                "Audio",
+                "Frames per Beat Attribute ID",
+                "Beat Phase Attribute ID",
+                "Proxy Object",
+            }
+            required_outputs = {"Frames per Beat", "Beat Phase", "Audio"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
         if node_type == "preview_sink":
             # Sink: one Audio input, no outputs required.
@@ -207,6 +254,33 @@ class ACEDummyNodeFactory:
             has_audio_in = any(n == "Audio" or n.startswith("Audio ") for n in inputs)
             has_audio_out = any(n == "Audio" or n.startswith("Audio ") for n in outputs)
             return not has_audio_in or not has_audio_out
+        if node_type == "util_rolling_avg":
+            required_inputs = {"Value", "Number of Frames", "Attribute ID", "Proxy Object"}
+            required_outputs = {"Rolling Avg"}
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        if node_type == "stream_accumulator":
+            required_inputs = {"Value", "Attribute ID", "Proxy Object"}
+            required_outputs = {"Accumulated"}
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        stream_nodes = (
+            ACE_NODES.get("stream", {}).get("nodes", {})
+            if isinstance(ACE_NODES.get("stream", {}), dict)
+            else {}
+        )
+        if node_type in stream_nodes:
+            node_def = stream_nodes.get(node_type, {}) if isinstance(stream_nodes, dict) else {}
+            required_inputs = {str(name) for _sock_type, name in list(node_def.get("inputs", []))}
+            required_outputs = {str(name) for _sock_type, name in list(node_def.get("outputs", []))}
+            value_output_count = 0
+            for sock_type, _sock_name in list(node_def.get("outputs", [])):
+                if "Bundle" in str(sock_type or ""):
+                    continue
+                value_output_count += 1
+            if value_output_count > 0:
+                required_inputs.add("Attribute ID")
+            for idx in range(1, int(value_output_count)):
+                required_inputs.add(f"Attribute ID {int(idx + 1)}")
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
 
         # ── Delta nodes ──────────────────────────────────────────────────────
         # All delta nodes share a single "Audio" input; outputs are fixed named
@@ -248,11 +322,27 @@ class ACEDummyNodeFactory:
             carry no attribute-ID sockets.
         """
         if category == "stream":
-            return ("Attribute ID",)
+            stream_nodes = (
+                ACE_NODES.get("stream", {}).get("nodes", {})
+                if isinstance(ACE_NODES.get("stream", {}), dict)
+                else {}
+            )
+            node_def = stream_nodes.get(str(node_type or ""), {}) if isinstance(stream_nodes, dict) else {}
+            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
+            value_output_count = max(
+                1,
+                sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
+            )
+            names = ["Attribute ID"]
+            for idx in range(1, int(value_output_count)):
+                names.append(f"Attribute ID {int(idx + 1)}")
+            return tuple(names)
         if category == "utilities" and node_type == "src_specs":
-            return ("BPF Attribute ID", "Time Signature Attribute ID", "Beat Phase Attribute ID")
-        if category == "utilities" and node_type == "scanner":
-            return ("Latency Attribute ID",)
+            return ("Frames per Beat Attribute ID", "Beat Phase Attribute ID")
+        if category == "utilities" and node_type == "util_rolling_avg":
+            return ("Attribute ID",)
+        if category == "utilities" and node_type == "stream_accumulator":
+            return ("Attribute ID",)
         return ()
 
     @staticmethod
@@ -302,6 +392,42 @@ class ACEDummyNodeFactory:
         outputs = node_def.get('outputs', [])
         for sock_type_str, sock_name in outputs:
             ng.interface.new_socket(sock_name, in_out='OUTPUT', socket_type=sock_type_str)
+
+        if category == "stream" and node_type == "lufs":
+            for item in getattr(getattr(ng, "interface", None), "items_tree", []):
+                if getattr(item, "in_out", None) != "INPUT":
+                    continue
+                name = str(getattr(item, "name", "") or "")
+                if name == "Window (s)":
+                    try:
+                        item.default_value = 0.4
+                    except Exception:
+                        pass
+                    for attr_name, value in (
+                        ("min_value", 0.05),
+                        ("max_value", 3.0),
+                        ("soft_min", 0.05),
+                        ("soft_max", 3.0),
+                    ):
+                        try:
+                            setattr(item, attr_name, value)
+                        except Exception:
+                            pass
+                elif name == "Overlap Ratio":
+                    try:
+                        item.default_value = 0.25
+                    except Exception:
+                        pass
+                    for attr_name, value in (
+                        ("min_value", 0.0),
+                        ("max_value", 1.0),
+                        ("soft_min", 0.0),
+                        ("soft_max", 1.0),
+                    ):
+                        try:
+                            setattr(item, attr_name, value)
+                        except Exception:
+                            pass
         
         # --- 2. INTERNALS SWITCH ---
         ACEDummyNodeFactory._create_dummy_internals(ng, inputs, outputs, category, node_type)
@@ -364,57 +490,105 @@ class ACEDummyNodeFactory:
         # CASE C: STREAM (Audio -> Float/Vector)
         # =====================================================================
         elif category == 'stream':
-            # Logic: Separate Bundle -> Sample Index (on Geometry) -> Output
-            
-            # 1. Attribute ID Input
-            if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
-                ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
-                ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+            # Logic: Separate Bundle -> one Sample Index per non-bundle output.
+            # Stream nodes with extra numeric controls (e.g. LUFS window/overlap ratio)
+            # consume those inputs via (sum * 0) fed into Sample Index[Index] so
+            # sockets stay active and non-grey without altering sampled values.
 
-            attr_id_idx = len(inputs_def)
+            # 1. Attribute-ID sockets (one per output)
+            value_output_count = sum(1 for sock_type, _sock_name in outputs_def if "Bundle" not in str(sock_type or ""))
+            if value_output_count <= 0:
+                value_output_count = len(outputs_def)
+            value_output_count = max(int(value_output_count), 0)
+            attr_socket_names: list[str] = []
+            for out_idx in range(value_output_count):
+                sock_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
+                if not any(s.name == sock_name for s in ng.interface.items_tree):
+                    ng.interface.new_socket(sock_name, in_out='INPUT', socket_type='NodeSocketString')
+                try:
+                    ng.interface.items_tree[sock_name].default_value = (
+                        "ACE_undefined" if out_idx == 0 else f"ACE_undefined_{int(out_idx + 1)}"
+                    )
+                except Exception:
+                    pass
+                attr_socket_names.append(sock_name)
+
+            attr_id_start_idx = len(inputs_def)
 
             # 2. Nodes
-            # [Separate Bundle] (Extract Geometry from Bundle)
-            sep_bundle = ng.nodes.new('NodeSeparateBundle') 
+            sep_bundle = ng.nodes.new('NodeSeparateBundle')
             sep_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
-            sep_bundle.location = (-200, 0)
-            
-            # [Named Attribute] (Read data)
-            named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
-            named_attr.location = (0, 150)
-            
-            target_type = 'FLOAT'
-            if len(outputs_def) > 0 and 'Vector' in outputs_def[0][0]:
-                target_type = 'FLOAT_VECTOR'
-                named_attr.data_type = 'FLOAT_VECTOR'
-            else:
-                named_attr.data_type = 'FLOAT'
+            sep_bundle.location = (-220, 0)
 
-            # [Sample Index]
-            sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
-            sample_idx.location = (200, 0)
-            sample_idx.data_type = target_type
-            sample_idx.domain = 'POINT'
+            # Optional index driver for numeric controls.
+            index_driver_socket = None
+            numeric_ctrl_indices = []
+            for idx, (sock_type, _sock_name) in enumerate(inputs_def):
+                if idx == 0:
+                    continue
+                st = str(sock_type or "")
+                if "Bundle" in st or "String" in st or "Object" in st:
+                    continue
+                numeric_ctrl_indices.append(idx)
+            if len(numeric_ctrl_indices) >= 2:
+                math_add = ng.nodes.new('ShaderNodeMath')
+                math_add.operation = 'ADD'
+                math_add.location = (-560, -180)
+                ng.links.new(input_node.outputs[int(numeric_ctrl_indices[0])], math_add.inputs[0])
+                ng.links.new(input_node.outputs[int(numeric_ctrl_indices[1])], math_add.inputs[1])
+                add_out = math_add.outputs[0]
+                for extra_idx in numeric_ctrl_indices[2:]:
+                    add_next = ng.nodes.new('ShaderNodeMath')
+                    add_next.operation = 'ADD'
+                    add_next.location = (int(math_add.location.x) + 180, int(math_add.location.y))
+                    ng.links.new(add_out, add_next.inputs[0])
+                    ng.links.new(input_node.outputs[int(extra_idx)], add_next.inputs[1])
+                    add_out = add_next.outputs[0]
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-340, -180)
+                ng.links.new(add_out, math_mul.inputs[0])
+                index_driver_socket = math_mul.outputs[0]
+            elif len(numeric_ctrl_indices) == 1:
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-340, -180)
+                ng.links.new(input_node.outputs[int(numeric_ctrl_indices[0])], math_mul.inputs[0])
+                index_driver_socket = math_mul.outputs[0]
 
             # 3. Wiring
-            
-            # A. Group Input (Bundle) -> Separate Bundle
             if len(inputs_def) > 0:
                 ng.links.new(input_node.outputs[0], sep_bundle.inputs[0])
-            
-            # B. Separate Bundle (Geometry) -> Sample Index (Geometry)
-            # Assuming output 0 of Separate Bundle is the geometry content
-            ng.links.new(sep_bundle.outputs[0], sample_idx.inputs['Geometry'])
-            
-            # C. Group Input (Attribute ID) -> Named Attribute (Name)
-            ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
-            
-            # D. Named Attribute -> Sample Index (Value)
-            ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-            
-            # E. Sample Index (Value) -> Group Output
-            if len(outputs_def) > 0:
-                ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
+
+            for out_idx in range(min(len(outputs_def), len(output_node.inputs))):
+                sock_type = str(outputs_def[out_idx][0] or "") if out_idx < len(outputs_def) else ""
+                if "Bundle" in sock_type:
+                    continue
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.location = (0, 210 - (out_idx * 220))
+                target_type = 'FLOAT'
+                if 'Vector' in sock_type:
+                    target_type = 'FLOAT_VECTOR'
+                elif 'Color' in sock_type or 'RGBA' in sock_type:
+                    target_type = 'FLOAT_COLOR'
+                named_attr.data_type = target_type
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.location = (220, 200 - (out_idx * 220))
+                sample_idx.data_type = target_type
+                sample_idx.domain = 'POINT'
+
+                ng.links.new(sep_bundle.outputs[0], sample_idx.inputs['Geometry'])
+                attr_socket_idx = attr_id_start_idx + out_idx
+                if attr_socket_idx < len(input_node.outputs):
+                    ng.links.new(input_node.outputs[attr_socket_idx], named_attr.inputs['Name'])
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                if index_driver_socket is not None:
+                    ng.links.new(index_driver_socket, sample_idx.inputs['Index'])
+                ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
         # =====================================================================
         # CASE D: UTILITIES
@@ -422,33 +596,50 @@ class ACEDummyNodeFactory:
         elif category == 'utilities':
 
             if node_type == 'src_specs':
-                # Facade-only: expose attribute-ID input sockets for routing/params.
-                # Runtime Layer 2 computes real metadata and writes proxy attributes.
                 attr_inputs = (
-                    ("BPF Attribute ID", "ACE_undefined_bpf"),
-                    ("Time Signature Attribute ID", "ACE_undefined_timesig"),
+                    ("Frames per Beat Attribute ID", "ACE_undefined_frames_per_beat"),
                     ("Beat Phase Attribute ID", "ACE_undefined_beatphase"),
                 )
                 for sock_name, default_name in attr_inputs:
                     if not any(s.name == sock_name for s in ng.interface.items_tree):
                         ng.interface.new_socket(sock_name, in_out='INPUT', socket_type='NodeSocketString')
                         ng.interface.items_tree[sock_name].default_value = default_name
-                # Audio passthrough: connect bundle input to the last output socket.
-                # Float/vector metadata outputs are left unconnected (default zero) —
-                # facade groups must not compute.
-                if len(inputs_def) > 0 and len(outputs_def) > 0:
-                    audio_out_idx = len(outputs_def) - 1
-                    ng.links.new(input_node.outputs[0], output_node.inputs[audio_out_idx])
+                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
 
-            elif node_type == 'scanner':
-                # Facade-only: latency is resolved by runtime commits, not GN internals.
-                attr_name = "Latency Attribute ID"
-                if not any(s.name == attr_name for s in ng.interface.items_tree):
-                    ng.interface.new_socket(attr_name, in_out='INPUT', socket_type='NodeSocketString')
-                    ng.interface.items_tree[attr_name].default_value = "ACE_undefined_latency"
-                # Audio passthrough to the second output (index 1); latency float stays at default.
-                if len(inputs_def) > 0 and len(output_node.inputs) > 1:
-                    ng.links.new(input_node.outputs[0], output_node.inputs[1])
+                attr_id_start_idx = len(inputs_def)
+                proxy_obj_idx = attr_id_start_idx + len(attr_inputs)
+
+                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+                obj_info.transform_space = 'ORIGINAL'
+                obj_info.location = (-320, 0)
+                if 'As Instance' in obj_info.inputs:
+                    obj_info.inputs['As Instance'].default_value = False
+
+                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+
+                sampler_specs = (
+                    ('FLOAT', 0, (-120, 220), (140, 220)),
+                    ('FLOAT', 1, (-120, -20), (140, -20)),
+                )
+                for offset, (data_type, out_idx, attr_loc, sample_loc) in enumerate(sampler_specs):
+                    named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                    named_attr.data_type = data_type
+                    named_attr.location = attr_loc
+
+                    sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                    sample_idx.data_type = data_type
+                    sample_idx.domain = 'POINT'
+                    sample_idx.location = sample_loc
+
+                    ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                    ng.links.new(input_node.outputs[attr_id_start_idx + offset], named_attr.inputs['Name'])
+                    ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                    if out_idx < len(output_node.inputs):
+                        ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
+
+                if len(inputs_def) > 0 and len(outputs_def) > 0:
+                    ng.links.new(input_node.outputs[0], output_node.inputs[len(outputs_def) - 1])
 
             elif node_type == 'preview_sink':
                 # Monitoring sink: one Bundle Audio input, zero outputs.
@@ -462,6 +653,121 @@ class ACEDummyNodeFactory:
                 # This wiring lets the user see the audio signal flow visually.
                 for i in range(min(len(inputs_def), len(outputs_def))):
                     ng.links.new(input_node.outputs[i], output_node.inputs[i])
+
+            elif node_type == 'util_rolling_avg':
+                # Attribute ID input (string) — the auto-generated proxy attribute name.
+                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
+                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+
+                attr_id_idx = len(inputs_def)  # 2: after Value (0) and Number of Frames (1)
+
+                # Proxy Object input — the source proxy mesh to read the attribute from.
+                # Auto-populated at node creation time (gn_menu._initialize_auto_attr_ids).
+                # Using an explicit Object socket (mirroring the src node) rather than
+                # Self Object keeps the node context-independent and lets the user
+                # inspect or override the target object.
+                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
+
+                proxy_obj_idx = len(inputs_def) + 1  # 3: after Attribute ID (2)
+
+                # ── Nodes ────────────────────────────────────────────────────
+                # (Value + Number of Frames) × 0 → always evaluates to 0.
+                # Feeds into Sample Index[Index] so sampling is always at element 0,
+                # while both inputs are genuinely consumed by compute nodes (no grey sockets).
+                math_add = ng.nodes.new('ShaderNodeMath')
+                math_add.operation = 'ADD'
+                math_add.location = (-560, -160)
+
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-380, -160)
+
+                ng.links.new(input_node.outputs[0], math_add.inputs[0])  # Value  → Add A
+                ng.links.new(input_node.outputs[1], math_add.inputs[1])  # Frames → Add B
+                ng.links.new(math_add.outputs[0], math_mul.inputs[0])    # sum → × 0
+
+                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+                obj_info.transform_space = 'ORIGINAL'
+                obj_info.location = (-300, 0)
+                if 'As Instance' in obj_info.inputs:
+                    obj_info.inputs['As Instance'].default_value = False
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.data_type = 'FLOAT'
+                named_attr.location = (-100, 150)
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.data_type = 'FLOAT'
+                sample_idx.domain = 'POINT'
+                sample_idx.location = (150, 0)
+
+                # ── Wiring ───────────────────────────────────────────────────
+                # A. Group Input (Proxy Object) → Object Info (Object)
+                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                # B. Object Info (Geometry) → Sample Index (Geometry)
+                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                # C. Group Input (Attribute ID) → Named Attribute (Name)
+                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
+                # D. Named Attribute → Sample Index (Value)
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                # E. (Value + Number of Frames) × 0 → Sample Index (Index) — always 0
+                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
+                # F. Sample Index (Value) → Group Output (Rolling Avg)
+                if len(outputs_def) > 0:
+                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
+
+            elif node_type == 'stream_accumulator':
+                # Attribute ID input (string) — the auto-generated proxy attribute name.
+                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
+                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+
+                attr_id_idx = len(inputs_def)  # 1: after Value (0)
+
+                # Proxy Object input — the source proxy mesh to read the attribute from.
+                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
+
+                proxy_obj_idx = len(inputs_def) + 1  # 2: after Attribute ID (1)
+
+                # Consume Value so the input is active, then force index 0 sampling.
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-420, -160)
+                ng.links.new(input_node.outputs[0], math_mul.inputs[0])  # Value → × 0
+
+                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+                obj_info.transform_space = 'ORIGINAL'
+                obj_info.location = (-300, 0)
+                if 'As Instance' in obj_info.inputs:
+                    obj_info.inputs['As Instance'].default_value = False
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.data_type = 'FLOAT'
+                named_attr.location = (-100, 150)
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.data_type = 'FLOAT'
+                sample_idx.domain = 'POINT'
+                sample_idx.location = (150, 0)
+
+                # A. Group Input (Proxy Object) → Object Info (Object)
+                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                # B. Object Info (Geometry) → Sample Index (Geometry)
+                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                # C. Group Input (Attribute ID) → Named Attribute (Name)
+                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
+                # D. Named Attribute → Sample Index (Value)
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                # E. Value × 0 → Sample Index (Index) — always 0
+                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
+                # F. Sample Index (Value) → Group Output (Accumulated)
+                if len(outputs_def) > 0:
+                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
 
         # =====================================================================
         # FALLBACK (unknown node type)
@@ -491,6 +797,7 @@ class ACEDummyTreeReader:
     # and registry extensions are reflected without a full Blender restart.
     _GROUP_NAME_LOOKUP: dict[str, tuple[str, str]] = {}
     _ACE_NODES_LOOKUP_HASH: str = ""
+    FACTORY_CLS = ACEDummyNodeFactory
 
     @classmethod
     def _ensure_group_name_lookup(cls):
@@ -500,13 +807,13 @@ class ACEDummyTreeReader:
         changes.  The lookup is rebuilt on first use and whenever the registry
         hash differs from the cached value.
         """
-        current_hash = ACEDummyNodeFactory._ace_nodes_hash()
+        current_hash = cls.FACTORY_CLS._ace_nodes_hash()
         if cls._GROUP_NAME_LOOKUP and current_hash and current_hash == cls._ACE_NODES_LOOKUP_HASH:
             return
         cls._GROUP_NAME_LOOKUP.clear()
         for cat_key, category in ACE_NODES.items():
             for type_key in category.get("nodes", {}).keys():
-                canonical = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
+                canonical = cls.FACTORY_CLS.get_group_name(cat_key, type_key)
                 cls._GROUP_NAME_LOOKUP[canonical] = (cat_key, type_key)
                 norm = canonical.lstrip(".")
                 if norm != canonical:
@@ -514,15 +821,40 @@ class ACEDummyTreeReader:
         if current_hash:
             cls._ACE_NODES_LOOKUP_HASH = current_hash
 
-    def __init__(self, blender_node_tree):
+    def __init__(
+        self,
+        blender_node_tree,
+        frontend_uid: str = "",
+        frontend_kind: str = FRONTEND_KIND_GEOMETRY,
+        reserved_node_ids: set[str] | None = None,
+        consumer_keys: tuple[str, ...] = (),
+    ):
         self.bl_tree = blender_node_tree
         self.abstract_tree = ACEAbstractTree()
+        self.frontend_uid = str(frontend_uid or "")
+        self.frontend_kind = str(frontend_kind or FRONTEND_KIND_GEOMETRY)
+        self.consumer_keys = tuple(str(v) for v in (consumer_keys or ()) if str(v))
+        self._node_order_by_ptr = {
+            self._node_pointer(node): idx
+            for idx, node in enumerate(getattr(blender_node_tree, "nodes", []) or [])
+        }
         # Track which source roots have already visited a Blender node
         self.visited_blender_nodes: dict[Any, set[str]] = {}
         # Track ACE ID ownership inside this read pass so duplicated Blender
         # nodes (Shift+D) cannot collapse to one abstract/task node.
         self._ace_id_owner: dict[str, int] = {}
         self._node_id_by_ptr: dict[int, str] = {}
+        self._reserved_node_ids = reserved_node_ids if reserved_node_ids is not None else set()
+        if self.frontend_uid:
+            self.abstract_tree.add_frontend(
+                ACEFrontendRef(
+                    uid=self.frontend_uid,
+                    kind=self.frontend_kind,
+                    tree_name=str(getattr(blender_node_tree, "name", "") or ""),
+                    tree_bl_idname=str(getattr(blender_node_tree, "bl_idname", "") or ""),
+                    tree_ptr=_tree_pointer(blender_node_tree),
+                )
+            )
 
     @staticmethod
     def _node_pointer(node) -> int:
@@ -569,12 +901,14 @@ class ACEDummyTreeReader:
         if cached:
             return cached
         owner_ptr = self._ace_id_owner.get(ace_id)
-        if owner_ptr is None or owner_ptr == node_ptr:
+        reserved_elsewhere = ace_id in self._reserved_node_ids and owner_ptr != node_ptr
+        if (owner_ptr is None or owner_ptr == node_ptr) and not reserved_elsewhere:
             self._ace_id_owner[ace_id] = node_ptr
             self._node_id_by_ptr[node_ptr] = ace_id
+            self._reserved_node_ids.add(ace_id)
             return ace_id
 
-        existing_ids = list(self._ace_id_owner.keys())
+        existing_ids = list(set(self._ace_id_owner.keys()).union(self._reserved_node_ids))
         seed_payload = str(deterministic_seed or f"{category}:{node_type}")
 
         try:
@@ -589,6 +923,7 @@ class ACEDummyTreeReader:
 
         self._ace_id_owner[new_id] = node_ptr
         self._node_id_by_ptr[node_ptr] = new_id
+        self._reserved_node_ids.add(new_id)
         # Persist the disambiguated ID back into the node's custom property so
         # that duplicate nodes have stable unique IDs on the next session/reload.
         try:
@@ -616,36 +951,23 @@ class ACEDummyTreeReader:
         if result:
             return result
 
-        # Fallback: prefix-based scan for dynamic variants (e.g. frequency_splitter_3bands,
-        # audio_math_3).  Only reached for group names not in the exact lookup.
+        # Fallback: prefix-based scan for dynamic/specialized variants.
+        # This covers splitter/audio_math dynamic arity groups and shader
+        # per-instance groups such as ".ACE_SHADER_stream_rms_<hash>".
         resolved_cat = ""
         resolved_type = ""
         clean_group_name = ACEIdManager._clean_string(norm_group_name).lower()
         for cat_key, category in ACE_NODES.items():
             for type_key in category.get("nodes", {}).keys():
-                canonical = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
+                canonical = self.FACTORY_CLS.get_group_name(cat_key, type_key)
                 norm_canonical = canonical.lstrip(".")
                 clean_canonical = ACEIdManager._clean_string(norm_canonical).lower()
                 if (
-                    cat_key == "delta"
-                    and type_key == "frequency_splitter"
-                    and (
-                        group_name.startswith(canonical + "_")
-                        or norm_group_name.startswith(norm_canonical + "_")
-                        or (clean_group_name and clean_group_name.startswith(clean_canonical))
-                    )
-                ):
-                    resolved_cat = cat_key
-                    resolved_type = type_key
-                    break
-                if (
-                    cat_key == "utilities"
-                    and type_key == "audio_math"
-                    and (
-                        group_name.startswith(canonical + "_")
-                        or norm_group_name.startswith(norm_canonical + "_")
-                        or (clean_group_name and clean_group_name.startswith(clean_canonical))
-                    )
+                    group_name.startswith(canonical + "_")
+                    or group_name.startswith(canonical + ".")
+                    or norm_group_name.startswith(norm_canonical + "_")
+                    or norm_group_name.startswith(norm_canonical + ".")
+                    or (clean_group_name and clean_group_name.startswith(clean_canonical))
                 ):
                     resolved_cat = cat_key
                     resolved_type = type_key
@@ -738,6 +1060,7 @@ class ACEDummyTreeReader:
             except Exception:
                 source_context = ""
         payload = {
+            "frontend_uid": str(self.frontend_uid or ""),
             "category": str(category),
             "type": str(node_type),
             "socket_signature": {
@@ -762,6 +1085,7 @@ class ACEDummyTreeReader:
         if sources:
             self._traverse_from_sources(sources)
         self._validate_cross_source_links()
+        self._emit_consumer_intents()
         return self.abstract_tree
 
     def _validate_cross_source_links(self):
@@ -792,13 +1116,64 @@ class ACEDummyTreeReader:
                 "WARNING",
             )
 
+    @staticmethod
+    def _is_writeable_output_node(node: Optional[ACEAbstractNode]) -> bool:
+        if node is None:
+            return False
+        is_stream = str(getattr(node, "category", "")) == "stream"
+        is_specs = (
+            str(getattr(node, "category", "")) == "utilities"
+            and str(getattr(node, "type", "")) == "src_specs"
+        )
+        is_rolling_avg = (
+            str(getattr(node, "category", "")) == "utilities"
+            and str(getattr(node, "type", "")) == "util_rolling_avg"
+        )
+        is_stream_accumulator = (
+            str(getattr(node, "category", "")) == "utilities"
+            and str(getattr(node, "type", "")) == "stream_accumulator"
+        )
+        return bool(is_stream or is_specs or is_rolling_avg or is_stream_accumulator)
+
+    def _emit_consumer_intents(self):
+        sink_kind = (
+            "OBJECT_PROPERTY"
+            if self.frontend_kind == FRONTEND_KIND_SHADER
+            else "PROXY_ATTRIBUTE"
+        )
+        for node in self.abstract_tree.nodes.values():
+            if not self._is_writeable_output_node(node):
+                continue
+            root_tokens = sorted({str(v) for v in (getattr(node, "root_sources", set()) or set()) if str(v)})
+            if not root_tokens:
+                root_tokens = [""]
+            params = dict(getattr(node, "parameters", {}) or {})
+            for sock in getattr(node, "outputs", []) or []:
+                data_type = str(getattr(sock, "data_type", "") or "")
+                if data_type in ("NodeSocketBundle", "BUNDLE", "BUNDLE_SOCKET"):
+                    continue
+                explicit_name = str(params.get(f"attr_id_out_{int(getattr(sock, 'socket_idx', 0) or 0)}", "") or "")
+                for source_token in root_tokens:
+                    self.abstract_tree.add_consumer_intent(
+                        ACEConsumerIntent(
+                            frontend_uid=self.frontend_uid,
+                            node_id=str(getattr(node, "id", "") or ""),
+                            socket_idx=int(getattr(sock, "socket_idx", 0) or 0),
+                            sink_kind=sink_kind,
+                            source_token=str(source_token or ""),
+                            consumer_keys=self.consumer_keys if sink_kind == "OBJECT_PROPERTY" else (),
+                            output_name=str(getattr(sock, "name", "") or ""),
+                            explicit_name=explicit_name,
+                        )
+                    )
+
     def _ensure_ace_id(self, bl_node, root_id: str = "") -> str:
         """Return the ACE ID for *bl_node*, generating one deterministically if absent.
 
-        Source management nodes use the ace_source_id property as the ID
-        (stable across renames).  All other nodes derive their ID from a
-        content hash of their socket signature and topology context so that the
-        same physical wiring always yields the same ID without persisting state.
+        All nodes derive their ID from a content hash of their socket
+        signature and topology context so that the same physical wiring always
+        yields the same ID without persisting state. Source management nodes
+        keep the stable source token separately in ``ace_source_id``.
 
         Args:
             bl_node: The Blender node to identify.
@@ -817,19 +1192,42 @@ class ACEDummyTreeReader:
         if not resolved_cat:
             return ""
 
-        if resolved_cat == "source_mngmt" and resolved_type == "src":
+        # Source nodes: use the stored ace_id as the primary identity (stable across topology
+        # changes) so that _sync_shader_output_ids / _sync_auto_attr_ids can look them up by
+        # bl_node["ace_id"] without the id drifting when connections change.
+        try:
+            stored_ace_id = str(bl_node.get("ace_id", "") or "")
+        except Exception:
+            stored_ace_id = ""
+        parsed_stored = ACEIdManager.parse_node_id(stored_ace_id) if stored_ace_id else None
+        if parsed_stored and parsed_stored.get("category") == resolved_cat and parsed_stored.get("type") == resolved_type:
+            if resolved_cat == "source_mngmt" and resolved_type == "src":
+                try:
+                    source_id = str(bl_node.get("ace_source_id", "") or "")
+                except Exception:
+                    source_id = ""
+                # Must not accidentally use the source's own stable_id as the node id.
+                if stored_ace_id == source_id:
+                    stored_ace_id = ""
+                    parsed_stored = None
+
+        if stored_ace_id and parsed_stored:
+            det_seed = (
+                f"{self.frontend_uid}:source-node:{bl_node.get('ace_source_id', '') or ''}"
+                if resolved_cat == "source_mngmt" and resolved_type == "src"
+                else stored_ace_id
+            )
+            resolved_id = self._reserve_unique_ace_id(
+                bl_node, stored_ace_id, resolved_cat, resolved_type, deterministic_seed=det_seed,
+            )
+            # Persist back so duplicated nodes (which get a new id from _reserve_unique_ace_id)
+            # are also stable on the next compile.
             try:
-                source_id = str(bl_node.get("ace_source_id", "") or "")
+                if str(bl_node.get("ace_id", "") or "") != resolved_id:
+                    bl_node["ace_id"] = resolved_id
             except Exception:
-                source_id = ""
-            if source_id and ACEIdManager.parse_node_id(source_id):
-                return self._reserve_unique_ace_id(
-                    bl_node,
-                    source_id,
-                    resolved_cat,
-                    resolved_type,
-                    deterministic_seed=f"source:{source_id}",
-                )
+                pass
+            return resolved_id
 
         seed = self._build_deterministic_node_seed(
             bl_node,
@@ -846,13 +1244,21 @@ class ACEDummyTreeReader:
             )
         except Exception:
             return ""
-        return self._reserve_unique_ace_id(
+        resolved_id = self._reserve_unique_ace_id(
             bl_node,
             generated,
             resolved_cat,
             resolved_type,
             deterministic_seed=seed,
         )
+        # Persist the generated id so the next compile reuses it instead of re-generating
+        # from topology (which changes whenever the user adds/removes links).
+        try:
+            if str(bl_node.get("ace_id", "") or "") != resolved_id:
+                bl_node["ace_id"] = resolved_id
+        except Exception:
+            pass
+        return resolved_id
 
     def _find_source_nodes(self):
         """Return all managed source placeholder nodes in the Blender tree.
@@ -949,6 +1355,8 @@ class ACEDummyTreeReader:
                             source_socket_idx=int(prev_output_idx),
                             target_socket_idx=int(target_socket_idx),
                             target_socket_name=target_socket_name,
+                            frontend_uid=self.frontend_uid,
+                            frontend_kind=self.frontend_kind,
                         )
                     )
 
@@ -1061,22 +1469,31 @@ class ACEDummyTreeReader:
             try:
                 proxy_sock = next((s for s in bl_node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                 if proxy_sock and getattr(proxy_sock, "default_value", None):
-                    proxy_obj = proxy_sock.default_value
-                    root_id = getattr(proxy_obj, "name", "") or ""
+                    proxy_value = proxy_sock.default_value
+                    if isinstance(proxy_value, str):
+                        root_id = str(proxy_value or "").strip()
+                    else:
+                        root_id = getattr(proxy_value, "name", "") or ""
             except Exception:
                 root_id = ""
         return root_id
 
     @staticmethod
     def _attribute_socket_to_output_index(sock_name: str) -> Optional[int]:
+        name = str(sock_name or "").strip()
+        if name == "Attribute ID":
+            return 0
+        if name.startswith("Attribute ID "):
+            suffix = name[len("Attribute ID "):].strip()
+            if suffix.isdigit():
+                idx = int(suffix) - 1
+                if idx >= 0:
+                    return int(idx)
         mapping = {
-            "Attribute ID": 0,
-            "BPF Attribute ID": 0,
-            "Time Signature Attribute ID": 1,
-            "Beat Phase Attribute ID": 2,
-            "Latency Attribute ID": 0,
+            "Frames per Beat Attribute ID": 0,
+            "Beat Phase Attribute ID": 1,
         }
-        return mapping.get(sock_name)
+        return mapping.get(name)
 
     def _parse_node(self, bl_node, root_id: str) -> Optional[ACEAbstractNode]:
         ace_id = self._ensure_ace_id(bl_node, root_id=root_id)
@@ -1153,6 +1570,9 @@ class ACEDummyTreeReader:
             params["op"] = op_value
         preview_enabled = bl_node.get("ace_preview_enabled", True)
         params["preview_enabled"] = bool(preview_enabled)
+        params["frontend_node_index"] = int(
+            self._node_order_by_ptr.get(self._node_pointer(bl_node), 0)
+        )
 
         # Build Outputs
         outputs = []
@@ -1177,7 +1597,14 @@ class ACEDummyTreeReader:
             inputs=inputs,
             outputs=outputs,
             parameters=params,
-            root_sources={root_id} if root_id else set()
+            root_sources={root_id} if root_id else set(),
+            frontend_uid=self.frontend_uid,
+            frontend_kind=self.frontend_kind,
+            source_binding_id=(
+                str(getattr(bl_node, "get", lambda *_: "")("ace_source_id", "") or "")
+                if cat == "source_mngmt" and typ == "src"
+                else ""
+            ),
         )
 
 # --- MODULE REGISTRATION ---

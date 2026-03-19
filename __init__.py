@@ -54,14 +54,15 @@ MODULE_NAMES = [
     # ── nodes/ sub-package ──────────────────────────────────────────────────
     "nodes",                         # 12. Package marker (nodes/__init__.py)
     "nodes.dummy_tree",              # 13. GN node factory & tree reader
-    "nodes.dynamic_audio_operators", # 14. Dynamic splitter/math variants
+    "nodes.shader_tree",             # 14. Shader node factory & tree reader
+    "nodes.dynamic_audio_operators", # 15. Dynamic splitter/math variants
     # ── ui/ sub-package ─────────────────────────────────────────────────────
-    "ui",                            # 15. Package marker (ui/__init__.py)
-    "ui.gn_menu",                    # 16. Geometry Node Editor add menus
-    "ui.n_panel_operators",          # 17. N-Panel operators
-    "ui.n_panel_ui",                 # 18. N-Panel UI panels
-    "ui.prefs_library_manager",      # 19. Dependency installer
-    "ui.prefs_panel_ui",             # 20. Add-on preferences UI
+    "ui",                            # 16. Package marker (ui/__init__.py)
+    "ui.gn_menu",                    # 17. Geometry Node Editor add menus
+    "ui.n_panel_operators",          # 18. N-Panel operators
+    "ui.n_panel_ui",                 # 19. N-Panel UI panels
+    "ui.prefs_library_manager",      # 20. Dependency installer
+    "ui.prefs_panel_ui",             # 21. Add-on preferences UI
 ]
 
 modules = []
@@ -101,6 +102,13 @@ def register():
             register_handlers()
         except (ImportError, AttributeError):
             pass
+        try:
+            import bpy  # type: ignore
+            from .properties import _live_device_cache_timer
+            if not bpy.app.timers.is_registered(_live_device_cache_timer):
+                bpy.app.timers.register(_live_device_cache_timer, first_interval=0.1, persistent=True)
+        except Exception:
+            pass
 
         modules[:] = imported_modules
         log(f"Registered successfully ({len(modules)} modules).")
@@ -130,6 +138,13 @@ def unregister():
         from .core.audio_engine import unregister_handlers
         unregister_handlers()
     except (ImportError, AttributeError):
+        pass
+    try:
+        import bpy  # type: ignore
+        from .properties import _live_device_cache_timer
+        if bpy.app.timers.is_registered(_live_device_cache_timer):
+            bpy.app.timers.unregister(_live_device_cache_timer)
+    except Exception:
         pass
 
     # 2. Unregister Blender Classes

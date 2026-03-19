@@ -7,6 +7,14 @@ idm = load_module("id_management")
 
 
 class TestIdManagement(unittest.TestCase):
+    class _FakeSource:
+        def __init__(self, stable_id: str = "", name: str = "Source"):
+            self.stable_id = stable_id
+            self.name = name
+            self.source_type = "FILE"
+            self.filepath = "/tmp/source.wav"
+            self.flow_identifier = ""
+
     def test_generate_and_parse_node_id(self):
         node_id = idm.ACEIdManager.generate_node_id("stream", "rms")
         parsed = idm.ACEIdManager.parse_node_id(node_id)
@@ -46,6 +54,27 @@ class TestIdManagement(unittest.TestCase):
     def test_parse_node_id_rejects_invalid_strings(self):
         self.assertIsNone(idm.ACEIdManager.parse_node_id("not_ace"))
         self.assertIsNone(idm.ACEIdManager.parse_node_id("ACE_invalid"))
+
+    def test_ensure_source_uid_preserves_valid_source_id(self):
+        valid = idm.ACEIdManager.generate_node_id("source_mngmt", "src")
+        src = self._FakeSource(stable_id=valid)
+
+        resolved = idm.ACEIdManager.ensure_source_uid(src, existing_ids=[valid])
+
+        self.assertEqual(resolved, valid)
+        self.assertEqual(src.stable_id, valid)
+
+    def test_ensure_source_uid_migrates_legacy_id_to_valid_source_id(self):
+        src = self._FakeSource(stable_id="legacy_source_uuid")
+
+        resolved = idm.ACEIdManager.ensure_source_uid(src, existing_ids=["legacy_source_uuid"])
+        parsed = idm.ACEIdManager.parse_node_id(resolved)
+
+        self.assertNotEqual(resolved, "legacy_source_uuid")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["category"], "source_mngmt")
+        self.assertEqual(parsed["type"], "src")
+        self.assertEqual(src.stable_id, resolved)
 
 
 if __name__ == "__main__":

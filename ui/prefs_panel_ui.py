@@ -10,6 +10,13 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
         return fn
 from .. import utils
 
+
+def _addon_module_name() -> str:
+    """Return the root add-on module name Blender uses for preferences lookup."""
+    package_name = __package__ or __name__
+    return str(package_name).split(".")[0]
+
+
 # --- Data structures ---
 class ACE_DependencyItem(bpy.types.PropertyGroup):
     """Stores metadata about a required dependency."""
@@ -57,7 +64,7 @@ class ACE_UL_dependencies(bpy.types.UIList):
 class ACE_preferences(bpy.types.AddonPreferences):
     """Preferences panel for AudioCore Engine."""
 
-    bl_idname = __package__ or __name__.split(".")[0]
+    bl_idname = _addon_module_name()
 
     def _update_debug_logging(self, context):
         """Update callback for debug logging toggle."""
@@ -132,7 +139,7 @@ def _get_addon_preferences():
     addons = getattr(prefs, "addons", None) if prefs else None
     if not addons:
         return None
-    candidate_keys = [ACE_preferences.bl_idname, __package__, __name__.split(".")[0]]
+    candidate_keys = [ACE_preferences.bl_idname, _addon_module_name(), __package__, __name__.split(".")[0]]
     for key in candidate_keys:
         if key and key in addons:
             return addons[key].preferences

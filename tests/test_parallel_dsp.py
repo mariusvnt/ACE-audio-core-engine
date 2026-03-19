@@ -94,6 +94,46 @@ class TestParallelDSP(unittest.TestCase):
             },
         }
 
+    def _lufs_stream_graph_ir(self):
+        return {
+            "nodes": {
+                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "lufs": {
+                    "category": "stream",
+                    "type": "lufs",
+                    "parameters": {"window_size": 0.4, "overlap_ratio": 0.25},
+                },
+            },
+            "links": [
+                ("src_a", 0, "lufs", 0),
+            ],
+            "source_node_ids": ["src_a"],
+            "source_ir": {
+                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
+            },
+            "output_specs": {
+                "lufs:0": {"node_id": "lufs", "socket_idx": 0, "attr_type": "FLOAT"},
+            },
+        }
+
+    def _peak_stream_graph_ir(self):
+        return {
+            "nodes": {
+                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "peak": {"category": "stream", "type": "peak", "parameters": {}},
+            },
+            "links": [
+                ("src_a", 0, "peak", 0),
+            ],
+            "source_node_ids": ["src_a"],
+            "source_ir": {
+                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
+            },
+            "output_specs": {
+                "peak:0": {"node_id": "peak", "socket_idx": 0, "attr_type": "FLOAT"},
+            },
+        }
+
     def _specs_splitter_stream_graph_ir(self):
         return {
             "nodes": {
@@ -113,6 +153,26 @@ class TestParallelDSP(unittest.TestCase):
             },
             "output_specs": {
                 "rms:0": {"node_id": "rms", "socket_idx": 0, "attr_type": "FLOAT"},
+            },
+        }
+
+    def _stream_accumulator_graph_ir(self):
+        return {
+            "nodes": {
+                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "rms": {"category": "stream", "type": "rms", "parameters": {}},
+                "accum": {"category": "utilities", "type": "stream_accumulator", "parameters": {}},
+            },
+            "links": [
+                ("src_a", 0, "rms", 0),
+                ("rms", 0, "accum", 0),
+            ],
+            "source_node_ids": ["src_a"],
+            "source_ir": {
+                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
+            },
+            "output_specs": {
+                "accum:0": {"node_id": "accum", "socket_idx": 0, "attr_type": "FLOAT"},
             },
         }
 
@@ -241,6 +301,54 @@ class TestParallelDSP(unittest.TestCase):
         self.assertTrue(np.isfinite(float(values["rms:0"])))
         self.assertGreater(float(values["rms:0"]), 0.0)
 
+    def test_worker_supports_lufs_stream_operator(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        mono = (0.2 * np.sin((2.0 * np.pi * 440.0 * t))).astype(np.float32, copy=False)
+        job = {
+            "generation_id": 10041,
+            "graph_uid": "lufs_graph",
+            "frame_id": 4,
+            "block_size": n,
+            "sample_rate": sr,
+            "graph_ir_digest": "digest_lufs",
+            "graph_ir": self._lufs_stream_graph_ir(),
+            "source_chunks": {
+                "src_a": {"mono": mono, "sample_rate": sr, "latency_ms": 0.0},
+            },
+        }
+        out = self.pds.evaluate_parallel_job(job)
+        values = dict(out.get("values", {}) or {})
+        self.assertIn("lufs:0", values)
+        self.assertTrue(np.isfinite(float(values["lufs:0"])))
+        self.assertGreaterEqual(float(values["lufs:0"]), 0.0)
+        self.assertLessEqual(float(values["lufs:0"]), 1.0)
+
+    def test_worker_supports_peak_stream_operator(self):
+        n = 2048
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        mono = (0.2 * np.sin((2.0 * np.pi * 440.0 * t))).astype(np.float32, copy=False)
+        job = {
+            "generation_id": 10042,
+            "graph_uid": "peak_graph",
+            "frame_id": 4,
+            "block_size": n,
+            "sample_rate": sr,
+            "graph_ir_digest": "digest_peak",
+            "graph_ir": self._peak_stream_graph_ir(),
+            "source_chunks": {
+                "src_a": {"mono": mono, "sample_rate": sr, "latency_ms": 0.0},
+            },
+        }
+        out = self.pds.evaluate_parallel_job(job)
+        values = dict(out.get("values", {}) or {})
+        self.assertIn("peak:0", values)
+        self.assertTrue(np.isfinite(float(values["peak:0"])))
+        self.assertGreaterEqual(float(values["peak:0"]), 0.0)
+        self.assertLessEqual(float(values["peak:0"]), 1.0)
+
     def test_worker_supports_cross_source_math_chromagram_branches(self):
         n = 1024
         t = np.arange(n, dtype=np.float32) / 48000.0
@@ -267,6 +375,40 @@ class TestParallelDSP(unittest.TestCase):
         self.assertIn("rms1:0", values)
         self.assertTrue(np.isfinite(float(values["rms0:0"])))
         self.assertTrue(np.isfinite(float(values["rms1:0"])))
+
+    def test_worker_stream_accumulator_persists_state_and_resets_on_rewind(self):
+        n = 256
+        mono = np.ones(n, dtype=np.float32)
+        base_job = {
+            "generation_id": 1006,
+            "graph_uid": "stream_accum_graph",
+            "block_size": n,
+            "sample_rate": 48000,
+            "graph_ir_digest": "digest_stream_accum",
+            "graph_ir": self._stream_accumulator_graph_ir(),
+            "source_chunks": {
+                "src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0},
+            },
+        }
+
+        def _run(frame_id: int, job_key: str) -> float:
+            payload = dict(base_job)
+            payload["frame_id"] = int(frame_id)
+            payload["job_key"] = str(job_key)
+            out = self.pds.evaluate_parallel_job(payload)
+            values = dict(out.get("values", {}) or {})
+            self.assertIn("accum:0", values)
+            return float(values["accum:0"])
+
+        v1 = _run(1, "stream_accum_graph:f1:j1")
+        v2 = _run(2, "stream_accum_graph:f2:j1")
+        v3 = _run(3, "stream_accum_graph:f3:j1")
+        v1_rewind = _run(1, "stream_accum_graph:f1:j2")
+
+        self.assertAlmostEqual(v1, 1.0, places=5)
+        self.assertAlmostEqual(v2, 2.0, places=5)
+        self.assertAlmostEqual(v3, 3.0, places=5)
+        self.assertAlmostEqual(v1_rewind, 1.0, places=5)
 
     def test_shared_memory_payload_resolution_reuses_worker_cache(self):
         if not bool(getattr(self.pds, "_SHARED_MEMORY_AVAILABLE", False)):
@@ -322,10 +464,10 @@ class TestParallelDSP(unittest.TestCase):
         """Gap 1 runtime check: worker SourceSpecs computes correct beat-phase from injected params."""
         n = 512
         mono = np.zeros(n, dtype=np.float32)
-        # 180 BPM, 3/4 time, 30 FPS → beats_per_frame = 180 / (60 * 30) = 0.1
+        # 180 BPM, 3/4 time, 30 FPS → frames_per_beat = (60 * 30) / 180 = 10
         # At frame 5: pos_in_measure = (5 * 0.1) % 3.0 = 0.5; beat_phase = 0.5 / 3.0 ≈ 0.1667
-        expected_bpf  = 180.0 / (60.0 * 30.0)
-        expected_phase = ((5 * expected_bpf) % 3.0) / 3.0
+        expected_frames_per_beat = (60.0 * 30.0) / 180.0
+        expected_phase = ((5 * (1.0 / expected_frames_per_beat)) % 3.0) / 3.0
 
         graph_ir = {
             "nodes": {
@@ -339,7 +481,7 @@ class TestParallelDSP(unittest.TestCase):
             },
             "links": [
                 ("src_a", 0, "specs", 0),
-                ("specs", 3, "rms",   0),   # socket 3 = audio passthrough
+                ("specs", 2, "rms",   0),   # socket 2 = audio passthrough
             ],
             "source_node_ids": ["src_a"],
             "source_ir": {
@@ -367,10 +509,10 @@ class TestParallelDSP(unittest.TestCase):
         out = self.pds.evaluate_parallel_job(job)
         values = dict(out.get("values", {}) or {})
         self.assertIn("specs:0", values)
-        # Output socket 0 = beats_per_frame
-        bpf_val = float(values["specs:0"])
-        self.assertAlmostEqual(bpf_val, expected_bpf, places=5,
-                               msg="beats_per_frame should reflect injected BPM+FPS, not hardcoded defaults")
+        # Output socket 0 = frames_per_beat
+        frames_per_beat_val = float(values["specs:0"])
+        self.assertAlmostEqual(frames_per_beat_val, expected_frames_per_beat, places=5,
+                               msg="frames_per_beat should reflect injected BPM+FPS, not hardcoded defaults")
 
 
 if __name__ == "__main__":

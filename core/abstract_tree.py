@@ -1,6 +1,6 @@
 """
-Structure of the 'AbstractTree' object, which is an abstract representation of a node tree.
-It is used as a common language between the blender dummy tree, the backend tree and the audio engine.
+Structure of the 'AbstractTree' object, which is an abstract representation of
+scene frontends.
 """
 
 from dataclasses import dataclass, field
@@ -20,6 +20,35 @@ class ACEAbstractSocket:
     # Critical for inputs that have no link connected:
     default_value: Any = None 
 
+
+@dataclass
+class ACEFrontendRef:
+    """Reference to a top-level ACE authoring frontend in Blender."""
+
+    uid: str
+    kind: str
+    tree_name: str
+    tree_bl_idname: str
+    owner_keys: tuple[str, ...] = ()
+    material_name: str = ""
+    tree_ptr: int = 0
+    discovery_index: int = 0
+
+
+@dataclass
+class ACEConsumerIntent:
+    """Frontend-local declaration of who consumes a node output."""
+
+    frontend_uid: str
+    node_id: str
+    socket_idx: int
+    sink_kind: str
+    source_token: str = ""
+    consumer_keys: tuple[str, ...] = ()
+    output_name: str = ""
+    explicit_name: str = ""
+
+
 @dataclass
 class ACEAbstractNode:
     """
@@ -37,6 +66,9 @@ class ACEAbstractNode:
     outputs: List[ACEAbstractSocket] = field(default_factory=list)
     # Identifiers of source roots (proxy/stable ids) that feed this node.
     root_sources: set[str] = field(default_factory=set)
+    frontend_uid: str = ""
+    frontend_kind: str = ""
+    source_binding_id: str = ""
 
 @dataclass
 class ACEAbstractLink:
@@ -59,6 +91,8 @@ class ACEAbstractOutputLink:
     source_socket_idx: int
     target_socket_idx: int
     target_socket_name: str = ""
+    frontend_uid: str = ""
+    frontend_kind: str = ""
 
 @dataclass
 class ACEAbstractTree:
@@ -68,6 +102,8 @@ class ACEAbstractTree:
     nodes: Dict[str, ACEAbstractNode] = field(default_factory=dict)
     links: List[ACEAbstractLink] = field(default_factory=list)
     group_output_links: List[ACEAbstractOutputLink] = field(default_factory=list)
+    frontends: Dict[str, ACEFrontendRef] = field(default_factory=dict)
+    consumer_intents: List[ACEConsumerIntent] = field(default_factory=list)
 
     def to_dict(self):
         """Helper to serialize the tree for sending to the backend."""
@@ -82,3 +118,23 @@ class ACEAbstractTree:
 
     def add_group_output_link(self, link: ACEAbstractOutputLink):
         self.group_output_links.append(link)
+
+    def add_frontend(self, frontend: ACEFrontendRef):
+        self.frontends[frontend.uid] = frontend
+
+    def add_consumer_intent(self, intent: ACEConsumerIntent):
+        self.consumer_intents.append(intent)
+
+    def merge_from(self, other_tree: "ACEAbstractTree"):
+        """Deterministically merge another partial frontend tree into this one."""
+        for frontend_uid, frontend in (getattr(other_tree, "frontends", {}) or {}).items():
+            if frontend_uid in self.frontends:
+                raise ValueError(f"Duplicate frontend UID during merge: {frontend_uid}")
+            self.frontends[frontend_uid] = frontend
+        for node_id, node in (getattr(other_tree, "nodes", {}) or {}).items():
+            if node_id in self.nodes:
+                raise ValueError(f"Duplicate node ID during merge: {node_id}")
+            self.nodes[node_id] = node
+        self.links.extend(list(getattr(other_tree, "links", []) or []))
+        self.group_output_links.extend(list(getattr(other_tree, "group_output_links", []) or []))
+        self.consumer_intents.extend(list(getattr(other_tree, "consumer_intents", []) or []))
