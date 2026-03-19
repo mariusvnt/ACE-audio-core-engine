@@ -1028,12 +1028,20 @@ def _ensure_splitter_ramp_texture():
     Returns an RNA owner that exposes a `color_ramp` property for
     `layout.template_color_ramp(...)`.
     """
+    scene = getattr(getattr(bpy, "context", None), "scene", None)
     try:
         node_groups = bpy.data.node_groups
     except Exception:
         return None
 
     tree = node_groups.get(_SPLITTER_RAMP_NODETREE_NAME)
+    if ACEAudioEngine._undo_recovery_active_for_scene(scene):
+        if tree is None:
+            return None
+        ramp_node = tree.nodes.get(_SPLITTER_RAMP_NODE_NAME)
+        if ramp_node is None or getattr(ramp_node, "bl_idname", "") != 'ShaderNodeValToRGB':
+            return None
+        return ramp_node
     if tree is None:
         try:
             tree = node_groups.new(_SPLITTER_RAMP_NODETREE_NAME, 'ShaderNodeTree')
@@ -1334,9 +1342,14 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
     engine_abstract = None
     engine_tree_ready = False
     if tree and engine:
-        pending_tree = getattr(engine, "_pending_tree", None)
-        dirty_trees = getattr(engine, "_dirty_trees", set()) or set()
-        dirty_tree_match = bool((pending_tree == tree) or (tree in dirty_trees))
+        tree_ptr = 0
+        try:
+            tree_ptr = int(tree.as_pointer())
+        except Exception:
+            tree_ptr = 0
+        pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
+        dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
+        dirty_tree_match = bool((tree_ptr and pending_tree_ptr == tree_ptr) or (tree_ptr and tree_ptr in dirty_tree_ptrs))
         if allow_dirty_rebuild:
             tree_dirty_hint = tree_dirty_hint or dirty_tree_match
         if not tree_dirty_hint:
@@ -1625,24 +1638,32 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
         tree: The currently viewed GeometryNodeTree, or None.
 
     Returns:
-        True if the engine's pending_tree matches *tree* or if *tree* is in
-        the engine's dirty_trees set.
+        True if the engine has a pending rebuild for *tree* or if *tree* is in
+        the engine's dirty tree-pointer set.
     """
     engine = ACEAudioEngine.get_instance(scene)
     if not engine:
         return False
 
-    pending_tree = getattr(engine, "_pending_tree", None)
-    dirty_trees = getattr(engine, "_dirty_trees", set()) or set()
+    pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
+    dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
 
-    if pending_tree is not None:
-        if tree is None or pending_tree == tree:
+    if pending_tree_ptr:
+        if tree is None:
             return True
-    if not dirty_trees:
+        try:
+            if int(tree.as_pointer()) == pending_tree_ptr:
+                return True
+        except Exception:
+            pass
+    if not dirty_tree_ptrs:
         return False
     if tree is None:
         return True
-    return tree in dirty_trees
+    try:
+        return int(tree.as_pointer()) in dirty_tree_ptrs
+    except Exception:
+        return False
 
 
 def _engine_latency_metrics(context) -> dict[str, float | bool]:

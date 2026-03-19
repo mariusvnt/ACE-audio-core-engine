@@ -1192,29 +1192,42 @@ class ACEDummyTreeReader:
         if not resolved_cat:
             return ""
 
-        if resolved_cat == "source_mngmt" and resolved_type == "src":
+        # Source nodes: use the stored ace_id as the primary identity (stable across topology
+        # changes) so that _sync_shader_output_ids / _sync_auto_attr_ids can look them up by
+        # bl_node["ace_id"] without the id drifting when connections change.
+        try:
+            stored_ace_id = str(bl_node.get("ace_id", "") or "")
+        except Exception:
+            stored_ace_id = ""
+        parsed_stored = ACEIdManager.parse_node_id(stored_ace_id) if stored_ace_id else None
+        if parsed_stored and parsed_stored.get("category") == resolved_cat and parsed_stored.get("type") == resolved_type:
+            if resolved_cat == "source_mngmt" and resolved_type == "src":
+                try:
+                    source_id = str(bl_node.get("ace_source_id", "") or "")
+                except Exception:
+                    source_id = ""
+                # Must not accidentally use the source's own stable_id as the node id.
+                if stored_ace_id == source_id:
+                    stored_ace_id = ""
+                    parsed_stored = None
+
+        if stored_ace_id and parsed_stored:
+            det_seed = (
+                f"{self.frontend_uid}:source-node:{bl_node.get('ace_source_id', '') or ''}"
+                if resolved_cat == "source_mngmt" and resolved_type == "src"
+                else stored_ace_id
+            )
+            resolved_id = self._reserve_unique_ace_id(
+                bl_node, stored_ace_id, resolved_cat, resolved_type, deterministic_seed=det_seed,
+            )
+            # Persist back so duplicated nodes (which get a new id from _reserve_unique_ace_id)
+            # are also stable on the next compile.
             try:
-                source_id = str(bl_node.get("ace_source_id", "") or "")
+                if str(bl_node.get("ace_id", "") or "") != resolved_id:
+                    bl_node["ace_id"] = resolved_id
             except Exception:
-                source_id = ""
-            try:
-                stored_ace_id = str(bl_node.get("ace_id", "") or "")
-            except Exception:
-                stored_ace_id = ""
-            parsed_stored = ACEIdManager.parse_node_id(stored_ace_id) if stored_ace_id else None
-            if (
-                parsed_stored
-                and parsed_stored.get("category") == resolved_cat
-                and parsed_stored.get("type") == resolved_type
-                and stored_ace_id != source_id
-            ):
-                return self._reserve_unique_ace_id(
-                    bl_node,
-                    stored_ace_id,
-                    resolved_cat,
-                    resolved_type,
-                    deterministic_seed=f"{self.frontend_uid}:source-node:{source_id}",
-                )
+                pass
+            return resolved_id
 
         seed = self._build_deterministic_node_seed(
             bl_node,
@@ -1238,12 +1251,13 @@ class ACEDummyTreeReader:
             resolved_type,
             deterministic_seed=seed,
         )
-        if resolved_cat == "source_mngmt" and resolved_type == "src":
-            try:
-                if str(bl_node.get("ace_id", "") or "") != resolved_id:
-                    bl_node["ace_id"] = resolved_id
-            except Exception:
-                pass
+        # Persist the generated id so the next compile reuses it instead of re-generating
+        # from topology (which changes whenever the user adds/removes links).
+        try:
+            if str(bl_node.get("ace_id", "") or "") != resolved_id:
+                bl_node["ace_id"] = resolved_id
+        except Exception:
+            pass
         return resolved_id
 
     def _find_source_nodes(self):
