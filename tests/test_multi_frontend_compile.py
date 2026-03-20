@@ -1022,11 +1022,32 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertIn(owner, tree.nodes)
         self.assertNotIn(helper_frame, tree.nodes)
 
-    def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
+    def test_depsgraph_handler_tracks_runtime_tree_updates_and_object_membership_changes(self):
+        geometry_snapshot = self.engine_mod._ACECompiledFrontendSnapshot(
+            uid="ACE_FRONTEND_GN",
+            kind="GEOMETRY_NODES",
+            tree_name="ACE_GN",
+            tree_bl_idname="GeometryNodeTree",
+            owner_keys=("Cube:ACE GN",),
+            tree_ptr=606,
+        )
+        shader_snapshot = self.engine_mod._ACECompiledFrontendSnapshot(
+            uid="ACE_FRONTEND_SHADER",
+            kind="SHADER_NODES",
+            tree_name="ACE_Shader",
+            tree_bl_idname="ShaderNodeTree",
+            owner_keys=("Cube",),
+            material_name="ACE Mat",
+            tree_ptr=707,
+        )
         engine = types.SimpleNamespace(
             requested=[],
             _consume_geometry_eval_updates=lambda *_args, **_kwargs: None,
             request_recompile=lambda tree: engine.requested.append(tree),
+            _compiled_frontend_snapshots={
+                "ACE_FRONTEND_GN": geometry_snapshot,
+                "ACE_FRONTEND_SHADER": shader_snapshot,
+            },
         )
         settings = types.SimpleNamespace(auto_compile=True)
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
@@ -1041,6 +1062,34 @@ class TestMultiFrontendCompile(unittest.TestCase):
             material_slots=[_FakeMaterialSlot(material)],
         )
         obj.bl_idname = "Object"
+        matching_frontends = [
+            types.SimpleNamespace(
+                tree=geometry_tree,
+                frontend_ref=self.abs_mod.ACEFrontendRef(
+                    uid="ACE_FRONTEND_GN",
+                    kind="GEOMETRY_NODES",
+                    tree_name="ACE_GN",
+                    tree_bl_idname="GeometryNodeTree",
+                    owner_keys=("Cube:ACE GN",),
+                    tree_ptr=geometry_tree.as_pointer(),
+                ),
+                consumer_object_names=(),
+            ),
+            types.SimpleNamespace(
+                tree=shader_tree,
+                frontend_ref=self.abs_mod.ACEFrontendRef(
+                    uid="ACE_FRONTEND_SHADER",
+                    kind="SHADER_NODES",
+                    tree_name="ACE_Shader",
+                    tree_bl_idname="ShaderNodeTree",
+                    owner_keys=("Cube",),
+                    material_name="ACE Mat",
+                    tree_ptr=shader_tree.as_pointer(),
+                ),
+                consumer_object_names=(),
+            ),
+        ]
+        engine.discover_scene_frontends = lambda _scene: list(matching_frontends)
 
         orig_ensure = self.engine_mod.ACEAudioEngine.ensure_instance
         orig_get = self.engine_mod.ACEAudioEngine.get_instance
@@ -1064,18 +1113,22 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=material)]),
             )
+            engine.discover_scene_frontends = lambda _scene: []
+            self.engine_mod.depsgraph_update_handler(
+                scene,
+                types.SimpleNamespace(updates=[types.SimpleNamespace(id=obj)]),
+            )
         finally:
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
             self.engine_mod.ACEAudioEngine.get_instance = orig_get
 
         self.assertEqual(engine.requested[0], geometry_tree)
         self.assertEqual(engine.requested[1], shader_tree)
-        self.assertEqual(engine.requested[2], geometry_tree)
-        self.assertEqual(engine.requested[3], shader_tree)
-        self.assertEqual(engine.requested[4], shader_tree)
-        self.assertEqual(len(engine.requested), 5)
+        self.assertEqual(engine.requested[2], shader_tree)
+        self.assertIsNone(engine.requested[3])
+        self.assertEqual(len(engine.requested), 4)
 
-    def test_frame_change_handler_skips_compile_and_sink_work_when_render_writes_are_unsafe(self):
+    def test_frame_change_handler_keeps_runtime_alive_when_render_writes_are_unsafe(self):
         calls = []
         engine = types.SimpleNamespace(
             graphs={},
@@ -1095,9 +1148,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
         finally:
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
 
-        self.assertTrue(any(call[0] == "log" for call in calls))
-        self.assertFalse(any(call[0] == "execute" for call in calls))
-        self.assertFalse(any(call[0] == "discover" for call in calls))
+        self.assertFalse(any(call[0] == "log" for call in calls))
+        self.assertTrue(any(call[0] == "execute" for call in calls))
+        self.assertTrue(any(call[0] == "discover" for call in calls))
         self.assertFalse(any(call[0] == "compile" for call in calls))
 
     def test_shader_tree_mutations_are_unsafe_in_rendered_viewport_preview(self):
@@ -1329,6 +1382,113 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
         self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_a", 104))
         self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_missing", 104))
+
+    def test_compile_builds_explicit_mixed_graph_for_cross_source_audio_math(self):
+        engine = self._engine_shell()
+        engine._unsafe_for_handler_writes = lambda _scene: True
+        engine._probe_source_metadata = lambda *_args, **_kwargs: None
+        engine._prune_bake_cache = lambda *_args, **_kwargs: None
+        engine._parallel_mode = lambda *_args, **_kwargs: "none"
+
+        source_a = _FakePropertyCtx(
+            name="Source A",
+            stable_id="src_a",
+            proxy_object_name="ACE_PROXY_A",
+            source_type="FILE",
+            sample_rate=48000,
+            native_sample_rate=48000,
+            duration=1.0,
+            filepath="a.wav",
+        )
+        source_b = _FakePropertyCtx(
+            name="Source B",
+            stable_id="src_b",
+            proxy_object_name="ACE_PROXY_B",
+            source_type="FILE",
+            sample_rate=48000,
+            native_sample_rate=48000,
+            duration=1.0,
+            filepath="b.wav",
+        )
+        scene = types.SimpleNamespace(
+            audiocore=types.SimpleNamespace(
+                audio_sources=[source_a, source_b],
+                engine_settings=types.SimpleNamespace(),
+                active_source_index=0,
+            ),
+            render=types.SimpleNamespace(fps=24.0, fps_base=1.0, use_lock_interface=False),
+            frame_start=1,
+        )
+        socket_bundle = self.abs_mod.ACEAbstractSocket("audio", "Audio", 0, True, "NodeSocketBundle")
+        socket_float = self.abs_mod.ACEAbstractSocket("value", "Value", 0, True, "NodeSocketFloat")
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "src_a_node": self.abs_mod.ACEAbstractNode(
+                    id="src_a_node",
+                    name="Source A",
+                    category="source_mngmt",
+                    type="src",
+                    parameters={},
+                    outputs=[socket_bundle],
+                    root_sources={"src_a"},
+                    source_binding_id="src_a",
+                ),
+                "src_b_node": self.abs_mod.ACEAbstractNode(
+                    id="src_b_node",
+                    name="Source B",
+                    category="source_mngmt",
+                    type="src",
+                    parameters={},
+                    outputs=[socket_bundle],
+                    root_sources={"src_b"},
+                    source_binding_id="src_b",
+                ),
+                "math_mix": self.abs_mod.ACEAbstractNode(
+                    id="math_mix",
+                    name="Math",
+                    category="utilities",
+                    type="audio_math",
+                    parameters={"op": "add"},
+                    outputs=[socket_bundle],
+                    root_sources={"src_a", "src_b"},
+                ),
+                "peak_mix": self.abs_mod.ACEAbstractNode(
+                    id="peak_mix",
+                    name="Peak",
+                    category="stream",
+                    type="peak",
+                    parameters={},
+                    outputs=[socket_float],
+                    root_sources={"src_a", "src_b"},
+                ),
+            },
+            links=[
+                self.abs_mod.ACEAbstractLink("src_a_node", "math_mix", 0, 0),
+                self.abs_mod.ACEAbstractLink("src_b_node", "math_mix", 0, 1),
+                self.abs_mod.ACEAbstractLink("math_mix", "peak_mix", 0, 0),
+            ],
+        )
+
+        orig_ensure_proxy = self.engine_mod.ACEProxyManager.ensure_proxy_for_source
+        try:
+            self.engine_mod.ACEProxyManager.ensure_proxy_for_source = staticmethod(
+                lambda source, scene=None: types.SimpleNamespace(name=getattr(source, "proxy_object_name", ""))
+            )
+            engine.compile(abstract_tree, scene)
+        finally:
+            self.engine_mod.ACEProxyManager.ensure_proxy_for_source = orig_ensure_proxy
+
+        mixed_graphs = [graph for graph in engine.graphs.values() if getattr(graph, "is_mixed", False)]
+        self.assertEqual(len(mixed_graphs), 1)
+        mixed_graph = mixed_graphs[0]
+        self.assertEqual(set(mixed_graph.root_source_tokens), {"src_a", "src_b"})
+        self.assertEqual(mixed_graph.source_alias_to_proxy["src_a"], "ACE_PROXY_A")
+        self.assertEqual(mixed_graph.source_alias_to_proxy["src_b"], "ACE_PROXY_B")
+        self.assertIn("src_a_node", mixed_graph.tasks)
+        self.assertIn("src_b_node", mixed_graph.tasks)
+        self.assertIn("math_mix", mixed_graph.tasks)
+        self.assertIn("peak_mix", mixed_graph.tasks)
+        self.assertIn("peak_mix:0", mixed_graph.output_attr_keys)
 
     def test_compile_requires_main_thread(self):
         errors = []

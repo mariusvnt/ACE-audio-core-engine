@@ -4142,16 +4142,15 @@ class LUFSTask(ACEAudioTask):
                 self._weighted_energy = self._weighted_energy[-window_samples:]
         self._samples_since_update += int(energy.size)
 
-        if self._samples_since_update >= hop_samples or self._last_frame_request is None:
-            mean_square = float(np.mean(self._weighted_energy, dtype=np.float64)) if self._weighted_energy.size > 0 else 0.0
-            if (not np.isfinite(mean_square)) or mean_square <= 1e-12:
+        mean_square = float(np.mean(self._weighted_energy, dtype=np.float64)) if self._weighted_energy.size > 0 else 0.0
+        if (not np.isfinite(mean_square)) or mean_square <= 1e-12:
+            lufs = float("-inf")
+        else:
+            lufs = -0.691 + (10.0 * math.log10(mean_square))
+            if not np.isfinite(lufs):
                 lufs = float("-inf")
-            else:
-                lufs = -0.691 + (10.0 * math.log10(mean_square))
-                if not np.isfinite(lufs):
-                    lufs = float("-inf")
-            self._last_lufs = self._db_to_unit(lufs)
-            self._samples_since_update %= hop_samples
+        self._last_lufs = self._db_to_unit(lufs)
+        self._samples_since_update %= hop_samples
 
         if frame_idx >= 0:
             self._last_frame_request = frame_idx
@@ -4551,27 +4550,22 @@ def _run_biquad(
                 "WARNING",
             )
 
-    # ── Tier 3: Pure-Python sample loop ──────────────────────────────────────
-    # Last resort.  At 512 samples/block this path takes ~10 ms on the preview
-    # thread and will cause audible dropouts.  Emit a one-time WARNING.
+    # ── Tier 3: Silence fallback ─────────────────────────────────────────────
+    # Both Numba and scipy are unavailable.  The pure-Python sample loop would
+    # take ~10 ms/512-sample block causing audible dropouts, so output silence
+    # instead.  Emit a one-time user-visible WARNING.
     if not _BIQUAD_PYTHON_FALLBACK_WARNED:
         _BIQUAD_PYTHON_FALLBACK_WARNED = True
         utils.log(
             "ACE Layer-3 preview: Numba and scipy.signal are both unavailable. "
-            "Using a slow Python biquad fallback that may cause audio dropouts. "
+            "Preview audio filtering disabled (silence output). "
             "Install Numba or scipy to restore full preview performance.",
             "WARNING",
         )
 
-    out = np.empty_like(src, dtype=np.float32)
-    for i in range(src.shape[0]):
-        x = float(src[i])
-        y = (b0 * x) + z1
-        z1 = (b1 * x) - (a1 * y) + z2
-        z2 = (b2 * x) - (a2 * y)
-        out[i] = y
-    state[0] = z1
-    state[1] = z2
+    out = np.zeros_like(src, dtype=np.float32)
+    state[0] = 0.0
+    state[1] = 0.0
     return out
 
 
@@ -4601,6 +4595,8 @@ class PreviewSinkTask(ACEAudioTask):
         self._sparse_iir_key: Optional[Tuple[int, int, Tuple[Tuple[float, float], ...]]] = None
         # OrderedDict enables O(1) LRU eviction: move_to_end() on hit, pop FIFO on overflow.
         self._section_coeff_cache: OrderedDict[Tuple[int, float, float], Tuple[List[Any], List[Any]]] = OrderedDict()
+        # Cross-block limiter state for exponential release envelope.
+        self._limiter_gain_state: float = 1.0
 
     def _numba_turbo_enabled(self) -> bool:
         # Runtime policy: force Numba acceleration for preview filtering whenever
@@ -4864,8 +4860,8 @@ class PreviewSinkTask(ACEAudioTask):
         # different surrounding context.
         self._section_coeff_cache.clear()
 
-    @staticmethod
     def _apply_preview_gain(
+        self,
         mono: np.ndarray,
         stereo: Optional[np.ndarray],
         coverage_ratio: float,
@@ -4908,10 +4904,21 @@ class PreviewSinkTask(ACEAudioTask):
             np.float32(1.0),
         ).astype(np.float32, copy=False)
 
+        # Cross-block release: allow limiter gain to recover gradually between
+        # blocks so quiet passages after a loud transient are not permanently
+        # suppressed.  ~0.25 s recovery at 44100 Hz / 512-sample blocks.
+        _RELEASE_COEFF = 0.05
+        if self._limiter_gain_state < 1.0:
+            self._limiter_gain_state += (1.0 - self._limiter_gain_state) * _RELEASE_COEFF
+        desired[0] = min(float(desired[0]), self._limiter_gain_state)
+
         # Instant-attack via running minimum: gain is only allowed to fall,
         # never rise within a block.  This prevents inter-sample pumping while
         # keeping quiet regions at full gain.
         gain_arr = np.minimum.accumulate(desired)
+
+        # Store final gain for next block's release seed.
+        self._limiter_gain_state = float(gain_arr[-1])
 
         mono_out = (mono_scaled * gain_arr).astype(np.float32, copy=False)
         stereo_out: Optional[np.ndarray] = None
@@ -5543,6 +5550,11 @@ class ACEAudioGraph:
         self.output_slot_specs: List[Tuple[str, str, int]] = []
         self.output_slot_specs_by_subset: Dict[Tuple[str, ...], List[Tuple[str, str, int]]] = {}
         self.proxy_lookup_fn: Optional[Callable[[str], Any]] = None
+        # Scheduling priority: 0 = highest (preview-active), 1 = normal, 2 = low.
+        self.priority: int = 1
+        self.is_mixed: bool = False
+        self.root_source_tokens: List[str] = []
+        self.source_alias_to_proxy: Dict[str, str] = {}
 
     def get_proxy_object(self):
         resolver = getattr(self, "proxy_lookup_fn", None)

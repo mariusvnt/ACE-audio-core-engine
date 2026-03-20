@@ -1,6 +1,6 @@
 {
-  "generated_utc": "2026-03-01T15:41:10Z",
-  "duration_s": 53.801589,
+  "generated_utc": "2026-03-19T23:00:34Z",
+  "duration_s": 39.410459,
   "environment": {
     "cwd": "C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine",
     "python_executable": "C:\\Users\\mariu\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\python.exe",
@@ -16,7 +16,7 @@
   "summary": {
     "overall_status": "fail",
     "gates": {
-      "integrity": "pass",
+      "integrity": "fail",
       "performance": "fail",
       "integration": "pass",
       "performance_tests": "fail",
@@ -24,18 +24,18 @@
     },
     "categories": {
       "integrity": {
-        "status": "pass",
+        "status": "fail",
         "counts": {
-          "passed": 123,
-          "failed": 0,
-          "error": 0,
+          "passed": 154,
+          "failed": 2,
+          "error": 4,
           "skipped": 1,
           "expected_failure": 0,
           "unexpected_success": 0,
-          "total": 124,
-          "executed": 123
+          "total": 161,
+          "executed": 160
         },
-        "pass_rate_pct": 100.0
+        "pass_rate_pct": 96.25
       },
       "performance": {
         "status": "fail",
@@ -68,13 +68,49 @@
     },
     "failures": [
       {
+        "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_lufs_task_increases_with_signal_level",
+        "module": "test_audio_tasks_registry",
+        "file": "test_audio_tasks_registry.py",
+        "category": "integrity",
+        "status": "failed",
+        "duration_s": 0.0014193000006343937,
+        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_audio_tasks_registry.py\", line 565, in test_lufs_task_increases_with_signal_level\n    self.assertGreater(float(high_lufs), float(low_lufs))\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 0.032544376207384026 not greater than 0.032544376207384026"
+      },
+      {
         "test_id": "test_engine_perf_gate.TestEnginePerfGate.test_engine_perf_strict_gate",
         "module": "test_engine_perf_gate",
         "file": "test_engine_perf_gate.py",
         "category": "performance",
         "status": "failed",
-        "duration_s": 0.001262200006749481,
-        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_engine_perf_gate.py\", line 96, in test_engine_perf_strict_gate\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        ratio,\n        ^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 1.5819442597429412 not less than or equal to 1.1 : Engine DSP strict gate failed sid=24: processes/threads dsp p95 ratio=1.582 > 1.100"
+        "duration_s": 0.0012050000004819594,
+        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_engine_perf_gate.py\", line 96, in test_engine_perf_strict_gate\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        ratio,\n        ^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 1.1724931693001406 not less than or equal to 1.1 : Engine DSP strict gate failed sid=24: processes/threads dsp p95 ratio=1.172 > 1.100"
+      },
+      {
+        "test_id": "setUpClass (test_multi_frontend_compile.TestMultiFrontendCompile)",
+        "module": "setUpClass (test_multi_frontend_compile",
+        "file": "setUpClass (test_multi_frontend_compile",
+        "category": "integrity",
+        "status": "error",
+        "duration_s": 0.0,
+        "message": "File \"<frozen importlib._bootstrap_external>\", line 1023, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\audio_engine.py\", line 50, in <module>\n    from .proxy_management import ACEProxyManager\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 10, in <module>\n    class ACEProxyManager:\n    ...<1350 lines>...\n            return bpy.data.objects.get(source_prop.proxy_object_name)\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 103, in ACEProxyManager\n    def _ensure_internal_collection(scene=None) -> bpy.types.Collection:\n                                                   ^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'types.SimpleNamespace' object has no attribute 'Collection'"
+      },
+      {
+        "test_id": "test_parallel_dsp.TestParallelDSP.test_shared_memory_payload_resolution_reuses_worker_cache",
+        "module": "test_parallel_dsp",
+        "file": "test_parallel_dsp.py",
+        "category": "integrity",
+        "status": "error",
+        "duration_s": 0.0011835000004793983,
+        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_parallel_dsp.py\", line 441, in test_shared_memory_payload_resolution_reuses_worker_cache\n    resolved_a, attached_a = self.pds._resolve_source_payloads(job)\n    ^^^^^^^^^^^^^^^^^^^^^^\nValueError: not enough values to unpack (expected 2, got 1)"
+      },
+      {
+        "test_id": "test_parallel_dsp.TestParallelDSP.test_worker_supports_specs_splitter_stream_chain",
+        "module": "test_parallel_dsp",
+        "file": "test_parallel_dsp.py",
+        "category": "integrity",
+        "status": "failed",
+        "duration_s": 0.000890199999048491,
+        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_parallel_dsp.py\", line 302, in test_worker_supports_specs_splitter_stream_chain\n    self.assertGreater(float(values[\"rms:0\"]), 0.0)\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 0.0 not greater than 0.0"
       },
       {
         "test_id": "test_perf_gate.TestPerfGate.test_perf_gate_warning_mode_or_strict_threshold",
@@ -82,70 +118,88 @@
         "file": "test_perf_gate.py",
         "category": "performance",
         "status": "failed",
-        "duration_s": 10.145435000013094,
-        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_perf_gate.py\", line 111, in test_perf_gate_warning_mode_or_strict_threshold\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        cur_p95,\n        ^^^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 0.4032250348245722 not less than or equal to 0.29931525030406186 : Perf regression sid=1 stage=dsp: p95=0.403ms baseline=0.222ms allowed=0.299ms"
+        "duration_s": 2.566498299998784,
+        "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_perf_gate.py\", line 111, in test_perf_gate_warning_mode_or_strict_threshold\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        cur_p95,\n        ^^^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 0.36311500025476556 not less than or equal to 0.29931525030406186 : Perf regression sid=1 stage=dsp: p95=0.363ms baseline=0.222ms allowed=0.299ms"
+      },
+      {
+        "test_id": "setUpClass (test_preferences_panel_ui.TestPreferencesPanelUI)",
+        "module": "setUpClass (test_preferences_panel_ui",
+        "file": "setUpClass (test_preferences_panel_ui",
+        "category": "integrity",
+        "status": "error",
+        "duration_s": 0.0,
+        "message": "File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_preferences_panel_ui.py\", line 87, in setUpClass\n    cls.prefs_ui = load_module(\"prefs_panel_ui\")\n                   ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\module_loader.py\", line 64, in load_module\n    spec.loader.exec_module(module)\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\n  File \"<frozen importlib._bootstrap_external>\", line 1023, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\ui\\prefs_panel_ui.py\", line 21, in <module>\n    class ACE_DependencyItem(bpy.types.PropertyGroup):\n                             ^^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'types.SimpleNamespace' object has no attribute 'PropertyGroup'"
+      },
+      {
+        "test_id": "setUpClass (test_proxy_management.TestProxyManagement)",
+        "module": "setUpClass (test_proxy_management",
+        "file": "setUpClass (test_proxy_management",
+        "category": "integrity",
+        "status": "error",
+        "duration_s": 0.0,
+        "message": "spec.loader.exec_module(module)\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\n  File \"<frozen importlib._bootstrap_external>\", line 1023, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 10, in <module>\n    class ACEProxyManager:\n    ...<1350 lines>...\n            return bpy.data.objects.get(source_prop.proxy_object_name)\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 103, in ACEProxyManager\n    def _ensure_internal_collection(scene=None) -> bpy.types.Collection:\n                                                   ^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'types.SimpleNamespace' object has no attribute 'Collection'"
       }
     ],
     "slowest_tests": [
       {
-        "test_id": "test_perf_gate.TestPerfGate.test_perf_harness_generates_required_scenarios",
-        "category": "performance",
-        "status": "passed",
-        "duration_s": 10.192906
-      },
-      {
         "test_id": "test_perf_gate.TestPerfGate.test_perf_gate_warning_mode_or_strict_threshold",
         "category": "performance",
         "status": "failed",
-        "duration_s": 10.145435
+        "duration_s": 2.566498
       },
       {
-        "test_id": "test_audio_tasks_registry_smoke.TestAudioTasksRegistrySmoke.test_imports_with_fake_numpy_module",
-        "category": "integration",
+        "test_id": "test_perf_gate.TestPerfGate.test_perf_harness_generates_required_scenarios",
+        "category": "performance",
         "status": "passed",
-        "duration_s": 0.006248
-      },
-      {
-        "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_preview_sink_sparse_indices_uses_masked_fft",
-        "category": "integrity",
-        "status": "passed",
-        "duration_s": 0.004185
-      },
-      {
-        "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_splitter_then_chromagram_preview_respects_parent_band_with_variable_chunk_size",
-        "category": "integrity",
-        "status": "passed",
-        "duration_s": 0.003393
+        "duration_s": 2.491967
       },
       {
         "test_id": "test_regression_findings.TestRegressionFindings.test_auto_attr_ids_reinitialize_on_reconnect",
         "category": "integrity",
         "status": "passed",
-        "duration_s": 0.001647
+        "duration_s": 0.002015
+      },
+      {
+        "test_id": "test_regression_findings.TestRegressionFindings.test_scene_frontend_sink_dispatch_contract_exists",
+        "category": "integrity",
+        "status": "passed",
+        "duration_s": 0.001674
       },
       {
         "test_id": "test_regression_findings.TestRegressionFindings.test_handlers_are_persistent",
         "category": "integrity",
         "status": "passed",
-        "duration_s": 0.001374
-      },
-      {
-        "test_id": "test_engine_perf_gate.TestEnginePerfGate.test_engine_perf_strict_gate",
-        "category": "performance",
-        "status": "failed",
-        "duration_s": 0.001262
+        "duration_s": 0.001617
       },
       {
         "test_id": "test_regression_findings.TestRegressionFindings.test_file_source_description_uses_original_sample_rate_metadata",
         "category": "integrity",
         "status": "passed",
-        "duration_s": 0.001221
+        "duration_s": 0.001553
       },
       {
-        "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_chromagram_fallback_keeps_sparse_mask_non_empty_in_coarse_band",
+        "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_lufs_task_increases_with_signal_level",
+        "category": "integrity",
+        "status": "failed",
+        "duration_s": 0.001419
+      },
+      {
+        "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_splitter_then_chromagram_preview_respects_parent_band_with_variable_chunk_size",
         "category": "integrity",
         "status": "passed",
-        "duration_s": 0.001128
+        "duration_s": 0.001261
+      },
+      {
+        "test_id": "test_regression_findings.TestRegressionFindings.test_n_panel_queues_non_blocking_recompiles_for_edit_operators",
+        "category": "integrity",
+        "status": "passed",
+        "duration_s": 0.001244
+      },
+      {
+        "test_id": "test_engine_perf_gate.TestEnginePerfGate.test_engine_perf_strict_gate",
+        "category": "performance",
+        "status": "failed",
+        "duration_s": 0.001205
       }
     ]
   },
@@ -177,10 +231,10 @@
         ],
         "missing_scenarios": [],
         "stage_peak_p95_ms": {
-          "source_read": 0.222185,
-          "dsp": 17.914505,
-          "preview": 3.33378,
-          "proxy_write": 0.016405,
+          "source_read": 0.24589,
+          "dsp": 5.083645,
+          "preview": 0.4757,
+          "proxy_write": 0.020925,
           "ui_sync": 0.001205
         },
         "violations": []
@@ -192,20 +246,19 @@
           "36",
           "50"
         ],
-        "max_dsp_ratio_processes_vs_threads": 1.538107,
-        "max_queue_drop_rate": 0.291667,
-        "min_fresh_result_rate": 0.116667,
-        "sla_total_latency_p95_ms": 14.39387,
+        "max_dsp_ratio_processes_vs_threads": 1.570982,
+        "max_queue_drop_rate": 0.3,
+        "min_fresh_result_rate": 0.216667,
+        "sla_total_latency_p95_ms": 7.8693,
         "sla_threshold_ms": 15.0,
         "violations": [
-          "engine scenario 24: dsp ratio 1.465 > 1.100",
-          "engine scenario 24: fresh-result rate 0.117 < 0.900",
-          "engine scenario 36: dsp ratio 1.538 > 1.100",
-          "engine scenario 36: queue-drop rate 0.067 > 0.030",
-          "engine scenario 36: fresh-result rate 0.214 < 0.900",
-          "engine scenario 50: dsp ratio 1.441 > 1.100",
-          "engine scenario 50: queue-drop rate 0.292 > 0.030",
-          "engine scenario 50: fresh-result rate 0.341 < 0.900"
+          "engine scenario 24: dsp ratio 1.112 > 1.100",
+          "engine scenario 24: fresh-result rate 0.217 < 0.900",
+          "engine scenario 36: dsp ratio 1.386 > 1.100",
+          "engine scenario 36: fresh-result rate 0.277 < 0.900",
+          "engine scenario 50: dsp ratio 1.571 > 1.100",
+          "engine scenario 50: queue-drop rate 0.300 > 0.030",
+          "engine scenario 50: fresh-result rate 0.369 < 0.900"
         ]
       }
     }
@@ -217,7 +270,7 @@
       "file": "test_ambiguous_compile_pruning.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004567000432871282,
+      "duration_s": 0.00047399999857589137,
       "message": ""
     },
     {
@@ -226,7 +279,7 @@
       "file": "test_ambiguous_compile_pruning.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.000707999977748841,
+      "duration_s": 0.0009339000007457798,
       "message": ""
     },
     {
@@ -235,7 +288,7 @@
       "file": "test_audio_influx.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00015199999324977398,
+      "duration_s": 0.00033369999982824083,
       "message": ""
     },
     {
@@ -244,7 +297,7 @@
       "file": "test_audio_influx.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 7.870001718401909e-05,
+      "duration_s": 0.00011730000005627517,
       "message": ""
     },
     {
@@ -253,7 +306,7 @@
       "file": "test_audio_influx.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 7.799995364621282e-05,
+      "duration_s": 0.0001277999999729218,
       "message": ""
     },
     {
@@ -262,7 +315,7 @@
       "file": "test_audio_influx.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 6.089999806135893e-05,
+      "duration_s": 9.450000106880907e-05,
       "message": ""
     },
     {
@@ -271,7 +324,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 5.940004484727979e-05,
+      "duration_s": 8.059999890974723e-05,
       "message": ""
     },
     {
@@ -280,7 +333,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 4.439998883754015e-05,
+      "duration_s": 7.590000132040586e-05,
       "message": ""
     },
     {
@@ -289,7 +342,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 3.4800032153725624e-05,
+      "duration_s": 6.500000017695129e-05,
       "message": ""
     },
     {
@@ -298,7 +351,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 2.829998265951872e-05,
+      "duration_s": 5.7499999456922524e-05,
       "message": ""
     },
     {
@@ -307,7 +360,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 8.569995407015085e-05,
+      "duration_s": 0.00014230000124371145,
       "message": ""
     },
     {
@@ -316,7 +369,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 6.160000339150429e-05,
+      "duration_s": 0.00010250000013911631,
       "message": ""
     },
     {
@@ -325,7 +378,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 3.589998232200742e-05,
+      "duration_s": 6.500000017695129e-05,
       "message": ""
     },
     {
@@ -334,7 +387,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 2.970005152747035e-05,
+      "duration_s": 6.000000030326191e-05,
       "message": ""
     },
     {
@@ -343,7 +396,7 @@
       "file": "test_audio_influx_backends.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 2.6799971237778664e-05,
+      "duration_s": 5.469999996421393e-05,
       "message": ""
     },
     {
@@ -352,7 +405,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00019180000526830554,
+      "duration_s": 0.00022650000028079376,
       "message": ""
     },
     {
@@ -361,7 +414,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0001894999877549708,
+      "duration_s": 0.00036499999987427145,
       "message": ""
     },
     {
@@ -370,7 +423,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 6.659998325631022e-05,
+      "duration_s": 0.00012570000035339035,
       "message": ""
     },
     {
@@ -379,7 +432,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00011720001930370927,
+      "duration_s": 0.00016850000065460335,
       "message": ""
     },
     {
@@ -388,7 +441,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003108999808318913,
+      "duration_s": 0.00035659999957715627,
       "message": ""
     },
     {
@@ -397,7 +450,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004830000107176602,
+      "duration_s": 0.0005750000000261934,
       "message": ""
     },
     {
@@ -406,7 +459,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00018630002159625292,
+      "duration_s": 0.00023130000045057386,
       "message": ""
     },
     {
@@ -415,7 +468,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00024580000899732113,
+      "duration_s": 0.00030169999990903307,
       "message": ""
     },
     {
@@ -424,7 +477,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00031319999834522605,
+      "duration_s": 0.00029489999906218145,
       "message": ""
     },
     {
@@ -433,7 +486,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00021780002862215042,
+      "duration_s": 0.00020540000150504056,
       "message": ""
     },
     {
@@ -442,7 +495,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00024060002760961652,
+      "duration_s": 0.00023039999905449804,
       "message": ""
     },
     {
@@ -451,7 +504,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0011282999766990542,
+      "duration_s": 0.001042300000335672,
       "message": ""
     },
     {
@@ -460,7 +513,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 5.830003647133708e-05,
+      "duration_s": 7.969999933266081e-05,
       "message": ""
     },
     {
@@ -469,7 +522,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 5.329999839887023e-05,
+      "duration_s": 6.969999958528206e-05,
       "message": ""
     },
     {
@@ -478,7 +531,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 4.0700018871575594e-05,
+      "duration_s": 6.460000076913275e-05,
       "message": ""
     },
     {
@@ -487,7 +540,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0001002000062726438,
+      "duration_s": 0.00013239999861980323,
       "message": ""
     },
     {
@@ -496,7 +549,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00013080000644549727,
+      "duration_s": 0.0001581999986228766,
       "message": ""
     },
     {
@@ -505,7 +558,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 8.330005221068859e-05,
+      "duration_s": 0.00010899999870161992,
       "message": ""
     },
     {
@@ -514,7 +567,34 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 9.34000127017498e-05,
+      "duration_s": 0.00011989999984507449,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_lufs_task_accepts_window_and_overlap_inputs",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0002795999989757547,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_lufs_task_increases_with_signal_level",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "failed",
+      "duration_s": 0.0014193000006343937,
+      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_audio_tasks_registry.py\", line 565, in test_lufs_task_increases_with_signal_level\n    self.assertGreater(float(high_lufs), float(low_lufs))\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 0.032544376207384026 not greater than 0.032544376207384026"
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_lufs_task_reports_floor_for_silence",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0001990000000660075,
       "message": ""
     },
     {
@@ -523,7 +603,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 8.739996701478958e-05,
+      "duration_s": 0.00011360000098648015,
       "message": ""
     },
     {
@@ -532,7 +612,25 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00012169999536126852,
+      "duration_s": 0.0001694999991741497,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_peak_task_increases_with_signal_level",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0003311000000394415,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_peak_task_reports_floor_for_silence",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00015770000027259812,
       "message": ""
     },
     {
@@ -541,7 +639,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0009684999822638929,
+      "duration_s": 0.0002947000011772616,
       "message": ""
     },
     {
@@ -550,7 +648,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0008847000426612794,
+      "duration_s": 0.0002856999999494292,
       "message": ""
     },
     {
@@ -559,7 +657,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 7.020001066848636e-05,
+      "duration_s": 9.190000128000975e-05,
       "message": ""
     },
     {
@@ -568,7 +666,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00023549998877570033,
+      "duration_s": 0.00023230000078910962,
       "message": ""
     },
     {
@@ -577,7 +675,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0001572000328451395,
+      "duration_s": 0.00017559999832883477,
       "message": ""
     },
     {
@@ -586,7 +684,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.004184699966572225,
+      "duration_s": 0.0004074000007676659,
       "message": ""
     },
     {
@@ -595,7 +693,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00028279999969527125,
+      "duration_s": 0.0002490999995643506,
       "message": ""
     },
     {
@@ -604,7 +702,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007259999983943999,
+      "duration_s": 0.0005929999988438794,
       "message": ""
     },
     {
@@ -613,7 +711,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00011139997513964772,
+      "duration_s": 0.0001143000008596573,
       "message": ""
     },
     {
@@ -622,7 +720,16 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004697999684140086,
+      "duration_s": 0.00036789999830944,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_rolling_average_uses_fixed_frame_count",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00013519999993150122,
       "message": ""
     },
     {
@@ -631,43 +738,16 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00020539999241009355,
+      "duration_s": 0.0002086000004055677,
       "message": ""
     },
     {
-      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_source_scanner_accumulates_chromagram_branch_latency",
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_source_specs_outputs_frames_per_beat",
       "module": "test_audio_tasks_registry",
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0011025999556295574,
-      "message": ""
-    },
-    {
-      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_source_scanner_reports_block_latency_for_file_sources",
-      "module": "test_audio_tasks_registry",
-      "file": "test_audio_tasks_registry.py",
-      "category": "integrity",
-      "status": "passed",
-      "duration_s": 9.619997581467032e-05,
-      "message": ""
-    },
-    {
-      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_source_scanner_reports_latency_and_passthrough",
-      "module": "test_audio_tasks_registry",
-      "file": "test_audio_tasks_registry.py",
-      "category": "integrity",
-      "status": "passed",
-      "duration_s": 5.900004180148244e-05,
-      "message": ""
-    },
-    {
-      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_source_specs_outputs_beats_per_frame",
-      "module": "test_audio_tasks_registry",
-      "file": "test_audio_tasks_registry.py",
-      "category": "integrity",
-      "status": "passed",
-      "duration_s": 7.920002099126577e-05,
+      "duration_s": 0.00011959999937971588,
       "message": ""
     },
     {
@@ -676,7 +756,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00016719999257475138,
+      "duration_s": 0.00015779999921505805,
       "message": ""
     },
     {
@@ -685,7 +765,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0008328999974764884,
+      "duration_s": 0.0009122999999817694,
       "message": ""
     },
     {
@@ -694,7 +774,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0001414999715052545,
+      "duration_s": 0.00013209999997343402,
       "message": ""
     },
     {
@@ -703,7 +783,43 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0033933999948203564,
+      "duration_s": 0.0012605000010807998,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_stream_accumulator_persists_and_resets_on_timeline_rewind",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00011239999912504572,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_stream_accumulator_state_roundtrip_preserves_running_sum",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00011780000022554304,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_stream_accumulator_state_roundtrip_preserves_vector_sum",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00017660000048635993,
+      "message": ""
+    },
+    {
+      "test_id": "test_audio_tasks_registry.TestAudioTasksRegistry.test_stream_accumulator_supports_vector_inputs",
+      "module": "test_audio_tasks_registry",
+      "file": "test_audio_tasks_registry.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00016829999913170468,
       "message": ""
     },
     {
@@ -712,7 +828,7 @@
       "file": "test_audio_tasks_registry.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0001449999981559813,
+      "duration_s": 0.00013249999938125256,
       "message": ""
     },
     {
@@ -721,7 +837,7 @@
       "file": "test_audio_tasks_registry_smoke.py",
       "category": "integration",
       "status": "passed",
-      "duration_s": 0.00624800001969561,
+      "duration_s": 8.69999985297909e-05,
       "message": ""
     },
     {
@@ -730,7 +846,7 @@
       "file": "test_blender_integration_smoke.py",
       "category": "integration",
       "status": "skipped",
-      "duration_s": 5.15999854542315e-05,
+      "duration_s": 4.509999962465372e-05,
       "message": "requires Blender bpy module"
     },
     {
@@ -739,7 +855,7 @@
       "file": "test_ci_env_requirements.py",
       "category": "integrity",
       "status": "skipped",
-      "duration_s": 5.920004332438111e-05,
+      "duration_s": 5.869999949936755e-05,
       "message": "CI-only environment guard"
     },
     {
@@ -748,7 +864,7 @@
       "file": "test_engine_perf_gate.py",
       "category": "performance",
       "status": "passed",
-      "duration_s": 9.799998952075839e-05,
+      "duration_s": 0.00016109999887703452,
       "message": ""
     },
     {
@@ -757,8 +873,8 @@
       "file": "test_engine_perf_gate.py",
       "category": "performance",
       "status": "failed",
-      "duration_s": 0.001262200006749481,
-      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_engine_perf_gate.py\", line 96, in test_engine_perf_strict_gate\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        ratio,\n        ^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 1.5819442597429412 not less than or equal to 1.1 : Engine DSP strict gate failed sid=24: processes/threads dsp p95 ratio=1.582 > 1.100"
+      "duration_s": 0.0012050000004819594,
+      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_engine_perf_gate.py\", line 96, in test_engine_perf_strict_gate\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        ratio,\n        ^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 1.1724931693001406 not less than or equal to 1.1 : Engine DSP strict gate failed sid=24: processes/threads dsp p95 ratio=1.172 > 1.100"
     },
     {
       "test_id": "test_engine_perf_gate.TestEnginePerfGate.test_sla_topology_report_exists",
@@ -766,7 +882,7 @@
       "file": "test_engine_perf_gate.py",
       "category": "performance",
       "status": "passed",
-      "duration_s": 4.549999721348286e-05,
+      "duration_s": 6.600000051548705e-05,
       "message": ""
     },
     {
@@ -775,7 +891,25 @@
       "file": "test_id_management.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00011229998199269176,
+      "duration_s": 0.00014270000065153,
+      "message": ""
+    },
+    {
+      "test_id": "test_id_management.TestIdManagement.test_ensure_source_uid_migrates_legacy_id_to_valid_source_id",
+      "module": "test_id_management",
+      "file": "test_id_management.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 9.390000013809185e-05,
+      "message": ""
+    },
+    {
+      "test_id": "test_id_management.TestIdManagement.test_ensure_source_uid_preserves_valid_source_id",
+      "module": "test_id_management",
+      "file": "test_id_management.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 7.160000131989364e-05,
       "message": ""
     },
     {
@@ -784,7 +918,7 @@
       "file": "test_id_management.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 5.660002352669835e-05,
+      "duration_s": 6.600000051548705e-05,
       "message": ""
     },
     {
@@ -793,7 +927,7 @@
       "file": "test_id_management.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 4.349998198449612e-05,
+      "duration_s": 6.260000009206124e-05,
       "message": ""
     },
     {
@@ -802,7 +936,7 @@
       "file": "test_id_management.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 3.50000336766243e-05,
+      "duration_s": 5.5500000598840415e-05,
       "message": ""
     },
     {
@@ -811,7 +945,7 @@
       "file": "test_id_management.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 3.2100011594593525e-05,
+      "duration_s": 5.459999920276459e-05,
       "message": ""
     },
     {
@@ -820,8 +954,17 @@
       "file": "test_id_management.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 4.020001506432891e-05,
+      "duration_s": 6.480000047304202e-05,
       "message": ""
+    },
+    {
+      "test_id": "setUpClass (test_multi_frontend_compile.TestMultiFrontendCompile)",
+      "module": "setUpClass (test_multi_frontend_compile",
+      "file": "setUpClass (test_multi_frontend_compile",
+      "category": "integrity",
+      "status": "error",
+      "duration_s": 0.0,
+      "message": "File \"<frozen importlib._bootstrap_external>\", line 1023, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\audio_engine.py\", line 50, in <module>\n    from .proxy_management import ACEProxyManager\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 10, in <module>\n    class ACEProxyManager:\n    ...<1350 lines>...\n            return bpy.data.objects.get(source_prop.proxy_object_name)\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 103, in ACEProxyManager\n    def _ensure_internal_collection(scene=None) -> bpy.types.Collection:\n                                                   ^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'types.SimpleNamespace' object has no attribute 'Collection'"
     },
     {
       "test_id": "test_parallel_dsp.TestParallelDSP.test_cross_source_audio_math_uses_distinct_source_chunks",
@@ -829,7 +972,7 @@
       "file": "test_parallel_dsp.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00047849997645244,
+      "duration_s": 0.0007373000007646624,
       "message": ""
     },
     {
@@ -838,7 +981,7 @@
       "file": "test_parallel_dsp.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0002142000012099743,
+      "duration_s": 0.0003352999992785044,
       "message": ""
     },
     {
@@ -847,7 +990,7 @@
       "file": "test_parallel_dsp.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0002975999959744513,
+      "duration_s": 0.00044609999895328656,
       "message": ""
     },
     {
@@ -855,9 +998,9 @@
       "module": "test_parallel_dsp",
       "file": "test_parallel_dsp.py",
       "category": "integrity",
-      "status": "passed",
-      "duration_s": 0.0002929000183939934,
-      "message": ""
+      "status": "error",
+      "duration_s": 0.0011835000004793983,
+      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_parallel_dsp.py\", line 441, in test_shared_memory_payload_resolution_reuses_worker_cache\n    resolved_a, attached_a = self.pds._resolve_source_payloads(job)\n    ^^^^^^^^^^^^^^^^^^^^^^\nValueError: not enough values to unpack (expected 2, got 1)"
     },
     {
       "test_id": "test_parallel_dsp.TestParallelDSP.test_worker_specs_uses_injected_bpm_fps",
@@ -865,7 +1008,16 @@
       "file": "test_parallel_dsp.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00011129997437819839,
+      "duration_s": 0.000148899998748675,
+      "message": ""
+    },
+    {
+      "test_id": "test_parallel_dsp.TestParallelDSP.test_worker_stream_accumulator_persists_state_and_resets_on_rewind",
+      "module": "test_parallel_dsp",
+      "file": "test_parallel_dsp.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0004949000012857141,
       "message": ""
     },
     {
@@ -874,7 +1026,25 @@
       "file": "test_parallel_dsp.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0008223999757319689,
+      "duration_s": 0.000969299999269424,
+      "message": ""
+    },
+    {
+      "test_id": "test_parallel_dsp.TestParallelDSP.test_worker_supports_lufs_stream_operator",
+      "module": "test_parallel_dsp",
+      "file": "test_parallel_dsp.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00047420000009879004,
+      "message": ""
+    },
+    {
+      "test_id": "test_parallel_dsp.TestParallelDSP.test_worker_supports_peak_stream_operator",
+      "module": "test_parallel_dsp",
+      "file": "test_parallel_dsp.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0003130999994027661,
       "message": ""
     },
     {
@@ -882,8 +1052,26 @@
       "module": "test_parallel_dsp",
       "file": "test_parallel_dsp.py",
       "category": "integrity",
+      "status": "failed",
+      "duration_s": 0.000890199999048491,
+      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_parallel_dsp.py\", line 302, in test_worker_supports_specs_splitter_stream_chain\n    self.assertGreater(float(values[\"rms:0\"]), 0.0)\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 0.0 not greater than 0.0"
+    },
+    {
+      "test_id": "test_parallel_offload_policy.TestParallelOffloadPolicy.test_rms_remains_parallel_offload_candidate",
+      "module": "test_parallel_offload_policy",
+      "file": "test_parallel_offload_policy.py",
+      "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00028789998032152653,
+      "duration_s": 0.00010870000005525071,
+      "message": ""
+    },
+    {
+      "test_id": "test_parallel_offload_policy.TestParallelOffloadPolicy.test_stream_accumulator_is_not_parallel_offload_candidate",
+      "module": "test_parallel_offload_policy",
+      "file": "test_parallel_offload_policy.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 5.810000038763974e-05,
       "message": ""
     },
     {
@@ -892,8 +1080,8 @@
       "file": "test_perf_gate.py",
       "category": "performance",
       "status": "failed",
-      "duration_s": 10.145435000013094,
-      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_perf_gate.py\", line 111, in test_perf_gate_warning_mode_or_strict_threshold\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        cur_p95,\n        ^^^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 0.4032250348245722 not less than or equal to 0.29931525030406186 : Perf regression sid=1 stage=dsp: p95=0.403ms baseline=0.222ms allowed=0.299ms"
+      "duration_s": 2.566498299998784,
+      "message": "Traceback (most recent call last):\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_perf_gate.py\", line 111, in test_perf_gate_warning_mode_or_strict_threshold\n    self.assertLessEqual(\n    ~~~~~~~~~~~~~~~~~~~~^\n        cur_p95,\n        ^^^^^^^^\n    ...<4 lines>...\n        ),\n        ^^\n    )\n    ^\nAssertionError: 0.36311500025476556 not less than or equal to 0.29931525030406186 : Perf regression sid=1 stage=dsp: p95=0.363ms baseline=0.222ms allowed=0.299ms"
     },
     {
       "test_id": "test_perf_gate.TestPerfGate.test_perf_harness_generates_required_scenarios",
@@ -901,7 +1089,34 @@
       "file": "test_perf_gate.py",
       "category": "performance",
       "status": "passed",
-      "duration_s": 10.192906100011896,
+      "duration_s": 2.491967300000397,
+      "message": ""
+    },
+    {
+      "test_id": "setUpClass (test_preferences_panel_ui.TestPreferencesPanelUI)",
+      "module": "setUpClass (test_preferences_panel_ui",
+      "file": "setUpClass (test_preferences_panel_ui",
+      "category": "integrity",
+      "status": "error",
+      "duration_s": 0.0,
+      "message": "File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\test_preferences_panel_ui.py\", line 87, in setUpClass\n    cls.prefs_ui = load_module(\"prefs_panel_ui\")\n                   ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\tests\\module_loader.py\", line 64, in load_module\n    spec.loader.exec_module(module)\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\n  File \"<frozen importlib._bootstrap_external>\", line 1023, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\ui\\prefs_panel_ui.py\", line 21, in <module>\n    class ACE_DependencyItem(bpy.types.PropertyGroup):\n                             ^^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'types.SimpleNamespace' object has no attribute 'PropertyGroup'"
+    },
+    {
+      "test_id": "setUpClass (test_proxy_management.TestProxyManagement)",
+      "module": "setUpClass (test_proxy_management",
+      "file": "setUpClass (test_proxy_management",
+      "category": "integrity",
+      "status": "error",
+      "duration_s": 0.0,
+      "message": "spec.loader.exec_module(module)\n    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\n  File \"<frozen importlib._bootstrap_external>\", line 1023, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 10, in <module>\n    class ACEProxyManager:\n    ...<1350 lines>...\n            return bpy.data.objects.get(source_prop.proxy_object_name)\n  File \"C:\\Users\\mariu\\AppData\\Roaming\\Blender Foundation\\Blender\\5.0\\scripts\\addons\\AudioCore Engine\\core\\proxy_management.py\", line 103, in ACEProxyManager\n    def _ensure_internal_collection(scene=None) -> bpy.types.Collection:\n                                                   ^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'types.SimpleNamespace' object has no attribute 'Collection'"
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_active_ace_instances_panel_uses_compiled_source_instance_ledger",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0005237999994278653,
       "message": ""
     },
     {
@@ -910,7 +1125,25 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0008281000191345811,
+      "duration_s": 0.0007494999990740325,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_audio_sources_panel_is_top_level_manage_sources_panel",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.00037739999970654026,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_audio_sources_tree_panel_reads_compiled_ir_only",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0004107999993721023,
       "message": ""
     },
     {
@@ -919,7 +1152,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0016471000271849334,
+      "duration_s": 0.0020154000012553297,
       "message": ""
     },
     {
@@ -928,7 +1161,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.000597700010985136,
+      "duration_s": 0.0009231000003637746,
       "message": ""
     },
     {
@@ -937,16 +1170,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0006244000396691263,
+      "duration_s": 0.0006640000010520453,
       "message": ""
     },
     {
-      "test_id": "test_regression_findings.TestRegressionFindings.test_compile_from_blender_tree_refreshes_auto_attr_metadata",
+      "test_id": "test_regression_findings.TestRegressionFindings.test_compile_scene_frontends_refreshes_auto_attr_metadata",
       "module": "test_regression_findings",
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004791999817825854,
+      "duration_s": 0.000747899999623769,
       "message": ""
     },
     {
@@ -955,7 +1188,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004867999814450741,
+      "duration_s": 0.0008416999990004115,
       "message": ""
     },
     {
@@ -964,7 +1197,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00042990001384168863,
+      "duration_s": 0.0007000000005064066,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_depsgraph_handler_tracks_geometry_shader_tree_and_object_frontends",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0008142999995470745,
       "message": ""
     },
     {
@@ -973,7 +1215,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003081000177189708,
+      "duration_s": 0.0003920999988622498,
       "message": ""
     },
     {
@@ -982,7 +1224,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005380999646149576,
+      "duration_s": 0.0006004000006214483,
       "message": ""
     },
     {
@@ -991,7 +1233,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007309000357054174,
+      "duration_s": 0.000744200000553974,
       "message": ""
     },
     {
@@ -1000,7 +1242,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0002997000119648874,
+      "duration_s": 0.0004071000003023073,
       "message": ""
     },
     {
@@ -1009,7 +1251,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00027679995400831103,
+      "duration_s": 0.00031550000130664557,
       "message": ""
     },
     {
@@ -1018,7 +1260,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005377000197768211,
+      "duration_s": 0.0004997999985789647,
       "message": ""
     },
     {
@@ -1027,7 +1269,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.001221399987116456,
+      "duration_s": 0.0015530000000580912,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_frontend_uid_repair_runs_on_canonical_frontend_order",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0005686999993486097,
       "message": ""
     },
     {
@@ -1036,7 +1287,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0009584000217728317,
+      "duration_s": 0.0011716999997588573,
       "message": ""
     },
     {
@@ -1045,7 +1296,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.001373699982650578,
+      "duration_s": 0.0016168999991350574,
       "message": ""
     },
     {
@@ -1054,7 +1305,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005991000216454268,
+      "duration_s": 0.0007534999986091862,
       "message": ""
     },
     {
@@ -1063,7 +1314,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00026139995316043496,
+      "duration_s": 0.0002727999999478925,
       "message": ""
     },
     {
@@ -1072,16 +1323,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003943000338040292,
+      "duration_s": 0.0004692999991675606,
       "message": ""
     },
     {
-      "test_id": "test_regression_findings.TestRegressionFindings.test_layer1_facade_specs_scanner_have_no_sampling_internals",
+      "test_id": "test_regression_findings.TestRegressionFindings.test_layer1_specs_and_rolling_avg_use_proxy_object_sampling_internals",
       "module": "test_regression_findings",
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00026619998971000314,
+      "duration_s": 0.0005197000009502517,
       "message": ""
     },
     {
@@ -1090,7 +1341,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003449000068940222,
+      "duration_s": 0.000693199999659555,
       "message": ""
     },
     {
@@ -1099,7 +1350,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007535999757237732,
+      "duration_s": 0.0012444000003597466,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_object_property_sink_updates_tag_depsgraph",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0003488000002107583,
       "message": ""
     },
     {
@@ -1108,7 +1368,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0006410000496543944,
+      "duration_s": 0.000987600000371458,
       "message": ""
     },
     {
@@ -1117,7 +1377,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007647000020369887,
+      "duration_s": 0.0010363000001234468,
       "message": ""
     },
     {
@@ -1126,7 +1386,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007424999494105577,
+      "duration_s": 0.000925600001210114,
       "message": ""
     },
     {
@@ -1135,7 +1395,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004710000357590616,
+      "duration_s": 0.0005921000010857824,
       "message": ""
     },
     {
@@ -1144,7 +1404,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00046959996689110994,
+      "duration_s": 0.0005877000003238209,
       "message": ""
     },
     {
@@ -1153,7 +1413,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00044739997247233987,
+      "duration_s": 0.0005596999999397667,
       "message": ""
     },
     {
@@ -1162,7 +1422,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00044520001392811537,
+      "duration_s": 0.0005519000005733687,
       "message": ""
     },
     {
@@ -1171,7 +1431,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0009640000062063336,
+      "duration_s": 0.0011385999987396644,
       "message": ""
     },
     {
@@ -1180,7 +1440,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00035859999479725957,
+      "duration_s": 0.00038390000008803327,
       "message": ""
     },
     {
@@ -1189,7 +1449,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005615000263787806,
+      "duration_s": 0.0007150999990699347,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_preview_conflict_resolution_selects_single_global_manual_preview",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0008601999998063548,
       "message": ""
     },
     {
@@ -1198,7 +1467,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007227000314742327,
+      "duration_s": 0.0008472999998048181,
       "message": ""
     },
     {
@@ -1207,7 +1476,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005357000045478344,
+      "duration_s": 0.0006783999997423962,
       "message": ""
     },
     {
@@ -1216,7 +1485,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0002937999670393765,
+      "duration_s": 0.0005300000011629891,
       "message": ""
     },
     {
@@ -1225,7 +1494,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0010878999601118267,
+      "duration_s": 0.0011058000000048196,
       "message": ""
     },
     {
@@ -1234,7 +1503,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00032049999572336674,
+      "duration_s": 0.0005629000006592833,
       "message": ""
     },
     {
@@ -1243,7 +1512,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005677000153809786,
+      "duration_s": 0.0007862000002205605,
       "message": ""
     },
     {
@@ -1252,7 +1521,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003491000388748944,
+      "duration_s": 0.00044809999963035807,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_proxy_and_menu_defer_shader_tree_sync_during_viewport_preview",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0005264999999781139,
       "message": ""
     },
     {
@@ -1261,7 +1539,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003018999705091119,
+      "duration_s": 0.00030930000139051117,
       "message": ""
     },
     {
@@ -1270,7 +1548,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0008104000007733703,
+      "duration_s": 0.0011421999988669995,
       "message": ""
     },
     {
@@ -1279,7 +1557,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0002595999976620078,
+      "duration_s": 0.0002856999999494292,
       "message": ""
     },
     {
@@ -1288,7 +1566,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00046470004599541426,
+      "duration_s": 0.0008331999997608364,
       "message": ""
     },
     {
@@ -1297,7 +1575,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0005201000021770597,
+      "duration_s": 0.000905699998838827,
       "message": ""
     },
     {
@@ -1306,16 +1584,25 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0006052999524399638,
+      "duration_s": 0.0008563000010326505,
       "message": ""
     },
     {
-      "test_id": "test_regression_findings.TestRegressionFindings.test_scanner_reads_chunk_latency_metadata",
+      "test_id": "test_regression_findings.TestRegressionFindings.test_scene_and_membership_signatures_ignore_discovery_order_metadata",
       "module": "test_regression_findings",
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0003074000123888254,
+      "duration_s": 0.0010157000015169615,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_scene_frontend_sink_dispatch_contract_exists",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.001673500000833883,
       "message": ""
     },
     {
@@ -1324,7 +1611,61 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0004653999931178987,
+      "duration_s": 0.0006673999996564817,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_shader_editor_add_menu_uses_shader_group_nodes",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0003670999994938029,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_shader_editor_dynamic_variants_are_tree_aware",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0010115000004589092,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_shader_output_id_sync_updates_shader_instance_bindings",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0010855000000447035,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_shader_sink_bindings_route_to_consumer_objects",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0008911000004445668,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_shader_sinks_use_attribute_nodes",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0004589000000123633,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_shader_viewport_preview_guard_defers_structural_shader_writes",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0009336999992228812,
       "message": ""
     },
     {
@@ -1333,7 +1674,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0007506999536417425,
+      "duration_s": 0.0010122000003320863,
       "message": ""
     },
     {
@@ -1342,16 +1683,52 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0006111999973654747,
+      "duration_s": 0.0008660000003146706,
       "message": ""
     },
     {
-      "test_id": "test_regression_findings.TestRegressionFindings.test_tempo_meter_panel_uses_single_row_layout",
+      "test_id": "test_regression_findings.TestRegressionFindings.test_source_specs_outputs_frames_per_beat_and_no_time_signature",
       "module": "test_regression_findings",
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.0002949000336229801,
+      "duration_s": 0.0006028000007063383,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_stage_a_and_stage_c_mutators_assert_main_thread",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.001006799999231589,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_stage_c_runtime_paths_guard_unsafe_render_writes",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0007444000002578832,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_tempo_meter_panel_places_auto_detect_above_row",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0004762999997183215,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_ui_active_node_list_follows_shader_or_geometry_editor_context",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0004470999992918223,
       "message": ""
     },
     {
@@ -1360,7 +1737,16 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.00030020001577213407,
+      "duration_s": 0.0004011000000900822,
+      "message": ""
+    },
+    {
+      "test_id": "test_regression_findings.TestRegressionFindings.test_ui_stream_list_filters_source_management_nodes",
+      "module": "test_regression_findings",
+      "file": "test_regression_findings.py",
+      "category": "integrity",
+      "status": "passed",
+      "duration_s": 0.0003496999997878447,
       "message": ""
     },
     {
@@ -1369,7 +1755,7 @@
       "file": "test_regression_findings.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 0.000700599979609251,
+      "duration_s": 0.0011598999990383163,
       "message": ""
     },
     {
@@ -1378,7 +1764,7 @@
       "file": "test_source_sample_rate_metadata.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 8.939998224377632e-05,
+      "duration_s": 0.00020390000099723693,
       "message": ""
     },
     {
@@ -1387,7 +1773,7 @@
       "file": "test_source_sample_rate_metadata.py",
       "category": "integrity",
       "status": "passed",
-      "duration_s": 3.679998917505145e-05,
+      "duration_s": 8.650000017951243e-05,
       "message": ""
     }
   ]

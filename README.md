@@ -150,7 +150,7 @@ Reads completed future results from Stage B.
 
 Calls proxy_management to fan out float/vector/color values to the named point-domain attributes on source proxy meshes and to deterministic object custom properties for shader consumers.
 
-Commits happen inside use_lock_interface — Blender will not read these attributes or custom properties from the depsgraph while a commit is in progress.
+Stage C checks ``scene.render.use_lock_interface`` before any sink-layout or commit write. During a render job with Lock Interface disabled, ACE still runs Stage A/B evaluation but defers Stage C writes until the render path is safe again.
 
 _attr_schema_dirty dirty flag triggers attribute schema resync when node topology has changed since last commit (replaces the old 120-frame polling approach).
 
@@ -164,7 +164,7 @@ bpy.data, bpy.context, node trees, mesh attributes, object properties, and all h
 
 utils.assert_main_thread() is called at the entry of every Stage A/C function. In debug strict mode (utils.set_debug_strict(True)), violations raise RuntimeError. In normal mode they emit a rate-limited ERROR log.
 
-Blender's use_lock_interface is respected during Stage C commits to prevent the depsgraph from reading partially-written attributes.
+Blender's use_lock_interface is enforced as a Stage C gate: commit/layout writes are skipped or deferred when a render job is active and Lock Interface is disabled.
 
 Worker processes in parallel_dsp.py are spawn-context children — they do not inherit the parent's bpy module state.
 
@@ -204,11 +204,11 @@ Rule 5 — Cross-Source Branch Synchronization
 
 AudioMathTask is the sole node permitted to merge audio branches that originate from different root sources.
 
-Each ACEAudioGraph is compiled per source. When an audio_math node references inputs from two sources, the engine must synchronize the two graphs' outputs before the Math task executes.
+Single-root branches are still compiled per source, but any multi-root island is compiled into an explicit mixed graph that contains the ``audio_math`` node and all of its downstream dependents.
 
 Block sizes may differ between sources (different sample rates or GPT-derived sizes). AudioMathTask.process() is responsible for resampling or zero-padding the shorter block to match.
 
-The root_sources set propagated through the abstract graph is the mechanism that identifies cross-source dependencies at compile time, allowing the engine to schedule both upstream graphs before committing Stage C for the Math node.
+The ``root_sources`` set propagated through the abstract graph is the mechanism that identifies cross-source dependencies at compile time and partitions mixed islands away from the per-source graphs.
 
 LIVE sources have no auto-BPM detection. _refresh_specs_ir_bpm() patches scene_bpm, scene_beats_per_bar, and scene_fps into the parallel IR each frame so that user BPM changes propagate without requiring a full recompile.
 

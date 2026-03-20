@@ -14,14 +14,14 @@ def _read(name: str) -> str:
     return (ROOT / _SUBPACKAGE_PATHS.get(name, name)).read_text(encoding="utf-8")
 
 
-class TestAmbiguousCompilePruning(unittest.TestCase):
-    def test_required_sets_use_ambiguity_pruning(self):
+class TestMixedSourceCompile(unittest.TestCase):
+    def test_required_sets_use_mixed_graph_partitioning(self):
         src = _read("audio_engine.py")
-        self.assertIn("def _prune_ambiguous_required_node_ids(", src)
-        self.assertIn("return self._prune_ambiguous_required_node_ids(", src)
-        self.assertIn("if len(upstream_roots) >= 2:", src)
-        self.assertIn("if src_id in ambiguous or dst_id in ambiguous:", src)
-        self.assertIn("return bool(roots.intersection(source_aliases))", src)
+        self.assertIn("def _compute_mixed_graph_specs(", src)
+        self.assertIn("if not single_source_mode and self._node_is_mixed_source(node):", src)
+        self.assertIn('mixed_graph_uid = "__ace_mixed__:"', src)
+        self.assertIn("graph.is_mixed = True", src)
+        self.assertIn("graph.root_source_tokens = sorted(root_tokens)", src)
 
     def test_dummy_tree_does_not_fallback_to_node_ace_id_as_root(self):
         src = _read("dummy_tree.py")

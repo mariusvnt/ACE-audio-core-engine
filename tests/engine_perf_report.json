@@ -56,9 +56,9 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 0.13182249919433767,
-            "p95_ms": 0.17009995644912124,
-            "max_ms": 0.23040000814944506
+            "mean_ms": 0.14552500009206898,
+            "p95_ms": 0.18119999913324136,
+            "max_ms": 0.20699999913631473
           },
           "preview": {
             "count": 120.0,
@@ -68,9 +68,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0016791663559464116,
-            "p95_ms": 0.0024999608285725117,
-            "max_ms": 0.006499991286545992
+            "mean_ms": 0.0018475000918745839,
+            "p95_ms": 0.0024000000848900527,
+            "max_ms": 0.005199999577598646
           },
           "ui_sync": {
             "count": 120.0,
@@ -104,18 +104,18 @@
         "dsp_hotspots": {
           "BenchSourceTask": {
             "count": 120.0,
-            "mean_ms": 0.014300837453144291,
-            "p95_ms": 0.019600032828748226,
-            "max_ms": 0.022299995180219412
+            "mean_ms": 0.015979166679850703,
+            "p95_ms": 0.02029999996011611,
+            "max_ms": 0.03470000046945643
           },
           "RMSTask": {
             "count": 120.0,
-            "mean_ms": 0.10729666925423469,
-            "p95_ms": 0.1373999984934926,
-            "max_ms": 0.19270001212134957
+            "mean_ms": 0.11791083334173891,
+            "p95_ms": 0.14660000124422368,
+            "max_ms": 0.16210000103455968
           }
         },
-        "total_latency_p95_ms": 0.17259991727769375
+        "total_latency_p95_ms": 0.18359999921813142
       },
       "processes_dsp": {
         "stages": {
@@ -126,10 +126,10 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 30.0,
-            "mean_ms": 0.16434999415650964,
-            "p95_ms": 0.210359992343001,
-            "max_ms": 0.6661000079475343
+            "count": 120.0,
+            "mean_ms": 0.21947166668117762,
+            "p95_ms": 0.3293999998277286,
+            "max_ms": 0.4664000007323921
           },
           "preview": {
             "count": 120.0,
@@ -139,9 +139,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0011558348584609728,
-            "p95_ms": 0.001500011421740055,
-            "max_ms": 0.002500019036233425
+            "mean_ms": 0.001797500059789551,
+            "p95_ms": 0.0022999993234407157,
+            "max_ms": 0.0035000011848751456
           },
           "ui_sync": {
             "count": 120.0,
@@ -160,27 +160,34 @@
           "parallel_submit_attempts": 120.0,
           "parallel_submit_success": 120.0,
           "parallel_submit_success_rate": 1.0,
-          "parallel_result_requests": 120.0,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 30.0,
+          "parallel_completed_results": 43.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.25
+          "parallel_fresh_result_rate": 0.35833333333333334
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 1.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 1.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 0.21186000376474107
+        "dsp_hotspots": {
+          "RMSTask": {
+            "count": 120.0,
+            "mean_ms": 0.21207583320877652,
+            "p95_ms": 0.32189999910769984,
+            "max_ms": 0.45529999988502823
+          }
+        },
+        "total_latency_p95_ms": 0.3316999991511693
       },
       "comparison": {
-        "dsp_p95_ratio_processes_vs_threads": 1.2366845749659083,
-        "dsp_p95_delta_ms": 0.040260035893879775,
+        "dsp_p95_ratio_processes_vs_threads": 1.8178808024469784,
+        "dsp_p95_delta_ms": 0.14820000069448724,
         "dsp_metrics_valid": true,
-        "threads_dsp_p95_ms": 0.17009995644912124,
-        "processes_dsp_p95_ms": 0.210359992343001
+        "threads_dsp_p95_ms": 0.18119999913324136,
+        "processes_dsp_p95_ms": 0.3293999998277286
       }
     },
     "4": {
@@ -194,9 +201,9 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 1.1187391680626508,
-            "p95_ms": 1.2724999687634408,
-            "max_ms": 1.3707000180147588
+            "mean_ms": 1.1651308333208967,
+            "p95_ms": 1.2925999999424675,
+            "max_ms": 1.4511000008496922
           },
           "preview": {
             "count": 120.0,
@@ -206,9 +213,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.001656664729428788,
-            "p95_ms": 0.0023999600671231747,
-            "max_ms": 0.0036999699659645557
+            "mean_ms": 0.0020516668125007223,
+            "p95_ms": 0.003200000719516538,
+            "max_ms": 0.006000000212225132
           },
           "ui_sync": {
             "count": 120.0,
@@ -242,36 +249,36 @@
         "dsp_hotspots": {
           "BenchSourceTask": {
             "count": 120.0,
-            "mean_ms": 0.013342499732971191,
-            "p95_ms": 0.016300007700920105,
-            "max_ms": 0.021599989850074053
+            "mean_ms": 0.016252500048115813,
+            "p95_ms": 0.0228000008064555,
+            "max_ms": 0.02860000131477136
           },
           "PitchTask": {
             "count": 120.0,
-            "mean_ms": 0.8446250018702509,
-            "p95_ms": 0.943399965763092,
-            "max_ms": 0.9783999994397163
+            "mean_ms": 0.8747174999825802,
+            "p95_ms": 0.9726000007503899,
+            "max_ms": 1.0294000003341353
           },
           "RMSTask": {
             "count": 120.0,
-            "mean_ms": 0.08243916575641681,
-            "p95_ms": 0.10420003673061728,
-            "max_ms": 0.11859997175633907
+            "mean_ms": 0.08763583338501726,
+            "p95_ms": 0.1083999995898921,
+            "max_ms": 0.21890000061830506
           },
           "SpectralCentroidTask": {
             "count": 120.0,
-            "mean_ms": 0.0776624995827054,
-            "p95_ms": 0.09089999366551638,
-            "max_ms": 0.38350000977516174
+            "mean_ms": 0.08176499995897757,
+            "p95_ms": 0.10280000060447492,
+            "max_ms": 0.15629999870725442
           },
           "SpectralFluxTask": {
             "count": 120.0,
-            "mean_ms": 0.07794000218079115,
-            "p95_ms": 0.09009998757392168,
-            "max_ms": 0.11109997285529971
+            "mean_ms": 0.07933999994141534,
+            "p95_ms": 0.09270000009564683,
+            "max_ms": 0.11249999988649506
           }
         },
-        "total_latency_p95_ms": 1.274899928830564
+        "total_latency_p95_ms": 1.295800000661984
       },
       "processes_dsp": {
         "stages": {
@@ -282,10 +289,10 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 18.0,
-            "mean_ms": 2.976561123634585,
-            "p95_ms": 3.378915006760508,
-            "max_ms": 3.550700028426945
+            "count": 120.0,
+            "mean_ms": 1.18379000001975,
+            "p95_ms": 1.3688999988517025,
+            "max_ms": 1.4873000000079628
           },
           "preview": {
             "count": 120.0,
@@ -295,9 +302,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0013458309695124626,
-            "p95_ms": 0.001900014467537403,
-            "max_ms": 0.002300017513334751
+            "mean_ms": 0.002163333192584105,
+            "p95_ms": 0.00270000055024866,
+            "max_ms": 0.022199999875738285
           },
           "ui_sync": {
             "count": 120.0,
@@ -316,27 +323,52 @@
           "parallel_submit_attempts": 120.0,
           "parallel_submit_success": 120.0,
           "parallel_submit_success_rate": 1.0,
-          "parallel_result_requests": 120.0,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 18.0,
+          "parallel_completed_results": 22.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.15
+          "parallel_fresh_result_rate": 0.18333333333333332
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 4.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 1.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 3.3808150212280452
+        "dsp_hotspots": {
+          "PitchTask": {
+            "count": 120.0,
+            "mean_ms": 0.9204150000490092,
+            "p95_ms": 1.0438000008434756,
+            "max_ms": 1.177300000563264
+          },
+          "RMSTask": {
+            "count": 120.0,
+            "mean_ms": 0.08378999996239145,
+            "p95_ms": 0.10000000111176632,
+            "max_ms": 0.16069999946921598
+          },
+          "SpectralCentroidTask": {
+            "count": 120.0,
+            "mean_ms": 0.0786850000016178,
+            "p95_ms": 0.09590000081516337,
+            "max_ms": 0.1587999995535938
+          },
+          "SpectralFluxTask": {
+            "count": 120.0,
+            "mean_ms": 0.07994833343521653,
+            "p95_ms": 0.1007999999274034,
+            "max_ms": 0.17889999980980065
+          }
+        },
+        "total_latency_p95_ms": 1.3715999994019512
       },
       "comparison": {
-        "dsp_p95_ratio_processes_vs_threads": 2.6553360233430796,
-        "dsp_p95_delta_ms": 2.106415037997067,
+        "dsp_p95_ratio_processes_vs_threads": 1.0590283141827566,
+        "dsp_p95_delta_ms": 0.076299998909235,
         "dsp_metrics_valid": true,
-        "threads_dsp_p95_ms": 1.2724999687634408,
-        "processes_dsp_p95_ms": 3.378915006760508
+        "threads_dsp_p95_ms": 1.2925999999424675,
+        "processes_dsp_p95_ms": 1.3688999988517025
       }
     },
     "12": {
@@ -350,9 +382,9 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 3.6108608333355128,
-            "p95_ms": 4.033199977129698,
-            "max_ms": 4.463899997062981
+            "mean_ms": 2.533139166704738,
+            "p95_ms": 2.9567000001406996,
+            "max_ms": 3.2332999999198364
           },
           "preview": {
             "count": 120.0,
@@ -362,9 +394,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0020541672711260617,
-            "p95_ms": 0.002700020559132099,
-            "max_ms": 0.005400041118264198
+            "mean_ms": 0.0029000000419425,
+            "p95_ms": 0.004699999408330768,
+            "max_ms": 0.007200000254670158
           },
           "ui_sync": {
             "count": 120.0,
@@ -398,60 +430,60 @@
         "dsp_hotspots": {
           "BenchSourceTask": {
             "count": 120.0,
-            "mean_ms": 0.013652496272698045,
-            "p95_ms": 0.015500001609325409,
-            "max_ms": 0.030099996365606785
+            "mean_ms": 0.0175358333914725,
+            "p95_ms": 0.026100000468431972,
+            "max_ms": 0.03710000055434648
           },
           "OnsetTask": {
             "count": 120.0,
-            "mean_ms": 0.1071266655344516,
-            "p95_ms": 0.1210999907925725,
-            "max_ms": 0.1650999765843153
+            "mean_ms": 0.130830833404616,
+            "p95_ms": 0.18760000057227444,
+            "max_ms": 0.26169999910052866
           },
           "PitchTask": {
             "count": 240.0,
-            "mean_ms": 0.7692495855735615,
-            "p95_ms": 0.8925999864004552,
-            "max_ms": 1.0011999984271824
+            "mean_ms": 0.8011920833344751,
+            "p95_ms": 0.9229999996023253,
+            "max_ms": 1.0954999997920822
           },
           "RMSTask": {
             "count": 240.0,
-            "mean_ms": 0.06524333366542123,
-            "p95_ms": 0.0782000133767724,
-            "max_ms": 0.14780001947656274
+            "mean_ms": 0.0746499999271085,
+            "p95_ms": 0.10459999975864775,
+            "max_ms": 0.22030000036465935
           },
           "SpectralCentroidTask": {
             "count": 240.0,
-            "mean_ms": 0.062182497640606016,
-            "p95_ms": 0.0727999722585082,
-            "max_ms": 0.11470000026747584
+            "mean_ms": 0.07291749998330488,
+            "p95_ms": 0.10830000064743217,
+            "max_ms": 0.23269999837793875
           },
           "SpectralFluxTask": {
             "count": 240.0,
-            "mean_ms": 0.06813124685625857,
-            "p95_ms": 0.08129997877404094,
-            "max_ms": 0.12340000830590725
+            "mean_ms": 0.07807416664794195,
+            "p95_ms": 0.10990000009769574,
+            "max_ms": 0.252800000453135
           },
           "StereoBalanceTask": {
             "count": 120.0,
-            "mean_ms": 0.09872333078722781,
-            "p95_ms": 0.11740002082660794,
-            "max_ms": 0.22059999173507094
+            "mean_ms": 0.10971416659231181,
+            "p95_ms": 0.13130000115779694,
+            "max_ms": 0.21740000011050142
           },
           "StereoWidthTask": {
             "count": 120.0,
-            "mean_ms": 0.06382833137953033,
-            "p95_ms": 0.07459998596459627,
-            "max_ms": 0.11000002268701792
+            "mean_ms": 0.07033249997524156,
+            "p95_ms": 0.09890000001178123,
+            "max_ms": 0.2237999997305451
           },
           "ZeroCrossTask": {
             "count": 120.0,
-            "mean_ms": 1.3447733367987287,
-            "p95_ms": 1.5261999797075987,
-            "max_ms": 1.8375000217929482
+            "mean_ms": 0.09167000001374012,
+            "p95_ms": 0.1263999984075781,
+            "max_ms": 0.19020000036107376
           }
         },
-        "total_latency_p95_ms": 4.03589999768883
+        "total_latency_p95_ms": 2.9613999995490303
       },
       "processes_dsp": {
         "stages": {
@@ -462,10 +494,10 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 20.0,
-            "mean_ms": 8.455290016718209,
-            "p95_ms": 8.706524976878427,
-            "max_ms": 8.906500006560236
+            "count": 120.0,
+            "mean_ms": 2.563244166685763,
+            "p95_ms": 2.886100000978331,
+            "max_ms": 3.4940000005008187
           },
           "preview": {
             "count": 120.0,
@@ -475,9 +507,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.001824169400303314,
-            "p95_ms": 0.0023999600671231747,
-            "max_ms": 0.014199991710484028
+            "mean_ms": 0.0027575001695367973,
+            "p95_ms": 0.0037999998312443495,
+            "max_ms": 0.009700001101009548
           },
           "ui_sync": {
             "count": 120.0,
@@ -496,27 +528,76 @@
           "parallel_submit_attempts": 120.0,
           "parallel_submit_success": 120.0,
           "parallel_submit_success_rate": 1.0,
-          "parallel_result_requests": 120.0,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 20.0,
+          "parallel_completed_results": 16.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.16666666666666666
+          "parallel_fresh_result_rate": 0.13333333333333333
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 12.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 1.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 8.70892493694555
+        "dsp_hotspots": {
+          "OnsetTask": {
+            "count": 120.0,
+            "mean_ms": 0.22767583323002327,
+            "p95_ms": 0.3578000014385907,
+            "max_ms": 0.44970000089961104
+          },
+          "PitchTask": {
+            "count": 240.0,
+            "mean_ms": 0.8066870833393599,
+            "p95_ms": 0.966800000242074,
+            "max_ms": 1.1677999991661636
+          },
+          "RMSTask": {
+            "count": 240.0,
+            "mean_ms": 0.07011874999231318,
+            "p95_ms": 0.0900999984878581,
+            "max_ms": 0.16400000095018186
+          },
+          "SpectralCentroidTask": {
+            "count": 240.0,
+            "mean_ms": 0.06652125004317593,
+            "p95_ms": 0.08300000081362668,
+            "max_ms": 0.12149999929533806
+          },
+          "SpectralFluxTask": {
+            "count": 240.0,
+            "mean_ms": 0.07190416662676095,
+            "p95_ms": 0.09070000123756472,
+            "max_ms": 0.1305999994656304
+          },
+          "StereoBalanceTask": {
+            "count": 120.0,
+            "mean_ms": 0.10636500001055538,
+            "p95_ms": 0.12909999895782676,
+            "max_ms": 0.28870000096503645
+          },
+          "StereoWidthTask": {
+            "count": 120.0,
+            "mean_ms": 0.06395999994310841,
+            "p95_ms": 0.07729999924777076,
+            "max_ms": 0.12090000018361025
+          },
+          "ZeroCrossTask": {
+            "count": 120.0,
+            "mean_ms": 0.08294583341618514,
+            "p95_ms": 0.10030000157712493,
+            "max_ms": 0.2514000007067807
+          }
+        },
+        "total_latency_p95_ms": 2.8899000008095754
       },
       "comparison": {
-        "dsp_p95_ratio_processes_vs_threads": 2.1587139309354524,
-        "dsp_p95_delta_ms": 4.673324999748729,
+        "dsp_p95_ratio_processes_vs_threads": 0.9761220282209866,
+        "dsp_p95_delta_ms": -0.07059999916236848,
         "dsp_metrics_valid": true,
-        "threads_dsp_p95_ms": 4.033199977129698,
-        "processes_dsp_p95_ms": 8.706524976878427
+        "threads_dsp_p95_ms": 2.9567000001406996,
+        "processes_dsp_p95_ms": 2.886100000978331
       }
     },
     "24": {
@@ -530,9 +611,9 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 7.6396908329722155,
-            "p95_ms": 7.960899965837598,
-            "max_ms": 8.445900049991906
+            "mean_ms": 4.059090000040063,
+            "p95_ms": 4.648300000553718,
+            "max_ms": 5.212699999901815
           },
           "preview": {
             "count": 120.0,
@@ -542,9 +623,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0032133345181743302,
-            "p95_ms": 0.005599984433501959,
-            "max_ms": 0.006700051017105579
+            "mean_ms": 0.003842499912328397,
+            "p95_ms": 0.004999999873689376,
+            "max_ms": 0.010300000212737359
           },
           "ui_sync": {
             "count": 120.0,
@@ -578,60 +659,60 @@
         "dsp_hotspots": {
           "BenchSourceTask": {
             "count": 120.0,
-            "mean_ms": 0.013864166006290663,
-            "p95_ms": 0.016400008462369442,
-            "max_ms": 0.019199971575289965
+            "mean_ms": 0.016397499985032482,
+            "p95_ms": 0.021800000467919745,
+            "max_ms": 0.03249999826948624
           },
           "OnsetTask": {
             "count": 360.0,
-            "mean_ms": 0.09158499985157202,
-            "p95_ms": 0.11219998123124242,
-            "max_ms": 0.14379998901858926
+            "mean_ms": 0.09588222217442106,
+            "p95_ms": 0.14679999912914354,
+            "max_ms": 0.24920000032579992
           },
           "PitchTask": {
             "count": 360.0,
-            "mean_ms": 0.7400169430184178,
-            "p95_ms": 0.8809000137262046,
-            "max_ms": 0.9445999749004841
+            "mean_ms": 0.7822355554758866,
+            "p95_ms": 0.9145000003627501,
+            "max_ms": 1.0110999992321013
           },
           "RMSTask": {
             "count": 360.0,
-            "mean_ms": 0.06395833220772652,
-            "p95_ms": 0.07539999205619097,
-            "max_ms": 0.13480003690347075
+            "mean_ms": 0.06639527773586451,
+            "p95_ms": 0.08290000005217735,
+            "max_ms": 0.1503000003140187
           },
           "SpectralCentroidTask": {
             "count": 360.0,
-            "mean_ms": 0.060110276455007904,
-            "p95_ms": 0.06500002928078175,
-            "max_ms": 0.09370001498609781
+            "mean_ms": 0.0641619445155407,
+            "p95_ms": 0.07840000034775585,
+            "max_ms": 0.15669999993406236
           },
           "SpectralFluxTask": {
             "count": 360.0,
-            "mean_ms": 0.0681116700030139,
-            "p95_ms": 0.0803999719209969,
-            "max_ms": 0.1501000369898975
+            "mean_ms": 0.07169777776552008,
+            "p95_ms": 0.08879999950295314,
+            "max_ms": 0.1971000001503853
           },
           "StereoBalanceTask": {
             "count": 360.0,
-            "mean_ms": 0.0968102792588373,
-            "p95_ms": 0.11650001397356391,
-            "max_ms": 0.20599999697878957
+            "mean_ms": 0.09936472224075664,
+            "p95_ms": 0.11840000115626026,
+            "max_ms": 0.28329999986453913
           },
           "StereoWidthTask": {
             "count": 360.0,
-            "mean_ms": 0.0596222231656106,
-            "p95_ms": 0.07010000990703702,
-            "max_ms": 0.16910000704228878
+            "mean_ms": 0.060490000007323234,
+            "p95_ms": 0.07139999979699496,
+            "max_ms": 0.18559999989520293
           },
           "ZeroCrossTask": {
             "count": 360.0,
-            "mean_ms": 1.3305838895677073,
-            "p95_ms": 1.3834999990649521,
-            "max_ms": 1.6326999757438898
+            "mean_ms": 0.07573333334928774,
+            "p95_ms": 0.09169999975711107,
+            "max_ms": 0.20450000010896474
           }
         },
-        "total_latency_p95_ms": 7.9664999502711
+        "total_latency_p95_ms": 4.653300000427407
       },
       "processes_dsp": {
         "stages": {
@@ -642,10 +723,10 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 17.0,
-            "mean_ms": 11.678300003575929,
-            "p95_ms": 12.593700003344564,
-            "max_ms": 14.962100016418844
+            "count": 120.0,
+            "mean_ms": 4.689221666603771,
+            "p95_ms": 5.450099999507074,
+            "max_ms": 7.129399999030284
           },
           "preview": {
             "count": 120.0,
@@ -655,9 +736,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0028333301694753272,
-            "p95_ms": 0.003400025889277458,
-            "max_ms": 0.006300047971308231
+            "mean_ms": 0.003977500015632056,
+            "p95_ms": 0.005399999281507917,
+            "max_ms": 0.021100000594742596
           },
           "ui_sync": {
             "count": 120.0,
@@ -676,27 +757,76 @@
           "parallel_submit_attempts": 120.0,
           "parallel_submit_success": 120.0,
           "parallel_submit_success_rate": 1.0,
-          "parallel_result_requests": 120.0,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 17.0,
+          "parallel_completed_results": 24.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.14166666666666666
+          "parallel_fresh_result_rate": 0.2
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 24.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 1.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 12.597100029233841
+        "dsp_hotspots": {
+          "OnsetTask": {
+            "count": 360.0,
+            "mean_ms": 0.22124361115755975,
+            "p95_ms": 0.37599999996018596,
+            "max_ms": 0.5583000001934124
+          },
+          "PitchTask": {
+            "count": 360.0,
+            "mean_ms": 0.7895627777745379,
+            "p95_ms": 0.9648999985074624,
+            "max_ms": 1.8595999990793644
+          },
+          "RMSTask": {
+            "count": 360.0,
+            "mean_ms": 0.07306638887914435,
+            "p95_ms": 0.11669999912555795,
+            "max_ms": 0.39849999848229345
+          },
+          "SpectralCentroidTask": {
+            "count": 360.0,
+            "mean_ms": 0.07195499996568187,
+            "p95_ms": 0.13410000065050554,
+            "max_ms": 0.31570000101055484
+          },
+          "SpectralFluxTask": {
+            "count": 360.0,
+            "mean_ms": 0.09112055555912471,
+            "p95_ms": 0.21770000057586003,
+            "max_ms": 0.3966999993281206
+          },
+          "StereoBalanceTask": {
+            "count": 360.0,
+            "mean_ms": 0.13292166666158461,
+            "p95_ms": 0.25770000138436444,
+            "max_ms": 0.7734000009804731
+          },
+          "StereoWidthTask": {
+            "count": 360.0,
+            "mean_ms": 0.06690888890766977,
+            "p95_ms": 0.09860000136541203,
+            "max_ms": 0.5004000013286714
+          },
+          "ZeroCrossTask": {
+            "count": 360.0,
+            "mean_ms": 0.08197138891874703,
+            "p95_ms": 0.11840000115626026,
+            "max_ms": 0.39900000047055073
+          }
+        },
+        "total_latency_p95_ms": 5.455499998788582
       },
       "comparison": {
-        "dsp_p95_ratio_processes_vs_threads": 1.5819442597429412,
-        "dsp_p95_delta_ms": 4.632800037506966,
+        "dsp_p95_ratio_processes_vs_threads": 1.1724931693001406,
+        "dsp_p95_delta_ms": 0.8017999989533564,
         "dsp_metrics_valid": true,
-        "threads_dsp_p95_ms": 7.960899965837598,
-        "processes_dsp_p95_ms": 12.593700003344564
+        "threads_dsp_p95_ms": 4.648300000553718,
+        "processes_dsp_p95_ms": 5.450099999507074
       }
     },
     "36": {
@@ -710,9 +840,9 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 11.090137497618949,
-            "p95_ms": 12.013099971227348,
-            "max_ms": 12.393200013320893
+            "mean_ms": 6.333032499969704,
+            "p95_ms": 7.267699998919852,
+            "max_ms": 8.25549999899522
           },
           "preview": {
             "count": 120.0,
@@ -722,9 +852,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0034975018934346735,
-            "p95_ms": 0.0048999791033566,
-            "max_ms": 0.008200004231184721
+            "mean_ms": 0.00490083325530577,
+            "p95_ms": 0.006599999323952943,
+            "max_ms": 0.009499999578110874
           },
           "ui_sync": {
             "count": 120.0,
@@ -758,60 +888,60 @@
         "dsp_hotspots": {
           "BenchSourceTask": {
             "count": 120.0,
-            "mean_ms": 0.013529998735369494,
-            "p95_ms": 0.015600002370774746,
-            "max_ms": 0.018600025214254856
+            "mean_ms": 0.019024166598076892,
+            "p95_ms": 0.026100000468431972,
+            "max_ms": 0.03529999958118424
           },
           "OnsetTask": {
             "count": 480.0,
-            "mean_ms": 0.08497250091750175,
-            "p95_ms": 0.1094000181183219,
-            "max_ms": 0.13689999468624592
+            "mean_ms": 0.09799145828613595,
+            "p95_ms": 0.16630000027362257,
+            "max_ms": 0.3226999997423263
           },
           "PitchTask": {
             "count": 600.0,
-            "mean_ms": 0.7400583343890806,
-            "p95_ms": 0.8746999665163457,
-            "max_ms": 0.9471999946981668
+            "mean_ms": 0.7701396665864497,
+            "p95_ms": 0.901999999769032,
+            "max_ms": 1.154700001279707
           },
           "RMSTask": {
             "count": 600.0,
-            "mean_ms": 0.05988266804100325,
-            "p95_ms": 0.07260002894327044,
-            "max_ms": 0.10140001541003585
+            "mean_ms": 0.06540183335043064,
+            "p95_ms": 0.09750000026542693,
+            "max_ms": 0.2113999998982763
           },
           "SpectralCentroidTask": {
             "count": 600.0,
-            "mean_ms": 0.05845800061554959,
-            "p95_ms": 0.07010000990703702,
-            "max_ms": 0.17380004283040762
+            "mean_ms": 0.06389783333058101,
+            "p95_ms": 0.09619999946153257,
+            "max_ms": 0.198199999431381
           },
           "SpectralFluxTask": {
             "count": 600.0,
-            "mean_ms": 0.06573366787051782,
-            "p95_ms": 0.07750000804662704,
-            "max_ms": 0.19749999046325684
+            "mean_ms": 0.07011216660127198,
+            "p95_ms": 0.10540000039327424,
+            "max_ms": 0.1534000002720859
           },
           "StereoBalanceTask": {
             "count": 480.0,
-            "mean_ms": 0.09435208169937445,
-            "p95_ms": 0.11480000102892518,
-            "max_ms": 0.42429997120052576
+            "mean_ms": 0.09806687497757594,
+            "p95_ms": 0.1381999991281191,
+            "max_ms": 0.2012999993894482
           },
           "StereoWidthTask": {
             "count": 480.0,
-            "mean_ms": 0.058967706718249246,
-            "p95_ms": 0.07210002513602376,
-            "max_ms": 0.11800002539530396
+            "mean_ms": 0.059678124974501166,
+            "p95_ms": 0.08119999984046444,
+            "max_ms": 0.13529999887396116
           },
           "ZeroCrossTask": {
             "count": 480.0,
-            "mean_ms": 1.3426254180861483,
-            "p95_ms": 1.4708000235259533,
-            "max_ms": 2.0997999818064272
+            "mean_ms": 0.07540583333896697,
+            "p95_ms": 0.11070000073232222,
+            "max_ms": 0.20539999968605116
           }
         },
-        "total_latency_p95_ms": 12.017999950330704
+        "total_latency_p95_ms": 7.274299998243805
       },
       "processes_dsp": {
         "stages": {
@@ -822,10 +952,10 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 23.0,
-            "mean_ms": 17.557626078917604,
-            "p95_ms": 17.902430007234216,
-            "max_ms": 18.446300004143268
+            "count": 120.0,
+            "mean_ms": 7.328853333380418,
+            "p95_ms": 9.30530000005092,
+            "max_ms": 11.152699999001925
           },
           "preview": {
             "count": 120.0,
@@ -835,9 +965,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0031408349362512427,
-            "p95_ms": 0.0036999699659645557,
-            "max_ms": 0.006699992809444666
+            "mean_ms": 0.004587499931100562,
+            "p95_ms": 0.005899999450775795,
+            "max_ms": 0.010200001270277426
           },
           "ui_sync": {
             "count": 120.0,
@@ -850,33 +980,82 @@
           "parallel_job_timeouts": 0.0,
           "parallel_job_exceptions": 0.0,
           "parallel_pool_restarts": 0.0,
-          "parallel_queue_pressure_drops": 6.0,
-          "parallel_queue_drop_rate": 0.05,
+          "parallel_queue_pressure_drops": 0.0,
+          "parallel_queue_drop_rate": 0.0,
           "parallel_disabled_sources": 0.0,
           "parallel_submit_attempts": 120.0,
-          "parallel_submit_success": 114.0,
-          "parallel_submit_success_rate": 0.95,
-          "parallel_result_requests": 120.0,
+          "parallel_submit_success": 120.0,
+          "parallel_submit_success_rate": 1.0,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 23.0,
+          "parallel_completed_results": 30.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.20175438596491227
+          "parallel_fresh_result_rate": 0.25
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 36.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 1.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 17.90612997720018
+        "dsp_hotspots": {
+          "OnsetTask": {
+            "count": 480.0,
+            "mean_ms": 0.10511999998167691,
+            "p95_ms": 0.24680000024090987,
+            "max_ms": 0.4478999999264488
+          },
+          "PitchTask": {
+            "count": 600.0,
+            "mean_ms": 0.7551038333228158,
+            "p95_ms": 0.8758000003581401,
+            "max_ms": 1.043000000208849
+          },
+          "RMSTask": {
+            "count": 600.0,
+            "mean_ms": 0.06899166665486214,
+            "p95_ms": 0.10760000077425502,
+            "max_ms": 0.23809999947843608
+          },
+          "SpectralCentroidTask": {
+            "count": 600.0,
+            "mean_ms": 0.07877233332692413,
+            "p95_ms": 0.198199999431381,
+            "max_ms": 0.6775999991077697
+          },
+          "SpectralFluxTask": {
+            "count": 600.0,
+            "mean_ms": 0.09691883330863978,
+            "p95_ms": 0.25490000007266644,
+            "max_ms": 0.6046999988029711
+          },
+          "StereoBalanceTask": {
+            "count": 480.0,
+            "mean_ms": 0.14507270838066688,
+            "p95_ms": 0.3206000001227949,
+            "max_ms": 0.5801999996037921
+          },
+          "StereoWidthTask": {
+            "count": 480.0,
+            "mean_ms": 0.10103937501071414,
+            "p95_ms": 0.22979999994277023,
+            "max_ms": 0.421200000346289
+          },
+          "ZeroCrossTask": {
+            "count": 480.0,
+            "mean_ms": 0.19329250001192122,
+            "p95_ms": 0.39029999970807694,
+            "max_ms": 0.6437000010919292
+          }
+        },
+        "total_latency_p95_ms": 9.311199999501696
       },
       "comparison": {
-        "dsp_p95_ratio_processes_vs_threads": 1.4902423229734574,
-        "dsp_p95_delta_ms": 5.889330036006868,
+        "dsp_p95_ratio_processes_vs_threads": 1.2803638016750694,
+        "dsp_p95_delta_ms": 2.037600001131068,
         "dsp_metrics_valid": true,
-        "threads_dsp_p95_ms": 12.013099971227348,
-        "processes_dsp_p95_ms": 17.902430007234216
+        "threads_dsp_p95_ms": 7.267699998919852,
+        "processes_dsp_p95_ms": 9.30530000005092
       }
     },
     "50": {
@@ -890,9 +1069,9 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 15.929068332479801,
-            "p95_ms": 16.446500027086586,
-            "max_ms": 20.82669996889308
+            "mean_ms": 8.470296666670645,
+            "p95_ms": 9.081199999855016,
+            "max_ms": 10.425899999972899
           },
           "preview": {
             "count": 120.0,
@@ -902,9 +1081,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0043325043710259106,
-            "p95_ms": 0.007299997378140688,
-            "max_ms": 0.013599987141788006
+            "mean_ms": 0.005160833400926397,
+            "p95_ms": 0.007099999493220821,
+            "max_ms": 0.010100000508828089
           },
           "ui_sync": {
             "count": 120.0,
@@ -938,60 +1117,60 @@
         "dsp_hotspots": {
           "BenchSourceTask": {
             "count": 120.0,
-            "mean_ms": 0.01213999833756437,
-            "p95_ms": 0.014499993994832039,
-            "max_ms": 0.026999972760677338
+            "mean_ms": 0.01667999999881431,
+            "p95_ms": 0.0213999992411118,
+            "max_ms": 0.026199999410891905
           },
           "OnsetTask": {
             "count": 720.0,
-            "mean_ms": 0.07710472135739918,
-            "p95_ms": 0.11020002420991659,
-            "max_ms": 0.24550000671297312
+            "mean_ms": 0.08471694443667528,
+            "p95_ms": 0.12209999840706587,
+            "max_ms": 0.21430000015243422
           },
           "PitchTask": {
             "count": 840.0,
-            "mean_ms": 0.7243758334966731,
-            "p95_ms": 0.846700044348836,
-            "max_ms": 0.9516999707557261
+            "mean_ms": 0.7425347619205458,
+            "p95_ms": 0.8646999995107763,
+            "max_ms": 0.9884000010060845
           },
           "RMSTask": {
             "count": 840.0,
-            "mean_ms": 0.060067976162480635,
-            "p95_ms": 0.07230002665892243,
-            "max_ms": 0.14479999663308263
+            "mean_ms": 0.062031547607451415,
+            "p95_ms": 0.08429999979853164,
+            "max_ms": 0.16219999997701962
           },
           "SpectralCentroidTask": {
             "count": 720.0,
-            "mean_ms": 0.058469584069421716,
-            "p95_ms": 0.06799999391660094,
-            "max_ms": 0.11279998579993844
+            "mean_ms": 0.060944999982994984,
+            "p95_ms": 0.0774000000092201,
+            "max_ms": 0.13179999950807542
           },
           "SpectralFluxTask": {
             "count": 720.0,
-            "mean_ms": 0.06628930495935492,
-            "p95_ms": 0.07670000195503235,
-            "max_ms": 0.1645000302232802
+            "mean_ms": 0.06797180559109013,
+            "p95_ms": 0.07709999954386149,
+            "max_ms": 0.17770000158634502
           },
           "StereoBalanceTask": {
             "count": 720.0,
-            "mean_ms": 0.09297610910531753,
-            "p95_ms": 0.10550004662945867,
-            "max_ms": 0.2101999707520008
+            "mean_ms": 0.09514624998195763,
+            "p95_ms": 0.11240000094403513,
+            "max_ms": 0.2959000012197066
           },
           "StereoWidthTask": {
             "count": 720.0,
-            "mean_ms": 0.057402084187035345,
-            "p95_ms": 0.06370001938194036,
-            "max_ms": 0.13860000763088465
+            "mean_ms": 0.05914902781114506,
+            "p95_ms": 0.07860000005166512,
+            "max_ms": 0.21670000023732428
           },
           "ZeroCrossTask": {
             "count": 720.0,
-            "mean_ms": 1.35714055731013,
-            "p95_ms": 1.400899956934154,
-            "max_ms": 2.81810003798455
+            "mean_ms": 0.07292930557317352,
+            "p95_ms": 0.09409999984200113,
+            "max_ms": 0.2091999995172955
           }
         },
-        "total_latency_p95_ms": 16.453800024464726
+        "total_latency_p95_ms": 9.088299999348237
       },
       "processes_dsp": {
         "stages": {
@@ -1002,10 +1181,10 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 21.0,
-            "mean_ms": 22.984619044499205,
-            "p95_ms": 23.55919999536127,
-            "max_ms": 23.66979996440932
+            "count": 120.0,
+            "mean_ms": 9.491921666691876,
+            "p95_ms": 12.237399998412002,
+            "max_ms": 13.565500001277542
           },
           "preview": {
             "count": 120.0,
@@ -1015,9 +1194,9 @@
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0032975023107913635,
-            "p95_ms": 0.003800028935074806,
-            "max_ms": 0.006100046448409557
+            "mean_ms": 0.004874999998113102,
+            "p95_ms": 0.00650000038149301,
+            "max_ms": 0.008400000297115184
           },
           "ui_sync": {
             "count": 120.0,
@@ -1030,33 +1209,82 @@
           "parallel_job_timeouts": 0.0,
           "parallel_job_exceptions": 0.0,
           "parallel_pool_restarts": 0.0,
-          "parallel_queue_pressure_drops": 34.0,
-          "parallel_queue_drop_rate": 0.2833333333333333,
+          "parallel_queue_pressure_drops": 33.0,
+          "parallel_queue_drop_rate": 0.275,
           "parallel_disabled_sources": 0.0,
           "parallel_submit_attempts": 120.0,
-          "parallel_submit_success": 86.0,
-          "parallel_submit_success_rate": 0.7166666666666667,
-          "parallel_result_requests": 120.0,
+          "parallel_submit_success": 87.0,
+          "parallel_submit_success_rate": 0.725,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 21.0,
+          "parallel_completed_results": 32.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.2441860465116279
+          "parallel_fresh_result_rate": 0.367816091954023
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 50.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 1.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 23.563000024296343
+        "dsp_hotspots": {
+          "OnsetTask": {
+            "count": 720.0,
+            "mean_ms": 0.11595138885240885,
+            "p95_ms": 0.26810000053956173,
+            "max_ms": 0.4930000013700919
+          },
+          "PitchTask": {
+            "count": 840.0,
+            "mean_ms": 0.759978333308893,
+            "p95_ms": 0.8883000009518582,
+            "max_ms": 1.1985999990429264
+          },
+          "RMSTask": {
+            "count": 840.0,
+            "mean_ms": 0.08087749999417394,
+            "p95_ms": 0.19840000095427968,
+            "max_ms": 0.4227999997965526
+          },
+          "SpectralCentroidTask": {
+            "count": 720.0,
+            "mean_ms": 0.0853240277592704,
+            "p95_ms": 0.22359999820764642,
+            "max_ms": 0.4346999994595535
+          },
+          "SpectralFluxTask": {
+            "count": 720.0,
+            "mean_ms": 0.088551666693901,
+            "p95_ms": 0.22080000053392723,
+            "max_ms": 0.8103000000119209
+          },
+          "StereoBalanceTask": {
+            "count": 720.0,
+            "mean_ms": 0.11568208330522288,
+            "p95_ms": 0.252800000453135,
+            "max_ms": 0.5013000009057578
+          },
+          "StereoWidthTask": {
+            "count": 720.0,
+            "mean_ms": 0.06769791668072381,
+            "p95_ms": 0.12310000056459103,
+            "max_ms": 0.30809999952907674
+          },
+          "ZeroCrossTask": {
+            "count": 720.0,
+            "mean_ms": 0.09589152777809634,
+            "p95_ms": 0.25469999854976777,
+            "max_ms": 0.8058000003074994
+          }
+        },
+        "total_latency_p95_ms": 12.243899998793495
       },
       "comparison": {
-        "dsp_p95_ratio_processes_vs_threads": 1.4324749920384527,
-        "dsp_p95_delta_ms": 7.112699968274683,
+        "dsp_p95_ratio_processes_vs_threads": 1.3475531866501536,
+        "dsp_p95_delta_ms": 3.1561999985569855,
         "dsp_metrics_valid": true,
-        "threads_dsp_p95_ms": 16.446500027086586,
-        "processes_dsp_p95_ms": 23.55919999536127
+        "threads_dsp_p95_ms": 9.081199999855016,
+        "processes_dsp_p95_ms": 12.237399998412002
       }
     }
   },
@@ -1072,21 +1300,21 @@
           },
           "dsp": {
             "count": 120.0,
-            "mean_ms": 6.325140833602442,
-            "p95_ms": 6.776500027626753,
-            "max_ms": 15.668499981984496
+            "mean_ms": 3.319716666737804,
+            "p95_ms": 4.189700001006713,
+            "max_ms": 5.32280000152241
           },
           "preview": {
             "count": 120.0,
-            "mean_ms": 0.0007541680436891814,
-            "p95_ms": 0.00100000761449337,
-            "max_ms": 0.001100008375942707
+            "mean_ms": 0.0011258334476830592,
+            "p95_ms": 0.0015000005078036338,
+            "max_ms": 0.0031999989005271345
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0036216680503760776,
-            "p95_ms": 0.004400033503770828,
-            "max_ms": 0.006300047971308231
+            "mean_ms": 0.004752499929357631,
+            "p95_ms": 0.0068999997893115506,
+            "max_ms": 0.012900000001536682
           },
           "ui_sync": {
             "count": 120.0,
@@ -1120,42 +1348,42 @@
         "dsp_hotspots": {
           "AudioMathTask": {
             "count": 120.0,
-            "mean_ms": 0.5145116675218258,
-            "p95_ms": 0.4344999906606972,
-            "max_ms": 9.47630003793165
+            "mean_ms": 0.24499833319471992,
+            "p95_ms": 0.3574999991542427,
+            "max_ms": 0.519499999427353
           },
           "BenchSourceTask": {
             "count": 360.0,
-            "mean_ms": 0.08517111079224075,
-            "p95_ms": 0.015099998563528061,
-            "max_ms": 9.151700010988861
+            "mean_ms": 0.011890833366123843,
+            "p95_ms": 0.022500000341096893,
+            "max_ms": 0.08859999979904387
           },
           "ChromagramTask": {
             "count": 120.0,
-            "mean_ms": 0.09935749597692242,
-            "p95_ms": 0.1254999660886824,
-            "max_ms": 0.14519999967887998
+            "mean_ms": 0.08097583334650456,
+            "p95_ms": 0.10919999840552919,
+            "max_ms": 0.20510000103968196
           },
           "FrequencySplitterTask": {
             "count": 360.0,
-            "mean_ms": 0.06886916752490732,
-            "p95_ms": 0.10569998994469643,
-            "max_ms": 0.13259996194392443
+            "mean_ms": 0.06563416670057147,
+            "p95_ms": 0.10870000005525071,
+            "max_ms": 0.15759999951114878
           },
           "RMSTask": {
             "count": 1024.0,
-            "mean_ms": 0.18290957007138786,
-            "p95_ms": 0.23069995222613215,
-            "max_ms": 0.3850999637506902
+            "mean_ms": 0.09326152344257821,
+            "p95_ms": 0.1351000009890413,
+            "max_ms": 0.21890000061830506
           },
           "SourceSpecsTask": {
             "count": 360.0,
-            "mean_ms": 0.004801111774415606,
-            "p95_ms": 0.008200004231184721,
-            "max_ms": 0.014899997040629387
+            "mean_ms": 0.009764444383917078,
+            "p95_ms": 0.0182999992830446,
+            "max_ms": 0.03259999903093558
           }
         },
-        "total_latency_p95_ms": 6.781900068745017
+        "total_latency_p95_ms": 4.198100001303828
       },
       "processes_dsp": {
         "stages": {
@@ -1166,22 +1394,22 @@
             "max_ms": 0.0
           },
           "dsp": {
-            "count": 102.0,
-            "mean_ms": 3.9438421554936496,
-            "p95_ms": 12.682375017902814,
-            "max_ms": 15.77330002328381
+            "count": 120.0,
+            "mean_ms": 7.654931666623574,
+            "p95_ms": 9.790300000531715,
+            "max_ms": 12.197199999718578
           },
           "preview": {
             "count": 120.0,
-            "mean_ms": 1.0588441703779001,
-            "p95_ms": 1.3210999895818532,
-            "max_ms": 1.4349999255500734
+            "mean_ms": 0.0012558333613318002,
+            "p95_ms": 0.0018999999156221747,
+            "max_ms": 0.002200000380980782
           },
           "proxy_write": {
             "count": 120.0,
-            "mean_ms": 0.0035449988596762223,
-            "p95_ms": 0.004199973773211241,
-            "max_ms": 0.006499933078885078
+            "mean_ms": 0.004631666676383853,
+            "p95_ms": 0.0072999991971300915,
+            "max_ms": 0.010199999451288022
           },
           "ui_sync": {
             "count": 120.0,
@@ -1200,29 +1428,60 @@
           "parallel_submit_attempts": 360.0,
           "parallel_submit_success": 360.0,
           "parallel_submit_success_rate": 1.0,
-          "parallel_result_requests": 120.0,
+          "parallel_result_requests": 0.0,
           "parallel_fresh_results": 0.0,
-          "parallel_completed_results": 102.0,
+          "parallel_completed_results": 123.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.2833333333333333
+          "parallel_fresh_result_rate": 0.3416666666666667
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 27.0,
           "parallel_local_attr_count": 0.0,
           "parallel_shards": 3.0,
-          "dsp_stage_source": "parallel_worker_elapsed"
+          "dsp_stage_source": "engine_dsp"
         },
-        "dsp_hotspots": {},
-        "total_latency_p95_ms": 14.007674981257878
+        "dsp_hotspots": {
+          "AudioMathTask": {
+            "count": 120.0,
+            "mean_ms": 0.531194166721131,
+            "p95_ms": 0.9477000003244029,
+            "max_ms": 2.7128999990964076
+          },
+          "ChromagramTask": {
+            "count": 120.0,
+            "mean_ms": 0.243041666666007,
+            "p95_ms": 0.3961000002163928,
+            "max_ms": 0.6270000012591481
+          },
+          "FrequencySplitterTask": {
+            "count": 360.0,
+            "mean_ms": 0.07261138887568248,
+            "p95_ms": 0.1066999993781792,
+            "max_ms": 0.1723000004858477
+          },
+          "RMSTask": {
+            "count": 1024.0,
+            "mean_ms": 0.25840312500591267,
+            "p95_ms": 0.4821999991690973,
+            "max_ms": 1.0330000004614703
+          },
+          "SourceSpecsTask": {
+            "count": 360.0,
+            "mean_ms": 0.010416666646051453,
+            "p95_ms": 0.02049999966402538,
+            "max_ms": 0.033099999200203456
+          }
+        },
+        "total_latency_p95_ms": 9.799499999644468
       }
     },
     "evaluation": {
       "sample_rate_hz": 96000,
       "pass_threshold_ms": 15.0,
       "ideal_threshold_ms": 10.0,
-      "total_latency_p95_ms": 14.007674981257878,
+      "total_latency_p95_ms": 9.799499999644468,
       "passes": true,
-      "ideal": false
+      "ideal": true
     }
   }
 }

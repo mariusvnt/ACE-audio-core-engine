@@ -305,9 +305,11 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
         idx = ace.active_audio_source_index
         source = ace.audio_sources[idx]
 
-        # Capture stable_id before the PropertyGroup is removed from the collection,
-        # because the Python reference may become invalid after audio_sources.remove().
+        # Capture stable_id and proxy name before the PropertyGroup is removed
+        # from the collection, because the Python reference may become invalid
+        # after audio_sources.remove().
         src_uid = getattr(source, "stable_id", "") or ""
+        _proxy_name = getattr(source, "proxy_object_name", "") or ""
 
         # --- PROXY CLEANUP ---
         ACEProxyManager.delete_proxy_for_source(source)
@@ -340,6 +342,13 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
                         engine._cleanup_bake_entry(entry)
                     except Exception:
                         pass
+            # Purge per-source proxy cache entries to prevent unbounded growth.
+            # Must run before _shutdown_graphs() which sets writer=None.
+            if _proxy_name and getattr(engine, "writer", None) is not None:
+                try:
+                    engine.writer.purge_source_caches(_proxy_name)
+                except Exception:
+                    pass
             engine._shutdown_graphs()
 
         return {'FINISHED'}

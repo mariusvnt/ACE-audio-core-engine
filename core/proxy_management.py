@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import bpy # type: ignore
 import numpy as np
 from typing import Dict, Set, Any
@@ -483,6 +485,26 @@ class ACEProxyManager:
         self._last_object_prop_values.clear()
         self._write_buffer_cache.clear()
 
+    def purge_source_caches(self, proxy_name: str, object_names: list = None):
+        """Remove cached entries for a specific source's proxy mesh and consumer objects.
+
+        Called when a source is removed to prevent unbounded cache growth in long sessions.
+        """
+        keys_to_purge = set()
+        if proxy_name:
+            keys_to_purge.add(proxy_name)
+        if object_names:
+            keys_to_purge.update(object_names)
+        for cache_dict in (
+            self._attr_cache,
+            self._last_values,
+            self._write_buffer_cache,
+            self._object_prop_cache,
+            self._last_object_prop_values,
+        ):
+            for key in keys_to_purge:
+                cache_dict.pop(key, None)
+
     @staticmethod
     def _zero_value_for_type(attr_type: str):
         if attr_type == "FLOAT_VECTOR":
@@ -810,6 +832,13 @@ class ACEProxyManager:
             return
 
         keys = results.keys() if active_keys is None else active_keys
+
+        # Bulk-prefill the attribute handle cache on first encounter of this mesh
+        # to avoid N individual mesh.attributes.get() calls on the cold-start frame.
+        if mesh.name not in self._attr_cache:
+            self._attr_cache[mesh.name] = {
+                a.name: a for a in mesh.attributes if a is not None
+            }
 
         for attr_key in keys:
             if attr_key not in results:

@@ -2,6 +2,8 @@
 prefs_panel_ui.py is responsible for all the UI related elements of the add-on preferences panel.
 """
 
+from __future__ import annotations
+
 import bpy # type: ignore
 try:
     from bpy.app.handlers import persistent  # type: ignore
@@ -11,6 +13,12 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
 from .. import utils
 
 
+_BPyTypes = getattr(bpy, "types", None)
+_PropertyGroupBase = getattr(_BPyTypes, "PropertyGroup", object)
+_UIListBase = getattr(_BPyTypes, "UIList", object)
+_AddonPreferencesBase = getattr(_BPyTypes, "AddonPreferences", object)
+
+
 def _addon_module_name() -> str:
     """Return the root add-on module name Blender uses for preferences lookup."""
     package_name = __package__ or __name__
@@ -18,7 +26,7 @@ def _addon_module_name() -> str:
 
 
 # --- Data structures ---
-class ACE_DependencyItem(bpy.types.PropertyGroup):
+class ACE_DependencyItem(_PropertyGroupBase):
     """Stores metadata about a required dependency."""
 
     library_id: bpy.props.StringProperty(name="Library ID")                      # type: ignore
@@ -28,7 +36,7 @@ class ACE_DependencyItem(bpy.types.PropertyGroup):
 
 
 # --- UI Lists ---
-class ACE_UL_dependencies(bpy.types.UIList):
+class ACE_UL_dependencies(_UIListBase):
     """Displays the list of AudioCore Engine dependencies."""
 
     bl_description = "List of AudioCore Engine dependencies"
@@ -61,7 +69,7 @@ class ACE_UL_dependencies(bpy.types.UIList):
 
 
 # --- Add-on preferences ---
-class ACE_preferences(bpy.types.AddonPreferences):
+class ACE_preferences(_AddonPreferencesBase):
     """Preferences panel for AudioCore Engine."""
 
     bl_idname = _addon_module_name()

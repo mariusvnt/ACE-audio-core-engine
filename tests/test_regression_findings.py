@@ -213,7 +213,8 @@ class TestRegressionFindings(unittest.TestCase):
         src = _read("audio_engine.py")
         self.assertIn("preview_allowed = self._is_animation_playing()", src)
         self.assertIn("if (not preview_allowed) or (not preview_pushed):", src)
-        self.assertIn("mixed_preview = self._mix_preview_chunks(preview_chunks)", src)
+        self.assertIn("preview_jobs: list[tuple[PreviewSinkTask, AudioChunk]] = []", src)
+        self.assertIn("if self._submit_preview_work(preview_jobs, preview_chunks):", src)
         self.assertNotIn("graph_uid == active_source_uid", src)
         self.assertIn("self._limiter_ceiling_db = -1.0", src)
         self.assertIn("def _apply_safety_limiter(", src)
@@ -947,8 +948,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("def _resolve_global_manual_preview_winner(", engine_src)
         self.assertIn("Multiple Audio Preview nodes are present.", engine_src)
         self.assertIn("manual_preview_winner_id", engine_src)
-        self.assertIn("if has_manual_preview:", engine_src)
-        self.assertIn("graph.preview_task_ids = list(graph.manual_preview_task_ids)", engine_src)
+        self.assertIn("if has_manual_preview and manual_preview_winner_id in graph.tasks:", engine_src)
+        self.assertIn("graph.preview_task_ids = list(graph.manual_preview_task_ids) if has_manual_preview else list(graph.auto_preview_task_ids)", engine_src)
         self.assertIn("if not has_manual_preview:", engine_src)
 
     def test_stage_a_and_stage_c_mutators_assert_main_thread(self):
@@ -988,7 +989,7 @@ class TestRegressionFindings(unittest.TestCase):
             label="compile body",
         )
         self.assertIn(
-            "sink_writes_allowed = not self._unsafe_for_handler_writes(blender_scene)",
+            "sink_writes_allowed = self._stage_c_writes_allowed(",
             compile_body,
         )
         self.assertIn("if self.writer is not None and sink_writes_allowed:", compile_body)
@@ -1000,8 +1001,9 @@ class TestRegressionFindings(unittest.TestCase):
             "def bake_source_to_cache",
             label="execute_next_frame body",
         )
-        self.assertIn("if self._unsafe_for_handler_writes(scene):", execute_body)
-        self.assertIn("Skipping ACE frame writes during render.", execute_body)
+        self.assertIn("stage_c_writes_allowed = self._stage_c_writes_allowed(", execute_body)
+        self.assertIn("Deferring ACE Stage C sink writes during render.", execute_body)
+        self.assertIn("if stage_c_writes_allowed:", execute_body)
 
     def test_object_property_sink_updates_tag_depsgraph(self):
         proxy_src = _read("proxy_management.py")
@@ -1053,7 +1055,11 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("seen_targets: set[int] = set()", handler_body)
         self.assertIn("def _queue_recompile_target(tree_obj) -> None:", handler_body)
         self.assertIn("if ACEAudioEngine._tree_is_ace_managed(_id):", handler_body)
-        self.assertNotIn("recompile_targets.append(None)", handler_body)
+        self.assertIn("scene_rebuild_requested = False", handler_body)
+        self.assertIn("def _compiled_object_signature(obj_name: str)", handler_body)
+        self.assertIn("def _discovered_object_signature(obj_name: str)", handler_body)
+        self.assertIn("if scene_rebuild_requested:", handler_body)
+        self.assertIn("engine.request_recompile(None)", handler_body)
         self.assertIn("for target in recompile_targets:", handler_body)
         self.assertIn("engine.request_recompile(target)", handler_body)
 

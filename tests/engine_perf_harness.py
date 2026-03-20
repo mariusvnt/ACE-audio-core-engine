@@ -557,7 +557,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
         split_id = f"split_{idx}"
         split_params = {f"in_{i + 1}": float(freq) for i, freq in enumerate(split_freqs)}
         split_task = atr.FrequencySplitterTask(split_id, split_params, block_size=graph.block_size)
-        split_task.connect_input(0, specs_task, 3)
+        split_task.connect_input(0, specs_task, 2)
         graph.tasks[split_id] = split_task
         abstract_tree.add_node(
             abs_mod.ACEAbstractNode(
@@ -568,7 +568,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
                 parameters=split_params,
             )
         )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, split_id, 3, 0))
+        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, split_id, 2, 0))
 
         for band_idx in range(5):
             stream_id = f"src{idx}_band{band_idx}_rms"
@@ -595,8 +595,8 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
         specs_task = graph.tasks.get(specs_id)
         if specs_task is None:
             continue
-        math_task.connect_input(idx, specs_task, 3)
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, math_id, 3, idx))
+        math_task.connect_input(idx, specs_task, 2)
+        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, math_id, 2, idx))
     graph.tasks[math_id] = math_task
     abstract_tree.add_node(
         abs_mod.ACEAbstractNode(
