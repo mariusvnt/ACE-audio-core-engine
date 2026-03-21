@@ -607,6 +607,25 @@ class ACE_OT_set_audio_math_op(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ACE_OT_set_loudness_method(bpy.types.Operator):
+    bl_idname = "ace.set_loudness_method"
+    bl_label = "Set Loudness Method"
+    bl_options = {'INTERNAL', 'UNDO'}
+    method: bpy.props.StringProperty()                                                                                                          # type: ignore
+
+    def execute(self, context):
+        node, parsed = _resolve_panel_selected_node(context)
+        is_loudness = bool(parsed and parsed.get("category") == "stream" and parsed.get("type") == "loudness")
+        if not node or not is_loudness:
+            return {'CANCELLED'}
+        method = str(self.method or "RMS").strip().upper()
+        if method not in {"RMS", "LUFS", "PEAK"}:
+            method = "RMS"
+        node["ace_loudness_method"] = method
+        _refresh_node_instance(node)
+        return {'FINISHED'}
+
+
 class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
     """Queue non-blocking BPM / beats-per-bar detection for the active file source."""
     bl_idname = "audiocore.detect_source_tempo_meter"
@@ -835,6 +854,7 @@ classes = (
     ACE_OT_apply_splitter_ramp,
     ACE_OT_update_audio_math_inputs,
     ACE_OT_set_audio_math_op,
+    ACE_OT_set_loudness_method,
     ACE_OT_detect_source_tempo_meter,
     ACE_OT_refresh_stream_list,
     ACE_OT_toggle_preview_sink,

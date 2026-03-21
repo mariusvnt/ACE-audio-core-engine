@@ -301,12 +301,14 @@ def _analyze_engine_perf_report(report: Dict[str, Any]) -> Dict[str, Any]:
     scenarios = dict(report.get("scenarios", {}) or {})
     ratio_limit = _as_float(strict.get("dsp_p95_ratio_max", 0.0))
     queue_drop_limit = _as_float(strict.get("parallel_queue_drop_rate_max", 0.0))
-    fresh_min = _as_float(strict.get("parallel_fresh_result_rate_min", 0.0))
+    exact_hit_min = _as_float(strict.get("parallel_exact_frame_hit_rate_min", 0.0))
+    sync_fallback_max = _as_float(strict.get("parallel_sync_fallback_rate_max", 0.0))
     ratio_scenarios = [str(v) for v in strict.get("dsp_ratio_scenarios", [])]
 
     max_ratio = 0.0
     max_queue_drop = 0.0
-    min_fresh = 1.0
+    min_exact_hit = 1.0
+    max_sync_fallback = 0.0
     violations: List[str] = []
 
     for sid in ratio_scenarios:
@@ -317,13 +319,14 @@ def _analyze_engine_perf_report(report: Dict[str, Any]) -> Dict[str, Any]:
 
         ratio = _as_float(cmp_rec.get("dsp_p95_ratio_processes_vs_threads", 0.0))
         queue_drop = _as_float(rt_rec.get("parallel_queue_drop_rate", 0.0))
-        fresh = _as_float(rt_rec.get("parallel_fresh_result_rate", 0.0))
-        timeouts = _as_float(rt_rec.get("parallel_job_timeouts", 0.0))
+        exact_hit = _as_float(rt_rec.get("parallel_exact_frame_hit_rate", 0.0))
+        sync_fallback = _as_float(rt_rec.get("parallel_sync_fallback_rate", 0.0))
         exceptions = _as_float(rt_rec.get("parallel_job_exceptions", 0.0))
 
         max_ratio = max(max_ratio, ratio)
         max_queue_drop = max(max_queue_drop, queue_drop)
-        min_fresh = min(min_fresh, fresh)
+        min_exact_hit = min(min_exact_hit, exact_hit)
+        max_sync_fallback = max(max_sync_fallback, sync_fallback)
 
         if ratio_limit > 0.0 and ratio > ratio_limit:
             violations.append(f"engine scenario {sid}: dsp ratio {ratio:.3f} > {ratio_limit:.3f}")
@@ -331,12 +334,14 @@ def _analyze_engine_perf_report(report: Dict[str, Any]) -> Dict[str, Any]:
             violations.append(
                 f"engine scenario {sid}: queue-drop rate {queue_drop:.3f} > {queue_drop_limit:.3f}"
             )
-        if fresh < fresh_min:
+        if exact_hit < exact_hit_min:
             violations.append(
-                f"engine scenario {sid}: fresh-result rate {fresh:.3f} < {fresh_min:.3f}"
+                f"engine scenario {sid}: exact-frame hit rate {exact_hit:.3f} < {exact_hit_min:.3f}"
             )
-        if timeouts > 0.0:
-            violations.append(f"engine scenario {sid}: parallel job timeouts {timeouts:.0f} > 0")
+        if sync_fallback > sync_fallback_max:
+            violations.append(
+                f"engine scenario {sid}: sync-fallback rate {sync_fallback:.3f} > {sync_fallback_max:.3f}"
+            )
         if exceptions > 0.0:
             violations.append(f"engine scenario {sid}: parallel job exceptions {exceptions:.0f} > 0")
 
@@ -353,7 +358,8 @@ def _analyze_engine_perf_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "scenarios_checked": ratio_scenarios,
         "max_dsp_ratio_processes_vs_threads": float(round(max_ratio, 6)),
         "max_queue_drop_rate": float(round(max_queue_drop, 6)),
-        "min_fresh_result_rate": float(round(min_fresh, 6)),
+        "min_exact_frame_hit_rate": float(round(min_exact_hit, 6)),
+        "max_sync_fallback_rate": float(round(max_sync_fallback, 6)),
         "sla_total_latency_p95_ms": float(round(sla_total, 6)),
         "sla_threshold_ms": float(round(sla_limit, 6)),
         "violations": violations,

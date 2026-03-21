@@ -27,7 +27,7 @@ _OUTPUT_MENU_ITEMS = (
 )
 
 _STREAM_MENU_GROUPS = (
-    ("peak", "rms", "lufs"),
+    ("loudness",),
     ("spectral_centroid", "spectral_flux"),
     ("pitch", "onset", "zero_crossing_rate"),
     ("stereo_width", "stereo_balance"),
@@ -36,7 +36,7 @@ _STREAM_MENU_GROUPS = (
 _UTILITIES_MENU_ORDER = (
     "audio_math",
     "logic",
-    "util_rolling_avg",
+    "util_smooth_operator",
     "stream_accumulator",
 )
 
@@ -198,16 +198,16 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         parsed = ACEIdManager.parse_node_id(node.get("ace_id", ""))
         if not parsed:
             return
-        if not ace_node_type_is_writeable_output(parsed.get("category", ""), parsed.get("type", "")):
-            return
+        is_src = parsed.get("category") == "source_mngmt" and parsed.get("type") == "src"
         is_stream = parsed.get("category") == "stream"
         is_specs = parsed.get("category") == "utilities" and parsed.get("type") == "src_specs"
         is_rolling_avg = parsed.get("category") == "utilities" and parsed.get("type") == "util_rolling_avg"
+        is_smooth_operator = parsed.get("category") == "utilities" and parsed.get("type") == "util_smooth_operator"
         is_stream_accumulator = (
             parsed.get("category") == "utilities" and parsed.get("type") == "stream_accumulator"
         )
         is_logic = parsed.get("category") == "utilities" and parsed.get("type") == "logic"
-        if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator or is_logic):
+        if not (is_src or is_stream or is_specs or is_rolling_avg or is_smooth_operator or is_stream_accumulator or is_logic):
             return
 
         proxy_name = ACE_OT_add_node_group._resolve_active_proxy_name(context)
@@ -249,7 +249,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 if attr_sock:
                     ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
-        if (is_rolling_avg or is_logic) and len(node.outputs) > 0:
+        if (is_rolling_avg or is_smooth_operator or is_logic) and len(node.outputs) > 0:
             auto_name = ACE_OT_add_node_group._default_attr_name(
                 proxy_name,
                 node["ace_id"],
@@ -271,7 +271,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             if attr_sock:
                 ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
-        if (is_specs or is_rolling_avg or is_logic) and proxy_obj:
+        if (is_specs or is_rolling_avg or is_smooth_operator or is_logic) and proxy_obj:
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
             if proxy_sock:
                 try:
@@ -280,6 +280,14 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                     if proxy_name:
                         ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
         if is_stream_accumulator and proxy_obj:
+            proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
+            if proxy_sock:
+                try:
+                    proxy_sock.default_value = proxy_obj
+                except Exception:
+                    if proxy_name:
+                        ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
+        if is_src and proxy_obj:
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
             if proxy_sock:
                 try:
@@ -602,7 +610,7 @@ class ACE_MT_add_node_menu(bpy.types.Menu):
         if "stream" in allowed:
             layout.menu("ACE_MT_stream", icon='GRAPH')
         if "utilities" in allowed:
-            layout.menu("ACE_MT_utilities", icon='NODE')
+            layout.menu("ACE_MT_utilities", icon='TOOL_SETTINGS')
             layout.menu("ACE_MT_output", icon='PLAY_SOUND')
 
 def add_node_menu_func(self, context):

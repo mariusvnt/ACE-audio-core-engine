@@ -133,14 +133,14 @@ ACE_NODES: dict[str, Category] = {
         "nodes": {
             "rms": {
             "label": "RMS",
-            "icon": "GRAPH",
+            "icon": "FORCE_HARMONIC",
             "description": "Short-term average loudness measured on the mono-converted signal.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'RMS')],
             },
             "lufs": {
             "label": "Loudness (LUFS)",
-            "icon": "GRAPH",
+            "icon": "SPEAKER",
             "description": (
                 "Normalized loudness output in 0..1 "
                 "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
@@ -154,7 +154,7 @@ ACE_NODES: dict[str, Category] = {
             },
             "peak": {
             "label": "Peak",
-            "icon": "GRAPH",
+            "icon": "PMARKER_ACT",
             "description": "Normalized K-weighted peak level in 0..1 (0 = silence, 1 = 0 dB full scale).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Peak')],
@@ -189,21 +189,31 @@ ACE_NODES: dict[str, Category] = {
             },
             "pitch": {
             "label": "Pitch",
-            "icon": "GRAPH",
+            "icon": "IPO_SINE",
             "description": "Detected root note pitch in Hz.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Pitch')],
             },
             "onset": {
             "label": "Onset",
-            "icon": "GRAPH",
+            "icon": "RADIOBUT_ON",
             "description": "Sharp transient witness (0 = smooth, 1 = sharp transient).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Onset')],
             },
+            "loudness": {
+            "label": "Loudness",
+            "icon": "SPEAKER",
+            "description": (
+                "Unified loudness operator. Measure method selectable in the N panel: "
+                "RMS (short-term average), LUFS (K-weighted integrated), or Peak (K-weighted instantaneous)."
+            ),
+            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)'), ('NodeSocketFloat', 'Overlap Ratio')],
+            "outputs": [('NodeSocketFloat', 'Loudness')],
+            },
             "zero_crossing_rate": {
             "label": "Zero Crossing Rate",
-            "icon": "GRAPH",
+            "icon": "IPO_BACK",
             "description": "Measure of frequency activity (signal noisiness) (0 = no active frequency, 1 = every frequency is active).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'ZCR')],
@@ -238,28 +248,28 @@ ACE_NODES: dict[str, Category] = {
             },
             "audio_math": {
             "label": "Audio Math",
-            "icon": "NODE",
+            "icon": "NODETREE",
             "description": "Audio operations: add, subtract, multiply.",
             "inputs": [('NodeSocketBundle', 'Audio')], # dynamic
             "outputs": [('NodeSocketBundle', 'Audio')], # dynamic
             },
             "logic": {
             "label": "Logic",
-            "icon": "NODE",
+            "icon": "FAKE_USER_ON",
             "description": "Turn a float stream into a binary 0 or 1 output based on a threshold.",
             "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Threshold')],
             "outputs": [('NodeSocketFloat', 'Logic')],
             },
-            "util_rolling_avg": {
-            "label": "Rolling Average",
-            "icon": "GRAPH",
-            "description": "Smooths a scalar attribute stream over a fixed number of scene frames.",
-            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
-            "outputs": [('NodeSocketFloat', 'Rolling Avg')],
+            "util_smooth_operator": {
+            "label": "Smooth Operator",
+            "icon": "SMOOTHCURVE",
+            "description": "Per-sample attack/release envelope follower. Attack controls how fast the output rises, Release controls how slowly it falls.",
+            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Attack (frames)'), ('NodeSocketFloat', 'Release (frames)')],
+            "outputs": [('NodeSocketFloat', 'Smoothed Value')],
             },
             "stream_accumulator": {
             "label": "Stream Accumulator",
-            "icon": "GRAPH",
+            "icon": "STICKY_UVS_LOC",
             "description": "Maintains a running sum of the input stream values.",
             "inputs": [('NodeSocketFloat', 'Value')],
             "outputs": [('NodeSocketFloat', 'Accumulated')],

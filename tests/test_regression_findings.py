@@ -253,8 +253,10 @@ class TestRegressionFindings(unittest.TestCase):
             label="_initialize_auto_attr_ids body",
         )
         self.assertIn("proxy_obj = bpy.data.objects.get(proxy_name)", init_body)
-        self.assertIn("if (is_specs or is_rolling_avg or is_logic) and proxy_obj:", init_body)
         self.assertIn("proxy_sock.default_value = proxy_obj", init_body)
+        # Proxy Object population covers specs, rolling avg, smooth operator, logic, and source nodes
+        self.assertIn("is_smooth_operator", init_body)
+        self.assertIn("is_src", init_body)
 
     def test_runtime_diagnostics_and_parallel_slot_reuse_exist(self):
         src = _read("audio_engine.py")
@@ -263,7 +265,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("def get_dsp_node_profile_snapshot(", src)
         self.assertIn("preview_underruns", src)
         self.assertIn("preview_queue_drops", src)
-        self.assertIn("parallel_job_timeouts", src)
+        self.assertIn("parallel_exact_frame_hits", src)
+        self.assertIn("parallel_sync_fallbacks", src)
         self.assertIn("parallel_pool_restarts", src)
         self.assertIn("_PARALLEL_ATTRS_PER_JOB", src)
         self.assertIn("parallel_output_shards", src)
@@ -435,17 +438,18 @@ class TestRegressionFindings(unittest.TestCase):
             ("attackrelease_splitter", "NODE"),
             ("chromagram", "NODE"),
             ("auto_component_splitter", "NODE"),
-            ("rms", "GRAPH"),
-            ("lufs", "GRAPH"),
-            ("peak", "GRAPH"),
-            ("pitch", "GRAPH"),
-            ("onset", "GRAPH"),
-            ("zero_crossing_rate", "GRAPH"),
+            ("rms", "FORCE_HARMONIC"),
+            ("lufs", "SPEAKER"),
+            ("peak", "PMARKER_ACT"),
+            ("pitch", "IPO_SINE"),
+            ("onset", "RADIOBUT_ON"),
+            ("zero_crossing_rate", "IPO_BACK"),
             ("src_specs", "INFO"),
-            ("audio_math", "NODE"),
-            ("logic", "NODE"),
-            ("util_rolling_avg", "GRAPH"),
-            ("stream_accumulator", "GRAPH"),
+            ("audio_math", "NODETREE"),
+            ("logic", "FAKE_USER_ON"),
+            ("util_smooth_operator", "SMOOTHCURVE"),
+            ("stream_accumulator", "STICKY_UVS_LOC"),
+            ("loudness", "SPEAKER"),
         ):
             self.assertRegex(
                 vars_src,
@@ -467,7 +471,7 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("layout.menu(\"ACE_MT_source_mngmt\", icon='SOUND')", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_delta\", icon='MOD_WAVE')", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_stream\", icon='GRAPH')", menu_src)
-        self.assertIn("layout.menu(\"ACE_MT_utilities\", icon='NODE')", menu_src)
+        self.assertIn("layout.menu(\"ACE_MT_utilities\", icon='TOOL_SETTINGS')", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_output\", icon='PLAY_SOUND')", menu_src)
 
     def test_shader_editor_add_menu_uses_shader_group_nodes(self):
@@ -930,14 +934,13 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("SpectralFluxTask", worker_src)
         self.assertIn("OnsetTask", worker_src)
 
-    def test_parallel_offload_uses_last_valid_without_main_thread_fallback(self):
+    def test_parallel_offload_uses_exact_worker_or_main_thread_fallback(self):
         engine_src = _read("audio_engine.py")
         self.assertIn("parallel_offload_graph = (", engine_src)
         self.assertIn("if parallel_offload_graph:", engine_src)
         self.assertIn("parallel_values = self._parallel_values_for_graph_frame(", engine_src)
-        self.assertIn("reusing last-valid offload values", engine_src)
-        self.assertNotIn("falling back to main-thread DSP", engine_src)
-        self.assertNotIn("using main-thread DSP", engine_src)
+        self.assertIn("forcing exact-frame local fallback", engine_src)
+        self.assertIn("self._parallel_sync_fallbacks += 1", engine_src)
 
     def test_compile_write_guardrails_only_touch_auto_attr_fields(self):
         engine_src = _read("audio_engine.py")
@@ -957,14 +960,25 @@ class TestRegressionFindings(unittest.TestCase):
         engine_src = _read("audio_engine.py")
         compile_body = _slice_between(
             engine_src,
+            "def _build_partial_tree_for_frontend(",
+            "def _compile_discovered_frontends(",
+            label="_build_partial_tree_for_frontend body",
+        )
+        self.assertIn("self._sync_auto_attr_ids(", compile_body)
+        self.assertIn("self._refresh_abstract_attr_params_from_tree(", compile_body)
+        helper_body = _slice_between(
+            engine_src,
+            "def _compile_discovered_frontends(",
+            "def _is_output_node(",
+            label="_compile_discovered_frontends body",
+        )
+        self.assertIn("self.discover_scene_frontends(scene)", _slice_between(
+            engine_src,
             "def compile_scene_frontends(",
             "def compile_from_blender_tree(",
             label="compile_scene_frontends body",
-        )
-        self.assertIn("self.discover_scene_frontends(scene)", compile_body)
-        self.assertIn("self._sync_auto_attr_ids(", compile_body)
-        self.assertIn("self._refresh_abstract_attr_params_from_tree(", compile_body)
-        self.assertIn("merged_tree.merge_from(partial_tree)", compile_body)
+        ))
+        self.assertIn("merged_tree.merge_from(partial_tree)", helper_body)
 
         wrapper_body = _slice_between(
             engine_src,
@@ -982,9 +996,10 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("def discover_scene_frontends(self, scene)", engine_src)
         self.assertIn("def compile_scene_frontends(self, scene, preferred_tree=None):", engine_src)
         self.assertIn("graph.sink_bindings_by_attr = self._resolve_sink_bindings_for_graph(", engine_src)
-        self.assertIn("self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))", engine_src)
+        self.assertIn("self._ensure_graph_sink_layout(", engine_src)
         self.assertIn("self.writer.commit_results(graph, results, active_keys=set(graph.output_attr_keys))", engine_src)
-        self.assertIn("def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):", proxy_src)
+        self.assertIn("def ensure_sink_layout(", proxy_src)
+        self.assertIn("def sink_layout_needs_sync(", proxy_src)
         self.assertIn("def commit_results(self, graph, results: Dict[str, Any], active_keys: Set[str] | None = None):", proxy_src)
         self.assertIn("self._object_prop_cache", proxy_src)
         self.assertIn("self._last_object_prop_values", proxy_src)
@@ -1017,7 +1032,7 @@ class TestRegressionFindings(unittest.TestCase):
 
         ensure_layout_body = _slice_between(
             proxy_src,
-            "def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):",
+            "def ensure_sink_layout(",
             "def commit_results(",
             label="ensure_sink_layout body",
         )
@@ -1107,8 +1122,7 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("def _queue_recompile_target(tree_obj) -> None:", handler_body)
         self.assertIn("if ACEAudioEngine._tree_is_ace_managed(_id):", handler_body)
         self.assertIn("scene_rebuild_requested = False", handler_body)
-        self.assertIn("def _compiled_object_signature(obj_name: str)", handler_body)
-        self.assertIn("def _discovered_object_signature(obj_name: str)", handler_body)
+        self.assertIn("if _update_touches_ace_tree(obj):", handler_body)
         self.assertIn("if scene_rebuild_requested:", handler_body)
         self.assertIn("engine.request_recompile(None)", handler_body)
         self.assertIn("for target in recompile_targets:", handler_body)
@@ -1193,7 +1207,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("parallel_output_shards", src)
         self.assertIn("ENGINE_PERF_STRICT_DSP_RATIO_MAX = 1.10", src)
         self.assertIn("ENGINE_PERF_STRICT_QUEUE_DROP_RATE_MAX = 0.03", src)
-        self.assertIn("ENGINE_PERF_STRICT_FRESH_RESULT_RATE_MIN = 0.90", src)
+        self.assertIn("ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN = 0.90", src)
+        self.assertIn("ENGINE_PERF_STRICT_SYNC_FALLBACK_RATE_MAX = 0.02", src)
         self.assertIn("ENGINE_PERF_SLA_SAMPLE_RATE_HZ = 96000", src)
         self.assertIn("ENGINE_PERF_SLA_PASS_TOTAL_LATENCY_MS = 15.0", src)
         self.assertIn("ENGINE_PERF_SLA_IDEAL_TOTAL_LATENCY_MS = 10.0", src)
@@ -1258,7 +1273,8 @@ class TestRegressionFindings(unittest.TestCase):
         engine_src = _read("audio_engine.py")
         self.assertIn("_PARALLEL_STALE_REUSE_MS", engine_src)
         self.assertNotIn("_PARALLEL_STALE_REUSE_WINDOW_FRAMES", engine_src)
-        self.assertIn("_PARALLEL_STALE_REUSE_MS * fps_now / 1000.0", engine_src)
+        self.assertIn("Retained only for diagnostics", engine_src)
+        self.assertNotIn("_PARALLEL_STALE_REUSE_MS * fps_now / 1000.0", engine_src)
 
     def test_inflight_per_source_within_spec(self):
         engine_src = _read("audio_engine.py")
@@ -1394,9 +1410,9 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("self._structural_tree_writes_allowed(", maybe_compile_body)
         compile_body = _slice_between(
             engine_src,
-            "def compile_scene_frontends(",
-            "def compile_from_blender_tree(",
-            label="compile_scene_frontends body",
+            "def _compile_discovered_frontends(",
+            "def _is_output_node(",
+            label="_compile_discovered_frontends body",
         )
         self.assertIn("has_shader_frontends", compile_body)
         self.assertIn("self.request_recompile(target_tree)", compile_body)

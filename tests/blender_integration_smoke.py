@@ -43,7 +43,7 @@ def main():
     _assert(str(getattr(eng_settings, "ace_scheduler_mode", "")) == "demand", "Default scheduler mode must be demand-driven")
     _assert(str(getattr(eng_settings, "ace_timeslice_mode", "")) == "fixed", "Default timeslice mode must be fixed")
     _assert(str(getattr(eng_settings, "ace_parallel_mode", "")) == "processes_dsp", "Default parallel mode must be processes_dsp")
-    _assert(bool(getattr(eng_settings, "ace_perf_enabled", False)) is True, "Performance metrics must be enabled by default")
+    _assert(bool(getattr(eng_settings, "ace_perf_enabled", True)) is False, "Performance metrics must be disabled by default")
 
     engine = engine_mod.ACEAudioEngine.ensure_instance(scene)
     engine.execute_next_frame(scene, force=True)

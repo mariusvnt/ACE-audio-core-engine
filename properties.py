@@ -504,7 +504,7 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
         description=(
             "Collect lightweight per-frame timings for audio stages, Blender geometry updates, and render timing"
         ),
-        default=True,
+        default=False,
     )
     ace_scheduler_mode: bpy.props.EnumProperty(                                                                                    # type: ignore
         name="Scheduler Mode",

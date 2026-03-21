@@ -789,6 +789,8 @@ def _parsed_node_has_operator_settings(parsed) -> bool:
         ("utilities", "audio_math"),
         ("utilities", "preview_sink"),
         ("utilities", "util_rolling_avg"),
+        ("utilities", "util_smooth_operator"),
+        ("stream", "loudness"),
     }
 
 
@@ -924,6 +926,37 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             row.prop(frames_sock, "default_value", text="Number of Frames")
         else:
             box.label(text="Number of Frames input is unavailable.", icon="INFO")
+
+    if parsed.get("category") == "utilities" and parsed.get("type") == "util_smooth_operator":
+        drew_settings = True
+        box = layout.box()
+        box.label(text="Smooth Operator", icon="SMOOTHCURVE")
+        attack_sock = next(
+            (s for s in getattr(node, "inputs", []) if getattr(s, "name", "") == "Attack (frames)"),
+            None,
+        )
+        release_sock = next(
+            (s for s in getattr(node, "inputs", []) if getattr(s, "name", "") == "Release (frames)"),
+            None,
+        )
+        if attack_sock is not None:
+            box.row(align=True).prop(attack_sock, "default_value", text="Attack (frames)")
+        if release_sock is not None:
+            box.row(align=True).prop(release_sock, "default_value", text="Release (frames)")
+        if attack_sock is None and release_sock is None:
+            box.label(text="Attack/Release sockets unavailable.", icon="INFO")
+
+    if parsed.get("category") == "stream" and parsed.get("type") == "loudness":
+        drew_settings = True
+        box = layout.box()
+        box.label(text="Loudness", icon="SPEAKER")
+        current_method = str(node.get("ace_loudness_method", "RMS") or "RMS").upper()
+        if current_method not in {"RMS", "LUFS", "PEAK"}:
+            current_method = "RMS"
+        row = box.row(align=True)
+        for method_id, label in (("RMS", "RMS"), ("LUFS", "LUFS"), ("PEAK", "Peak")):
+            op = row.operator("ace.set_loudness_method", text=label, depress=(current_method == method_id))
+            op.method = method_id
 
     return drew_settings
 

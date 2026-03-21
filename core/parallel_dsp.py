@@ -46,6 +46,9 @@ from .audio_tasks_registry import (
     StreamAccumulatorTask,
     LogicTask,
     AudioMathTask,
+    RollingAvgTask,
+    SmoothOperatorTask,
+    UnifiedLoudnessTask,
 )
 
 
@@ -420,6 +423,10 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
             return StreamAccumulatorTask(node_id, params, bs)
         if typ == "logic":
             return LogicTask(node_id, params, bs)
+        if typ == "util_rolling_avg":
+            return RollingAvgTask(node_id, params, bs)
+        if typ == "util_smooth_operator":
+            return SmoothOperatorTask(node_id, params, bs)
 
     if cat == "delta":
         if typ == "frequency_splitter":
@@ -454,6 +461,8 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
             return StereoWidthTask(node_id, params, bs)
         if typ == "stereo_balance":
             return StereoBalanceTask(node_id, params, bs)
+        if typ == "loudness":
+            return UnifiedLoudnessTask(node_id, params, bs)
 
     return ACEAudioTask(node_id, params, bs)
 

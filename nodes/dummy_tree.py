@@ -259,6 +259,10 @@ class ACEDummyNodeFactory:
             required_inputs = {"Value", "Number of Frames", "Attribute ID", "Proxy Object"}
             required_outputs = {"Rolling Avg"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        if node_type == "util_smooth_operator":
+            required_inputs = {"Value", "Attack (frames)", "Release (frames)", "Attribute ID", "Proxy Object"}
+            required_outputs = {"Smoothed Value"}
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
         if node_type == "stream_accumulator":
             required_inputs = {"Value", "Attribute ID", "Proxy Object"}
             required_outputs = {"Accumulated"}
@@ -344,7 +348,7 @@ class ACEDummyNodeFactory:
             return tuple(names)
         if category == "utilities" and node_type == "src_specs":
             return ("Frames per Beat Attribute ID", "Beat Phase Attribute ID")
-        if category == "utilities" and node_type == "util_rolling_avg":
+        if category == "utilities" and node_type in {"util_rolling_avg", "util_smooth_operator"}:
             return ("Attribute ID",)
         if category == "utilities" and node_type == "stream_accumulator":
             return ("Attribute ID",)
@@ -400,7 +404,9 @@ class ACEDummyNodeFactory:
         for sock_type_str, sock_name in outputs:
             ng.interface.new_socket(sock_name, in_out='OUTPUT', socket_type=sock_type_str)
 
-        if category == "stream" and node_type == "lufs":
+        if category == "stream" and node_type in {"lufs", "loudness"}:
+            # loudness uses 0.75 overlap (smoother real-time response); lufs keeps 0.25
+            default_overlap = 0.75 if node_type == "loudness" else 0.25
             for item in getattr(getattr(ng, "interface", None), "items_tree", []):
                 if getattr(item, "in_out", None) != "INPUT":
                     continue
@@ -422,7 +428,7 @@ class ACEDummyNodeFactory:
                             pass
                 elif name == "Overlap Ratio":
                     try:
-                        item.default_value = 0.25
+                        item.default_value = default_overlap
                     except Exception:
                         pass
                     for attr_name, value in (
@@ -723,6 +729,66 @@ class ACEDummyNodeFactory:
                 # E. (Value + Number of Frames) × 0 → Sample Index (Index) — always 0
                 ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
                 # F. Sample Index (Value) → Group Output (Rolling Avg)
+                if len(outputs_def) > 0:
+                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
+
+            elif node_type == 'util_smooth_operator':
+                # Attribute ID input (string) — the auto-generated proxy attribute name.
+                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
+                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+
+                attr_id_idx = len(inputs_def)  # 3: after Value (0), Attack (1), Release (2)
+
+                # Proxy Object input — the source proxy mesh to read the attribute from.
+                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
+
+                proxy_obj_idx = len(inputs_def) + 1  # 4: after Attribute ID (3)
+
+                # ── Nodes ────────────────────────────────────────────────────
+                # (Value + Attack + Release) × 0 → always 0 → Sample Index[Index].
+                # Keeps all three inputs genuinely consumed so sockets stay non-grey.
+                math_add = ng.nodes.new('ShaderNodeMath')
+                math_add.operation = 'ADD'
+                math_add.location = (-620, -160)
+
+                math_add2 = ng.nodes.new('ShaderNodeMath')
+                math_add2.operation = 'ADD'
+                math_add2.location = (-440, -160)
+
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-260, -160)
+
+                ng.links.new(input_node.outputs[0], math_add.inputs[0])   # Value   → Add A
+                ng.links.new(input_node.outputs[1], math_add.inputs[1])   # Attack  → Add B
+                ng.links.new(math_add.outputs[0], math_add2.inputs[0])    # sum     → Add2 A
+                ng.links.new(input_node.outputs[2], math_add2.inputs[1])  # Release → Add2 B
+                ng.links.new(math_add2.outputs[0], math_mul.inputs[0])    # sum2    → × 0
+
+                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+                obj_info.transform_space = 'ORIGINAL'
+                obj_info.location = (-300, 0)
+                if 'As Instance' in obj_info.inputs:
+                    obj_info.inputs['As Instance'].default_value = False
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.data_type = 'FLOAT'
+                named_attr.location = (-100, 150)
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.data_type = 'FLOAT'
+                sample_idx.domain = 'POINT'
+                sample_idx.location = (150, 0)
+
+                # ── Wiring ───────────────────────────────────────────────────
+                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
                 if len(outputs_def) > 0:
                     ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
 
@@ -1606,6 +1672,9 @@ class ACEDummyTreeReader:
         op_value = bl_node.get("ace_op")
         if isinstance(op_value, str):
             params["op"] = op_value
+        loudness_method = bl_node.get("ace_loudness_method")
+        if isinstance(loudness_method, str):
+            params["measure_method"] = loudness_method
         preview_enabled = bl_node.get("ace_preview_enabled", True)
         params["preview_enabled"] = bool(preview_enabled)
         params["frontend_node_index"] = int(

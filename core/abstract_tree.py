@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 WRITEABLE_OUTPUT_UTILITY_NODE_TYPES = frozenset({
     "src_specs",
     "util_rolling_avg",
+    "util_smooth_operator",
     "stream_accumulator",
     "logic",
 })

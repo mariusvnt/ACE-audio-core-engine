@@ -731,7 +731,46 @@ class ACEProxyManager:
                 changed = True
         return changed
 
-    def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):
+    def sink_layout_needs_sync(self, graph, active_keys: Set[str] | None = None) -> bool:
+        """Return True when any resolved sink target for *graph* is missing."""
+        utils.assert_main_thread("sink_layout_needs_sync")
+        keys = set(self.output_defs.keys()) if active_keys is None else set(active_keys)
+        for attr_key in keys:
+            info = self.output_defs.get(attr_key, {})
+            expected_attr_type = str(info.get("data_type", "FLOAT") or "FLOAT")
+            for binding in list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or []):
+                sink_kind = str(getattr(binding, "sink_kind", "") or "")
+                object_name = str(getattr(binding, "target_object_name", "") or "")
+                if not object_name:
+                    continue
+                if sink_kind == "PROXY_ATTRIBUTE":
+                    proxy = bpy.data.objects.get(object_name)
+                    mesh = getattr(proxy, "data", None) if proxy is not None else None
+                    if mesh is None or not hasattr(mesh, "attributes"):
+                        return True
+                    attr_name = self._select_attr_name(object_name, info)
+                    attr = mesh.attributes.get(attr_name) if attr_name else None
+                    if attr is None or str(getattr(attr, "data_type", "") or "") != expected_attr_type:
+                        return True
+                elif sink_kind == "OBJECT_PROPERTY":
+                    prop_name = str(getattr(binding, "target_data_name", "") or "")
+                    obj = bpy.data.objects.get(object_name)
+                    if obj is None or not prop_name:
+                        return True
+                    try:
+                        if prop_name not in obj.keys():
+                            return True
+                    except Exception:
+                        return True
+        return False
+
+    def ensure_sink_layout(
+        self,
+        graph,
+        active_keys: Set[str] | None = None,
+        *,
+        prune_existing: bool = True,
+    ):
         """Ensure all concrete sink targets for *graph* exist."""
         utils.assert_main_thread("ensure_sink_layout")
         proxy_keys_by_object: Dict[str, Set[str]] = {}
@@ -751,10 +790,15 @@ class ACEProxyManager:
             proxy = bpy.data.objects.get(proxy_name)
             if proxy is None:
                 continue
-            self.ensure_attributes_exist(proxy, self.abstract_tree, active_keys=set(attr_keys), prune_existing=True)
+            self.ensure_attributes_exist(
+                proxy,
+                self.abstract_tree,
+                active_keys=set(attr_keys),
+                prune_existing=bool(prune_existing),
+            )
             geometry_proxy_names.add(str(proxy_name))
         for object_name, bindings in object_bindings.items():
-            self.ensure_object_property_sinks(object_name, bindings, prune=True)
+            self.ensure_object_property_sinks(object_name, bindings, prune=bool(prune_existing))
         return geometry_proxy_names
 
     def commit_results(self, graph, results: Dict[str, Any], active_keys: Set[str] | None = None):

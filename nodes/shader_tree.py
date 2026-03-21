@@ -133,7 +133,7 @@ class ACEShaderNodeFactory:
         typ = str(node_type or "")
         return bool(
             cat == "stream"
-            or (cat == "utilities" and typ in {"src_specs", "util_rolling_avg", "stream_accumulator", "logic"})
+            or (cat == "utilities" and typ in {"src_specs", "util_rolling_avg", "util_smooth_operator", "stream_accumulator", "logic"})
         )
 
     @staticmethod
@@ -743,7 +743,7 @@ class ACEShaderNodeFactory:
             for idx in range(1, int(value_output_count)):
                 mapping[f"Attribute ID {int(idx + 1)}"] = int(idx)
             return mapping
-        if cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator", "logic"}:
+        if cat == "utilities" and typ in {"util_rolling_avg", "util_smooth_operator", "stream_accumulator", "logic"}:
             return {"Attribute ID": 0}
         if cat == "utilities" and typ == "src_specs":
             return {

@@ -81,6 +81,8 @@ from .audio_tasks_registry import (
     StereoBalanceTask,
     PreviewSinkTask,
     RollingAvgTask,
+    SmoothOperatorTask,
+    UnifiedLoudnessTask,
     StreamAccumulatorTask,
     LogicTask,
     AudioMathTask,
@@ -1035,8 +1037,9 @@ class ACEAudioEngine:
         prepares a serialisable parallel IR for each graph.
       - Stage B (worker processes): numeric DSP (RMS, pitch, centroid, etc.) is
         offloaded via ``evaluate_parallel_job()`` in a
-        ``ProcessPoolExecutor``; results flow back through
-        ``_parallel_poll_futures()`` into ``_parallel_last_valid``.
+        ``ProcessPoolExecutor``; results are committed only when they match the
+        exact frame being evaluated, otherwise the engine falls back to
+        synchronous main-thread evaluation for that frame.
       - Stage C (main thread): ``execute_next_frame()`` merges Stage-B values
         with any locally-evaluated outputs and writes them into Blender geometry
         node proxy attributes via ``ACEProxyManager``.
@@ -1048,16 +1051,12 @@ class ACEAudioEngine:
 
     Parallel pool constants:
       - ``_PARALLEL_MAX_INFLIGHT_PER_SOURCE``: max 2 concurrent jobs per source.
-      - ``_PARALLEL_STALE_REUSE_MS``: last-valid values reused within this window.
       - ``_PARALLEL_RESTART_LIMIT``: maximum pool restart attempts per session.
       - ``_PARALLEL_RESTART_BACKOFF_S``: per-attempt exponential backoff delays.
     """
 
     _instances: Dict[int, "ACEAudioEngine"] = {}
     _preview_monitor = _ACEPreviewAudioMonitor()
-    # Attribute schema is synced via a dirty flag set on compile, not by frame polling.
-    # The fallback interval applies only when the dirty set is missing (defensive).
-    _ATTR_RESYNC_INTERVAL_FRAMES = 120
     _META_CACHE_MAX_ENTRIES = 256
     _RUNTIME_LOG_MAX_ENTRIES = 512
     _BLOCK_SIZE_HYSTERESIS_FRAMES = 2
@@ -1091,12 +1090,13 @@ class ACEAudioEngine:
     # Backoff delays (seconds) indexed by restart attempt number (0-based).
     # Attempt 0 → 0.5 s, attempt 1 → 1.0 s, attempt 2 → 2.0 s.
     _PARALLEL_RESTART_BACKOFF_S: tuple = (0.5, 1.0, 2.0)
-    _PARALLEL_STALE_FRAME_GRACE = 2
-    # Time-based stale-reuse window (FPS-invariant). At 24 fps this is 1 frame;
-    # at 30 fps it is 1 frame; at 60 fps it is 3 frames — reduced from 66 ms (4 frames
-    # at 60 fps) to tighten the stale-result contract closer to the ≤2-frame spec.
+    # Retained only for diagnostics; stale reuse is no longer part of the
+    # steady-state commit contract.
     _PARALLEL_STALE_REUSE_MS = 50
     _PARALLEL_CANCEL_STALE_FRAME_DELTA = 4
+    _PARALLEL_LOCAL_ONLY_MISS_THRESHOLD = 3
+    _PARALLEL_LOCAL_ONLY_WINDOW_FRAMES = 120
+    _PARALLEL_FORCE_LOCAL_MODE_S = 5.0
     _PREVIEW_MIN_INTERVAL_S = 0.003
     _FILE_WORKING_SAMPLE_RATE_CAP = 48_000
 
@@ -1125,11 +1125,14 @@ class ACEAudioEngine:
         self._dirty_tree_ptrs: set[int] = set()
         self._dirty_tree_bl_idnames: Dict[int, str] = {}
         self._dirty_frontend_uids: set[str] = set()
+        self._frontend_partial_tree_cache: Dict[str, ACEAbstractTree] = {}
+        self._frontend_partial_tree_signatures: Dict[str, tuple[Any, ...]] = {}
         self._compiled_tree_ref: Optional[bpy.types.NodeTree] = None
         self._compiled_frontend_refs: Dict[str, Any] = {}
         self._compiled_frontend_snapshots: Dict[str, _ACECompiledFrontendSnapshot] = {}
         self._compiled_frontend_ptrs: Dict[str, int] = {}
         self._compiled_frontend_uids: tuple[str, ...] = ()
+        self._compiled_frontend_discoveries: list[_ACEFrontendDiscovery] = []
         self._last_frontend_membership_signature: tuple[Any, ...] = ()
         self._last_dirty_time: float = 0.0
         self._is_compiling: bool = False
@@ -1174,6 +1177,9 @@ class ACEAudioEngine:
         self._parallel_last_valid: Dict[str, Dict[str, Any]] = {}
         self._parallel_last_valid_frame: Dict[str, int] = {}
         self._parallel_failures: Dict[str, int] = {}
+        self._parallel_graph_miss_frames: Dict[str, deque[int]] = {}
+        self._parallel_local_only_graphs: set[str] = set()
+        self._parallel_force_local_until: float = 0.0
         self._parallel_disabled_sources: set[str] = set()
         self._parallel_graph_ir_required: set[str] = set()
         self._parallel_restart_count: int = 0
@@ -1185,11 +1191,13 @@ class ACEAudioEngine:
         self._parallel_payload_free_slots: Dict[str, deque[str]] = {}
         self._parallel_frame_payload_slots: Dict[tuple[str, int, str], str] = {}
         self._parallel_queue_pressure_drops: int = 0
-        self._parallel_job_timeouts: int = 0
         self._parallel_job_exceptions: int = 0
         self._parallel_stale_job_drops: int = 0
-        self._parallel_stale_result_drops: int = 0
+        self._parallel_late_result_drops: int = 0
         self._parallel_result_accepts: int = 0
+        self._parallel_exact_frame_hits: int = 0
+        self._parallel_exact_frame_misses: int = 0
+        self._parallel_sync_fallbacks: int = 0
         self._preview_last_chunk: Optional[AudioChunk] = None
         self._preview_last_eval_frame: int = -1
         self._preview_next_eval_ts: float = 0.0
@@ -1208,6 +1216,7 @@ class ACEAudioEngine:
         # Dirty-flag set for attribute schema resync: populated on compile,
         # cleared per-graph after ensure_attributes_exist() runs.
         self._attr_schema_dirty: set[str] = set()
+        self._sink_layout_signatures: Dict[str, str] = {}
         self.undo_generation: int = 0
         self.undo_recovery_until: float = 0.0
         # Worker health heartbeat: proactive dead-worker detection (Step 1).
@@ -1216,6 +1225,7 @@ class ACEAudioEngine:
         self._frame_budget_overruns: int = 0
         # Probe cache: filepaths whose metadata has been successfully probed (Step 3).
         self._probed_sources_complete: set = set()
+        self._geometry_metric_token_cache: Dict[tuple[str, ...], set[str]] = {}
 
     @staticmethod
     def _scene_key(scene) -> int:
@@ -1247,6 +1257,7 @@ class ACEAudioEngine:
         self._compiled_frontend_snapshots.clear()
         self._compiled_frontend_ptrs.clear()
         self._compiled_frontend_uids = ()
+        self._compiled_frontend_discoveries = []
         self._dirty_tree_ptrs.clear()
         self._dirty_tree_bl_idnames.clear()
         self._dirty_frontend_uids.clear()
@@ -1605,7 +1616,17 @@ class ACEAudioEngine:
     def _mark_geometry_eval_pending(self, scene, proxy_names: list[str] | set[str] | tuple[str, ...] | None = None):
         if not self._perf_enabled(scene):
             return
-        target_tokens = self._resolve_geometry_metric_tokens(scene, proxy_names=proxy_names)
+        proxy_key = tuple(sorted(str(v) for v in list(proxy_names or ()) if str(v)))
+        target_tokens = self._geometry_metric_token_cache.get(proxy_key)
+        if target_tokens is None:
+            target_tokens = set()
+            for proxy_name in proxy_key:
+                proxy_obj = bpy.data.objects.get(proxy_name)
+                if proxy_obj is not None:
+                    self._extend_metric_tokens_from_id(target_tokens, proxy_obj)
+            if not target_tokens:
+                target_tokens = self._resolve_geometry_metric_tokens(scene, proxy_names=proxy_key)
+            self._geometry_metric_token_cache[proxy_key] = set(target_tokens)
         if not target_tokens:
             return
         now_ts = time.perf_counter()
@@ -1716,12 +1737,15 @@ class ACEAudioEngine:
             render_p95_ms = 0.0
         report = {
             "parallel_queue_pressure_drops": float(self._parallel_queue_pressure_drops),
-            "parallel_job_timeouts": float(self._parallel_job_timeouts),
             "parallel_job_exceptions": float(self._parallel_job_exceptions),
             "parallel_pool_restarts": float(self._parallel_restart_count),
             "parallel_stale_job_drops": float(self._parallel_stale_job_drops),
-            "parallel_stale_result_drops": float(self._parallel_stale_result_drops),
+            "parallel_late_result_drops": float(self._parallel_late_result_drops),
             "parallel_result_accepts": float(self._parallel_result_accepts),
+            "parallel_exact_frame_hits": float(self._parallel_exact_frame_hits),
+            "parallel_exact_frame_misses": float(self._parallel_exact_frame_misses),
+            "parallel_sync_fallbacks": float(self._parallel_sync_fallbacks),
+            "parallel_local_only_graphs": float(len(self._parallel_local_only_graphs)),
             "parallel_disabled_sources": float(len(self._parallel_disabled_sources)),
             "parallel_worker_target": float(worker_target),
             "parallel_worker_active": float(active_workers),
@@ -1737,11 +1761,13 @@ class ACEAudioEngine:
         report.update(preview_diag)
         if reset:
             self._parallel_queue_pressure_drops = 0
-            self._parallel_job_timeouts = 0
             self._parallel_job_exceptions = 0
             self._parallel_stale_job_drops = 0
-            self._parallel_stale_result_drops = 0
+            self._parallel_late_result_drops = 0
             self._parallel_result_accepts = 0
+            self._parallel_exact_frame_hits = 0
+            self._parallel_exact_frame_misses = 0
+            self._parallel_sync_fallbacks = 0
             self._geometry_eval_history.clear()
             self._render_history.clear()
         return report
@@ -2035,6 +2061,38 @@ class ACEAudioEngine:
         # SHM slot exhaustion under high-core-count machines.
         return max(min(int(self._PARALLEL_MAX_INFLIGHT_PER_SOURCE), 2), 1)
 
+    def _parallel_force_local_active(self) -> bool:
+        return time.monotonic() < float(getattr(self, "_parallel_force_local_until", 0.0) or 0.0)
+
+    def _parallel_clear_graph_degradation(self, graph_key: str) -> None:
+        key = str(graph_key or "")
+        if not key:
+            return
+        self._parallel_graph_miss_frames.pop(key, None)
+        self._parallel_local_only_graphs.discard(key)
+        graph = self.graphs.get(key)
+        if graph is not None:
+            graph.parallel_local_only = False
+
+    def _parallel_record_exact_miss(self, graph: ACEAudioGraph, graph_key: str, frame_index: int) -> None:
+        key = str(graph_key or "")
+        if not key:
+            return
+        self._parallel_exact_frame_misses += 1
+        history = self._parallel_graph_miss_frames.setdefault(
+            key,
+            deque(maxlen=max(int(self._PARALLEL_LOCAL_ONLY_WINDOW_FRAMES), 1)),
+        )
+        frame_id = int(frame_index)
+        if (not history) or int(history[-1]) != frame_id:
+            history.append(frame_id)
+        window_floor = frame_id - max(int(self._PARALLEL_LOCAL_ONLY_WINDOW_FRAMES), 1) + 1
+        while history and int(history[0]) < window_floor:
+            history.popleft()
+        if len(history) >= int(self._PARALLEL_LOCAL_ONLY_MISS_THRESHOLD):
+            self._parallel_local_only_graphs.add(key)
+            graph.parallel_local_only = True
+
     def _parallel_clear_runtime_state(self, keep_last_valid: bool = True):
         for meta in list(self._parallel_future_meta.values()):
             self._parallel_cleanup_ipc_handles(meta)
@@ -2099,6 +2157,9 @@ class ACEAudioEngine:
         # under auto-compile mode (frequent recompiles = unlimited pool restarts).
         # The count is only cleared in __init__ (engine session boundary).
         self._parallel_pool_failed = False
+        self._parallel_graph_miss_frames.clear()
+        self._parallel_local_only_graphs.clear()
+        self._parallel_force_local_until = 0.0
         self._parallel_clear_runtime_state(keep_last_valid=False)
 
     def _ensure_parallel_pool(self, scene) -> bool:
@@ -2131,7 +2192,7 @@ class ACEAudioEngine:
             self._parallel_pool_failed = True
             self._log_runtime(
                 "parallel_init",
-                f"Processes-DSP unavailable, reusing last-valid offload values: {e}",
+                f"Processes-DSP unavailable, forcing exact-frame main-thread fallback: {e}",
                 "WARNING",
                 min_interval=0.0,
             )
@@ -2146,17 +2207,23 @@ class ACEAudioEngine:
         # errors (OOM spikes, process spawn latency) without burning the restart budget.
         now = time.monotonic()
         if now < self._parallel_restart_backoff_until:
-            # Still in the backoff window — defer this attempt; reuse last-valid values.
+            # Still in the backoff window — defer this attempt and keep the
+            # engine in synchronous fallback mode.
             return False
         self._parallel_restart_count += 1
         backoff_idx = min(self._parallel_restart_count - 1, len(self._PARALLEL_RESTART_BACKOFF_S) - 1)
         delay_s = float(self._PARALLEL_RESTART_BACKOFF_S[backoff_idx])
         self._parallel_restart_backoff_until = now + delay_s
+        self._parallel_force_local_until = max(
+            float(self._parallel_force_local_until),
+            float(now + self._PARALLEL_FORCE_LOCAL_MODE_S),
+        )
         self._log_runtime(
             "parallel_restart",
             f"Restarting Processes-DSP pool ({reason}), "
             f"attempt {self._parallel_restart_count}/{self._PARALLEL_RESTART_LIMIT}, "
-            f"backoff {delay_s:.1f}s.",
+            f"backoff {delay_s:.1f}s; forcing exact-frame local fallback for "
+            f"{self._PARALLEL_FORCE_LOCAL_MODE_S:.1f}s.",
             "WARNING",
             min_interval=0.0,
         )
@@ -2565,7 +2632,7 @@ class ACEAudioEngine:
                         self._parallel_disabled_sources.add(fail_key)
                     self._log_runtime(
                         f"parallel_job_error:{fail_key}",
-                        f"Parallel job failed for '{fail_key}', reusing last-valid offload values: {e}",
+                        f"Parallel job failed for '{fail_key}', forcing exact-frame local fallback: {e}",
                         "WARNING",
                         min_interval=0.0,
                     )
@@ -2589,8 +2656,8 @@ class ACEAudioEngine:
                     except Exception:
                         pass
                 frame_id = int(payload.get("frame_id", -1) or -1)
-                if frame_id < (int(current_frame) - int(self._PARALLEL_STALE_FRAME_GRACE)):
-                    self._parallel_stale_result_drops += 1
+                if frame_id != int(current_frame):
+                    self._parallel_late_result_drops += 1
                     continue
                 values = dict(payload.get("values", {}) or {})
                 if not res_key:
@@ -2598,10 +2665,6 @@ class ACEAudioEngine:
                 self._parallel_graph_ir_required.discard(res_key)
                 if values:
                     self._parallel_result_accepts += 1
-                    merged_last = dict(self._parallel_last_valid.get(res_key, {}) or {})
-                    merged_last.update(values)
-                    self._parallel_last_valid[res_key] = merged_last
-                    self._parallel_last_valid_frame[res_key] = int(frame_id)
                 frame_map = self._parallel_results.setdefault(res_key, {})
                 merged_frame = dict(frame_map.get(frame_id, {}) or {})
                 merged_frame.update(values)
@@ -2760,7 +2823,7 @@ class ACEAudioEngine:
                 self._parallel_disabled_sources.add(owner_graph_key)
             self._log_runtime(
                 f"parallel_submit:{owner_graph_key}",
-                f"Parallel submit failed for '{owner_graph_key}', reusing last-valid offload values: {e}",
+                f"Parallel submit failed for '{owner_graph_key}', forcing exact-frame local fallback: {e}",
                 "WARNING",
                 min_interval=0.0,
             )
@@ -2781,63 +2844,30 @@ class ACEAudioEngine:
         return True
 
     def _parallel_values_for_graph_frame(self, graph: ACEAudioGraph, graph_key: str, frame_index: int) -> Dict[str, Any]:
-        """Retrieve the best available parallel worker results for *frame_index*.
-
-        Priority: exact frame match > stale-reuse window > zero values.
-        The stale window is derived from ``_PARALLEL_STALE_REUSE_MS`` converted
-        to frames at the current scene FPS so behaviour is FPS-invariant.
-
-        Returns:
-            Dict mapping each offload attr_key to its normalised output value.
-        """
+        """Return exact-frame worker results for *frame_index*, or {} if incomplete."""
         offload_keys = list(getattr(graph, "parallel_offload_attr_keys", []) or [])
         if not offload_keys:
             return {}
         frame_map = self._parallel_results.get(graph_key, {}) or {}
-        frame_values = dict(frame_map.pop(int(frame_index), {}) or {})
+        frame_values = dict(frame_map.get(int(frame_index), {}) or {})
+        if not frame_values:
+            return {}
+        if any(attr_key not in frame_values for attr_key in offload_keys):
+            return {}
+        frame_map.pop(int(frame_index), None)
         if isinstance(frame_map, dict) and not frame_map:
             self._parallel_results.pop(graph_key, None)
-        if frame_values:
-            merged_last = dict(self._parallel_last_valid.get(graph_key, {}) or {})
-            merged_last.update(frame_values)
-            self._parallel_last_valid[graph_key] = merged_last
-            self._parallel_last_valid_frame[graph_key] = int(frame_index)
-            base = merged_last
-        else:
-            last_frame = int(self._parallel_last_valid_frame.get(graph_key, -10_000_000) or -10_000_000)
-            fps_now = max(float(self._current_scene_fps), 1.0)
-            stale_window_frames = max(1, int(self._PARALLEL_STALE_REUSE_MS * fps_now / 1000.0 + 0.5))
-            if (int(frame_index) - last_frame) <= stale_window_frames:
-                base = dict(self._parallel_last_valid.get(graph_key, {}) or {})
-            else:
-                base = {}
-        resolved: Dict[str, Any] = {}
-        for attr_key in offload_keys:
-            if attr_key in base:
-                resolved[attr_key] = self._normalize_output_value(attr_key, base[attr_key])
-            else:
-                resolved[attr_key] = self._zero_value_for_attr(attr_key)
-        return resolved
+        return {
+            attr_key: self._normalize_output_value(attr_key, frame_values[attr_key])
+            for attr_key in offload_keys
+            if attr_key in frame_values
+        }
 
     def _parallel_has_usable_values_for_graph_frame(self, graph_key: str, frame_index: int) -> bool:
-        """Return True when Stage-B has usable data for *graph_key* at *frame_index*.
-
-        "Usable" means either fresh values for the current frame or non-empty
-        last-valid values still inside the stale reuse window.
-        """
+        """Return True when Stage-B has exact-frame data for *graph_key*."""
         key = str(graph_key or "")
         frame_map = dict(self._parallel_results.get(key, {}) or {})
-        if dict(frame_map.get(int(frame_index), {}) or {}):
-            return True
-
-        last_vals = dict(self._parallel_last_valid.get(key, {}) or {})
-        if not last_vals:
-            return False
-
-        last_frame = int(self._parallel_last_valid_frame.get(key, -10_000_000) or -10_000_000)
-        fps_now = max(float(self._current_scene_fps), 1.0)
-        stale_window_frames = max(1, int(self._PARALLEL_STALE_REUSE_MS * fps_now / 1000.0 + 0.5))
-        return (int(frame_index) - last_frame) <= stale_window_frames
+        return bool(dict(frame_map.get(int(frame_index), {}) or {}))
 
     def compile(self, abstract_tree: ACEAbstractTree, blender_scene):
         """Build one ACEAudioGraph per audio source from the abstract tree.
@@ -3954,6 +3984,191 @@ class ACEAudioEngine:
         return sorted(discovered, key=lambda rec: str(rec.frontend_ref.uid or ""))
 
     @staticmethod
+    def _frontend_discovery_signature(rec: _ACEFrontendDiscovery) -> tuple[Any, ...]:
+        frontend_ref = getattr(rec, "frontend_ref", None)
+        return (
+            str(getattr(frontend_ref, "uid", "") or ""),
+            str(getattr(frontend_ref, "kind", "") or ""),
+            str(getattr(frontend_ref, "tree_name", "") or ""),
+            str(getattr(frontend_ref, "tree_bl_idname", "") or ""),
+            int(getattr(frontend_ref, "tree_ptr", 0) or 0),
+            tuple(str(v) for v in tuple(getattr(frontend_ref, "owner_keys", ()) or ()) if str(v)),
+            str(getattr(frontend_ref, "material_name", "") or ""),
+            tuple(str(v) for v in tuple(getattr(rec, "consumer_object_names", ()) or ()) if str(v)),
+        )
+
+    def _build_partial_tree_for_frontend(
+        self,
+        frontend: _ACEFrontendDiscovery,
+        scene,
+        reserved_node_ids: set[str],
+    ) -> ACEAbstractTree:
+        tree = frontend.tree
+        frontend_uid = str(frontend.frontend_ref.uid or "")
+        frontend_kind = str(frontend.frontend_ref.kind or "")
+        if frontend_kind == FRONTEND_KIND_SHADER:
+            from ..nodes.shader_tree import ACEShaderTreeReader
+            reader = ACEShaderTreeReader(
+                tree,
+                frontend_uid=frontend_uid,
+                frontend_kind=frontend_kind,
+                reserved_node_ids=reserved_node_ids,
+                consumer_keys=frontend.consumer_object_names,
+            )
+        else:
+            reader = ACEDummyTreeReader(
+                tree,
+                frontend_uid=frontend_uid,
+                frontend_kind=frontend_kind,
+                reserved_node_ids=reserved_node_ids,
+                consumer_keys=frontend.consumer_object_names,
+            )
+
+        partial_tree = reader.build()
+        changed = False
+        changed_node_ids: set[str] = set()
+        try:
+            if frontend_kind == FRONTEND_KIND_SHADER:
+                changed, changed_node_ids = self._sync_shader_output_ids(tree, partial_tree, scene)
+            else:
+                changed, changed_node_ids = self._sync_auto_attr_ids(tree, partial_tree, scene)
+        except Exception:
+            changed = False
+            changed_node_ids = set()
+        if changed:
+            self._refresh_abstract_attr_params_from_tree(partial_tree, tree, changed_node_ids)
+        self._refresh_consumer_intents_from_nodes(partial_tree)
+        partial_tree.frontends[frontend_uid] = frontend.frontend_ref
+        return partial_tree
+
+    def _compile_discovered_frontends(
+        self,
+        scene,
+        frontends: list[_ACEFrontendDiscovery],
+        preferred_tree=None,
+        *,
+        force_full_rebuild: bool = False,
+        dirty_frontend_uids: Optional[set[str]] = None,
+    ) -> bool:
+        utils.assert_main_thread("_compile_discovered_frontends")
+        frontends = list(frontends or [])
+        self._last_frontend_membership_signature = self._frontend_membership_signature(frontends)
+        has_shader_frontends = any(
+            str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+            for rec in frontends
+        )
+        if has_shader_frontends and not self._structural_tree_writes_allowed(
+            scene,
+            tree=preferred_tree,
+            frontend_kind=FRONTEND_KIND_SHADER,
+        ):
+            target_tree = preferred_tree
+            if str(getattr(target_tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                target_tree = next(
+                    (
+                        rec.tree
+                        for rec in frontends
+                        if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
+                    ),
+                    None,
+                )
+            self.request_recompile(target_tree)
+            self._log_runtime(
+                "shader_tree_preview_deferred",
+                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
+                "WARNING",
+                min_interval=5.0,
+            )
+            return False
+
+        sources = list(getattr(getattr(scene, "audiocore", None), "audio_sources", []) or [])
+        for source in sources:
+            try:
+                ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
+            except Exception:
+                pass
+
+        dirty_uids = {str(v) for v in set(dirty_frontend_uids or set()) if str(v)}
+        rebuild_all = bool(
+            force_full_rebuild
+            or self._pending_scene_rebuild
+            or not self._frontend_partial_tree_cache
+        )
+        reused_partials: Dict[str, ACEAbstractTree] = {}
+        if not rebuild_all:
+            for frontend in frontends:
+                frontend_uid = str(frontend.frontend_ref.uid or "")
+                if not frontend_uid or frontend_uid in dirty_uids:
+                    continue
+                cached_tree = self._frontend_partial_tree_cache.get(frontend_uid)
+                cached_sig = self._frontend_partial_tree_signatures.get(frontend_uid)
+                current_sig = self._frontend_discovery_signature(frontend)
+                if cached_tree is not None and cached_sig == current_sig:
+                    reused_partials[frontend_uid] = cached_tree
+
+        reserved_node_ids: set[str] = set()
+        for partial_tree in reused_partials.values():
+            reserved_node_ids.update(str(node_id) for node_id in dict(getattr(partial_tree, "nodes", {}) or {}).keys())
+
+        merged_tree = ACEAbstractTree()
+        try:
+            for frontend in frontends:
+                frontend_uid = str(frontend.frontend_ref.uid or "")
+                if not frontend_uid:
+                    continue
+                partial_tree = reused_partials.get(frontend_uid)
+                if partial_tree is None:
+                    partial_tree = self._build_partial_tree_for_frontend(frontend, scene, reserved_node_ids)
+                    self._frontend_partial_tree_cache[frontend_uid] = partial_tree
+                    self._frontend_partial_tree_signatures[frontend_uid] = self._frontend_discovery_signature(frontend)
+                reserved_node_ids.update(str(node_id) for node_id in dict(getattr(partial_tree, "nodes", {}) or {}).keys())
+                merged_tree.merge_from(partial_tree)
+        except ValueError:
+            if not force_full_rebuild:
+                return self._compile_discovered_frontends(
+                    scene,
+                    frontends,
+                    preferred_tree=preferred_tree,
+                    force_full_rebuild=True,
+                    dirty_frontend_uids=dirty_uids,
+                )
+            raise
+
+        active_uids = {
+            str(getattr(getattr(rec, "frontend_ref", None), "uid", "") or "")
+            for rec in frontends
+            if str(getattr(getattr(rec, "frontend_ref", None), "uid", "") or "")
+        }
+        for stale_uid in [
+            uid for uid in list(self._frontend_partial_tree_cache.keys()) if uid not in active_uids
+        ]:
+            self._frontend_partial_tree_cache.pop(stale_uid, None)
+            self._frontend_partial_tree_signatures.pop(stale_uid, None)
+
+        self.compile(merged_tree, scene)
+        self._compiled_frontend_refs.clear()
+        self._compiled_frontend_snapshots = {
+            rec.frontend_ref.uid: self._compiled_snapshot_from_discovery(rec)
+            for rec in frontends
+        }
+        self._compiled_frontend_ptrs = {
+            rec.frontend_ref.uid: int(self._node_tree_pointer(rec.tree))
+            for rec in frontends
+            if rec.tree is not None
+        }
+        self._compiled_frontend_uids = tuple(rec.frontend_ref.uid for rec in frontends)
+        self._compiled_frontend_discoveries = list(frontends)
+        resolved_preferred_tree = preferred_tree or (frontends[0].tree if frontends else None)
+        self._compiled_tree_ref = None
+        self._compiled_tree_ptr = self._node_tree_pointer(resolved_preferred_tree) if resolved_preferred_tree else 0
+        self._compiled_tree_frontend_uid = self._tree_frontend_uid(resolved_preferred_tree)
+        self._compiled_tree_bl_idname = str(getattr(resolved_preferred_tree, "bl_idname", "") or "")
+        self._pending_scene_rebuild = False
+        self._dirty_frontend_uids.clear()
+        self._geometry_metric_token_cache.clear()
+        return True
+
+    @staticmethod
     def _is_output_node(node: ACEAbstractNode) -> bool:
         return bool(
             node
@@ -4324,6 +4539,50 @@ class ACEAudioEngine:
                 )
         self._rebuild_graph_execution_order(graph)
 
+    @staticmethod
+    def _compute_sink_layout_signature(graph: ACEAudioGraph) -> str:
+        signature_rows: list[tuple[str, str, str, str, str]] = []
+        for attr_key in sorted(str(v) for v in list(getattr(graph, "output_attr_keys", []) or []) if str(v)):
+            bindings = list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or [])
+            for binding in sorted(
+                bindings,
+                key=lambda item: (
+                    str(getattr(item, "sink_kind", "") or ""),
+                    str(getattr(item, "target_object_name", "") or ""),
+                    str(getattr(item, "target_data_name", "") or ""),
+                    str(getattr(item, "attr_type", "") or ""),
+                ),
+            ):
+                signature_rows.append(
+                    (
+                        attr_key,
+                        str(getattr(binding, "sink_kind", "") or ""),
+                        str(getattr(binding, "target_object_name", "") or ""),
+                        str(getattr(binding, "target_data_name", "") or ""),
+                        str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"),
+                    )
+                )
+        payload = json.dumps(signature_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.blake2b(payload, digest_size=12).hexdigest()
+
+    def _ensure_graph_sink_layout(
+        self,
+        graph: ACEAudioGraph,
+        graph_key: str,
+        *,
+        prune_existing: bool,
+    ) -> set[str]:
+        if self.writer is None:
+            return set()
+        touched = self.writer.ensure_sink_layout(
+            graph,
+            active_keys=set(graph.output_attr_keys),
+            prune_existing=bool(prune_existing),
+        )
+        self._attr_schema_dirty.discard(graph_key)
+        self._last_attr_sync_frame[graph_key] = int(self.current_frame)
+        return set(str(v) for v in set(touched or set()) if str(v))
+
     def _finalize_compiled_graph(
         self,
         graph: ACEAudioGraph,
@@ -4454,12 +4713,33 @@ class ACEAudioEngine:
         self._prepare_parallel_graph_ir(graph, abstract_tree)
         graph_store_key = str(getattr(graph, "source_uid", "") or self._parallel_graph_uid(graph))
         self.graphs[graph_store_key] = graph
-        self._attr_schema_dirty.add(graph_store_key)
+        graph.sink_layout_signature = self._compute_sink_layout_signature(graph)
+        prior_layout_signature = str(self._sink_layout_signatures.get(graph_store_key, "") or "")
+        layout_signature_changed = graph.sink_layout_signature != prior_layout_signature
+        self._sink_layout_signatures[graph_store_key] = graph.sink_layout_signature
+        graph.parallel_local_only = False
+        self._parallel_clear_graph_degradation(graph_store_key)
+        self._parallel_clear_graph_degradation(str(getattr(graph, "parallel_graph_uid", "") or ""))
+
+        if layout_signature_changed:
+            self._attr_schema_dirty.add(graph_store_key)
 
         if sink_writes_allowed:
             try:
-                self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
-                self._last_attr_sync_frame[graph_store_key] = int(self.current_frame)
+                needs_layout_sync = bool(layout_signature_changed)
+                if not needs_layout_sync:
+                    needs_layout_sync = bool(
+                        self.writer.sink_layout_needs_sync(
+                            graph,
+                            active_keys=set(graph.output_attr_keys),
+                        )
+                    )
+                if needs_layout_sync:
+                    self._ensure_graph_sink_layout(
+                        graph,
+                        graph_store_key,
+                        prune_existing=bool(layout_signature_changed),
+                    )
             except Exception:
                 pass
 
@@ -5165,7 +5445,8 @@ class ACEAudioEngine:
         try:
             from ..nodes.shader_tree import ACEShaderNodeFactory as _ACEShaderNodeFactory
             shader_factory = _ACEShaderNodeFactory
-        except Exception:
+        except Exception as _sf_err:
+            utils.log(f"ACEShaderNodeFactory import failed: {_sf_err}", "WARNING")
             shader_factory = None
         if shader_factory is not None and not shader_tree_mutations_unsafe:
             try:
@@ -5293,8 +5574,8 @@ class ACEAudioEngine:
                     ):
                         changed = True
                         changed_node_ids.add(str(abs_node.id))
-                except Exception:
-                    pass
+                except Exception as _sync_err:
+                    utils.log(f"sync_node_instance_group_bindings failed for {abs_node.id}: {_sync_err}", "WARNING")
             # Write resolved attr names into abstract tree params so that
             # _emit_consumer_intents / _resolve_sink_data_name use the same
             # names that were set on the companion ShaderNodeAttribute helpers.
@@ -5326,6 +5607,8 @@ class ACEAudioEngine:
                 return AudioMathTask(node.id, node.parameters, block_size)
             if typ == 'util_rolling_avg':
                 return RollingAvgTask(node.id, node.parameters, block_size)
+            if typ == 'util_smooth_operator':
+                return SmoothOperatorTask(node.id, node.parameters, block_size)
             if typ == 'stream_accumulator':
                 return StreamAccumulatorTask(node.id, node.parameters, block_size)
             if typ == 'logic':
@@ -5362,6 +5645,8 @@ class ACEAudioEngine:
                 return StereoWidthTask(node.id, node.parameters, block_size)
             if typ == 'stereo_balance':
                 return StereoBalanceTask(node.id, node.parameters, block_size)
+            if typ == 'loudness':
+                return UnifiedLoudnessTask(node.id, node.parameters, block_size)
 
         return ACEAudioTask(node.id, node.parameters, block_size)
 
@@ -5623,6 +5908,9 @@ class ACEAudioEngine:
         self._last_tree_signature = None
         self._attr_schema_dirty.clear()
         self._last_attr_sync_frame.clear()
+        self._parallel_graph_miss_frames.clear()
+        self._parallel_local_only_graphs.clear()
+        self._parallel_force_local_until = 0.0
         self._source_specs_task_registry.clear()
         self.writer = None
         self._preview_last_chunk = None
@@ -5707,106 +5995,12 @@ class ACEAudioEngine:
             return
 
         frontends = self.discover_scene_frontends(scene)
-        self._last_frontend_membership_signature = self._frontend_membership_signature(frontends)
-        has_shader_frontends = any(
-            str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
-            for rec in (frontends or [])
-        )
-        if has_shader_frontends and not self._structural_tree_writes_allowed(
+        self._compile_discovered_frontends(
             scene,
-            tree=preferred_tree,
-            frontend_kind=FRONTEND_KIND_SHADER,
-        ):
-            target_tree = preferred_tree
-            if str(getattr(target_tree, "bl_idname", "") or "") != "ShaderNodeTree":
-                target_tree = next(
-                    (
-                        rec.tree
-                        for rec in (frontends or [])
-                        if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
-                    ),
-                    None,
-                )
-            self.request_recompile(target_tree)
-            self._log_runtime(
-                "shader_tree_preview_deferred",
-                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
-                "WARNING",
-                min_interval=5.0,
-            )
-            return
-        sources = list(getattr(getattr(scene, "audiocore", None), "audio_sources", []) or [])
-        # Shader driver bindings need concrete proxy object names before the
-        # frontend sync stage; ensure proxies are materialized up-front.
-        for source in sources:
-            try:
-                ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
-            except Exception:
-                pass
-        reserved_node_ids: set[str] = set()
-        merged_tree = ACEAbstractTree()
-
-        for frontend in frontends:
-            tree = frontend.tree
-            frontend_uid = str(frontend.frontend_ref.uid or "")
-            frontend_kind = str(frontend.frontend_ref.kind or "")
-            if not tree or not frontend_uid:
-                continue
-
-            if frontend_kind == FRONTEND_KIND_SHADER:
-                from ..nodes.shader_tree import ACEShaderTreeReader
-                reader = ACEShaderTreeReader(
-                    tree,
-                    frontend_uid=frontend_uid,
-                    frontend_kind=frontend_kind,
-                    reserved_node_ids=reserved_node_ids,
-                    consumer_keys=frontend.consumer_object_names,
-                )
-            else:
-                reader = ACEDummyTreeReader(
-                    tree,
-                    frontend_uid=frontend_uid,
-                    frontend_kind=frontend_kind,
-                    reserved_node_ids=reserved_node_ids,
-                    consumer_keys=frontend.consumer_object_names,
-                )
-
-            partial_tree = reader.build()
-            changed = False
-            changed_node_ids: set[str] = set()
-            try:
-                if frontend_kind == FRONTEND_KIND_SHADER:
-                    changed, changed_node_ids = self._sync_shader_output_ids(tree, partial_tree, scene)
-                else:
-                    changed, changed_node_ids = self._sync_auto_attr_ids(tree, partial_tree, scene)
-            except Exception:
-                changed = False
-                changed_node_ids = set()
-            if changed:
-                self._refresh_abstract_attr_params_from_tree(partial_tree, tree, changed_node_ids)
-            self._refresh_consumer_intents_from_nodes(partial_tree)
-            partial_tree.frontends[frontend_uid] = frontend.frontend_ref
-            merged_tree.merge_from(partial_tree)
-
-        self.compile(merged_tree, scene)
-        self._compiled_frontend_refs.clear()
-        self._compiled_frontend_snapshots = {
-            rec.frontend_ref.uid: self._compiled_snapshot_from_discovery(rec)
-            for rec in frontends
-        }
-        self._compiled_frontend_ptrs = {
-            rec.frontend_ref.uid: int(self._node_tree_pointer(rec.tree))
-            for rec in frontends
-            if rec.tree is not None
-        }
-        self._compiled_frontend_uids = tuple(rec.frontend_ref.uid for rec in frontends)
-        resolved_preferred_tree = preferred_tree or (frontends[0].tree if frontends else None)
-        self._compiled_tree_ref = None
-        self._compiled_tree_ptr = self._node_tree_pointer(resolved_preferred_tree) if resolved_preferred_tree else 0
-        self._compiled_tree_frontend_uid = self._tree_frontend_uid(resolved_preferred_tree)
-        self._compiled_tree_bl_idname = str(getattr(resolved_preferred_tree, "bl_idname", "") or "")
-        self._pending_scene_rebuild = False
-        self._dirty_frontend_uids.clear()
+            frontends,
+            preferred_tree=preferred_tree,
+            force_full_rebuild=True,
+        )
 
     def compile_from_blender_tree(
         self,
@@ -6039,10 +6233,14 @@ class ACEAudioEngine:
 
     @classmethod
     def _unsafe_for_shader_tree_mutations(cls, scene) -> bool:
-        """Avoid structural ShaderNodeTree edits during renders and live preview."""
-        if cls._unsafe_for_handler_writes(scene):
-            return True
-        return cls._is_shader_viewport_preview_active()
+        """Avoid structural ShaderNodeTree edits during active render jobs.
+
+        Viewport Material Preview / Rendered shading is safe — Cycles re-syncs
+        the shader tree every frame anyway.  Only a full F12 render without
+        use_lock_interface is truly unsafe (RNA mutations would race the render
+        thread).
+        """
+        return cls._unsafe_for_handler_writes(scene)
 
     @staticmethod
     def _is_animation_playing() -> bool:
@@ -6313,13 +6511,17 @@ class ACEAudioEngine:
         if self._undo_recovery_active():
             return False
         now = time.time()
-        discovered_frontends = self.discover_scene_frontends(scene)
+        cached_frontends = list(getattr(self, "_compiled_frontend_discoveries", []) or [])
+        membership_changed = False
+        discovered_frontends = list(cached_frontends)
+        if self._pending_scene_rebuild or not discovered_frontends:
+            discovered_frontends = self.discover_scene_frontends(scene)
+            membership_sig = self._frontend_membership_signature(discovered_frontends)
+            membership_changed = membership_sig != getattr(self, "_last_frontend_membership_signature", ())
         discovered_by_uid = {
             str(rec.frontend_ref.uid or ""): rec
             for rec in (discovered_frontends or [])
         }
-        membership_sig = self._frontend_membership_signature(discovered_frontends)
-        membership_changed = membership_sig != getattr(self, "_last_frontend_membership_signature", ())
         if not self._dirty_frontend_uids and not self._pending_scene_rebuild and not membership_changed:
             return False
         shader_frontend_uids = {
@@ -6373,6 +6575,8 @@ class ACEAudioEngine:
                 tree_ptr=int(getattr(self, "_pending_tree_ptr", 0) or 0),
                 tree_bl_idname=str(getattr(self, "_pending_tree_bl_idname", "") or ""),
             )
+        dirty_frontend_uids = {str(uid) for uid in (self._dirty_frontend_uids or set()) if str(uid)}
+        force_full_rebuild = bool(self._pending_scene_rebuild or membership_changed)
         self._pending_tree = None
         self._pending_tree_ptr = 0
         self._pending_tree_bl_idname = ""
@@ -6383,8 +6587,15 @@ class ACEAudioEngine:
         self._is_compiling = True
         compiled = False
         try:
-            self.compile_scene_frontends(scene, preferred_tree=preferred_tree)
-            compiled = True
+            compiled = bool(
+                self._compile_discovered_frontends(
+                    scene,
+                    discovered_frontends,
+                    preferred_tree=preferred_tree,
+                    force_full_rebuild=force_full_rebuild,
+                    dirty_frontend_uids=dirty_frontend_uids,
+                )
+            )
         finally:
             self._is_compiling = False
             self._first_dirty_time = 0.0  # reset after compile
@@ -6762,10 +6973,17 @@ class ACEAudioEngine:
                         self._rebuild_graph_output_slot_specs(graph)
                         if self.abstract_tree_ref is not None:
                             self._prepare_parallel_graph_ir(graph, self.abstract_tree_ref)
+                        graph.sink_layout_signature = self._compute_sink_layout_signature(graph)
+                        self._sink_layout_signatures[graph_key] = graph.sink_layout_signature
+                        self._attr_schema_dirty.add(graph_key)
                         if stage_c_writes_allowed:
                             try:
                                 t0 = time.perf_counter()
-                                touched = self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
+                                touched = self._ensure_graph_sink_layout(
+                                    graph,
+                                    graph_key,
+                                    prune_existing=False,
+                                )
                                 self._perf_add("proxy_write", time.perf_counter() - t0)
                                 if isinstance(touched, set):
                                     geometry_proxy_names.update({str(v) for v in touched if str(v)})
@@ -6788,25 +7006,32 @@ class ACEAudioEngine:
                         )
                         continue
 
-                # Dirty-flag resync: sync immediately after compile, then fall back to
-                # the interval only if the dirty set is somehow absent (defensive).
                 schema_dirty = graph_key in self._attr_schema_dirty
-                if not schema_dirty:
-                    last_sync = self._last_attr_sync_frame.get(graph_key, -10_000_000)
-                    schema_dirty = (self.current_frame - last_sync) >= self._ATTR_RESYNC_INTERVAL_FRAMES
-                if schema_dirty:
+                layout_missing = False
+                if not schema_dirty and stage_c_writes_allowed:
+                    try:
+                        layout_missing = bool(
+                            self.writer.sink_layout_needs_sync(
+                                graph,
+                                active_keys=set(graph.output_attr_keys),
+                            )
+                        )
+                    except Exception:
+                        layout_missing = False
+                if schema_dirty or layout_missing:
                     if stage_c_writes_allowed:
                         try:
                             t0 = time.perf_counter()
-                            touched = self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
+                            touched = self._ensure_graph_sink_layout(
+                                graph,
+                                graph_key,
+                                prune_existing=bool(schema_dirty),
+                            )
                             self._perf_add("proxy_write", time.perf_counter() - t0)
                             if isinstance(touched, set):
                                 geometry_proxy_names.update({str(v) for v in touched if str(v)})
                         except Exception as e:
                             self._log_runtime(f"attr_ensure:{graph_key}", f"Attribute ensure failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
-                        else:
-                            self._attr_schema_dirty.discard(graph_key)
-                            self._last_attr_sync_frame[graph_key] = int(self.current_frame)
 
                 baked_results = self._get_baked_frame_results(graph, self.current_frame)
                 if baked_results is not None:
@@ -6859,9 +7084,16 @@ class ACEAudioEngine:
                     and bool(getattr(graph, "parallel_ir", {}))
                     and bool(getattr(graph, "parallel_offload_attr_keys", []))
                 )
+                parallel_force_local = self._parallel_force_local_active()
+                parallel_local_only = bool(
+                    graph.parallel_local_only
+                    or parallel_graph_key in self._parallel_local_only_graphs
+                )
                 parallel_submit_enabled = (
                     parallel_offload_graph
                     and parallel_pool_ready
+                    and not parallel_force_local
+                    and not parallel_local_only
                     and parallel_graph_key not in self._parallel_disabled_sources
                 )
 
@@ -6909,15 +7141,38 @@ class ACEAudioEngine:
                         parallel_submit_enabled = False
 
                 if parallel_offload_graph:
-                    # Stage B: asynchronous numeric DSP worker path (fresh -> stale -> zero).
+                    # Stage B: exact-frame worker contract. Commit only exact
+                    # worker values for the current frame, otherwise fall back
+                    # to synchronous local evaluation for the same frame.
                     local_keys = list(getattr(graph, "parallel_local_attr_keys", []) or [])
-                    results = self._collect_graph_results_for_frame(graph, self.current_frame, attr_keys=local_keys)
-                    parallel_values = self._parallel_values_for_graph_frame(
-                        graph=graph,
-                        graph_key=parallel_graph_key,
-                        frame_index=int(self.current_frame),
-                    )
-                    results.update(parallel_values)
+                    offload_keys = list(getattr(graph, "parallel_offload_attr_keys", []) or [])
+                    if parallel_force_local or parallel_local_only:
+                        results = self._collect_graph_results_for_frame(graph, self.current_frame)
+                    elif not parallel_submit_enabled:
+                        self._parallel_record_exact_miss(graph, parallel_graph_key, int(self.current_frame))
+                        self._parallel_sync_fallbacks += 1
+                        results = self._collect_graph_results_for_frame(graph, self.current_frame)
+                    else:
+                        results = self._collect_graph_results_for_frame(graph, self.current_frame, attr_keys=local_keys)
+                        self._parallel_poll_futures(scene, current_frame=int(self.current_frame))
+                        parallel_values = self._parallel_values_for_graph_frame(
+                            graph=graph,
+                            graph_key=parallel_graph_key,
+                            frame_index=int(self.current_frame),
+                        )
+                        if parallel_values and len(parallel_values) == len(offload_keys):
+                            self._parallel_exact_frame_hits += 1
+                            self._parallel_clear_graph_degradation(parallel_graph_key)
+                            results.update(parallel_values)
+                        else:
+                            self._parallel_record_exact_miss(graph, parallel_graph_key, int(self.current_frame))
+                            self._parallel_sync_fallbacks += 1
+                            fallback_values = self._collect_graph_results_for_frame(
+                                graph,
+                                self.current_frame,
+                                attr_keys=offload_keys,
+                            )
+                            results.update(fallback_values)
                 else:
                     results = self._collect_graph_results_for_frame(graph, self.current_frame)
 
@@ -7523,75 +7778,7 @@ def depsgraph_update_handler(scene, depsgraph):
         seen_targets.add(key)
         recompile_targets.append(tree_obj)
 
-    compiled_frontend_snapshots = dict(getattr(engine, "_compiled_frontend_snapshots", {}) or {})
-    discovered_frontends = None
     scene_rebuild_requested = False
-
-    def _compiled_object_signature(obj_name: str) -> tuple[tuple[str, str, int], ...]:
-        name_token = str(obj_name or "")
-        if not name_token:
-            return ()
-        signature: list[tuple[str, str, int]] = []
-        for frontend_uid, frontend_snapshot in compiled_frontend_snapshots.items():
-            owners = {
-                str(v)
-                for v in tuple(getattr(frontend_snapshot, "owner_keys", ()) or ())
-                if str(v)
-            }
-            kind = str(getattr(frontend_snapshot, "kind", "") or "")
-            if kind == FRONTEND_KIND_GEOMETRY:
-                if any(owner.startswith(f"{name_token}:") for owner in owners):
-                    signature.append(
-                        (
-                            str(frontend_uid or ""),
-                            kind,
-                            int(getattr(frontend_snapshot, "tree_ptr", 0) or 0),
-                        )
-                    )
-            elif kind == FRONTEND_KIND_SHADER and name_token in owners:
-                signature.append(
-                    (
-                        str(frontend_uid or ""),
-                        kind,
-                        int(getattr(frontend_snapshot, "tree_ptr", 0) or 0),
-                    )
-                )
-        return tuple(sorted(set(signature)))
-
-    def _discovered_object_signature(obj_name: str) -> tuple[tuple[str, str, int], ...]:
-        nonlocal discovered_frontends
-        name_token = str(obj_name or "")
-        if not name_token:
-            return ()
-        if discovered_frontends is None:
-            discovered_frontends = list(engine.discover_scene_frontends(scene) or [])
-        signature: list[tuple[str, str, int]] = []
-        for rec in discovered_frontends:
-            frontend_ref = getattr(rec, "frontend_ref", None)
-            owners = {
-                str(v)
-                for v in tuple(getattr(frontend_ref, "owner_keys", ()) or ())
-                if str(v)
-            }
-            kind = str(getattr(frontend_ref, "kind", "") or "")
-            if kind == FRONTEND_KIND_GEOMETRY:
-                if any(owner.startswith(f"{name_token}:") for owner in owners):
-                    signature.append(
-                        (
-                            str(getattr(frontend_ref, "uid", "") or ""),
-                            kind,
-                            int(getattr(frontend_ref, "tree_ptr", 0) or 0),
-                        )
-                    )
-            elif kind == FRONTEND_KIND_SHADER and name_token in owners:
-                signature.append(
-                    (
-                        str(getattr(frontend_ref, "uid", "") or ""),
-                        kind,
-                        int(getattr(frontend_ref, "tree_ptr", 0) or 0),
-                    )
-                )
-        return tuple(sorted(set(signature)))
 
     for update in getattr(depsgraph, "updates", []):
         _id = getattr(update, "id", None)
@@ -7620,10 +7807,8 @@ def depsgraph_update_handler(scene, depsgraph):
             ):
                 continue
 
-            obj_name = str(getattr(obj, "name", "") or "")
-            if obj_name and compiled_frontend_snapshots:
-                if _compiled_object_signature(obj_name) != _discovered_object_signature(obj_name):
-                    scene_rebuild_requested = True
+            if _update_touches_ace_tree(obj):
+                scene_rebuild_requested = True
 
     if scene_rebuild_requested:
         engine.request_recompile(None)

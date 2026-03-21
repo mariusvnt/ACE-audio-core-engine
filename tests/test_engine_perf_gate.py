@@ -14,8 +14,9 @@ from engine_perf_harness import (
     ENGINE_PERF_SLA_SAMPLE_RATE_HZ,
     ENGINE_PERF_STRICT_DSP_RATIO_MAX,
     ENGINE_PERF_STRICT_DSP_SCENARIOS,
-    ENGINE_PERF_STRICT_FRESH_RESULT_RATE_MIN,
+    ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN,
     ENGINE_PERF_STRICT_QUEUE_DROP_RATE_MAX,
+    ENGINE_PERF_STRICT_SYNC_FALLBACK_RATE_MAX,
     generate_engine_perf_report,
 )
 
@@ -105,11 +106,6 @@ class TestEnginePerfGate(unittest.TestCase):
             proc = dict(scenarios[sid].get("processes_dsp", {}) or {})
             rt = dict(proc.get("realtime", {}) or {})
             self.assertLessEqual(
-                float(rt.get("parallel_job_timeouts", 0.0) or 0.0),
-                0.0,
-                msg=f"Parallel timeouts detected sid={sid}",
-            )
-            self.assertLessEqual(
                 float(rt.get("parallel_job_exceptions", 0.0) or 0.0),
                 0.0,
                 msg=f"Parallel exceptions detected sid={sid}",
@@ -123,13 +119,22 @@ class TestEnginePerfGate(unittest.TestCase):
                     f"{queue_drop_rate:.3f} > {float(ENGINE_PERF_STRICT_QUEUE_DROP_RATE_MAX):.3f}"
                 ),
             )
-            fresh_result_rate = float(rt.get("parallel_fresh_result_rate", 0.0) or 0.0)
+            fresh_result_rate = float(rt.get("parallel_exact_frame_hit_rate", 0.0) or 0.0)
             self.assertGreaterEqual(
                 fresh_result_rate,
-                float(ENGINE_PERF_STRICT_FRESH_RESULT_RATE_MIN),
+                float(ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN),
                 msg=(
-                    f"Parallel fresh-result rate too low sid={sid}: "
-                    f"{fresh_result_rate:.3f} < {float(ENGINE_PERF_STRICT_FRESH_RESULT_RATE_MIN):.3f}"
+                    f"Parallel exact-frame hit rate too low sid={sid}: "
+                    f"{fresh_result_rate:.3f} < {float(ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN):.3f}"
+                ),
+            )
+            sync_fallback_rate = float(rt.get("parallel_sync_fallback_rate", 0.0) or 0.0)
+            self.assertLessEqual(
+                sync_fallback_rate,
+                float(ENGINE_PERF_STRICT_SYNC_FALLBACK_RATE_MAX),
+                msg=(
+                    f"Parallel sync-fallback rate too high sid={sid}: "
+                    f"{sync_fallback_rate:.3f} > {float(ENGINE_PERF_STRICT_SYNC_FALLBACK_RATE_MAX):.3f}"
                 ),
             )
 

@@ -262,7 +262,12 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
     def _engine_shell(self):
         engine = object.__new__(self.engine_mod.ACEAudioEngine)
-        engine.writer = types.SimpleNamespace(output_defs={})
+        engine.writer = types.SimpleNamespace(
+            output_defs={},
+            sink_layout_needs_sync=lambda *_args, **_kwargs: False,
+            ensure_sink_layout=lambda *_args, **_kwargs: set(),
+            commit_results=lambda *_args, **_kwargs: set(),
+        )
         engine.graphs = {}
         engine.current_frame = 0
         engine.last_scene_frame = -1
@@ -277,6 +282,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._dirty_tree_ptrs = set()
         engine._dirty_tree_bl_idnames = {}
         engine._dirty_frontend_uids = set()
+        engine._frontend_partial_tree_cache = {}
+        engine._frontend_partial_tree_signatures = {}
         engine._compiled_tree_ref = None
         engine._compiled_tree_ptr = 0
         engine._compiled_tree_frontend_uid = ""
@@ -285,6 +292,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._compiled_frontend_snapshots = {}
         engine._compiled_frontend_ptrs = {}
         engine._compiled_frontend_uids = ()
+        engine._compiled_frontend_discoveries = []
         engine._last_frontend_membership_signature = ()
         engine._is_compiling = False
         engine._meta_cache = {}
@@ -308,6 +316,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._parallel_last_valid = {}
         engine._parallel_last_valid_frame = {}
         engine._parallel_failures = {}
+        engine._parallel_graph_miss_frames = {}
+        engine._parallel_local_only_graphs = set()
+        engine._parallel_force_local_until = 0.0
         engine._parallel_disabled_sources = set()
         engine._parallel_graph_ir_required = set()
         engine._parallel_payload_slots = {}
@@ -320,6 +331,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._parallel_executor = None
         engine._parallel_pool_failed = False
         engine._parallel_last_submit_frame = -1
+        engine._parallel_queue_pressure_drops = 0
+        engine._parallel_job_exceptions = 0
+        engine._parallel_stale_job_drops = 0
+        engine._parallel_late_result_drops = 0
+        engine._parallel_result_accepts = 0
+        engine._parallel_exact_frame_hits = 0
+        engine._parallel_exact_frame_misses = 0
+        engine._parallel_sync_fallbacks = 0
         engine._preview_last_chunk = None
         engine._preview_last_eval_frame = -1
         engine._preview_next_eval_ts = 0.0
@@ -332,6 +351,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._probe_thread_lock = threading.Lock()
         engine._attr_schema_dirty = set()
         engine._last_attr_sync_frame = {}
+        engine._sink_layout_signatures = {}
+        engine._geometry_metric_token_cache = {}
         engine.scene_key = 0
         engine.scene_name = ""
         engine.undo_generation = 0
@@ -1665,24 +1686,49 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
         self.assertTrue(engine._parallel_has_usable_values_for_graph_frame("graph_a", 24))
 
-    def test_parallel_usable_values_accepts_recent_last_valid_cache(self):
+    def test_parallel_usable_values_rejects_missing_exact_frame_cache(self):
         engine = self._engine_shell()
         engine._parallel_results = {"graph_a": {}}
-        engine._parallel_last_valid = {"graph_a": {"node:0": 0.42}}
-        engine._parallel_last_valid_frame = {"graph_a": 100}
-        engine._current_scene_fps = 30.0
-
-        self.assertTrue(engine._parallel_has_usable_values_for_graph_frame("graph_a", 102))
+        self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_a", 102))
 
     def test_parallel_usable_values_rejects_stale_or_empty_cache(self):
         engine = self._engine_shell()
         engine._parallel_results = {"graph_a": {}}
-        engine._parallel_last_valid = {"graph_a": {"node:0": 0.42}}
-        engine._parallel_last_valid_frame = {"graph_a": 100}
-        engine._current_scene_fps = 30.0
 
         self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_a", 104))
         self.assertFalse(engine._parallel_has_usable_values_for_graph_frame("graph_missing", 104))
+
+    def test_parallel_values_require_complete_exact_frame_results(self):
+        engine = self._engine_shell()
+        graph = self.tasks_mod.ACEAudioGraph(None, "ACE_PROXY")
+        graph.parallel_offload_attr_keys = ["node:0", "node:1"]
+        engine._parallel_results = {"graph_a": {12: {"node:0": 0.5}}}
+
+        self.assertEqual(
+            engine._parallel_values_for_graph_frame(graph, "graph_a", 12),
+            {},
+        )
+
+        engine._parallel_results = {"graph_a": {12: {"node:0": 0.5, "node:1": 0.25}}}
+        self.assertEqual(
+            engine._parallel_values_for_graph_frame(graph, "graph_a", 12),
+            {"node:0": 0.5, "node:1": 0.25},
+        )
+
+    def test_parallel_exact_miss_degrades_graph_to_local_only(self):
+        engine = self._engine_shell()
+        graph = self.tasks_mod.ACEAudioGraph(None, "ACE_PROXY")
+        graph.parallel_graph_uid = "graph_a"
+
+        engine._parallel_record_exact_miss(graph, "graph_a", 10)
+        engine._parallel_record_exact_miss(graph, "graph_a", 20)
+        self.assertFalse(graph.parallel_local_only)
+
+        engine._parallel_record_exact_miss(graph, "graph_a", 30)
+
+        self.assertTrue(graph.parallel_local_only)
+        self.assertIn("graph_a", engine._parallel_local_only_graphs)
+        self.assertEqual(engine._parallel_exact_frame_misses, 3)
 
     def test_compile_builds_explicit_mixed_graph_for_cross_source_audio_math(self):
         engine = self._engine_shell()

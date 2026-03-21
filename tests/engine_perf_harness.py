@@ -24,7 +24,8 @@ ENGINE_PERF_WARMUP_FRAMES = 24
 ENGINE_PERF_STRICT_DSP_RATIO_MAX = 1.10
 ENGINE_PERF_STRICT_DSP_SCENARIOS = (24, 36, 50)
 ENGINE_PERF_STRICT_QUEUE_DROP_RATE_MAX = 0.03
-ENGINE_PERF_STRICT_FRESH_RESULT_RATE_MIN = 0.90
+ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN = 0.90
+ENGINE_PERF_STRICT_SYNC_FALLBACK_RATE_MAX = 0.02
 ENGINE_PERF_DEFAULT_FRAME_PACE_HZ = 60.0
 ENGINE_PERF_DEFAULT_DRAIN_TIMEOUT_S = 2.0
 ENGINE_PERF_SLA_SAMPLE_RATE_HZ = 96000
@@ -75,10 +76,10 @@ def engine_perf_contract() -> Dict[str, Any]:
         "strict_gate": {
             "dsp_p95_ratio_max": float(ENGINE_PERF_STRICT_DSP_RATIO_MAX),
             "dsp_ratio_scenarios": [int(v) for v in ENGINE_PERF_STRICT_DSP_SCENARIOS],
-            "parallel_timeouts_max": 0.0,
             "parallel_exceptions_max": 0.0,
             "parallel_queue_drop_rate_max": float(ENGINE_PERF_STRICT_QUEUE_DROP_RATE_MAX),
-            "parallel_fresh_result_rate_min": float(ENGINE_PERF_STRICT_FRESH_RESULT_RATE_MIN),
+            "parallel_exact_frame_hit_rate_min": float(ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN),
+            "parallel_sync_fallback_rate_max": float(ENGINE_PERF_STRICT_SYNC_FALLBACK_RATE_MAX),
         },
         "sla_topology": {
             "sample_rate_hz": int(ENGINE_PERF_SLA_SAMPLE_RATE_HZ),
@@ -208,7 +209,10 @@ def _install_engine_import_stubs():
         def update_proxy_object(self, _proxy, _results, active_keys=None):  # noqa: ARG002
             return None
 
-        def ensure_sink_layout(self, _graph, active_keys=None):  # noqa: ARG002
+        def sink_layout_needs_sync(self, _graph, active_keys=None):  # noqa: ARG002
+            return False
+
+        def ensure_sink_layout(self, _graph, active_keys=None, prune_existing=True):  # noqa: ARG002
             return set()
 
         def commit_results(self, _graph, _results, active_keys=None):  # noqa: ARG002
@@ -315,7 +319,10 @@ class _WriterStub:
     def update_proxy_object(self, _proxy, results, active_keys=None):  # noqa: ARG002
         self._last = dict(results or {})
 
-    def ensure_sink_layout(self, _graph, active_keys=None):  # noqa: ARG002
+    def sink_layout_needs_sync(self, _graph, active_keys=None):  # noqa: ARG002
+        return False
+
+    def ensure_sink_layout(self, _graph, active_keys=None, prune_existing=True):  # noqa: ARG002
         return set()
 
     def commit_results(self, _graph, results, active_keys=None):  # noqa: ARG002
@@ -860,28 +867,39 @@ def _run_engine_benchmark(
         completed_results = float(completion_counters["done"])
         accepted_results = float(diag.get("parallel_result_accepts", 0.0) or 0.0)
         queue_drops = float(diag.get("parallel_queue_pressure_drops", 0.0) or 0.0)
+        exact_hits = float(diag.get("parallel_exact_frame_hits", 0.0) or 0.0)
+        exact_misses = float(diag.get("parallel_exact_frame_misses", 0.0) or 0.0)
+        sync_fallbacks = float(diag.get("parallel_sync_fallbacks", 0.0) or 0.0)
+        exact_total = exact_hits + exact_misses
         queue_drop_rate = (
             float(queue_drops / submit_attempts)
             if submit_attempts > 0.0
             else 0.0
         )
-        fresh_rate = (
-            float(completed_results / submit_success)
-            if (mode == "processes_dsp" and submit_success > 0.0)
-            else (
-                float(fresh_results / result_requests)
-                if result_requests > 0.0
-                else 1.0
-            )
+        exact_hit_rate = (
+            float(exact_hits / exact_total)
+            if (mode == "processes_dsp" and exact_total > 0.0)
+            else 1.0
+        )
+        sync_fallback_rate = (
+            float(sync_fallbacks / exact_total)
+            if (mode == "processes_dsp" and exact_total > 0.0)
+            else 0.0
         )
         result = {
             "stages": perf,
             "realtime": {
-                "parallel_job_timeouts": float(diag.get("parallel_job_timeouts", 0.0) or 0.0),
                 "parallel_job_exceptions": float(diag.get("parallel_job_exceptions", 0.0) or 0.0),
                 "parallel_pool_restarts": float(diag.get("parallel_pool_restarts", 0.0) or 0.0),
                 "parallel_queue_pressure_drops": queue_drops,
                 "parallel_queue_drop_rate": float(queue_drop_rate),
+                "parallel_late_result_drops": float(diag.get("parallel_late_result_drops", 0.0) or 0.0),
+                "parallel_exact_frame_hits": exact_hits,
+                "parallel_exact_frame_misses": exact_misses,
+                "parallel_exact_frame_hit_rate": float(exact_hit_rate),
+                "parallel_sync_fallbacks": sync_fallbacks,
+                "parallel_sync_fallback_rate": float(sync_fallback_rate),
+                "parallel_local_only_graphs": float(diag.get("parallel_local_only_graphs", 0.0) or 0.0),
                 "parallel_disabled_sources": float(diag.get("parallel_disabled_sources", 0.0) or 0.0),
                 "parallel_submit_attempts": submit_attempts,
                 "parallel_submit_success": submit_success,
@@ -890,7 +908,6 @@ def _run_engine_benchmark(
                 "parallel_fresh_results": fresh_results,
                 "parallel_completed_results": completed_results,
                 "parallel_accepted_results": accepted_results,
-                "parallel_fresh_result_rate": float(fresh_rate),
             },
             "parallel_meta": {
                 "parallel_offload_attr_count": float(len(getattr(graph, "parallel_offload_attr_keys", []) or [])),

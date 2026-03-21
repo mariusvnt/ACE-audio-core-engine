@@ -3925,6 +3925,7 @@ class LUFSTask(ACEAudioTask):
         self._samples_since_update: int = 0
         self._last_lufs: float = 0.0
         self._last_frame_request: Optional[int] = None
+        self._last_source_signature: Tuple[Any, ...] = ()
 
     def _reset_temporal_state(self):
         self._weighted_energy = np.zeros(0, dtype=np.float64)
@@ -4105,7 +4106,19 @@ class LUFSTask(ACEAudioTask):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
         last_frame = self._last_frame_request
-        if last_frame is not None and frame_idx >= 0 and frame_idx < int(last_frame):
+        source_signature = (
+            int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE),
+            tuple(getattr(chunk, "lineage", ()) or ()),
+        )
+        reset_temporal = False
+        if last_frame is not None and frame_idx >= 0:
+            if frame_idx < int(last_frame):
+                reset_temporal = True
+            elif frame_idx > int(last_frame) + 1:
+                reset_temporal = True
+        if self._last_source_signature and source_signature != self._last_source_signature:
+            reset_temporal = True
+        if reset_temporal:
             self._reset_temporal_state()
             self._reset_filter_state()
 
@@ -4166,6 +4179,7 @@ class LUFSTask(ACEAudioTask):
 
         if frame_idx >= 0:
             self._last_frame_request = frame_idx
+        self._last_source_signature = source_signature
         return float(self._last_lufs)
 
 
@@ -4213,6 +4227,41 @@ class PeakTask(LUFSTask):
         if frame_idx >= 0:
             self._last_frame_request = frame_idx
         return float(self._last_peak)
+
+
+class UnifiedLoudnessTask(ACEAudioTask):
+    """Unified loudness operator that delegates to RMS, LUFS, or Peak based on method.
+
+    The active measure method is read from ``parameters["measure_method"]``
+    (default ``"RMS"``).  All three sub-tasks are kept alive so that switching
+    methods preserves their internal filter state across the change.
+
+    Output socket is always named ``"Loudness"`` regardless of method.
+    """
+
+    def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
+        super().__init__(node_id, parameters, block_size)
+        self._rms_task = RMSTask(node_id, parameters, block_size)
+        self._lufs_task = LUFSTask(node_id, parameters, block_size)
+        self._peak_task = PeakTask(node_id, parameters, block_size)
+
+    def process(self, inputs):
+        method = str(self.parameters.get("measure_method", "RMS") or "RMS").upper()
+        if method == "LUFS":
+            result = self._lufs_task.process(inputs)
+            if isinstance(result, dict):
+                return float(next(iter(result.values()), 0.0))
+            return float(result if result is not None else 0.0)
+        if method == "PEAK":
+            result = self._peak_task.process(inputs)
+            if isinstance(result, dict):
+                return float(next(iter(result.values()), 0.0))
+            return float(result if result is not None else 0.0)
+        # Default: RMS
+        result = self._rms_task.process(inputs)
+        if isinstance(result, dict):
+            return float(next(iter(result.values()), 0.0))
+        return float(result if result is not None else 0.0)
 
 
 class PitchTask(ACEAudioTask):
@@ -5114,6 +5163,53 @@ class RollingAvgTask(ACEAudioTask):
         return float(np.mean(self._buffer))
 
 
+class SmoothOperatorTask(ACEAudioTask):
+    """Per-sample attack/release envelope follower.
+
+    Applies asymmetric smoothing: a fast attack coefficient when the absolute
+    value of the input is rising, and a slower release coefficient when it is
+    falling.  Time constants are expressed in scene frames so the response is
+    independent of the DSP block size.
+
+    Coefficients are derived as: c = exp(-1 / max(time_frames, 1e-6)).
+    """
+
+    def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
+        super().__init__(node_id, parameters, block_size)
+        self._smoothed: float = 0.0
+
+    def process(self, inputs):
+        raw_value = inputs.get(0)
+        if raw_value is None:
+            raw_value = self.parameters.get("in_0", 0.0)
+        try:
+            val = float(raw_value)
+        except (TypeError, ValueError):
+            val = 0.0
+
+        raw_attack = inputs.get(1)
+        if raw_attack is None:
+            raw_attack = self.parameters.get("in_1", 1.0)
+        try:
+            attack_f = max(float(raw_attack), 1e-6)
+        except (TypeError, ValueError):
+            attack_f = 1.0
+
+        raw_release = inputs.get(2)
+        if raw_release is None:
+            raw_release = self.parameters.get("in_2", 1.0)
+        try:
+            release_f = max(float(raw_release), 1e-6)
+        except (TypeError, ValueError):
+            release_f = 1.0
+
+        attack_c = math.exp(-1.0 / attack_f)
+        release_c = math.exp(-1.0 / release_f)
+        c = attack_c if abs(val) > abs(self._smoothed) else release_c
+        self._smoothed = c * self._smoothed + (1.0 - c) * val
+        return self._smoothed
+
+
 class StreamAccumulatorTask(ACEAudioTask):
     """Running sum utility for scalar or vector stream values.
 
@@ -5536,12 +5632,14 @@ class ACEAudioGraph:
         self.tasks: Dict[str, ACEAudioTask] = {}
         self.output_attr_keys: List[str] = []
         self.sink_bindings_by_attr: Dict[str, List["ACESinkBinding"]] = {}
+        self.sink_layout_signature: str = ""
         self.parallel_graph_uid: str = ""
         self.parallel_ir: Dict[str, Any] = {}
         self.parallel_ir_digest: str = ""
         self.parallel_offload_attr_keys: List[str] = []
         self.parallel_output_shards: List[List[str]] = []
         self.parallel_local_attr_keys: List[str] = []
+        self.parallel_local_only: bool = False
         self.manual_preview_task_ids: List[str] = []
         self.auto_preview_task_ids: List[str] = []
         self.auto_preview_passthrough_specs: List[Tuple[str, int]] = []
