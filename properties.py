@@ -554,7 +554,6 @@ class ACEProjectSettings(bpy.types.PropertyGroup):
     
     # Sub-Properties
     engine_settings: bpy.props.PointerProperty(type=ACEEngineSettings)                                                              # type: ignore
-    gn_target_object: bpy.props.PointerProperty(type=bpy.types.Object, name="GN Target Object")                                     # type: ignore
     
     # Legacy project-level mode retained for backward compatibility with
     # older .blend data. Source type is now chosen per source.

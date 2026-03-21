@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 import types
@@ -981,7 +982,311 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertIsNone(calls[0]["attr_names_by_idx"])
         self.assertEqual(shader_node.inputs[0].default_value, "ACE_manual_attr")
 
-    def test_shader_helper_layout_groups_helper_under_owner_in_frame(self):
+    def test_geometry_output_ids_use_source_roots_in_multi_source_scenes(self):
+        engine = self._engine_shell()
+        geometry_node = _FakeAttrNode(
+            "node_geo",
+            input_names=["Attribute ID"],
+            output_names=["RMS"],
+        )
+        geometry_tree = _FakeTree("ACE Geo", "GeometryNodeTree", 601)
+        geometry_tree.nodes = [geometry_node]
+        geometry_node.id_data = geometry_tree
+        source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
+        source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
+        scene = types.SimpleNamespace(
+            audiocore=types.SimpleNamespace(audio_sources=[source_a, source_b])
+        )
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "node_geo": self.abs_mod.ACEAbstractNode(
+                    id="node_geo",
+                    name="Geo RMS",
+                    category="stream",
+                    type="rms",
+                    root_sources={"src_b"},
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="node_geo_out_0",
+                            name="RMS",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            }
+        )
+
+        changed, changed_node_ids = engine._sync_auto_attr_ids(geometry_tree, abstract_tree, scene)
+
+        expected_topology = json.dumps(["src_b"]) + "|[]"
+        expected_name = engine._build_auto_attr_name(
+            "ACE_PROXY_b",
+            "node_geo",
+            "RMS",
+            0,
+            topology_sig=expected_topology,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(changed_node_ids, {"node_geo"})
+        self.assertEqual(geometry_node.inputs[0].default_value, expected_name)
+        self.assertEqual(geometry_node.get("ace_auto_attr_topology_json"), expected_topology)
+        self.assertEqual(abstract_tree.nodes["node_geo"].parameters["attr_id_out_0"], expected_name)
+        self.assertFalse(abstract_tree.nodes["node_geo"].parameters["attr_id_custom_out_0"])
+
+    def test_geometry_logic_output_ids_resolve_and_bind_to_proxy_attributes(self):
+        engine = self._engine_shell()
+        geometry_node = _FakeAttrNode(
+            "logic_node",
+            input_names=["Attribute ID"],
+            output_names=["Logic"],
+        )
+        geometry_tree = _FakeTree("ACE Geo", "GeometryNodeTree", 602)
+        geometry_tree.nodes = [geometry_node]
+        geometry_node.id_data = geometry_tree
+        source = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
+        scene = types.SimpleNamespace(
+            audiocore=types.SimpleNamespace(audio_sources=[source])
+        )
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "logic_node": self.abs_mod.ACEAbstractNode(
+                    id="logic_node",
+                    name="Logic",
+                    category="utilities",
+                    type="logic",
+                    root_sources={"src_a"},
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="logic_node_out_0",
+                            name="Logic",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            },
+            consumer_intents=[
+                self.abs_mod.ACEConsumerIntent(
+                    frontend_uid="frontend_gn",
+                    node_id="logic_node",
+                    socket_idx=0,
+                    sink_kind="PROXY_ATTRIBUTE",
+                    source_token="src_a",
+                    output_name="Logic",
+                )
+            ],
+        )
+
+        changed, changed_node_ids = engine._sync_auto_attr_ids(geometry_tree, abstract_tree, scene)
+        engine.writer.output_defs = {
+            "logic_node:0": {
+                "node_id": "logic_node",
+                "socket_idx": 0,
+                "type": "FLOAT",
+                "output_name": "Logic",
+                "attr_id": abstract_tree.nodes["logic_node"].parameters["attr_id_out_0"],
+                "attr_custom": False,
+            }
+        }
+        graph = types.SimpleNamespace(output_attr_keys=["logic_node:0"], is_mixed=False, source_alias_to_proxy={})
+        bindings = engine._resolve_sink_bindings_for_graph(
+            graph,
+            abstract_tree,
+            source_uid="src_a",
+            proxy_name="ACE_PROXY_a",
+            single_source_mode=True,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(changed_node_ids, {"logic_node"})
+        self.assertTrue(geometry_node.inputs[0].default_value.startswith("ACE_"))
+        self.assertEqual(len(bindings["logic_node:0"]), 1)
+        self.assertEqual(bindings["logic_node:0"][0].sink_kind, "PROXY_ATTRIBUTE")
+        self.assertEqual(bindings["logic_node:0"][0].target_object_name, "ACE_PROXY_a")
+        self.assertEqual(
+            bindings["logic_node:0"][0].target_data_name,
+            abstract_tree.nodes["logic_node"].parameters["attr_id_out_0"],
+        )
+
+    def test_geometry_output_ids_preserve_existing_name_when_proxy_is_unresolved(self):
+        engine = self._engine_shell()
+        geometry_node = _FakeAttrNode(
+            "node_geo",
+            input_names=["Attribute ID"],
+            output_names=["Peak"],
+        )
+        geometry_node.inputs[0].default_value = "ACE_existing_attr"
+        geometry_tree = _FakeTree("ACE Geo", "GeometryNodeTree", 603)
+        geometry_tree.nodes = [geometry_node]
+        geometry_node.id_data = geometry_tree
+        source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
+        source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
+        scene = types.SimpleNamespace(
+            audiocore=types.SimpleNamespace(audio_sources=[source_a, source_b])
+        )
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "node_geo": self.abs_mod.ACEAbstractNode(
+                    id="node_geo",
+                    name="Geo Peak",
+                    category="stream",
+                    type="peak",
+                    root_sources=set(),
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="node_geo_out_0",
+                            name="Peak",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            }
+        )
+
+        changed, changed_node_ids = engine._sync_auto_attr_ids(geometry_tree, abstract_tree, scene)
+
+        self.assertFalse(changed)
+        self.assertEqual(changed_node_ids, set())
+        self.assertEqual(geometry_node.inputs[0].default_value, "ACE_existing_attr")
+        self.assertEqual(abstract_tree.nodes["node_geo"].parameters["attr_id_out_0"], "ACE_existing_attr")
+
+    def test_geometry_splitter_to_stream_outputs_keep_canonical_attr_ids(self):
+        engine = self._engine_shell()
+        geometry_node = _FakeAttrNode(
+            "flux_node",
+            input_names=["Attribute ID"],
+            output_names=["Flux"],
+        )
+        geometry_tree = _FakeTree("ACE Geo", "GeometryNodeTree", 604)
+        geometry_tree.nodes = [geometry_node]
+        geometry_node.id_data = geometry_tree
+        source = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
+        scene = types.SimpleNamespace(
+            audiocore=types.SimpleNamespace(audio_sources=[source])
+        )
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "splitter_node": self.abs_mod.ACEAbstractNode(
+                    id="splitter_node",
+                    name="Splitter",
+                    category="delta",
+                    type="frequency_splitter",
+                    root_sources={"src_a"},
+                ),
+                "flux_node": self.abs_mod.ACEAbstractNode(
+                    id="flux_node",
+                    name="Flux",
+                    category="stream",
+                    type="spectral_flux",
+                    root_sources={"src_a"},
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="flux_node_out_0",
+                            name="Flux",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                ),
+            },
+            links=[
+                self.abs_mod.ACEAbstractLink(
+                    source_node_id="splitter_node",
+                    target_node_id="flux_node",
+                    source_socket_idx=0,
+                    target_socket_idx=0,
+                )
+            ],
+        )
+
+        changed, changed_node_ids = engine._sync_auto_attr_ids(geometry_tree, abstract_tree, scene)
+
+        self.assertTrue(changed)
+        self.assertEqual(changed_node_ids, {"flux_node"})
+        self.assertTrue(geometry_node.inputs[0].default_value.startswith("ACE_"))
+        self.assertEqual(
+            abstract_tree.nodes["flux_node"].parameters["attr_id_out_0"],
+            geometry_node.inputs[0].default_value,
+        )
+
+    def test_logic_explicit_name_contract_flows_from_node_to_sink_binding(self):
+        engine = self._engine_shell()
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "logic_node": self.abs_mod.ACEAbstractNode(
+                    id="logic_node",
+                    name="Logic",
+                    category="utilities",
+                    type="logic",
+                    parameters={"attr_id_out_0": "ACE_logic_contract"},
+                    root_sources={"src_a"},
+                    frontend_uid="frontend_shader",
+                    frontend_kind="SHADER_NODES",
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="logic_node_out_0",
+                            name="Logic",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            },
+            frontends={
+                "frontend_shader": self.abs_mod.ACEFrontendRef(
+                    uid="frontend_shader",
+                    kind="SHADER_NODES",
+                    tree_name="Shader",
+                    tree_bl_idname="ShaderNodeTree",
+                    owner_keys=("Cube",),
+                    material_name="ACE Mat",
+                    tree_ptr=22,
+                )
+            },
+            consumer_intents=[
+                self.abs_mod.ACEConsumerIntent(
+                    frontend_uid="frontend_shader",
+                    node_id="logic_node",
+                    socket_idx=0,
+                    sink_kind="OBJECT_PROPERTY",
+                    source_token="src_a",
+                    consumer_keys=("Cube",),
+                    output_name="Logic",
+                )
+            ],
+        )
+
+        engine._refresh_consumer_intents_from_nodes(abstract_tree)
+        engine.writer.output_defs = {
+            "logic_node:0": {
+                "node_id": "logic_node",
+                "socket_idx": 0,
+                "type": "FLOAT",
+                "output_name": "Logic",
+                "attr_id": "ACE_logic_contract",
+                "attr_custom": False,
+            }
+        }
+        graph = types.SimpleNamespace(output_attr_keys=["logic_node:0"], is_mixed=False, source_alias_to_proxy={})
+        bindings = engine._resolve_sink_bindings_for_graph(
+            graph,
+            abstract_tree,
+            source_uid="src_a",
+            proxy_name="ACE_PROXY_a",
+            single_source_mode=False,
+        )
+
+        self.assertEqual(abstract_tree.consumer_intents[0].explicit_name, "ACE_logic_contract")
+        self.assertEqual(bindings["logic_node:0"][0].target_data_name, "ACE_logic_contract")
+
+    def test_shader_helper_layout_places_helper_above_owner_without_frame(self):
         ace_id = self.idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[])
         tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1501)
         owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
@@ -998,13 +1303,10 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
 
         self.assertTrue(changed)
-        self.assertIsNotNone(owner.parent)
-        self.assertIs(owner.parent, helper.parent)
-        self.assertEqual(owner.parent.bl_idname, "NodeFrame")
-        self.assertEqual(owner.parent.get("ace_shader_helper_frame_owner"), ace_id)
-        self.assertTrue(owner.parent.shrink)
-        self.assertEqual(owner.location, (0.0, 0.0))
-        self.assertEqual(helper.location, (0.0, -146.0))
+        self.assertIsNone(owner.parent)
+        self.assertIsNone(helper.parent)
+        self.assertEqual(owner.location, (140.0, 320.0))
+        self.assertEqual(helper.location, (140.0, 174.0))
         self.assertTrue(helper.hide)
         self.assertEqual(helper.width_hidden, 150.0)
 
@@ -1014,7 +1316,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
         owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
         tree.nodes.append(owner)
         helper_frame = tree.nodes.new("NodeFrame")
-        helper_frame["ace_shader_helper_frame_owner"] = ace_id
 
         changed = self.shader_tree_mod.ACEShaderNodeFactory.cleanup_tree_helper_nodes(tree)
 

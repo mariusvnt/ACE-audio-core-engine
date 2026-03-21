@@ -108,7 +108,7 @@ Owner: audio_engine.py — compile_scene_frontends(), invoked from main thread o
 
 Discovers all managed scene frontends (Geometry Nodes modifiers and object-bound shader materials).
 
-Synchronizes managed source placeholders in every Geometry Nodes frontend.
+Discovers user-authored ACE source groups from visible editors and scene frontends without creating placeholder nodes.
 
 Reads each frontend via ACEDummyTreeReader or ACEShaderTreeReader.
 
@@ -116,7 +116,7 @@ Synchronizes auto-generated sink IDs per frontend and refreshes abstract paramet
 
 Merges partial frontend IR into one scene-scoped ACEAbstractTree.
 
-Compiles one ACEAudioGraph per source (topological sort, task instantiation).
+Compiles source-scoped audio graphs plus mixed-source subgraphs when a branch explicitly merges multiple roots.
 
 Serializes each graph into a compact parallel IR (integer/float dictionaries, no Python objects) via _prepare_parallel_graph_ir().
 

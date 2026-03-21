@@ -232,12 +232,6 @@ class ACE_OT_add_audio_sources_from_files(bpy.types.Operator, ImportHelper):
             self._create_proxy(context, new_source)
             
         ace.active_audio_source_index = len(ace.audio_sources) - 1
-        sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
-        if sonar_obj and not getattr(ace, "gn_target_object", None):
-            try:
-                ace.gn_target_object = sonar_obj
-            except Exception:
-                pass
         return {'FINISHED'}
 
     def _create_proxy(self, context, source):
@@ -278,12 +272,6 @@ class ACE_OT_add_audio_source(bpy.types.Operator):
         
         # Create Proxy (hidden + locked transforms)
         ACEProxyManager.ensure_proxy_for_source(new_source, scene=context.scene)
-        sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
-        if sonar_obj and not getattr(ace, "gn_target_object", None):
-            try:
-                ace.gn_target_object = sonar_obj
-            except Exception:
-                pass
             
         ace.active_audio_source_index = len(ace.audio_sources) - 1
         return {'FINISHED'}
@@ -319,17 +307,6 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
         if ace.active_audio_source_index >= len(ace.audio_sources):
             ace.active_audio_source_index = max(0, len(ace.audio_sources) - 1)
 
-        sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
-        if not ace.audio_sources and getattr(ace, "gn_target_object", None) and getattr(ace.gn_target_object, "name", "") == ACEProxyManager.SONAR_OBJECT_NAME:
-            try:
-                ace.gn_target_object = None
-            except Exception:
-                pass
-        elif sonar_obj and not getattr(ace, "gn_target_object", None):
-            try:
-                ace.gn_target_object = sonar_obj
-            except Exception:
-                pass
         engine = ACEAudioEngine.get_instance(context.scene)
         if engine:
             # Eagerly release the bake cache for this source so its SHM/disk
@@ -692,57 +669,6 @@ class ACE_OT_refresh_stream_list(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class ACE_OT_set_target_object(bpy.types.Operator):
-    """Assign the GN target object used for ACE processing."""
-    bl_idname = "audiocore.set_target_object"
-    bl_label = "Set Target Object"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    target: bpy.props.EnumProperty(  # type: ignore
-        name="Target",
-        items=[
-            ('ACTIVE', "Active Object", "Use the current active object"),
-            ('SONAR', "ACE Sonar", "Use the ACE_Sonar object"),
-        ],
-        default='ACTIVE',
-    )
-
-    @classmethod
-    def poll(cls, context):
-        scene = getattr(context, "scene", None)
-        ace = getattr(scene, "audiocore", None)
-        if not ace:
-            return False
-        if getattr(context, "active_object", None) is not None:
-            return True
-        if bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME) is not None:
-            return True
-        return bool(getattr(ace, "audio_sources", None))
-
-    def execute(self, context):
-        ace = getattr(context.scene, "audiocore", None)
-        if not ace:
-            self.report({'ERROR'}, "AudioCore settings unavailable.")
-            return {'CANCELLED'}
-
-        target_obj = None
-        if self.target == 'ACTIVE':
-            target_obj = getattr(context, "active_object", None)
-        else:
-            target_obj = ACEProxyManager.ensure_sonar_setup(context.scene, getattr(ace, "audio_sources", []))
-
-        if not target_obj:
-            self.report({'ERROR'}, "No suitable target object.")
-            return {'CANCELLED'}
-
-        try:
-            ace.gn_target_object = target_obj
-        except Exception:
-            self.report({'ERROR'}, "Could not assign target object.")
-            return {'CANCELLED'}
-        return {'FINISHED'}
-
-
 class ACE_OT_toggle_preview_sink(bpy.types.Operator):
     """Enable/disable branch audio preview on the selected Audio Preview node."""
     bl_idname = "ace.toggle_preview_sink"
@@ -911,7 +837,6 @@ classes = (
     ACE_OT_set_audio_math_op,
     ACE_OT_detect_source_tempo_meter,
     ACE_OT_refresh_stream_list,
-    ACE_OT_set_target_object,
     ACE_OT_toggle_preview_sink,
     ACE_OT_bake_active_source,
 )

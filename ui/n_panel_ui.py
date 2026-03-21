@@ -195,9 +195,6 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
             the N-panel active-node list so it tracks editor context.
     """
     scene = getattr(context, "scene", None)
-    ace = getattr(scene, "audiocore", None)
-    target_obj = getattr(ace, "gn_target_object", None) if ace else None
-
     def _is_supported_tree(tree):
         return str(getattr(tree, "bl_idname", "") or "") in {'GeometryNodeTree', 'ShaderNodeTree'}
 
@@ -292,34 +289,12 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
         if fallback is None and tree_fallback is not None:
             fallback = tree_fallback
 
-    if target_obj:
-        tree, tree_fallback = _tree_from_object_materials(target_obj)
-        if tree is not None:
-            return tree
-        if fallback is None and tree_fallback is not None:
-            fallback = tree_fallback
-        tree, tree_fallback = _tree_from_object_modifiers(target_obj)
-        if tree is not None:
-            return tree
-        if fallback is None and tree_fallback is not None:
-            fallback = tree_fallback
-
     if obj:
         tree, tree_fallback = _tree_from_object_modifiers(obj)
         if tree is not None:
             return tree
         if fallback is None and tree_fallback is not None:
             fallback = tree_fallback
-
-    # Fallback: try ACE_Sonar object if present
-    sonar = bpy.data.objects.get("ACE_Sonar")
-    if sonar:
-        for mod in getattr(sonar, "modifiers", []) or []:
-            if getattr(mod, "type", None) == 'NODES' and getattr(mod, "node_group", None):
-                tree = mod.node_group
-                chosen = _consider_tree(tree)
-                if chosen is not None:
-                    return chosen
     if fallback is None and scene is not None:
         for scene_obj in getattr(scene, "objects", []) or []:
             tree, tree_fallback = _tree_from_object_materials(scene_obj)

@@ -3,8 +3,38 @@ Structure of the 'AbstractTree' object, which is an abstract representation of
 scene frontends.
 """
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
+
+
+WRITEABLE_OUTPUT_UTILITY_NODE_TYPES = frozenset({
+    "src_specs",
+    "util_rolling_avg",
+    "stream_accumulator",
+    "logic",
+})
+
+
+def ace_node_type_is_writeable_output(category: str, node_type: str) -> bool:
+    category_str = str(category or "")
+    node_type_str = str(node_type or "")
+    return bool(
+        category_str == "stream"
+        or (
+            category_str == "utilities"
+            and node_type_str in WRITEABLE_OUTPUT_UTILITY_NODE_TYPES
+        )
+    )
+
+
+def ace_node_is_writeable_output(node) -> bool:
+    if node is None:
+        return False
+    return ace_node_type_is_writeable_output(
+        getattr(node, "category", ""),
+        getattr(node, "type", ""),
+    )
 
 @dataclass
 class ACEAbstractSocket:
@@ -107,7 +137,6 @@ class ACEAbstractTree:
 
     def to_dict(self):
         """Helper to serialize the tree for sending to the backend."""
-        import dataclasses
         return dataclasses.asdict(self)
         
     def add_node(self, node: ACEAbstractNode):

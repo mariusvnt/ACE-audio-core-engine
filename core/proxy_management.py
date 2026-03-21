@@ -5,8 +5,8 @@ import numpy as np
 from typing import Dict, Set, Any
 
 from .id_management import ACEIdManager
-from .abstract_tree import ACEAbstractTree
-from ..nodes.dummy_tree import ACEDummyNodeFactory, ensure_frontend_uid, FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER
+from .abstract_tree import ACEAbstractTree, ace_node_is_writeable_output
+from ..nodes.dummy_tree import ensure_frontend_uid, FRONTEND_KIND_SHADER
 from .. import utils
 
 class ACEProxyManager:
@@ -24,11 +24,6 @@ class ACEProxyManager:
 
     # "Pro" name for the invisible collection
     COLLECTION_NAME = "ACE_Internals"
-    SONAR_OBJECT_NAME = "ACE_Sonar"
-    SONAR_MODIFIER_NAME = "ACE_Sonar_Mod"
-    SONAR_TREE_NAME = "ACE_Sonar_Tree"
-    SONAR_SHADER_MATERIAL_NAME = "ACE_Sonar_Material"
-    _MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA = False
 
     def __init__(self, abstract_tree: ACEAbstractTree | None = None):
         self.abstract_tree = abstract_tree
@@ -269,8 +264,7 @@ class ACEProxyManager:
     def _cache_output_defs(self):
         """Precompute attribute slugs and Blender data types for all writeable outputs.
 
-        Iterates over stream, source_specs, util_rolling_avg, and stream_accumulator
-        nodes in the abstract tree.
+        Iterates over all writeable output nodes in the abstract tree.
         For each non-bundle output socket, builds a dict entry keyed by
         ``"<node_id>:<socket_idx>"`` containing the derived attribute name slug,
         Blender attribute type, and any user-supplied Attribute ID overrides.
@@ -281,11 +275,7 @@ class ACEProxyManager:
             return
 
         for node in self.abstract_tree.nodes.values():
-            is_stream = node.category == 'stream'
-            is_source_specs = node.type == 'src_specs' and node.category == 'utilities'
-            is_rolling_avg = node.type == 'util_rolling_avg' and node.category == 'utilities'
-            is_stream_accumulator = node.type == 'stream_accumulator' and node.category == 'utilities'
-            if not (is_stream or is_source_specs or is_rolling_avg or is_stream_accumulator):
+            if not ace_node_is_writeable_output(node):
                 continue
 
             for sock in node.outputs:
@@ -334,9 +324,9 @@ class ACEProxyManager:
     def _select_attr_name(self, proxy_name: str, info: Dict[str, Any]) -> str:
         """Choose the mesh attribute name for a given output definition.
 
-        When the user has explicitly set a custom Attribute ID on the node socket,
+        When the resolved Attribute ID is already present on the abstract node,
         that string is sanitised and returned (with the ACE prefix prepended if
-        absent).  Otherwise a compact auto-generated name is derived via
+        absent). Otherwise a compact auto-generated name is derived via
         ACEIdManager.generate_compact_attr_name().
 
         Args:
@@ -349,10 +339,9 @@ class ACEProxyManager:
         Returns:
             A Blender-compatible attribute name string (max 63 characters).
         """
-        custom = info.get("attr_id")
-        custom_is_explicit = bool(info.get("attr_custom", False))
-        if custom_is_explicit and isinstance(custom, str) and custom.strip():
-            name = custom.strip()
+        resolved_name = str(info.get("attr_id", "") or "").strip()
+        if resolved_name:
+            name = resolved_name
             if not name.startswith(ACEIdManager.PREFIX):
                 name = ACEIdManager.PREFIX + ACEIdManager._clean_string(name)
             return name[:63]
@@ -600,7 +589,7 @@ class ACEProxyManager:
             if obj is None:
                 return False
             self._object_prop_cache[object_name] = obj
-        mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
+        mirror_to_data = False
         mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
         active_prop_names: set[str] = set()
         layout_changed = False
@@ -652,7 +641,7 @@ class ACEProxyManager:
             if obj is None:
                 return False
             self._object_prop_cache[object_name] = obj
-        mirror_to_data = bool(self._MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA)
+        mirror_to_data = False
         mesh_data = self._mesh_data_idblock(obj) if mirror_to_data else None
         last_vals = self._last_object_prop_values.setdefault(object_name, {})
         changed_specs: list[tuple[str, str, Any]] = []
@@ -907,22 +896,16 @@ class ACEProxyManager:
                     vec = last_vals.get(attr_name)
                     if vec is None:
                         continue
-                    if count == 1:
-                        attr.data[0].vector = tuple(float(x) for x in vec.tolist())
-                    else:
-                        buf = self._get_write_buffer(mesh.name, attr_name, count * 3)
-                        np.copyto(buf.reshape(count, 3), vec)
-                        attr.data.foreach_set("vector", buf)
+                    buf = self._get_write_buffer(mesh.name, attr_name, count * 3)
+                    np.copyto(buf.reshape(count, 3), np.broadcast_to(vec, (count, 3)))
+                    attr.data.foreach_set("vector", buf)
                 elif dtype == 'FLOAT_COLOR':
                     col = last_vals.get(attr_name)
                     if col is None:
                         continue
-                    if count == 1:
-                        attr.data[0].color = tuple(float(x) for x in col.tolist())
-                    else:
-                        buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
-                        np.copyto(buf.reshape(count, 4), col)
-                        attr.data.foreach_set("color", buf)
+                    buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
+                    np.copyto(buf.reshape(count, 4), np.broadcast_to(col, (count, 4)))
+                    attr.data.foreach_set("color", buf)
             except Exception:
                 # Fallback to zeroing on failure
                 try:
@@ -934,453 +917,19 @@ class ACEProxyManager:
                             buf.fill(0.0)
                             attr.data.foreach_set("value", buf)
                     elif dtype == 'FLOAT_VECTOR':
-                        if count == 1:
-                            attr.data[0].vector = (0.0, 0.0, 0.0)
-                        else:
-                            buf = self._get_write_buffer(mesh.name, attr_name, count * 3)
-                            buf.fill(0.0)
-                            attr.data.foreach_set("vector", buf)
+                        buf = self._get_write_buffer(mesh.name, attr_name, count * 3)
+                        buf.fill(0.0)
+                        attr.data.foreach_set("vector", buf)
                     elif dtype == 'FLOAT_COLOR':
-                        if count == 1:
-                            attr.data[0].color = (0.0, 0.0, 0.0, 1.0)
-                        else:
-                            buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
-                            buf.fill(0.0)
-                            buf.reshape(count, 4)[:, 3] = 1.0
-                            attr.data.foreach_set("color", buf)
+                        buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
+                        buf.fill(0.0)
+                        buf.reshape(count, 4)[:, 3] = 1.0
+                        attr.data.foreach_set("color", buf)
                 except Exception:
                     pass
 
     # =========================================================================
-    # 4. SONAR OBJECT / DEFAULT TREE
-    # =========================================================================
-    @staticmethod
-    def _cube_vertices_faces(size: float = 2.0):
-        """Return vertex and face lists for an axis-aligned cube.
-
-        Args:
-            size: Full edge length of the cube.  Default is 2.0 (unit cube
-                spanning -1 to +1 on each axis).
-
-        Returns:
-            A (verts, faces) tuple where verts is a list of 8 (x, y, z) triples
-            and faces is a list of 6 quad index tuples.
-        """
-        h = size * 0.5
-        verts = [
-            (-h, -h, -h),
-            (h, -h, -h),
-            (h, h, -h),
-            (-h, h, -h),
-            (-h, -h, h),
-            (h, -h, h),
-            (h, h, h),
-            (-h, h, h),
-        ]
-        faces = [
-            (0, 1, 2, 3),
-            (4, 5, 6, 7),
-            (0, 4, 7, 3),
-            (1, 5, 6, 2),
-            (0, 1, 5, 4),
-            (3, 2, 6, 7),
-        ]
-        return verts, faces
-
-    @staticmethod
-    def _ensure_cube_mesh(mesh: bpy.types.Mesh):
-        verts, faces = ACEProxyManager._cube_vertices_faces()
-        try:
-            mesh.clear_geometry()
-        except Exception:
-            pass
-        mesh.from_pydata(verts, [], faces)
-        mesh.update()
-
-    @staticmethod
-    def ensure_sonar_setup(scene, sources):
-        """
-        Create or refresh the ACE_Sonar object and its Geometry Nodes modifier.
-        """
-        if scene is None:
-            return None
-
-        obj = bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME)
-        created = False
-        # Only create the sonar object once there is at least one source
-        if obj is None:
-            if not sources:
-                return None
-            # Create the design placeholder as a cube mesh.
-            mesh = bpy.data.meshes.new(ACEProxyManager.SONAR_OBJECT_NAME)
-            ACEProxyManager._ensure_cube_mesh(mesh)
-            obj = bpy.data.objects.new(ACEProxyManager.SONAR_OBJECT_NAME, mesh)
-            scene.collection.objects.link(obj)
-            created = True
-
-        mod = obj.modifiers.get(ACEProxyManager.SONAR_MODIFIER_NAME)
-        if mod is None or mod.type != 'NODES':
-            if mod and mod.type != 'NODES':
-                obj.modifiers.remove(mod)
-            mod = obj.modifiers.new(ACEProxyManager.SONAR_MODIFIER_NAME, 'NODES')
-
-        tree = bpy.data.node_groups.get(ACEProxyManager.SONAR_TREE_NAME)
-        if tree is None and sources:
-            tree = bpy.data.node_groups.new(ACEProxyManager.SONAR_TREE_NAME, 'GeometryNodeTree')
-        if tree is not None:
-            try:
-                tree.is_modifier = True
-            except Exception:
-                pass
-        mod.node_group = tree
-
-        if tree:
-            ACEProxyManager._sync_sonar_tree(tree, sources or [])
-        ACEProxyManager.ensure_sonar_shader_setup(scene, sources, obj=obj)
-        try:
-            ace = getattr(scene, "audiocore", None)
-            if ace and not getattr(ace, "gn_target_object", None):
-                ace.gn_target_object = obj
-        except Exception:
-            pass
-        if created:
-            try:
-                view_layer = None
-                if scene is not None:
-                    view_layers = list(getattr(scene, "view_layers", []) or [])
-                    if view_layers:
-                        view_layer = view_layers[0]
-                if view_layer is None:
-                    view_layer = getattr(getattr(bpy, "context", None), "view_layer", None)
-                if view_layer is not None:
-                    for o in view_layer.objects:
-                        try:
-                            o.select_set(False)
-                        except TypeError:
-                            o.select_set(False, view_layer=view_layer)
-                    try:
-                        obj.select_set(True)
-                    except TypeError:
-                        obj.select_set(True, view_layer=view_layer)
-                    view_layer.objects.active = obj
-            except Exception:
-                pass
-        return obj
-
-    @staticmethod
-    def ensure_sonar_shader_setup(scene, sources, obj=None):
-        """Create or refresh a managed shader frontend material on ACE_Sonar."""
-        if scene is None:
-            return None
-
-        if obj is None:
-            obj = bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME)
-        if obj is None:
-            return None
-
-        material = None
-        for slot in getattr(obj, "material_slots", []) or []:
-            slot_mat = getattr(slot, "material", None)
-            if slot_mat is None:
-                continue
-            if str(getattr(slot_mat, "name", "") or "") == ACEProxyManager.SONAR_SHADER_MATERIAL_NAME:
-                material = slot_mat
-                break
-
-        if material is None and sources:
-            material = bpy.data.materials.get(ACEProxyManager.SONAR_SHADER_MATERIAL_NAME)
-            if material is None:
-                material = bpy.data.materials.new(ACEProxyManager.SONAR_SHADER_MATERIAL_NAME)
-
-            obj_materials = getattr(getattr(obj, "data", None), "materials", None)
-            linked = False
-            if obj_materials is not None:
-                for candidate in obj_materials:
-                    if candidate == material:
-                        linked = True
-                        break
-                if not linked:
-                    try:
-                        obj_materials.append(material)
-                        linked = True
-                    except Exception:
-                        pass
-            if not linked:
-                try:
-                    obj.active_material = material
-                except Exception:
-                    pass
-
-        if material is None:
-            return None
-
-        try:
-            if not bool(getattr(material, "use_nodes", False)):
-                material.use_nodes = True
-        except Exception:
-            pass
-
-        tree = getattr(material, "node_tree", None)
-        if tree is None:
-            return None
-
-        try:
-            ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)
-        except Exception:
-            pass
-        return tree
-
-    @staticmethod
-    def _frontend_kind_for_tree(tree) -> str:
-        tree_type = str(getattr(tree, "bl_idname", "") or "")
-        if tree_type == "ShaderNodeTree":
-            return FRONTEND_KIND_SHADER
-        return FRONTEND_KIND_GEOMETRY
-
-    @staticmethod
-    def _source_group_factory_for_tree(tree):
-        frontend_kind = ACEProxyManager._frontend_kind_for_tree(tree)
-        if frontend_kind == FRONTEND_KIND_SHADER:
-            from ..nodes.shader_tree import ACEShaderNodeFactory
-            return ACEShaderNodeFactory
-        return ACEDummyNodeFactory
-
-    @staticmethod
-    def _source_group_node_type_for_tree(tree) -> str:
-        return "ShaderNodeGroup" if ACEProxyManager._frontend_kind_for_tree(tree) == FRONTEND_KIND_SHADER else "GeometryNodeGroup"
-
-    @staticmethod
-    def _managed_source_ace_id(frontend_uid: str, source_id: str, existing_ids=None) -> str:
-        return ACEIdManager.generate_node_id(
-            "source_mngmt",
-            "src",
-            existing_ids=list(existing_ids or []),
-            deterministic_seed=f"{frontend_uid}:source:{source_id}",
-        )
-
-    @staticmethod
-    def sync_managed_source_tree(tree: bpy.types.NodeTree, sources, scene=None):
-        """Sync managed ACE source placeholders in any supported top-level tree."""
-        utils.assert_main_thread("sync_managed_source_tree")
-        if tree is None:
-            return
-        if (
-            ACEProxyManager._frontend_kind_for_tree(tree) == FRONTEND_KIND_SHADER
-            and ACEProxyManager._shader_tree_writes_are_unsafe(scene)
-        ):
-            ACEProxyManager._defer_shader_tree_sync(tree, scene)
-            return
-
-        factory_cls = ACEProxyManager._source_group_factory_for_tree(tree)
-        try:
-            factory_cls.ensure_node_groups_exist()
-        except Exception:
-            pass
-
-        frontend_kind = ACEProxyManager._frontend_kind_for_tree(tree)
-        frontend_uid = ensure_frontend_uid(tree, frontend_kind, [])
-        base_group_name = factory_cls.get_group_name("source_mngmt", "src")
-        base_group = bpy.data.node_groups.get(base_group_name)
-        group_node_type = ACEProxyManager._source_group_node_type_for_tree(tree)
-
-        desired_sources: list[tuple[str, str, Any]] = []
-        existing_source_ids: list[str] = [
-            str(node.get("ace_source_id") or "")
-            for node in getattr(tree, "nodes", [])
-            if getattr(node, "get", None) and node.get("ace_source_id")
-        ]
-        for src in sources or []:
-            try:
-                src_id = ACEIdManager.ensure_source_uid(src, existing_ids=existing_source_ids)
-            except Exception:
-                src_id = getattr(src, "stable_id", "") or getattr(src, "name", "Source")
-            if src_id and src_id not in existing_source_ids:
-                existing_source_ids.append(src_id)
-            desired_sources.append((str(src_id or ""), getattr(src, "name", "Source"), src))
-
-        def _is_managed_source_node(node: bpy.types.Node) -> bool:
-            if getattr(node, "type", "") != "GROUP":
-                return False
-            try:
-                if node.get("ace_source_id"):
-                    return True
-            except Exception:
-                pass
-            ace_id = ""
-            try:
-                ace_id = str(node.get("ace_id", "") or "")
-            except Exception:
-                ace_id = ""
-            parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
-            if not parsed:
-                return False
-            if parsed.get("category") != "source_mngmt" or parsed.get("type") != "src":
-                return False
-            node_tree = getattr(node, "node_tree", None)
-            return bool(base_group and node_tree == base_group)
-
-        managed_nodes: list[bpy.types.Node] = [n for n in getattr(tree, "nodes", []) if _is_managed_source_node(n)]
-        node_by_source_id: Dict[str, bpy.types.Node] = {}
-        unassigned_nodes: list[bpy.types.Node] = []
-        duplicate_nodes: list[bpy.types.Node] = []
-        for node in managed_nodes:
-            try:
-                src_id = str(node.get("ace_source_id", "") or "")
-            except Exception:
-                src_id = ""
-            if src_id:
-                if src_id in node_by_source_id:
-                    duplicate_nodes.append(node)
-                else:
-                    node_by_source_id[src_id] = node
-            else:
-                unassigned_nodes.append(node)
-        for node in duplicate_nodes:
-            try:
-                tree.nodes.remove(node)
-            except Exception:
-                pass
-
-        desired_ids = {src_id for src_id, _src_name, _src in desired_sources if src_id}
-        for src_id, node in list(node_by_source_id.items()):
-            if src_id in desired_ids:
-                continue
-            try:
-                tree.nodes.remove(node)
-            except Exception:
-                pass
-            node_by_source_id.pop(src_id, None)
-
-        def _take_reusable() -> bpy.types.Node | None:
-            if not unassigned_nodes:
-                return None
-            return unassigned_nodes.pop(0)
-
-        existing_node_ids = [
-            str(node.get("ace_id") or "")
-            for node in getattr(tree, "nodes", [])
-            if getattr(node, "get", None) and node.get("ace_id")
-        ]
-
-        for idx, (src_id, src_name, src) in enumerate(desired_sources):
-            node = node_by_source_id.get(src_id)
-            created_node = False
-            if node is None:
-                node = _take_reusable()
-            if node is None:
-                node = tree.nodes.new(group_node_type)
-                created_node = True
-            if base_group and getattr(node, "node_tree", None) != base_group:
-                node.node_tree = base_group
-            elif not getattr(node, "node_tree", None):
-                node.node_tree = base_group
-
-            ace_id = ACEProxyManager._managed_source_ace_id(frontend_uid, src_id, existing_ids=existing_node_ids)
-            if ace_id and ace_id not in existing_node_ids:
-                existing_node_ids.append(ace_id)
-            try:
-                node["ace_id"] = ace_id
-            except Exception:
-                pass
-            try:
-                node["ace_source_id"] = src_id
-            except Exception:
-                pass
-            try:
-                node["ace_source_name"] = src_name
-            except Exception:
-                pass
-            node.label = src_name
-            node.name = src_name
-            if created_node:
-                try:
-                    node.location = (0, -220 * idx)
-                except Exception:
-                    pass
-
-            if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                try:
-                    proxy_obj = bpy.data.objects.get(getattr(src, "proxy_object_name", ""))
-                    proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-                    if proxy_obj and proxy_socket:
-                        proxy_socket.default_value = proxy_obj
-                except Exception:
-                    pass
-            elif frontend_kind == FRONTEND_KIND_SHADER:
-                try:
-                    proxy_name = str(getattr(src, "proxy_object_name", "") or "")
-                    proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-                    if proxy_socket and proxy_name:
-                        try:
-                            current = getattr(proxy_socket, "default_value", None)
-                        except Exception:
-                            current = None
-                        if isinstance(current, str):
-                            proxy_socket.default_value = proxy_name
-                except Exception:
-                    pass
-
-        for node in unassigned_nodes:
-            try:
-                tree.nodes.remove(node)
-            except Exception:
-                pass
-
-    @staticmethod
-    def _sync_sonar_tree(tree: bpy.types.NodeTree, sources):
-        """
-        Incrementally updates the sonar GN tree to include one managed ACE source
-        node per audio source without touching user processing nodes.
-        """
-        utils.assert_main_thread("_sync_sonar_tree")
-        if tree is None:
-            return
-
-        try:
-            ACEDummyNodeFactory.ensure_node_groups_exist()
-        except Exception:
-            pass
-
-        base_group_name = ACEDummyNodeFactory.get_group_name('source_mngmt', 'src')
-        base_group = bpy.data.node_groups.get(base_group_name)
-
-        # Ensure mandatory IO nodes exist
-        input_node = next((n for n in tree.nodes if n.type == 'GROUP_INPUT'), None)
-        if input_node is None:
-            input_node = tree.nodes.new('NodeGroupInput')
-            input_node.location = (-400, 0)
-        output_node = next((n for n in tree.nodes if n.type == 'GROUP_OUTPUT'), None)
-        if output_node is None:
-            output_node = tree.nodes.new('NodeGroupOutput')
-            output_node.location = (400, 0)
-
-        # Ensure default outputs exist.
-        if hasattr(tree, "interface"):
-            output_names = {
-                item.name
-                for item in tree.interface.items_tree
-                if getattr(item, "in_out", None) == 'OUTPUT'
-            }
-            if "Geometry" not in output_names:
-                try:
-                    tree.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
-                except Exception:
-                    pass
-            if "Audio" not in output_names:
-                try:
-                    tree.interface.new_socket("Audio", in_out='OUTPUT', socket_type='NodeSocketBundle')
-                except Exception:
-                    pass
-        geom_out_sock = next((s for s in output_node.inputs if s.name == "Geometry"), None)
-        if "Geometry" in input_node.outputs and geom_out_sock and not geom_out_sock.is_linked:
-            try:
-                tree.links.new(input_node.outputs["Geometry"], geom_out_sock)
-            except Exception:
-                pass
-        ACEProxyManager.sync_managed_source_tree(tree, sources or [])
-
-    # =========================================================================
-    # 5. UTILS
+    # 4. UTILS
     # =========================================================================
     @staticmethod
     def get_proxy_object(source_prop):

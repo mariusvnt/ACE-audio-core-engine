@@ -43,8 +43,8 @@ from .audio_tasks_registry import (
     ZeroCrossTask,
     StereoWidthTask,
     StereoBalanceTask,
-    StereoVectorTask,
     StreamAccumulatorTask,
+    LogicTask,
     AudioMathTask,
 )
 
@@ -418,6 +418,8 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
             return AudioMathTask(node_id, params, bs)
         if typ == "stream_accumulator":
             return StreamAccumulatorTask(node_id, params, bs)
+        if typ == "logic":
+            return LogicTask(node_id, params, bs)
 
     if cat == "delta":
         if typ == "frequency_splitter":
@@ -452,8 +454,6 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
             return StereoWidthTask(node_id, params, bs)
         if typ == "stereo_balance":
             return StereoBalanceTask(node_id, params, bs)
-        if typ == "stereo_vector":
-            return StereoVectorTask(node_id, params, bs)
 
     return ACEAudioTask(node_id, params, bs)
 
@@ -558,18 +558,16 @@ def _normalize_worker_value(attr_type: str, value: Any):
 
     target_len = 4 if attr == "FLOAT_COLOR" else 3
     if isinstance(value, (list, tuple, np.ndarray)):
-        arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        flat = np.asarray(value, dtype=np.float32).reshape(-1)
+        n = int(flat.size)
+        padded = [float(flat[i]) if i < n else 0.0 for i in range(target_len)]
     elif isinstance(value, (int, float, np.integer, np.floating)):
-        arr = np.asarray([float(value)], dtype=np.float32)
+        padded = [float(value)] + [0.0] * (target_len - 1)
     else:
-        arr = np.zeros(0, dtype=np.float32)
-
-    padded = np.zeros(target_len, dtype=np.float32)
-    if arr.size > 0:
-        padded[: min(target_len, arr.size)] = arr[:target_len]
-    if attr == "FLOAT_COLOR" and arr.size < 4:
+        padded = [0.0] * target_len
+    if attr == "FLOAT_COLOR" and padded[3] == 0.0:
         padded[3] = 1.0
-    return tuple(float(x) for x in padded.tolist())
+    return tuple(padded)
 
 
 def _trim_worker_cache():

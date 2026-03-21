@@ -226,6 +226,87 @@ class TestProxyManagement(unittest.TestCase):
         )
         self.assertEqual(consumer_obj["ace_prop_a"], 2.5)
 
+    def test_cache_output_defs_includes_logic_and_prefers_resolved_attr_name(self):
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "logic_node": self.abs_mod.ACEAbstractNode(
+                    id="logic_node",
+                    name="Logic",
+                    category="utilities",
+                    type="logic",
+                    parameters={
+                        "attr_id_out_0": "ACE_logic_contract",
+                        "attr_id_custom_out_0": False,
+                    },
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="logic_node_out_0",
+                            name="Logic",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            }
+        )
+
+        manager = self.proxy_mod.ACEProxyManager(abstract_tree)
+
+        self.assertIn("logic_node:0", manager.output_defs)
+        self.assertEqual(
+            manager._select_attr_name("ACE_PROXY_src", manager.output_defs["logic_node:0"]),
+            "ACE_logic_contract",
+        )
+
+    def test_logic_output_defs_drive_proxy_sink_layout(self):
+        proxy_obj = _TrackingObject("ACE_PROXY_src")
+        self.bpy.data.objects = {"ACE_PROXY_src": proxy_obj}
+        abstract_tree = self.abs_mod.ACEAbstractTree(
+            nodes={
+                "logic_node": self.abs_mod.ACEAbstractNode(
+                    id="logic_node",
+                    name="Logic",
+                    category="utilities",
+                    type="logic",
+                    parameters={"attr_id_out_0": "ACE_logic_contract"},
+                    outputs=[
+                        self.abs_mod.ACEAbstractSocket(
+                            id="logic_node_out_0",
+                            name="Logic",
+                            socket_idx=0,
+                            is_output=True,
+                            data_type="NodeSocketFloat",
+                        )
+                    ],
+                )
+            }
+        )
+        manager = self.proxy_mod.ACEProxyManager(abstract_tree)
+        calls = []
+
+        def _ensure_attributes_exist(proxy, _tree, active_keys=None, prune_existing=False):
+            calls.append((proxy.name, tuple(sorted(active_keys or ())), bool(prune_existing)))
+
+        manager.ensure_attributes_exist = _ensure_attributes_exist
+        graph = types.SimpleNamespace(
+            sink_bindings_by_attr={
+                "logic_node:0": [
+                    self.tasks_mod.ACESinkBinding(
+                        sink_kind="PROXY_ATTRIBUTE",
+                        target_object_name="ACE_PROXY_src",
+                        target_data_name="ACE_logic_contract",
+                        attr_type="FLOAT",
+                    )
+                ]
+            }
+        )
+
+        touched = manager.ensure_sink_layout(graph, active_keys={"logic_node:0"})
+
+        self.assertEqual(calls, [("ACE_PROXY_src", ("logic_node:0",), True)])
+        self.assertEqual(touched, {"ACE_PROXY_src"})
+
     def test_stage_c_sink_writers_require_main_thread(self):
         proxy_obj = _TrackingObject("ACE_PROXY_src")
         consumer_obj = _TrackingObject("Cube")

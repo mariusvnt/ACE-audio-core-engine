@@ -286,11 +286,9 @@ class ACESplitterManager:
         output_node = ng.nodes.new('NodeGroupOutput')
         input_node.location = (-700, 0)
         output_node.location = (520, 0)
-
-        marker = ng.nodes.new('NodeFrame')
+        marker = ng.nodes.new('NodeReroute')
         marker.name = ACESplitterManager._INTERNAL_VERSION_TAG
-        marker.label = "ACE Splitter Internals"
-        marker.location = (-520, 260)
+        marker.location = (-860, 260)
 
         for split_idx in range(split_count):
             input_idx = split_idx + 1
@@ -298,7 +296,6 @@ class ACESplitterManager:
                 continue
             splitter_tap = ng.nodes.new('NodeReroute')
             splitter_tap.location = (-220, -120 * split_idx)
-            splitter_tap.parent = marker
             ng.links.new(input_node.outputs[input_idx], splitter_tap.inputs[0])
 
         if len(getattr(input_node, "outputs", [])) <= 0:
@@ -308,7 +305,6 @@ class ACESplitterManager:
                 continue
             reroute = ng.nodes.new('NodeReroute')
             reroute.location = (120, -120 * out_idx)
-            reroute.parent = marker
             ng.links.new(input_node.outputs[0], reroute.inputs[0])
             ng.links.new(reroute.outputs[0], output_node.inputs[out_idx])
 
@@ -500,26 +496,32 @@ class ACEAudioMathManager:
         output_node = ng.nodes.new('NodeGroupOutput')
         input_node.location = (-900, 0)
         output_node.location = (380, 0)
-
-        marker = ng.nodes.new('NodeFrame')
+        marker = ng.nodes.new('NodeReroute')
         marker.name = ACEAudioMathManager._INTERNAL_VERSION_TAG
-        marker.label = "ACE Audio Math Internals"
-        marker.location = (-700, 260)
-
-        outputs = getattr(input_node, "outputs", [])
+        marker.location = (-1020, 260)
+        outputs = list(getattr(input_node, "outputs", []) or [])
         if len(outputs) > 0 and len(getattr(output_node, "inputs", [])) > 0:
-            passthrough = ng.nodes.new('NodeReroute')
-            passthrough.location = (-420, 0)
-            passthrough.parent = marker
-            ng.links.new(outputs[0], passthrough.inputs[0])
-            ng.links.new(passthrough.outputs[0], output_node.inputs[0])
-
-        # Keep extra inputs "alive" without embedding DSP logic in the shader facade.
-        for i in range(1, max(int(input_count), 1)):
-            if i >= len(outputs):
-                continue
-            sink_tap = ng.nodes.new('NodeReroute')
-            sink_tap.location = (-540, -120 * i)
-            sink_tap.parent = marker
-            ng.links.new(outputs[i], sink_tap.inputs[0])
+            combine_bundle = ng.nodes.new('NodeCombineBundle')
+            combine_bundle.location = (-180, 0)
+            item_count = 0
+            for bundle_socket in outputs[:max(int(input_count), 1)]:
+                try:
+                    bundle_item = combine_bundle.bundle_items.new('BUNDLE', f"Audio {int(item_count + 1)}")
+                except Exception:
+                    try:
+                        bundle_item = combine_bundle.bundle_items.new('FLOAT', f"Audio {int(item_count + 1)}")
+                    except Exception:
+                        continue
+                try:
+                    ng.links.new(bundle_socket, combine_bundle.inputs[bundle_item.name])
+                except Exception:
+                    try:
+                        ng.links.new(bundle_socket, combine_bundle.inputs[item_count])
+                    except Exception:
+                        continue
+                item_count += 1
+            try:
+                ng.links.new(combine_bundle.outputs[0], output_node.inputs[0])
+            except Exception:
+                pass
     

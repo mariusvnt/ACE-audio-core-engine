@@ -126,7 +126,7 @@ Responsibilities:
 proxy object lifecycle
 sink schema synchronization
 proxy attribute and object property write path
-ACE_Sonar management
+deferred shader helper synchronization
 
 Primary modules:
 `proxy_management.py`
@@ -191,12 +191,12 @@ optional user override via Attribute ID sockets for supported nodes
 1. Source created/imported.
 2. Stable source ID assigned.
 3. Single-vertex proxy mesh created or reused.
-4. ACE_Sonar object/tree synchronized with managed source placeholders.
+4. User-authored ACE source groups are discovered from visible editors and scene frontends; ACE does not create objects, modifiers, materials, or placeholder source nodes.
 5. Engine recompilation requested/triggered.
 
 ### 7.3 Compilation Lifecycle
 1. Managed scene frontends are discovered from Geometry Nodes modifiers and object-bound shader materials.
-2. Geometry frontends synchronize managed source placeholders.
+2. Frontend helper layout and sink IDs are synchronized without mutating source-group membership.
 3. Each frontend is parsed into a partial abstract graph and local sink IDs are synchronized.
 4. Partial frontend graphs are merged into one scene-scoped `ACEAbstractTree`.
 5. One `ACEAudioGraph` is compiled per source with only required upstream tasks.
@@ -305,7 +305,7 @@ Test coverage includes:
 ID generation and parsing invariants
 audio input parser/backends behavior
 task semantics and regression checks for splitters/preview/math/rolling-average/specs
-Blender integration smoke tests for handlers/source lifecycle/ACE_Sonar synchronization
+Blender integration smoke tests for handlers, source lifecycle, and manual frontend discovery
 
 Primary test modules:
 `tests/test_audio_tasks_registry.py`

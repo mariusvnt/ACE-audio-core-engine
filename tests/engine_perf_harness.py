@@ -194,19 +194,12 @@ def _install_engine_import_stubs():
 
     class ACEProxyManager:  # pragma: no cover - runtime harness uses a dedicated writer stub
         COLLECTION_NAME = "ACE_Internals"
-        SONAR_OBJECT_NAME = "ACE_Sonar"
-        SONAR_MODIFIER_NAME = "ACE_Sonar_Mod"
-        SONAR_TREE_NAME = "ACE_Sonar_Tree"
 
         def __init__(self, _abstract_tree):
             self.output_defs = {}
 
         @staticmethod
         def ensure_proxy_for_source(_source, scene=None):  # noqa: ARG004
-            return None
-
-        @staticmethod
-        def ensure_sonar_setup(_scene, _sources):
             return None
 
         def ensure_attributes_exist(self, _proxy, _tree, active_keys=None, prune_existing=False):  # noqa: ARG002

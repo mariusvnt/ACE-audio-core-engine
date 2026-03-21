@@ -71,7 +71,7 @@ ACE_NODES: dict[str, Category] = {
         "nodes": {
             "src": {
             "label": "Source",
-            "icon": "",
+            "icon": "SOUND",
             "description": "Reference to an audio source.",
             "inputs": [],
             "outputs": [('NodeSocketBundle', 'Audio')],
@@ -88,35 +88,35 @@ ACE_NODES: dict[str, Category] = {
         "nodes": {
             "frequency_splitter": {
             "label": "Frequency Splitter",
-            "icon": "",
+            "icon": "MOD_WAVE",
             "description": "Splits the incoming audio into multiple audios, each corresponding to a band of frequencies.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketBundle', 'Audio')], # template sockets, runtime variants are dynamic
             },
             "midside_splitter": {
             "label": "Mid/Side Splitter",
-            "icon": "",
+            "icon": "NODE",
             "description": "Splits the incoming audio between the middle and side part of the stereo image.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Mid'), ('NodeSocketBundle', 'Side')],
             },
             "attackrelease_splitter": {
             "label": "Attack/Release Splitter",
-            "icon": "",
+            "icon": "NODE",
             "description": "Splits the incoming audio between the rising and falling parts of the signal.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Attack'), ('NodeSocketBundle', 'Release')],
             },
             "chromagram": {
             "label": "Chromagram",
-            "icon": "",
+            "icon": "NODE",
             "description": "Splits the incoming audio into 12 audios, each corresponing to the level of a particular note.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'C'), ('NodeSocketBundle', 'C#'), ('NodeSocketBundle', 'D'), ('NodeSocketBundle', 'D#'), ('NodeSocketBundle', 'E'), ('NodeSocketBundle', 'F'), ('NodeSocketBundle', 'F#'), ('NodeSocketBundle', 'G'), ('NodeSocketBundle', 'G#'), ('NodeSocketBundle', 'A'), ('NodeSocketBundle', 'A#'), ('NodeSocketBundle', 'B')],
             },
             "auto_component_splitter": {
             "label": "Automatic Component Splitter",
-            "icon": "",
+            "icon": "NODE",
             "description": "Automatically splits the incoming audio between its percussive and harmonics components (residual undefined elements are also outputted separately).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Percussive'), ('NodeSocketBundle', 'Harmonics'), ('NodeSocketBundle', 'Residual')],
@@ -133,14 +133,14 @@ ACE_NODES: dict[str, Category] = {
         "nodes": {
             "rms": {
             "label": "RMS",
-            "icon": "DRIVER_DISTANCE",
+            "icon": "GRAPH",
             "description": "Short-term average loudness measured on the mono-converted signal.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'RMS')],
             },
             "lufs": {
             "label": "Loudness (LUFS)",
-            "icon": "DRIVER_DISTANCE",
+            "icon": "GRAPH",
             "description": (
                 "Normalized loudness output in 0..1 "
                 "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
@@ -154,7 +154,7 @@ ACE_NODES: dict[str, Category] = {
             },
             "peak": {
             "label": "Peak",
-            "icon": "DRIVER_DISTANCE",
+            "icon": "GRAPH",
             "description": "Normalized K-weighted peak level in 0..1 (0 = silence, 1 = 0 dB full scale).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Peak')],
@@ -187,30 +187,23 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Stereo Balance')],
             },
-            "stereo_vector": {
-            "label": "Stereo Vector",
-            "icon": "ORIENTATION_GIMBAL",
-            "description": "Time-domain stereo descriptor packed as vector (L RMS, R RMS, Balance).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketVector', 'Stereo Vector')],
-            },
             "pitch": {
             "label": "Pitch",
-            "icon": "",
+            "icon": "GRAPH",
             "description": "Detected root note pitch in Hz.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Pitch')],
             },
             "onset": {
             "label": "Onset",
-            "icon": "",
+            "icon": "GRAPH",
             "description": "Sharp transient witness (0 = smooth, 1 = sharp transient).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Onset')],
             },
             "zero_crossing_rate": {
             "label": "Zero Crossing Rate",
-            "icon": "",
+            "icon": "GRAPH",
             "description": "Measure of frequency activity (signal noisiness) (0 = no active frequency, 1 = every frequency is active).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'ZCR')],
@@ -227,7 +220,7 @@ ACE_NODES: dict[str, Category] = {
         "nodes": {
             "src_specs": {
             "label": "Source Specs",
-            "icon": "",
+            "icon": "INFO",
             "description": "Long-term specs and passing through the audio.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [
@@ -245,21 +238,28 @@ ACE_NODES: dict[str, Category] = {
             },
             "audio_math": {
             "label": "Audio Math",
-            "icon": "",
+            "icon": "NODE",
             "description": "Audio operations: add, subtract, multiply.",
             "inputs": [('NodeSocketBundle', 'Audio')], # dynamic
             "outputs": [('NodeSocketBundle', 'Audio')], # dynamic
             },
+            "logic": {
+            "label": "Logic",
+            "icon": "NODE",
+            "description": "Turn a float stream into a binary 0 or 1 output based on a threshold.",
+            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Threshold')],
+            "outputs": [('NodeSocketFloat', 'Logic')],
+            },
             "util_rolling_avg": {
             "label": "Rolling Average",
-            "icon": "",
+            "icon": "GRAPH",
             "description": "Smooths a scalar attribute stream over a fixed number of scene frames.",
             "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
             "outputs": [('NodeSocketFloat', 'Rolling Avg')],
             },
             "stream_accumulator": {
             "label": "Stream Accumulator",
-            "icon": "",
+            "icon": "GRAPH",
             "description": "Maintains a running sum of the input stream values.",
             "inputs": [('NodeSocketFloat', 'Value')],
             "outputs": [('NodeSocketFloat', 'Accumulated')],

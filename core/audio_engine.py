@@ -42,7 +42,13 @@ except Exception:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 
-from .abstract_tree import ACEAbstractTree, ACEAbstractNode, ACEFrontendRef, ACEConsumerIntent
+from .abstract_tree import (
+    ACEAbstractTree,
+    ACEAbstractNode,
+    ACEFrontendRef,
+    ACEConsumerIntent,
+    ace_node_is_writeable_output,
+)
 from .audio_influx import AudioReception, build_live_flow_identifier
 from ..nodes.dummy_tree import ACEDummyTreeReader
 from .id_management import ACEIdManager
@@ -73,10 +79,10 @@ from .audio_tasks_registry import (
     ZeroCrossTask,
     StereoWidthTask,
     StereoBalanceTask,
-    StereoVectorTask,
     PreviewSinkTask,
     RollingAvgTask,
     StreamAccumulatorTask,
+    LogicTask,
     AudioMathTask,
     ACESinkBinding,
     _clear_file_open_locks,
@@ -1073,7 +1079,6 @@ class ACEAudioEngine:
             "zero_crossing_rate",
             "stereo_width",
             "stereo_balance",
-            "stereo_vector",
         }
     )
     _PARALLEL_MAX_INFLIGHT_PER_SOURCE = 2
@@ -1144,6 +1149,7 @@ class ACEAudioEngine:
         self._bake_cache: Dict[str, Dict[str, Any]] = {}
         self._bake_jobs: Dict[str, Dict[str, Any]] = {}
         self._bake_result_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._bake_abort_event = threading.Event()
         self._source_specs_task_registry: Dict[tuple[str, float], SourceSpecsTask] = {}
         self._current_delta_frames: float = 1.0
         self._perf_frame_accumulator: Dict[str, float] = {}
@@ -1561,13 +1567,25 @@ class ACEAudioEngine:
     @classmethod
     def _resolve_geometry_metric_tokens(cls, scene, proxy_names: list[str] | set[str] | tuple[str, ...] | None = None) -> set[str]:
         tokens: set[str] = set()
-        ace = getattr(scene, "audiocore", None)
-        target_obj = getattr(ace, "gn_target_object", None) if ace else None
-        if target_obj is not None:
-            cls._extend_metric_tokens_from_id(tokens, target_obj)
-        sonar_obj = bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME)
-        if sonar_obj is not None:
-            cls._extend_metric_tokens_from_id(tokens, sonar_obj)
+        for scene_obj in getattr(scene, "objects", []) or []:
+            has_ace_frontend = False
+            for mod in getattr(scene_obj, "modifiers", []) or []:
+                if getattr(mod, "type", None) != "NODES":
+                    continue
+                if cls._tree_has_ace_nodes(getattr(mod, "node_group", None)):
+                    has_ace_frontend = True
+                    break
+            if not has_ace_frontend:
+                for slot in getattr(scene_obj, "material_slots", []) or []:
+                    material = getattr(slot, "material", None)
+                    tree = getattr(material, "node_tree", None) if material is not None else None
+                    if str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
+                        continue
+                    if cls._tree_has_ace_nodes(tree):
+                        has_ace_frontend = True
+                        break
+            if has_ace_frontend:
+                cls._extend_metric_tokens_from_id(tokens, scene_obj)
         if not tokens:
             for proxy_name in list(proxy_names or ()):
                 proxy_obj = bpy.data.objects.get(str(proxy_name or ""))
@@ -1893,6 +1911,8 @@ class ACEAudioEngine:
             # never jump when the engine temporarily falls back between worker
             # and main-thread execution paths.
             return False
+        if category == "utilities" and node_type == "logic":
+            return True
         if category != "stream":
             return False
         if node_type in cls._PARALLEL_OFFLOAD_STREAM_TYPES:
@@ -3163,10 +3183,6 @@ class ACEAudioEngine:
             except Exception:
                 pass
 
-        try:
-            ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
-        except Exception:
-            pass
         self._last_compile_time = time.time()
 
     def _log_runtime(self, key: str, message: str, level: str = "ERROR", min_interval: float = 2.0):
@@ -3673,8 +3689,16 @@ class ACEAudioEngine:
     ) -> str:
         if node is None:
             return ""
+        tokens: list[str] = []
+        source_binding_id = str(getattr(node, "source_binding_id", "") or "")
+        if source_binding_id:
+            tokens.append(source_binding_id)
         for root in sorted(set(getattr(node, "root_sources", set()) or set())):
-            proxy_name = str(source_lookup.get(str(root), "") or "")
+            root_str = str(root or "")
+            if root_str and root_str not in tokens:
+                tokens.append(root_str)
+        for token in tokens:
+            proxy_name = str(source_lookup.get(str(token), "") or "")
             if proxy_name:
                 return proxy_name
         if len(unique_proxies) == 1:
@@ -3931,16 +3955,10 @@ class ACEAudioEngine:
 
     @staticmethod
     def _is_output_node(node: ACEAbstractNode) -> bool:
-        is_specs = bool(
-            node
-            and node.type in {'src_specs', 'util_rolling_avg', 'stream_accumulator'}
-            and node.category == 'utilities'
-        )
         return bool(
             node
             and (
-                node.category == 'stream'
-                or is_specs
+                ace_node_is_writeable_output(node)
                 or (node.category == 'utilities' and node.type == 'preview_sink')
             )
         )
@@ -4883,6 +4901,31 @@ class ACEAudioEngine:
             results[attr_key] = series[frame_offset]
         return results if results else None
 
+    @staticmethod
+    def _writeable_output_socket_pairs(node: Optional[ACEAbstractNode]) -> tuple[tuple[str, int], ...]:
+        if not ace_node_is_writeable_output(node):
+            return ()
+        if node is None:
+            return ()
+        if str(getattr(node, "category", "") or "") == "stream":
+            pairs: list[tuple[str, int]] = []
+            for out_idx, out_sock in enumerate(getattr(node, "outputs", []) or []):
+                data_type = str(getattr(out_sock, "data_type", "") or "")
+                if data_type in ("NodeSocketBundle", "BUNDLE", "BUNDLE_SOCKET"):
+                    continue
+                socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
+                pairs.append((socket_name, int(out_idx)))
+            return tuple(pairs)
+        if (
+            str(getattr(node, "category", "") or "") == "utilities"
+            and str(getattr(node, "type", "") or "") == "src_specs"
+        ):
+            return (
+                ("Frames per Beat Attribute ID", 0),
+                ("Beat Phase Attribute ID", 1),
+            )
+        return (("Attribute ID", 0),)
+
     def _sync_auto_attr_ids(
         self,
         bl_tree: bpy.types.NodeTree,
@@ -4920,61 +4963,18 @@ class ACEAudioEngine:
             if not abs_node:
                 continue
 
-            is_stream = abs_node.category == "stream"
-            is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
-            is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
-            if not (is_stream or is_specs or is_stream_accumulator):
+            if not ace_node_is_writeable_output(abs_node):
                 continue
 
             proxy_name = self._resolve_proxy_name_for_output_node(abs_node, source_lookup, unique_proxies)
-            if not proxy_name:
-                continue
-
             root_sig = json.dumps(sorted(set(getattr(abs_node, "root_sources", set()) or set())))
             upstream_sig = json.dumps(sorted(incoming_by_target.get(abs_node.id, [])))
             topology_sig = f"{root_sig}|{upstream_sig}"
 
-            desired_map: Dict[str, str] = {}
-            socket_map: Dict[str, str] = {}
-            if is_stream and len(abs_node.outputs) > 0:
-                for out_idx, out_sock in enumerate(abs_node.outputs):
-                    desired_map[str(out_idx)] = self._build_auto_attr_name(
-                        proxy_name,
-                        abs_node.id,
-                        out_sock.name,
-                        out_idx,
-                        topology_sig=topology_sig,
-                    )
-                    socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
-                    socket_map[socket_name] = str(out_idx)
-            elif is_specs:
-                specs_socket_map = (
-                    ("Frames per Beat Attribute ID", 0),
-                    ("Beat Phase Attribute ID", 1),
-                )
-                for socket_name, out_idx in specs_socket_map:
-                    if out_idx >= len(abs_node.outputs):
-                        continue
-                    desired_map[str(out_idx)] = self._build_auto_attr_name(
-                        proxy_name,
-                        abs_node.id,
-                        abs_node.outputs[out_idx].name,
-                        out_idx,
-                        topology_sig=topology_sig,
-                    )
-                    socket_map[socket_name] = str(out_idx)
-            elif is_stream_accumulator and len(abs_node.outputs) > 0:
-                desired_map["0"] = self._build_auto_attr_name(
-                    proxy_name,
-                    abs_node.id,
-                    abs_node.outputs[0].name,
-                    0,
-                    topology_sig=topology_sig,
-                )
-                socket_map["Attribute ID"] = "0"
-
-            if not desired_map:
+            socket_pairs = self._writeable_output_socket_pairs(abs_node)
+            if not socket_pairs:
                 continue
+            socket_name_map = {socket_name: str(out_idx) for socket_name, out_idx in socket_pairs}
 
             try:
                 node_tree = getattr(bl_node, "node_tree", None)
@@ -4982,30 +4982,77 @@ class ACEAudioEngine:
                     for item in getattr(node_tree.interface, "items_tree", []):
                         if (
                             getattr(item, "in_out", None) == "INPUT"
-                            and getattr(item, "name", "") in socket_map
+                            and getattr(item, "name", "") in socket_name_map
                             and hasattr(item, "hide_value")
                         ):
                             item.hide_value = False
             except Exception:
                 pass
-            for sock in getattr(bl_node, "inputs", []):
-                if getattr(sock, "name", "") in socket_map:
-                    try:
-                        sock.hide_value = False
-                    except Exception:
-                        pass
 
-            socket_bindings: list[tuple[Any, str, str]] = []
+            current_map: Dict[str, str] = {}
+            socket_objects: Dict[str, Any] = {}
             for sock in getattr(bl_node, "inputs", []):
-                socket_key = socket_map.get(getattr(sock, "name", ""))
+                socket_key = socket_name_map.get(str(getattr(sock, "name", "") or ""))
                 if socket_key is None:
                     continue
-                current = str(getattr(sock, "default_value", "") or "")
-                target = desired_map.get(socket_key, "")
-                socket_bindings.append((sock, current, target))
+                try:
+                    sock.hide_value = False
+                except Exception:
+                    pass
+                raw_value = getattr(sock, "default_value", None)
+                current_map[socket_key] = str(raw_value).strip() if isinstance(raw_value, str) else ""
+                socket_objects[socket_key] = sock
 
-            for sock, current, target in socket_bindings:
-                if not target or current == target:
+            desired_map: Dict[str, str] = {}
+            custom_flags: Dict[str, bool] = {}
+            params = dict(getattr(abs_node, "parameters", {}) or {})
+
+            for socket_name, out_idx in socket_pairs:
+                if out_idx >= len(getattr(abs_node, "outputs", []) or []):
+                    continue
+                out_key = str(out_idx)
+                current = str(current_map.get(out_key, "") or "").strip()
+                if proxy_name:
+                    auto_name = self._build_auto_attr_name(
+                        proxy_name,
+                        abs_node.id,
+                        abs_node.outputs[out_idx].name,
+                        out_idx,
+                        topology_sig=topology_sig,
+                    )
+                    is_custom = bool(current and current != auto_name)
+                    desired_map[out_key] = current if is_custom else auto_name
+                    custom_flags[out_key] = bool(is_custom)
+                elif current:
+                    desired_map[out_key] = current
+                    custom_flags[out_key] = bool(params.get(f"attr_id_custom_out_{out_key}", False))
+
+            if not proxy_name and desired_map:
+                self._log_runtime(
+                    f"missing_proxy_output:{abs_node.id}",
+                    (
+                        f"ACE: Could not resolve a proxy for geometry output node "
+                        f"'{str(getattr(abs_node, 'name', '') or abs_node.id)}'. "
+                        f"Keeping the existing Attribute ID values until a source proxy is available."
+                    ),
+                    level="WARNING",
+                    min_interval=5.0,
+                )
+
+            for out_key, attr_name in desired_map.items():
+                if attr_name:
+                    params[f"attr_id_out_{out_key}"] = attr_name
+                else:
+                    params.pop(f"attr_id_out_{out_key}", None)
+                params[f"attr_id_custom_out_{out_key}"] = bool(custom_flags.get(out_key, False))
+            abs_node.parameters = params
+
+            for out_key, target in desired_map.items():
+                if not proxy_name or bool(custom_flags.get(out_key, False)):
+                    continue
+                sock = socket_objects.get(out_key)
+                current = current_map.get(out_key, "")
+                if sock is None or not target or current == target:
                     continue
                 try:
                     sock.default_value = target
@@ -5014,12 +5061,13 @@ class ACEAudioEngine:
                 except Exception:
                     pass
 
-            try:
-                if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
-                    bl_node["ace_auto_attr_topology_json"] = topology_sig
-                    changed = True
-            except Exception:
-                pass
+            if proxy_name:
+                try:
+                    if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
+                        bl_node["ace_auto_attr_topology_json"] = topology_sig
+                        changed = True
+                except Exception:
+                    pass
         return changed, changed_node_ids
 
     @staticmethod
@@ -5088,7 +5136,11 @@ class ACEAudioEngine:
                     params[f"attr_id_out_{out_idx}"] = attr_name
                 else:
                     params.pop(f"attr_id_out_{out_idx}", None)
-                params[f"attr_id_custom_out_{out_idx}"] = bool(attr_name)
+                    params.pop(f"attr_id_custom_out_{out_idx}", None)
+                    continue
+                params[f"attr_id_custom_out_{out_idx}"] = bool(
+                    params.get(f"attr_id_custom_out_{out_idx}", False)
+                )
 
             abs_node.parameters = params
 
@@ -5146,11 +5198,7 @@ class ACEAudioEngine:
             abs_node = abstract_tree.nodes.get(ace_id)
             if abs_node is None:
                 continue
-            is_stream = abs_node.category == "stream"
-            is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
-            is_rolling_avg = abs_node.type == "util_rolling_avg" and abs_node.category == "utilities"
-            is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
-            if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator):
+            if not ace_node_is_writeable_output(abs_node):
                 continue
 
             root_sig = json.dumps(sorted(set(getattr(abs_node, "root_sources", set()) or set())))
@@ -5158,8 +5206,21 @@ class ACEAudioEngine:
             topology_sig = f"{root_sig}|{upstream_sig}"
             proxy_name = self._resolve_proxy_name_for_output_node(abs_node, source_lookup, unique_proxies)
 
+            socket_pairs = self._writeable_output_socket_pairs(abs_node)
+            socket_name_map = {socket_name: str(out_idx) for socket_name, out_idx in socket_pairs}
+            current_map: Dict[str, str] = {}
+            socket_objects: Dict[str, Any] = {}
+            for sock in getattr(bl_node, "inputs", []):
+                socket_key = socket_name_map.get(str(getattr(sock, "name", "") or ""))
+                if socket_key is None:
+                    continue
+                raw_value = getattr(sock, "default_value", None)
+                current_map[socket_key] = str(raw_value).strip() if isinstance(raw_value, str) else ""
+                socket_objects[socket_key] = sock
+
             desired_map: Dict[str, str] = {}
-            socket_map: Dict[str, str] = {}
+            custom_flags: Dict[str, bool] = {}
+            params = dict(getattr(abs_node, "parameters", {}) or {})
             if proxy_name:
                 # Shader sinks write to consumer object custom properties — one
                 # per node instance — so topology_sig is NOT needed for
@@ -5167,72 +5228,52 @@ class ACEAudioEngine:
                 # Using topology_sig here creates a mismatch with
                 # _resolve_sink_bindings_for_graph's fallback path (which also
                 # omits it) and with the initial gn_menu sync.
-                if is_stream and len(abs_node.outputs) > 0:
-                    for out_idx, out_sock in enumerate(abs_node.outputs):
-                        desired_map[str(out_idx)] = self._build_auto_attr_name(
-                            proxy_name,
-                            abs_node.id,
-                            out_sock.name,
-                            out_idx,
-                            topology_sig="",
-                        )
-                        socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
-                        socket_map[socket_name] = str(out_idx)
-                elif is_specs:
-                    specs_socket_map = (
-                        ("Frames per Beat Attribute ID", 0),
-                        ("Beat Phase Attribute ID", 1),
-                    )
-                    for socket_name, out_idx in specs_socket_map:
-                        if out_idx >= len(abs_node.outputs):
-                            continue
-                        desired_map[str(out_idx)] = self._build_auto_attr_name(
-                            proxy_name,
-                            abs_node.id,
-                            abs_node.outputs[out_idx].name,
-                            out_idx,
-                            topology_sig="",
-                        )
-                        socket_map[socket_name] = str(out_idx)
-                elif is_rolling_avg and len(abs_node.outputs) > 0:
-                    desired_map["0"] = self._build_auto_attr_name(
+                for socket_name, out_idx in socket_pairs:
+                    if out_idx >= len(getattr(abs_node, "outputs", []) or []):
+                        continue
+                    out_key = str(out_idx)
+                    auto_name = self._build_auto_attr_name(
                         proxy_name,
                         abs_node.id,
-                        abs_node.outputs[0].name,
-                        0,
+                        abs_node.outputs[out_idx].name,
+                        out_idx,
                         topology_sig="",
                     )
-                    socket_map["Attribute ID"] = "0"
-                elif is_stream_accumulator and len(abs_node.outputs) > 0:
-                    desired_map["0"] = self._build_auto_attr_name(
-                        proxy_name,
-                        abs_node.id,
-                        abs_node.outputs[0].name,
-                        0,
-                        topology_sig="",
-                    )
-                    socket_map["Attribute ID"] = "0"
+                    current = str(current_map.get(out_key, "") or "").strip()
+                    is_custom = bool(current and current != auto_name)
+                    desired_map[out_key] = current if is_custom else auto_name
+                    custom_flags[out_key] = bool(is_custom)
+            else:
+                for _socket_name, out_idx in socket_pairs:
+                    out_key = str(out_idx)
+                    current = str(current_map.get(out_key, "") or "").strip()
+                    if not current:
+                        continue
+                    desired_map[out_key] = current
+                    custom_flags[out_key] = bool(params.get(f"attr_id_custom_out_{out_key}", False))
 
             if desired_map:
-                for sock in getattr(bl_node, "inputs", []):
-                    socket_key = socket_map.get(str(getattr(sock, "name", "") or ""))
-                    if socket_key is None:
+                for out_key, target in desired_map.items():
+                    if not proxy_name or bool(custom_flags.get(out_key, False)):
                         continue
-                    target = desired_map.get(socket_key, "")
-                    current = str(getattr(sock, "default_value", "") or "")
-                    if target and target != current:
-                        try:
-                            sock.default_value = target
-                            changed = True
-                            changed_node_ids.add(str(abs_node.id))
-                        except Exception:
-                            pass
-                try:
-                    if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
-                        bl_node["ace_auto_attr_topology_json"] = topology_sig
+                    sock = socket_objects.get(out_key)
+                    current = current_map.get(out_key, "")
+                    if sock is None or not target or target == current:
+                        continue
+                    try:
+                        sock.default_value = target
                         changed = True
-                except Exception:
-                    pass
+                        changed_node_ids.add(str(abs_node.id))
+                    except Exception:
+                        pass
+                if proxy_name:
+                    try:
+                        if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
+                            bl_node["ace_auto_attr_topology_json"] = topology_sig
+                            changed = True
+                    except Exception:
+                        pass
+
             # Allow sync during viewport Material Preview / Rendered view —
             # only a full render job (use_lock_interface=False) is truly unsafe.
             # Viewport renders re-sync Cycles per frame anyway, so updating the
@@ -5240,26 +5281,30 @@ class ACEAudioEngine:
             # node during viewport render is safe and necessary.
             if shader_factory is not None and not shader_tree_mutations_unsafe:
                 try:
-                    _names_by_idx = {int(k): str(v) for k, v in desired_map.items() if v} or None
+                    binding_names = (
+                        {int(k): str(v) for k, v in desired_map.items() if v}
+                        if proxy_name else None
+                    ) or None
                     if shader_factory.sync_node_instance_group_bindings(
                         bl_node,
                         proxy_name=proxy_name,
                         scene=scene,
-                        attr_names_by_idx=_names_by_idx,
+                        attr_names_by_idx=binding_names,
                     ):
                         changed = True
                         changed_node_ids.add(str(abs_node.id))
                 except Exception:
                     pass
-            # Write computed attr names into abstract tree params so that
+            # Write resolved attr names into abstract tree params so that
             # _emit_consumer_intents / _resolve_sink_data_name use the same
             # names that were set on the companion ShaderNodeAttribute helpers.
             if desired_map:
-                params = dict(getattr(abs_node, "parameters", {}) or {})
                 for out_key, attr_name in desired_map.items():
                     if attr_name:
                         params[f"attr_id_out_{out_key}"] = attr_name
-                        params[f"attr_id_custom_out_{out_key}"] = True
+                    else:
+                        params.pop(f"attr_id_out_{out_key}", None)
+                    params[f"attr_id_custom_out_{out_key}"] = bool(custom_flags.get(out_key, False))
                 abs_node.parameters = params
                 changed = True
                 changed_node_ids.add(str(abs_node.id))
@@ -5283,6 +5328,8 @@ class ACEAudioEngine:
                 return RollingAvgTask(node.id, node.parameters, block_size)
             if typ == 'stream_accumulator':
                 return StreamAccumulatorTask(node.id, node.parameters, block_size)
+            if typ == 'logic':
+                return LogicTask(node.id, node.parameters, block_size)
         elif cat == 'delta':
             if typ == 'frequency_splitter':
                 return FrequencySplitterTask(node.id, node.parameters, block_size)
@@ -5315,8 +5362,6 @@ class ACEAudioEngine:
                 return StereoWidthTask(node.id, node.parameters, block_size)
             if typ == 'stereo_balance':
                 return StereoBalanceTask(node.id, node.parameters, block_size)
-            if typ == 'stereo_vector':
-                return StereoVectorTask(node.id, node.parameters, block_size)
 
         return ACEAudioTask(node.id, node.parameters, block_size)
 
@@ -5557,6 +5602,8 @@ class ACEAudioEngine:
             self._bake_cache.pop(source_id, None)
 
     def _shutdown_graphs(self, wait_parallel_pool: bool = False, clear_bake_cache: bool = False):
+        # Signal any running bake worker to exit before we close graph objects.
+        self._bake_abort_event.set()
         self._stop_preview_worker()
         self._shutdown_parallel_pool(wait=wait_parallel_pool)
         for graph in self.graphs.values():
@@ -5650,54 +5697,6 @@ class ACEAudioEngine:
         except Exception:
             return False
 
-    @staticmethod
-    def _find_scene_target_tree(scene) -> Optional[bpy.types.NodeTree]:
-        def _tree_from_object(obj):
-            if not obj:
-                return (None, None)
-            ace_tree = None
-            fallback = None
-            for mod in getattr(obj, "modifiers", []):
-                if getattr(mod, "type", None) == 'NODES' and getattr(mod, "node_group", None):
-                    tree = mod.node_group
-                    if fallback is None:
-                        fallback = tree
-                    if ACEAudioEngine._tree_has_ace_nodes(tree):
-                        ace_tree = tree
-                        break
-            return ace_tree, fallback
-
-        ace = getattr(scene, "audiocore", None)
-        target_obj = getattr(ace, "gn_target_object", None) if ace else None
-        target_ace, target_fallback = _tree_from_object(target_obj)
-        if target_ace:
-            utils.log(
-                f"ACE: target tree resolved via 'gn_target_object' → '{target_ace.name}'",
-                "DEBUG",
-            )
-            return target_ace
-
-        sonar = bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME)
-        sonar_ace, sonar_fallback = _tree_from_object(sonar)
-        if sonar_ace:
-            utils.log(
-                f"ACE: target tree resolved via Sonar object → '{sonar_ace.name}'",
-                "DEBUG",
-            )
-            return sonar_ace
-        if target_fallback:
-            utils.log(
-                f"ACE: target tree resolved via gn_target_object fallback (no ace_id nodes) → '{target_fallback.name}'",
-                "DEBUG",
-            )
-            return target_fallback
-        if sonar_fallback:
-            utils.log(
-                f"ACE: target tree resolved via Sonar fallback (no ace_id nodes) → '{sonar_fallback.name}'",
-                "DEBUG",
-            )
-        return sonar_fallback
-
     def compile_scene_frontends(self, scene, preferred_tree=None):
         """Discover, parse, merge, and compile all ACE frontends in the scene."""
         utils.assert_main_thread("compile_scene_frontends")
@@ -5753,20 +5752,6 @@ class ACEAudioEngine:
             frontend_kind = str(frontend.frontend_ref.kind or "")
             if not tree or not frontend_uid:
                 continue
-
-            if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                try:
-                    from ..nodes.dummy_tree import ACEDummyNodeFactory
-                    removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
-                    if removed:
-                        utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
-                except Exception:
-                    pass
-
-            try:
-                ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
-            except Exception:
-                pass
 
             if frontend_kind == FRONTEND_KIND_SHADER:
                 from ..nodes.shader_tree import ACEShaderTreeReader
@@ -6754,6 +6739,7 @@ class ACEAudioEngine:
                                 or (node.type == 'src_specs' and node.category == 'utilities')
                                 or (node.type == 'util_rolling_avg' and node.category == 'utilities')
                                 or (node.type == 'stream_accumulator' and node.category == 'utilities')
+                                or (node.type == 'logic' and node.category == 'utilities')
                                 or (node.category == 'utilities' and node.type == 'preview_sink')
                             )
                             if not is_output_node:
@@ -7181,6 +7167,7 @@ class ACEAudioEngine:
 
     def bake_source_to_cache(self, source, tree=None, scene=None):
         """Precompute stream/spec outputs for a file source and cache them in memory."""
+        self._bake_abort_event.clear()
         if not source or getattr(source, "source_type", "") != "FILE":
             return False
         if scene is None:
@@ -7263,6 +7250,16 @@ class ACEAudioEngine:
             baked_values: Dict[str, List[Any]] = {k: [] for k in output_attr_keys}
             try:
                 for i, frame_idx in enumerate(range(frame_start, frame_end + 1)):
+                    # Exit early if _shutdown_graphs() was called while we were running,
+                    # so we never evaluate a graph object that is being closed/cleared.
+                    if engine_ref._bake_abort_event.is_set():
+                        try:
+                            engine_ref._bake_result_queue.put_nowait(
+                                ("error", str(src_uid), "Bake aborted by engine shutdown.")
+                            )
+                        except Exception:
+                            pass
+                        return
                     frame_results = engine_ref._collect_graph_results_for_frame(graph, frame_idx)
                     for attr_key in output_attr_keys:
                         baked_values[attr_key].append(
@@ -7502,6 +7499,11 @@ def depsgraph_update_handler(scene, depsgraph):
     if not auto_compile_enabled:
         return
 
+    # Recompiles cannot happen during playback; skip the O(n_updates × n_frontends)
+    # object-signature scan entirely to avoid wasted work on every proxy attribute write.
+    if engine is not None and engine._is_animation_playing():
+        return
+
     engine = engine or ACEAudioEngine.ensure_instance(scene)
     if engine is None:
         return
@@ -7649,6 +7651,8 @@ def auto_compile_timer():
         if ace and settings and settings.auto_compile:
             engine = ACEAudioEngine.ensure_instance(scene)
             if engine._undo_recovery_active():
+                return 0.25
+            if engine._is_animation_playing():
                 return 0.25
             compiled = engine._maybe_compile_dirty(scene)
             if compiled:

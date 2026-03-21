@@ -99,8 +99,8 @@ class TestRegressionFindings(unittest.TestCase):
 
     def test_proxy_tree_is_modifier(self):
         src = _read("proxy_management.py")
-        self.assertIn("tree.is_modifier = True", src)
-        self.assertIn("new_socket(\"Audio\", in_out='OUTPUT', socket_type='NodeSocketBundle')", src)
+        self.assertNotIn("tree.is_modifier = True", src)
+        self.assertNotIn("ACE_Sonar", src)
 
     def test_install_does_not_upgrade_pip_each_time(self):
         src = _read("prefs_library_manager.py")
@@ -253,7 +253,7 @@ class TestRegressionFindings(unittest.TestCase):
             label="_initialize_auto_attr_ids body",
         )
         self.assertIn("proxy_obj = bpy.data.objects.get(proxy_name)", init_body)
-        self.assertIn("if (is_specs or is_rolling_avg) and proxy_obj:", init_body)
+        self.assertIn("if (is_specs or is_rolling_avg or is_logic) and proxy_obj:", init_body)
         self.assertIn("proxy_sock.default_value = proxy_obj", init_body)
 
     def test_runtime_diagnostics_and_parallel_slot_reuse_exist(self):
@@ -358,7 +358,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("Auto-Compile", ui_src)
 
         dummy_src = _read("dummy_tree.py")
-        self.assertIn("is_custom = bool(attr_name)", dummy_src)
+        self.assertNotIn("is_custom = bool(attr_name)", dummy_src)
+        self.assertIn("params[f\"attr_id_out_{attr_out_idx}\"] = attr_name", dummy_src)
         self.assertIn("item.hide_value = False", dummy_src)
         self.assertIn("self._ace_id_owner", dummy_src)
         self.assertIn("def _reserve_unique_ace_id(", dummy_src)
@@ -407,17 +408,67 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertNotIn("\"source_mngmt_scanner\"", vars_src)
         # Specs now live under utilities.
         self.assertRegex(vars_src, r"\"utilities\"[\s\S]*?\"src_specs\"\s*:")
+        self.assertRegex(vars_src, r"\"utilities\"[\s\S]*?\"logic\"\s*:")
+        self.assertNotIn("\"stereo_vector\"", vars_src)
         self.assertNotRegex(vars_src, r"\"utilities\"[\s\S]*?\"scanner\"\s*:")
 
         menu_src = _read("gn_menu.py")
         self.assertIn("def _initialize_source_binding(node, context):", menu_src)
         self.assertIn("node[\"ace_source_id\"]", menu_src)
         self.assertIn("bl_label = \"Input\"", menu_src)
+        self.assertIn("bl_label = \"Output\"", menu_src)
+        self.assertIn("(\"utilities\", \"src_specs\", \"Input Info\")", menu_src)
+        self.assertIn("(\"utilities\", \"preview_sink\", None)", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_source_mngmt\"", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_delta\"", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_stream\"", menu_src)
         self.assertIn("layout.menu(\"ACE_MT_utilities\"", menu_src)
+        self.assertIn("layout.menu(\"ACE_MT_output\"", menu_src)
         self.assertNotIn("managed automatically per audio source", menu_src)
+
+    def test_node_and_menu_icons_cover_minimal_refresh_contract(self):
+        vars_src = _read("vars.py")
+        for node_key, icon_name in (
+            ("src", "SOUND"),
+            ("frequency_splitter", "MOD_WAVE"),
+            ("midside_splitter", "NODE"),
+            ("attackrelease_splitter", "NODE"),
+            ("chromagram", "NODE"),
+            ("auto_component_splitter", "NODE"),
+            ("rms", "GRAPH"),
+            ("lufs", "GRAPH"),
+            ("peak", "GRAPH"),
+            ("pitch", "GRAPH"),
+            ("onset", "GRAPH"),
+            ("zero_crossing_rate", "GRAPH"),
+            ("src_specs", "INFO"),
+            ("audio_math", "NODE"),
+            ("logic", "NODE"),
+            ("util_rolling_avg", "GRAPH"),
+            ("stream_accumulator", "GRAPH"),
+        ):
+            self.assertRegex(
+                vars_src,
+                rf"\"{node_key}\"\s*:\s*\{{[\s\S]*?\"icon\"\s*:\s*\"{icon_name}\"",
+            )
+        for node_key, icon_name in (
+            ("spectral_centroid", "CURVE_NCIRCLE"),
+            ("spectral_flux", "SEQ_HISTOGRAM"),
+            ("stereo_width", "ORIENTATION_GIMBAL"),
+            ("stereo_balance", "VIEW_PAN"),
+            ("preview_sink", "PLAY_SOUND"),
+        ):
+            self.assertRegex(
+                vars_src,
+                rf"\"{node_key}\"\s*:\s*\{{[\s\S]*?\"icon\"\s*:\s*\"{icon_name}\"",
+            )
+
+        menu_src = _read("gn_menu.py")
+        self.assertIn("layout.menu(\"ACE_MT_source_mngmt\", icon='SOUND')", menu_src)
+        self.assertIn("layout.menu(\"ACE_MT_delta\", icon='MOD_WAVE')", menu_src)
+        self.assertIn("layout.menu(\"ACE_MT_stream\", icon='GRAPH')", menu_src)
+        self.assertIn("layout.menu(\"ACE_MT_utilities\", icon='NODE')", menu_src)
+        self.assertIn("layout.menu(\"ACE_MT_output\", icon='PLAY_SOUND')", menu_src)
 
     def test_shader_editor_add_menu_uses_shader_group_nodes(self):
         menu_src = _read("gn_menu.py")
@@ -488,17 +539,17 @@ class TestRegressionFindings(unittest.TestCase):
     def test_shader_sinks_use_attribute_nodes(self):
         shader_src = _read("shader_tree.py")
         self.assertIn("ShaderNodeAttribute", shader_src)
-        self.assertIn("NodeFrame", shader_src)
         self.assertIn("_set_attr_node_defaults", shader_src)
         self.assertIn("_HELPER_NODE_OWNER_KEY", shader_src)
         self.assertIn("_HELPER_ATTR_NAME_KEY", shader_src)
-        self.assertIn("_HELPER_FRAME_OWNER_KEY", shader_src)
         self.assertIn("cleanup_tree_helper_nodes", shader_src)
         self.assertIn("_ensure_helper_link", shader_src)
         self.assertIn("_rebuild_helper_attr_node", shader_src)
         self.assertIn("_sync_helper_node_layout", shader_src)
         self.assertIn("attribute_type", shader_src)
         self.assertIn("sink_node[cls._OUTPUT_NODE_KIND_KEY]", shader_src)
+        self.assertNotIn("_ensure_helper_frame", shader_src)
+        self.assertNotIn("_HELPER_FRAME_OWNER_KEY", shader_src)
         # Driver bridge must be fully removed.
         self.assertNotIn("driver_add(", shader_src)
         self.assertNotIn("driver_remove(", shader_src)
@@ -1008,7 +1059,7 @@ class TestRegressionFindings(unittest.TestCase):
     def test_object_property_sink_updates_tag_depsgraph(self):
         proxy_src = _read("proxy_management.py")
         self.assertIn("obj.update_tag(refresh={\"OBJECT\", \"DATA\"})", proxy_src)
-        self.assertIn("elif frontend_kind == FRONTEND_KIND_SHADER:", proxy_src)
+        self.assertIn("obj.update_tag(refresh={\"OBJECT\"})", proxy_src)
 
     def test_scene_and_membership_signatures_ignore_discovery_order_metadata(self):
         engine_src = _read("audio_engine.py")
@@ -1362,10 +1413,7 @@ class TestRegressionFindings(unittest.TestCase):
         proxy_src = _read("proxy_management.py")
         self.assertIn("def _shader_tree_writes_are_unsafe(", proxy_src)
         self.assertIn("def _defer_shader_tree_sync(", proxy_src)
-        self.assertIn("def sync_managed_source_tree(tree: bpy.types.NodeTree, sources, scene=None):", proxy_src)
-        self.assertIn("ACEProxyManager._shader_tree_writes_are_unsafe(scene)", proxy_src)
-        self.assertIn("ACEProxyManager._defer_shader_tree_sync(tree, scene)", proxy_src)
-        self.assertIn("ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)", proxy_src)
+        self.assertNotIn("def sync_managed_source_tree(tree: bpy.types.NodeTree, sources, scene=None):", proxy_src)
 
         menu_src = _read("gn_menu.py")
         self.assertIn("ACEAudioEngine._structural_tree_writes_allowed(", menu_src)

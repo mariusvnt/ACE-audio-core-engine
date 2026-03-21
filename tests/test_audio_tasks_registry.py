@@ -522,13 +522,11 @@ class TestAudioTasksRegistry(unittest.TestCase):
 
         rms_task = atr.RMSTask("rms_node", {}, block_size=256)
         bal_task = atr.StereoBalanceTask("balance_node", {}, block_size=256)
-        vec_task = atr.StereoVectorTask("vector_node", {}, block_size=256)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", RuntimeWarning)
             rms_val = float(rms_task.process({0: chunk}))
             bal_val = float(bal_task.process({0: chunk}))
-            vec_val = vec_task.process({0: chunk})
 
         overflow_warnings = [
             w for w in caught
@@ -538,10 +536,12 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertTrue(np.isfinite(rms_val))
         self.assertGreater(rms_val, 0.0)
         self.assertTrue(np.isfinite(bal_val))
-        self.assertEqual(len(vec_val), 3)
-        self.assertTrue(np.isfinite(float(vec_val[0])))
-        self.assertTrue(np.isfinite(float(vec_val[1])))
-        self.assertTrue(np.isfinite(float(vec_val[2])))
+
+    def test_logic_task_thresholds_scalar_stream(self):
+        task = atr.LogicTask("logic_node", {}, block_size=128)
+        self.assertEqual(float(task.process({0: 0.25, 1: 0.5})), 0.0)
+        self.assertEqual(float(task.process({0: 0.5, 1: 0.5})), 1.0)
+        self.assertEqual(float(task.process({0: 0.75, 1: 0.5})), 1.0)
 
     def test_lufs_task_reports_floor_for_silence(self):
         task = atr.LUFSTask("lufs_node", {}, block_size=512)

@@ -25,6 +25,7 @@ from ..core.abstract_tree import (
     ACEAbstractOutputLink,
     ACEFrontendRef,
     ACEConsumerIntent,
+    ace_node_is_writeable_output,
 )
 from ..core.id_management import ACEIdManager
 from .. import utils
@@ -262,6 +263,10 @@ class ACEDummyNodeFactory:
             required_inputs = {"Value", "Attribute ID", "Proxy Object"}
             required_outputs = {"Accumulated"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        if node_type == "logic":
+            required_inputs = {"Value", "Threshold", "Attribute ID", "Proxy Object"}
+            required_outputs = {"Logic"}
+            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
         stream_nodes = (
             ACE_NODES.get("stream", {}).get("nodes", {})
             if isinstance(ACE_NODES.get("stream", {}), dict)
@@ -342,6 +347,8 @@ class ACEDummyNodeFactory:
         if category == "utilities" and node_type == "util_rolling_avg":
             return ("Attribute ID",)
         if category == "utilities" and node_type == "stream_accumulator":
+            return ("Attribute ID",)
+        if category == "utilities" and node_type == "logic":
             return ("Attribute ID",)
         return ()
 
@@ -769,6 +776,54 @@ class ACEDummyNodeFactory:
                 if len(outputs_def) > 0:
                     ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
 
+            elif node_type == 'logic':
+                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
+                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
+
+                attr_id_idx = len(inputs_def)
+
+                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
+
+                proxy_obj_idx = len(inputs_def) + 1
+
+                math_add = ng.nodes.new('ShaderNodeMath')
+                math_add.operation = 'ADD'
+                math_add.location = (-560, -160)
+
+                math_mul = ng.nodes.new('ShaderNodeMath')
+                math_mul.operation = 'MULTIPLY'
+                math_mul.inputs[1].default_value = 0.0
+                math_mul.location = (-380, -160)
+
+                ng.links.new(input_node.outputs[0], math_add.inputs[0])
+                ng.links.new(input_node.outputs[1], math_add.inputs[1])
+                ng.links.new(math_add.outputs[0], math_mul.inputs[0])
+
+                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+                obj_info.transform_space = 'ORIGINAL'
+                obj_info.location = (-300, 0)
+                if 'As Instance' in obj_info.inputs:
+                    obj_info.inputs['As Instance'].default_value = False
+
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.data_type = 'FLOAT'
+                named_attr.location = (-100, 150)
+
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.data_type = 'FLOAT'
+                sample_idx.domain = 'POINT'
+                sample_idx.location = (150, 0)
+
+                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
+                if len(outputs_def) > 0:
+                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
+
         # =====================================================================
         # FALLBACK (unknown node type)
         # =====================================================================
@@ -1118,22 +1173,7 @@ class ACEDummyTreeReader:
 
     @staticmethod
     def _is_writeable_output_node(node: Optional[ACEAbstractNode]) -> bool:
-        if node is None:
-            return False
-        is_stream = str(getattr(node, "category", "")) == "stream"
-        is_specs = (
-            str(getattr(node, "category", "")) == "utilities"
-            and str(getattr(node, "type", "")) == "src_specs"
-        )
-        is_rolling_avg = (
-            str(getattr(node, "category", "")) == "utilities"
-            and str(getattr(node, "type", "")) == "util_rolling_avg"
-        )
-        is_stream_accumulator = (
-            str(getattr(node, "category", "")) == "utilities"
-            and str(getattr(node, "type", "")) == "stream_accumulator"
-        )
-        return bool(is_stream or is_specs or is_rolling_avg or is_stream_accumulator)
+        return ace_node_is_writeable_output(node)
 
     def _emit_consumer_intents(self):
         sink_kind = (
@@ -1561,8 +1601,6 @@ class ACEDummyTreeReader:
                     attr_name = val.strip()
                     if attr_name:
                         params[f"attr_id_out_{attr_out_idx}"] = attr_name
-                    is_custom = bool(attr_name)
-                    params[f"attr_id_custom_out_{attr_out_idx}"] = bool(is_custom)
 
         # Custom parameters (e.g., Audio Math operation)
         op_value = bl_node.get("ace_op")

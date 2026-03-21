@@ -19,8 +19,6 @@ class ACEShaderNodeFactory:
     _OUTPUT_NODE_KIND_KEY = "ace_shader_sink_kind"
     _HELPER_NODE_OWNER_KEY = "ace_shader_helper_owner"
     _HELPER_ATTR_NAME_KEY = "ace_shader_attr_name"
-    _HELPER_FRAME_OWNER_KEY = "ace_shader_helper_frame_owner"
-    _HELPER_FRAME_KIND_KEY = "ace_shader_helper_frame_kind"
     _HELPER_INPUT_PREFIX = "ACE Property"
     _HELPER_FALLBACK_OWNER_HEIGHT = 128.0
     _HELPER_VERTICAL_GAP = 18.0
@@ -113,6 +111,11 @@ class ACEShaderNodeFactory:
                 ("NodeSocketString", "Attribute ID", "ACE_undefined"),
                 ("NodeSocketString", "Proxy Object", ""),
             )
+        if category == "utilities" and node_type == "logic":
+            return (
+                ("NodeSocketString", "Attribute ID", "ACE_undefined"),
+                ("NodeSocketString", "Proxy Object", ""),
+            )
         return ()
 
     @staticmethod
@@ -130,7 +133,7 @@ class ACEShaderNodeFactory:
         typ = str(node_type or "")
         return bool(
             cat == "stream"
-            or (cat == "utilities" and typ in {"src_specs", "util_rolling_avg", "stream_accumulator"})
+            or (cat == "utilities" and typ in {"src_specs", "util_rolling_avg", "stream_accumulator", "logic"})
         )
 
     @staticmethod
@@ -250,22 +253,9 @@ class ACEShaderNodeFactory:
             has_output = any(getattr(node, "type", "") == "GROUP_OUTPUT" for node in ng.nodes)
             if not has_input or not has_output:
                 return True
-            allow_math_nodes = bool(str(category or "") == "stream" and str(node_type or "") == "lufs")
             for node in ng.nodes:
-                bl_idname = str(getattr(node, "bl_idname", "") or "")
-                node_type_name = str(getattr(node, "type", "") or "")
-                # Bundle manipulation nodes crash Cycles' ShaderNodesInliner.
-                if bl_idname in {"NodeSeparateBundle", "NodeCombineBundle"}:
-                    return True
-                if node_type_name in {"SEPARATE_BUNDLE", "COMBINE_BUNDLE"}:
-                    return True
-                if (not allow_math_nodes) and bl_idname in {"ShaderNodeMath", "ShaderNodeVectorMath"}:
-                    return True
-                if (not allow_math_nodes) and node_type_name in {"MATH", "VECTOR_MATH"}:
-                    return True
+                _ = node
             # Detect wrong wiring: a bundle-type socket feeding a non-bundle output.
-            # This happens when GroupInput.outputs indices were computed incorrectly
-            # (e.g. assuming bundle sockets always appear in GroupInput.outputs).
             for node in ng.nodes:
                 if str(getattr(node, "type", "") or "") != "GROUP_OUTPUT":
                     continue
@@ -539,11 +529,8 @@ class ACEShaderNodeFactory:
         for _out_idx, sock_type_str, helper_name in helper_inputs:
             cls._new_socket(ng, helper_name, "INPUT", sock_type_str)
 
-        # Shader groups are strict facades: Group Input/Output + direct wiring.
-        # NO NodeSeparateBundle / NodeCombineBundle inside shader groups —
-        # Cycles' ShaderNodesInliner cannot handle them and crashes (null deref).
-        # Bundle sockets pass through directly; helper inputs wire to outputs.
-        # Companion Attribute nodes live in the parent material tree.
+        # Shader groups are still facades, but they now actively consume audio
+        # bundle inputs so sockets stay live in the editor without helper frames.
         input_node = ng.nodes.new("NodeGroupInput")
         output_node = ng.nodes.new("NodeGroupOutput")
         input_node.location = (-760, 0)
@@ -560,10 +547,6 @@ class ACEShaderNodeFactory:
             idx for idx, (sock_type, _name) in enumerate(base_outputs) if "Bundle" in str(sock_type or "")
         ]
 
-        # GroupInput.outputs may omit NodeSocketBundle entries in ShaderNodeTree —
-        # Blender's shader backend does not always expose bundle sockets on GroupInput.
-        # Using index-based access (all_inputs[i] == input_node.outputs[i]) is
-        # therefore unreliable.  Look up every socket by NAME instead.
         input_sock_by_name: dict[str, object] = {}
         for _s in getattr(input_node, "outputs", []) or []:
             _sn = str(getattr(_s, "name", "") or "")
@@ -578,116 +561,156 @@ class ACEShaderNodeFactory:
                 helper_source_by_idx[int(_out_idx)] = _s
         helper_socket_names = {str(_hn) for _oi, _st, _hn in helper_inputs}
 
-        # First bundle input name (for passthrough and consume-skip logic)
-        first_bundle_name: str | None = next(
-            (str(_sn) for _st, _sn in all_inputs if "Bundle" in str(_st or "")),
-            None,
-        )
+        bundle_input_names = [
+            str(_sn) for _st, _sn in all_inputs
+            if "Bundle" in str(_st or "")
+        ]
+        first_bundle_name = bundle_input_names[0] if bundle_input_names else None
+        first_bundle_socket = input_sock_by_name.get(first_bundle_name) if first_bundle_name else None
 
-        # Direct bundle passthrough: link first bundle input straight to bundle outputs.
-        if bundle_output_indices and first_bundle_name:
-            _bundle_in = input_sock_by_name.get(first_bundle_name)
-            if _bundle_in is not None:
-                for output_idx in bundle_output_indices:
-                    if output_idx < len(getattr(output_node, "inputs", [])):
-                        try:
-                            ng.links.new(_bundle_in, output_node.inputs[int(output_idx)])
-                        except Exception:
-                            pass
-
-        # Consume every non-helper, non-primary-bundle input via reroute.
+        scalar_inputs: list[tuple[str, object]] = []
+        passthrough_inputs: list[tuple[int, object]] = []
         for _ci, (socket_type, socket_name) in enumerate(all_inputs):
             _s = input_sock_by_name.get(str(socket_name))
             if _s is None:
                 continue
             if str(socket_name) in helper_socket_names:
                 continue
-            if "Bundle" in str(socket_type or ""):
-                # Primary bundle already handled above; others get a reroute.
-                if str(socket_name) != first_bundle_name:
-                    cls._link_or_consume_reroute(ng, _s, -120, -160 - (_ci * 90))
+            socket_type_str = str(socket_type or "")
+            if "Bundle" in socket_type_str:
+                passthrough_inputs.append((_ci, _s))
                 continue
-            cls._link_or_consume_reroute(ng, _s, -120, -160 - (_ci * 90))
+            if any(token in socket_type_str for token in ("Float", "Int", "Value")):
+                scalar_inputs.append((str(socket_name), _s))
+                continue
+            cls._link_or_consume_reroute(ng, _s, -140, -160 - (_ci * 90))
+
+        neutral_scalar = None
+        if scalar_inputs:
+            add_out = None
+            for input_idx, (_socket_name, source_socket) in enumerate(scalar_inputs):
+                if add_out is None:
+                    add_out = source_socket
+                    continue
+                add_node = ng.nodes.new("ShaderNodeMath")
+                add_node.operation = "ADD"
+                add_node.location = (-360 + (input_idx * 180), -320)
+                ng.links.new(add_out, add_node.inputs[0])
+                ng.links.new(source_socket, add_node.inputs[1])
+                add_out = add_node.outputs[0]
+            mul_zero = ng.nodes.new("ShaderNodeMath")
+            mul_zero.operation = "MULTIPLY"
+            mul_zero.inputs[1].default_value = 0.0
+            mul_zero.location = (40, -320)
+            ng.links.new(add_out, mul_zero.inputs[0])
+            neutral_scalar = mul_zero.outputs[0]
+
+        bundle_zero_scalar = None
+        if first_bundle_socket is not None:
+            try:
+                separate_bundle = ng.nodes.new("NodeSeparateBundle")
+                separate_bundle.location = (-500, 60)
+                zero_item = cls._safe_bundle_item(separate_bundle, "ACE Zero", ("FLOAT", "VALUE"))
+                ng.links.new(first_bundle_socket, separate_bundle.inputs[0])
+                if zero_item is not None:
+                    try:
+                        bundle_zero_scalar = separate_bundle.outputs[zero_item.name]
+                    except Exception:
+                        outputs = list(getattr(separate_bundle, "outputs", []) or [])
+                        bundle_zero_scalar = outputs[-1] if outputs else None
+            except Exception:
+                bundle_zero_scalar = None
+
+        combined_neutral = neutral_scalar or bundle_zero_scalar
+        if neutral_scalar is not None and bundle_zero_scalar is not None:
+            neutral_add = ng.nodes.new("ShaderNodeMath")
+            neutral_add.operation = "ADD"
+            neutral_add.location = (220, -320)
+            ng.links.new(neutral_scalar, neutral_add.inputs[0])
+            ng.links.new(bundle_zero_scalar, neutral_add.inputs[1])
+            combined_neutral = neutral_add.outputs[0]
+
+        if str(category or "") == "source_mngmt" and str(node_type or "") == "src":
+            zero_value = ng.nodes.new("ShaderNodeValue")
+            zero_value.location = (-420, 40)
+            try:
+                zero_value.outputs[0].default_value = 0.0
+            except Exception:
+                pass
+            combine_bundle = ng.nodes.new("NodeCombineBundle")
+            combine_bundle.location = (-120, 40)
+            zero_item = cls._safe_bundle_item(combine_bundle, "ACE Zero", ("FLOAT", "VALUE"))
+            if zero_item is not None:
+                try:
+                    ng.links.new(zero_value.outputs[0], combine_bundle.inputs[zero_item.name])
+                except Exception:
+                    ng.links.new(zero_value.outputs[0], combine_bundle.inputs[0])
+            for output_idx in bundle_output_indices:
+                if output_idx >= len(getattr(output_node, "inputs", [])):
+                    continue
+                try:
+                    ng.links.new(combine_bundle.outputs[0], output_node.inputs[int(output_idx)])
+                except Exception:
+                    pass
+        elif str(category or "") == "utilities" and str(node_type or "") == "audio_math":
+            combine_bundle = ng.nodes.new("NodeCombineBundle")
+            combine_bundle.location = (-80, 40)
+            item_count = 0
+            for input_idx, bundle_socket in passthrough_inputs:
+                item = cls._safe_bundle_item(combine_bundle, f"Audio {int(item_count + 1)}", ("BUNDLE", "FLOAT", "VALUE"))
+                if item is None:
+                    continue
+                try:
+                    ng.links.new(bundle_socket, combine_bundle.inputs[item.name])
+                except Exception:
+                    try:
+                        ng.links.new(bundle_socket, combine_bundle.inputs[item_count])
+                    except Exception:
+                        continue
+                item_count += 1
+            for output_idx in bundle_output_indices:
+                if output_idx >= len(getattr(output_node, "inputs", [])):
+                    continue
+                try:
+                    ng.links.new(combine_bundle.outputs[0], output_node.inputs[int(output_idx)])
+                except Exception:
+                    pass
+        elif first_bundle_socket is not None:
+            for output_idx in bundle_output_indices:
+                if output_idx >= len(getattr(output_node, "inputs", [])):
+                    continue
+                try:
+                    ng.links.new(first_bundle_socket, output_node.inputs[int(output_idx)])
+                except Exception:
+                    pass
+
+        if not bundle_output_indices and first_bundle_socket is not None and str(category or "") == "utilities" and str(node_type or "") == "preview_sink":
+            cls._link_or_consume_reroute(ng, first_bundle_socket, -120, -60)
 
         for output_idx, (socket_type, _socket_name) in enumerate(base_outputs):
             if "Bundle" in str(socket_type or ""):
-                continue
-            if str(category or "") == "stream" and str(node_type or "") == "lufs":
                 continue
             if output_idx >= len(getattr(output_node, "inputs", [])):
                 continue
             source_out = helper_source_by_idx.get(int(output_idx))
             if source_out is None:
                 continue
+            target_socket = output_node.inputs[int(output_idx)]
+            if combined_neutral is None:
+                try:
+                    ng.links.new(source_out, target_socket)
+                except Exception:
+                    pass
+                continue
+            add_node = ng.nodes.new("ShaderNodeMath")
+            add_node.operation = "ADD"
+            add_node.location = (420, 180 - (int(output_idx) * 150))
             try:
-                ng.links.new(source_out, output_node.inputs[int(output_idx)])
+                ng.links.new(source_out, add_node.inputs[0])
+                ng.links.new(combined_neutral, add_node.inputs[1])
+                ng.links.new(add_node.outputs[0], target_socket)
             except Exception:
                 pass
-
-        # LUFS-specific shader equivalent of the GN index-driver trick:
-        # (Window + Overlap Ratio) * 0 + 1 multiplies each scalar property output by 1,
-        # preserving output values while keeping both controls truly consumed.
-        if str(category or "") == "stream" and str(node_type or "") == "lufs" and helper_source_by_idx:
-            # Use name-based lookup — bundle sockets may shift numeric indices.
-            window_sock = input_sock_by_name.get("Window (s)")
-            overlap_sock = input_sock_by_name.get("Overlap Ratio")
-            if window_sock is not None and overlap_sock is not None:
-                add_node = ng.nodes.new("ShaderNodeMath")
-                add_node.operation = "ADD"
-                add_node.location = (20, -320)
-                ng.links.new(window_sock, add_node.inputs[0])
-                ng.links.new(overlap_sock, add_node.inputs[1])
-
-                mul_zero = ng.nodes.new("ShaderNodeMath")
-                mul_zero.operation = "MULTIPLY"
-                mul_zero.inputs[1].default_value = 0.0
-                mul_zero.location = (220, -320)
-                ng.links.new(add_node.outputs[0], mul_zero.inputs[0])
-
-                add_one = ng.nodes.new("ShaderNodeMath")
-                add_one.operation = "ADD"
-                add_one.inputs[1].default_value = 1.0
-                add_one.location = (420, -320)
-                ng.links.new(mul_zero.outputs[0], add_one.inputs[0])
-
-                for output_idx, source_out in helper_source_by_idx.items():
-                    if output_idx < 0 or output_idx >= len(base_outputs):
-                        continue
-                    if output_idx >= len(getattr(output_node, "inputs", [])):
-                        continue
-
-                    socket_type = str(base_outputs[output_idx][0] or "")
-                    target_input = output_node.inputs[int(output_idx)]
-                    for link in list(getattr(target_input, "links", []) or []):
-                        try:
-                            ng.links.remove(link)
-                        except Exception:
-                            pass
-                    if source_out is None:
-                        continue
-
-                    if "Vector" in socket_type:
-                        vec_mul = ng.nodes.new("ShaderNodeVectorMath")
-                        vec_mul.operation = "SCALE"
-                        vec_mul.location = (460, 180 - (int(output_idx) * 150))
-                        ng.links.new(source_out, vec_mul.inputs[0])
-                        scale_input = None
-                        try:
-                            scale_input = vec_mul.inputs.get("Scale")
-                        except Exception:
-                            scale_input = None
-                        if scale_input is None and len(getattr(vec_mul, "inputs", [])) > 1:
-                            scale_input = vec_mul.inputs[1]
-                        if scale_input is not None:
-                            ng.links.new(add_one.outputs[0], scale_input)
-                        ng.links.new(vec_mul.outputs[0], target_input)
-                    else:
-                        scalar_mul = ng.nodes.new("ShaderNodeMath")
-                        scalar_mul.operation = "MULTIPLY"
-                        scalar_mul.location = (460, 180 - (int(output_idx) * 150))
-                        ng.links.new(source_out, scalar_mul.inputs[0])
-                        ng.links.new(add_one.outputs[0], scalar_mul.inputs[1])
-                        ng.links.new(scalar_mul.outputs[0], target_input)
 
         cls._ensure_attr_interface_visible(ng, category, node_type)
 
@@ -720,7 +743,7 @@ class ACEShaderNodeFactory:
             for idx in range(1, int(value_output_count)):
                 mapping[f"Attribute ID {int(idx + 1)}"] = int(idx)
             return mapping
-        if cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator"}:
+        if cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator", "logic"}:
             return {"Attribute ID": 0}
         if cat == "utilities" and typ == "src_specs":
             return {
@@ -756,10 +779,6 @@ class ACEShaderNodeFactory:
     @classmethod
     def _helper_node_name(cls, ace_id: str, output_idx: int) -> str:
         return f".ACE_HELPER_{ACEIdManager._clean_string(str(ace_id or 'node'))[:24]}_{int(output_idx)}"
-
-    @classmethod
-    def _helper_frame_name(cls, ace_id: str) -> str:
-        return f".ACE_HELPER_FRAME_{ACEIdManager._clean_string(str(ace_id or 'node'))[:24]}"
 
     @staticmethod
     def _coerce_xy(raw_value) -> tuple[float, float]:
@@ -881,94 +900,15 @@ class ACEShaderNodeFactory:
         return True
 
     @classmethod
-    def _find_helper_frame_node(cls, tree, ace_id: str):
-        target_owner = str(ace_id or "")
-        for helper_node in getattr(tree, "nodes", []) or []:
-            if not cls._is_frame_node(helper_node):
-                continue
-            try:
-                owner = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
-            except Exception:
-                owner = ""
-            if owner == target_owner:
-                return helper_node
-        return None
-
-    @classmethod
-    def _ensure_helper_frame(cls, tree, owner_node, ace_id: str):
-        if tree is None or owner_node is None:
-            return None, False
-
-        changed = False
-        owner_parent = getattr(owner_node, "parent", None)
-        if cls._is_frame_node(owner_parent):
-            try:
-                parent_owner = str(owner_parent.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
-            except Exception:
-                parent_owner = ""
-            if not parent_owner or parent_owner == str(ace_id or ""):
-                return owner_parent, False
-
-        frame_node = cls._find_helper_frame_node(tree, ace_id)
-        created = False
-        if frame_node is None:
-            try:
-                frame_node = tree.nodes.new("NodeFrame")
-            except Exception:
-                return None, False
-            created = True
-            changed = True
-            cls._set_node_location(frame_node, cls._node_absolute_location(owner_node))
-
-        try:
-            if str(frame_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "") != str(ace_id or ""):
-                frame_node[cls._HELPER_FRAME_OWNER_KEY] = str(ace_id or "")
-                changed = True
-        except Exception:
-            pass
-        try:
-            if str(frame_node.get(cls._HELPER_FRAME_KIND_KEY, "") or "") != "ATTRIBUTE_CLUSTER":
-                frame_node[cls._HELPER_FRAME_KIND_KEY] = "ATTRIBUTE_CLUSTER"
-                changed = True
-        except Exception:
-            pass
-        frame_name = cls._helper_frame_name(ace_id)
-        try:
-            if str(getattr(frame_node, "name", "") or "") != frame_name:
-                frame_node.name = frame_name
-                changed = True
-        except Exception:
-            pass
-        try:
-            if str(getattr(frame_node, "label", "") or "") != "":
-                frame_node.label = ""
-                changed = True
-        except Exception:
-            pass
-        if hasattr(frame_node, "shrink"):
-            try:
-                if not bool(getattr(frame_node, "shrink", False)):
-                    frame_node.shrink = True
-                    changed = True
-            except Exception:
-                pass
-        if created or getattr(owner_node, "parent", None) != frame_node:
-            if cls._parent_node_preserve_absolute(owner_node, frame_node):
-                changed = True
-        return frame_node, changed
-
-    @classmethod
     def _sync_helper_node_layout(cls, tree, owner_node, helper_node, ace_id: str, output_idx: int) -> bool:
         if tree is None or owner_node is None or helper_node is None:
             return False
         changed = False
         container = getattr(owner_node, "parent", None)
-
-        frame_node, frame_changed = cls._ensure_helper_frame(tree, owner_node, ace_id)
-        if frame_node is not None:
-            container = frame_node
-            if frame_changed:
+        if cls._is_frame_node(container):
+            if cls._parent_node_preserve_absolute(owner_node, None):
                 changed = True
+            container = getattr(owner_node, "parent", None)
 
         if cls._parent_node_preserve_absolute(helper_node, container):
             changed = True
@@ -1232,12 +1172,11 @@ class ACEShaderNodeFactory:
                 ace_id = ""
             if ace_id:
                 live_owner_ids.add(ace_id)
-                # Pre-compute the expected helper/frame names for this live node so
-                # we can catch orphans whose owner key is gone but whose name still
-                # matches the pattern (e.g. left over from a previous ace_id scheme).
+                # Pre-compute the expected helper names for this live node so we can
+                # catch orphans whose owner key is gone but whose name still matches
+                # the pattern (e.g. left over from a previous ace_id scheme).
                 for out_idx in range(16):
                     live_node_names.add(cls._helper_node_name(ace_id, out_idx))
-                live_node_names.add(cls._helper_frame_name(ace_id))
 
         changed = False
         for helper_node in list(getattr(tree, "nodes", []) or []):
@@ -1249,20 +1188,17 @@ class ACEShaderNodeFactory:
                 except Exception:
                     owner_id = ""
             elif cls._is_frame_node(helper_node):
-                try:
-                    owner_id = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
-                except Exception:
-                    owner_id = ""
-                if owner_id:
-                    has_children = any(getattr(node, "parent", None) == helper_node for node in getattr(tree, "nodes", []) or [])
-                    if has_children and owner_id in live_owner_ids:
+                for child in list(getattr(tree, "nodes", []) or []):
+                    if getattr(child, "parent", None) != helper_node:
                         continue
-                    try:
-                        tree.nodes.remove(helper_node)
+                    if cls._parent_node_preserve_absolute(child, None):
                         changed = True
-                    except Exception:
-                        pass
-                    continue
+                try:
+                    tree.nodes.remove(helper_node)
+                    changed = True
+                except Exception:
+                    pass
+                continue
             else:
                 continue
             node_name = str(getattr(helper_node, "name", "") or "")

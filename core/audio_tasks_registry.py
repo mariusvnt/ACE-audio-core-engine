@@ -11,11 +11,10 @@ Defines every audio processing node (tasks) used by the engine pipeline:
     ``AutoComponentSplitterTask``.
   - **Stream operators**: ``RMSTask``, ``LUFSTask``, ``PeakTask``, ``PitchTask``,
     ``SpectralCentroidTask``, ``SpectralFluxTask``, ``OnsetTask``,
-    ``ZeroCrossTask``, ``StereoWidthTask``, ``StereoBalanceTask``,
-    ``StereoVectorTask``.
+    ``ZeroCrossTask``, ``StereoWidthTask``, ``StereoBalanceTask``.
   - **Layer-3 preview**: ``PreviewSinkTask`` — time-domain-only biquad filter
     chain; strictly no iFFT/iBFT.
-  - **Utility**: ``RollingAvgTask``, ``StreamAccumulatorTask``, ``AudioMathTask``,
+  - **Utility**: ``RollingAvgTask``, ``StreamAccumulatorTask``, ``LogicTask``, ``AudioMathTask``,
     ``SourceFrontendProcessor``.
 
 All bpy access is forbidden in this module: tasks are evaluated on Stage-B
@@ -62,15 +61,25 @@ _BIQUAD_PYTHON_FALLBACK_WARNED: bool = False
 
 
 def reset_biquad_fallback_warned() -> None:
-    """Reset the one-time Tier-3 biquad fallback warning flag.
+    """Reset per-session module-level state.
 
-    Called by ``ACEAudioEngine.shutdown_all_instances()`` so the warning fires
-    once per engine session rather than once per Python interpreter lifetime.
-    This ensures users are re-warned on a fresh session if Numba and scipy are
-    still absent.
+    Called by ``ACEAudioEngine.shutdown_all_instances()`` on file load and
+    engine restart so that:
+
+    - The Tier-3 biquad fallback warning fires once per session (not once per
+      interpreter lifetime) when Numba and scipy are absent.
+    - The cross-instance BFT spectrum cache is cleared to prevent stale spectra
+      from a previous file being returned when a new file's lineage token and
+      frame index happen to collide with a cached entry.
     """
     global _BIQUAD_PYTHON_FALLBACK_WARNED
     _BIQUAD_PYTHON_FALLBACK_WARNED = False
+    # Clear cross-session spectrum cache.  The cache key includes frame_index
+    # (preventing within-session stale reuse) but not a session token, so a
+    # new file that reuses the same frame range could get a spectrum from the
+    # previous file if the lineage token also collides.
+    with AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE_LOCK:
+        AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.clear()
 
 from .audio_influx import AudioReception, build_live_flow_identifier
 from .. import utils
@@ -768,11 +777,12 @@ class AudioFluxAnalyzer:
     # Cross-instance BFT cache: keyed by (chunk_token, "full_spectrum", frame_index).
     # Shared across all AudioFluxAnalyzer instances so multi-band FrequencySplitter
     # sources pay exactly 1 BFT call per chunk instead of N (one per band).
-    # THREAD-SAFETY NOTE: Each Stage-B worker process is single-threaded (no
-    # internal BLAS thread-pool enabled), so this class-level dict is safe without
-    # a Lock under the current architecture. If worker-internal threading is ever
-    # introduced, protect all mutations with a threading.Lock here.
+    # THREAD-SAFETY: Protected by _GLOBAL_SPECTRUM_CACHE_LOCK.  Under the current
+    # architecture each Stage-B worker process is single-threaded (no internal BLAS
+    # thread-pool), so lock contention is negligible (~1 µs/acquire at 95% hit rate).
+    # The lock also guards the .clear() call in reset_biquad_fallback_warned().
     _GLOBAL_SPECTRUM_CACHE: "OrderedDict[Any, np.ndarray]" = OrderedDict()
+    _GLOBAL_SPECTRUM_CACHE_LOCK: threading.Lock = threading.Lock()
     _GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT = 64
 
     def __init__(self, sample_rate: int, block_size: int):
@@ -970,11 +980,12 @@ class AudioFluxAnalyzer:
         # the lineage-derived chunk_token is stable across frames and the first frame's
         # spectrum would be returned indefinitely, causing constant RMS/centroid outputs.
         global_key = (chunk_token, "full_spectrum", int(chunk.frame_index))
-        global_mag = AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.get(global_key)
-        if global_mag is not None:
-            AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
-            self.cache[spec_key] = global_mag
-            return global_mag
+        with AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE_LOCK:
+            global_mag = AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.get(global_key)
+            if global_mag is not None:
+                AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
+                self.cache[spec_key] = global_mag
+                return global_mag
 
         data, _ = _analysis_signal_for_chunk(chunk)
         # Guard against empty chunks (e.g. from _make_silence_chunk on broken sources)
@@ -1001,14 +1012,15 @@ class AudioFluxAnalyzer:
 
         self.cache[spec_key] = mag
         # Populate global cross-instance cache with LRU eviction.
-        AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE[global_key] = mag
-        AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
-        max_entries = AudioFluxAnalyzer._global_spectrum_cache_limit()
-        while len(AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE) > int(max_entries):
-            try:
-                AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.popitem(last=False)
-            except Exception:
-                break
+        with AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE_LOCK:
+            AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE[global_key] = mag
+            AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
+            max_entries = AudioFluxAnalyzer._global_spectrum_cache_limit()
+            while len(AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE) > int(max_entries):
+                try:
+                    AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.popitem(last=False)
+                except Exception:
+                    break
         if self.bft.is_temporal:
             try:
                 _, rms_arr, zcr_arr = self.bft.get_temporal_data()
@@ -4457,32 +4469,6 @@ class StereoBalanceTask(ACEAudioTask):
         return float(np.clip((r_rms - l_rms) / denom, -1.0, 1.0))
 
 
-class StereoVectorTask(ACEAudioTask):
-    """Time-domain vector summary of stereo energy and balance.
-
-    Output: 3-component FLOAT_VECTOR ``(left_rms, right_rms, balance)``.
-    ``left_rms`` and ``right_rms`` are in [0.0, 1.0].
-    ``balance`` mirrors ``StereoBalanceTask``: -1.0 = full left, +1.0 = full right.
-    Falls back to a mono-derived vector (equal L/R, centre balance) when the
-    input has no stereo data.
-    """
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        analysis_mono, stereo = _analysis_signals_normalized(chunk)
-        if stereo is not None and stereo.shape[0] >= 2:
-            left = stereo[0]
-            right = stereo[1]
-        else:
-            left = analysis_mono
-            right = analysis_mono
-
-        l_rms = _safe_rms(left)
-        r_rms = _safe_rms(right)
-        denom = l_rms + r_rms + 1e-9
-        balance = float(np.clip((r_rms - l_rms) / denom, -1.0, 1.0))
-        return (l_rms, r_rms, balance)
-
-
 def _run_biquad(
     signal: np.ndarray,
     coeffs: Tuple[float, float, float, float, float],
@@ -5266,6 +5252,28 @@ class StreamAccumulatorTask(ACEAudioTask):
         if int(self._accumulator.size) == 1:
             return float(self._accumulator[0])
         return self._accumulator.astype(np.float32, copy=False)
+
+
+class LogicTask(ACEAudioTask):
+    """Binary threshold utility for scalar streams.
+
+    Returns ``1.0`` when ``Value >= Threshold``, else ``0.0``.
+    """
+
+    def process(self, inputs):
+        raw_value = inputs.get(0)
+        if raw_value is None:
+            raw_value = self.parameters.get("in_0", 0.0)
+        raw_threshold = inputs.get(1)
+        if raw_threshold is None:
+            raw_threshold = self.parameters.get("in_1", 0.5)
+        value = self._coerce_scalar(raw_value, 0.0)
+        threshold = self._coerce_scalar(raw_threshold, 0.5)
+        if not np.isfinite(value):
+            value = 0.0
+        if not np.isfinite(threshold):
+            threshold = 0.5
+        return 1.0 if float(value) >= float(threshold) else 0.0
 
 
 class AudioMathTask(ACEAudioTask):

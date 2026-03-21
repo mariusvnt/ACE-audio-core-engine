@@ -61,28 +61,8 @@ def main():
     _assert(bool(proxy_name), "Added source has no proxy object name")
     _assert(bpy.data.objects.get(proxy_name) is not None, "Proxy object was not created")
 
-    sonar = bpy.data.objects.get("ACE_Sonar")
-    _assert(sonar is not None, "ACE_Sonar object was not created")
-    nodes_mod = next((m for m in sonar.modifiers if m.type == 'NODES'), None)
-    _assert(nodes_mod is not None, "ACE_Sonar has no Geometry Nodes modifier")
-    _assert(nodes_mod.node_group is not None, "ACE_Sonar modifier has no node tree")
-    _assert(bool(getattr(nodes_mod.node_group, "is_modifier", False)), "ACE_Sonar node tree is not marked as modifier")
-    source_nodes = [
-        n for n in nodes_mod.node_group.nodes
-        if getattr(n, "type", "") == 'GROUP' and getattr(n, "get", lambda *_: "")("ace_source_id", "") == src.stable_id
-    ]
-    _assert(bool(source_nodes), "No managed source placeholder found in ACE_Sonar tree")
-    sonar_mat = bpy.data.materials.get("ACE_Sonar_Material")
-    _assert(sonar_mat is not None, "ACE_Sonar shader material was not created")
-    _assert(bool(getattr(sonar_mat, "use_nodes", False)), "ACE_Sonar shader material is not node-based")
-    _assert(sonar.active_material == sonar_mat, "ACE_Sonar shader material is not assigned")
-    sonar_shader_tree = getattr(sonar_mat, "node_tree", None)
-    _assert(sonar_shader_tree is not None, "ACE_Sonar shader material has no node tree")
-    shader_source_nodes = [
-        n for n in sonar_shader_tree.nodes
-        if getattr(n, "type", "") == 'GROUP' and getattr(n, "get", lambda *_: "")("ace_source_id", "") == src.stable_id
-    ]
-    _assert(bool(shader_source_nodes), "No managed source placeholder found in ACE_Sonar shader tree")
+    _assert(bpy.data.objects.get("ACE_Sonar") is None, "ACE_Sonar should not be created")
+    _assert(bpy.data.materials.get("ACE_Sonar_Material") is None, "ACE_Sonar material should not be created")
 
     frontend_obj = None
     frontend_mesh = None
