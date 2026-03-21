@@ -177,6 +177,15 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("def _resolve_ui_list_selected_node(", ui_src)
         self.assertIn("def _build_ui_node_lookup_ids(", ui_src)
         self.assertIn("def _ui_node_lookup_id(", ui_src)
+        lookup_body = _slice_between(
+            ui_src,
+            "def _build_ui_node_lookup_ids(",
+            "def _ui_node_lookup_id(",
+            label="_build_ui_node_lookup_ids body",
+        )
+        self.assertIn("shader_frontend_trees = list(ACEAudioEngine._iter_shader_frontend_trees(tree))", lookup_body)
+        self.assertIn("shader_reader = ACEShaderTreeReader(shader_tree)", lookup_body)
+        self.assertIn("reader = ACEShaderTreeReader(tree)", lookup_body)
         self.assertIn("def _parsed_node_has_operator_settings(", ui_src)
         self.assertIn("def _selected_node_has_operator_settings(", ui_src)
         self.assertIn("def _selected_node_description(", ui_src)
@@ -208,6 +217,21 @@ class TestRegressionFindings(unittest.TestCase):
 
         ops_src = _read("n_panel_operators.py")
         self.assertIn("from .n_panel_ui import _resolve_capture_node", ops_src)
+
+    def test_loudness_n_panel_shows_lufs_controls_and_syncs_socket_visibility(self):
+        ui_src = _read("n_panel_ui.py")
+        self.assertIn("def _sync_loudness_node_input_visibility(", ui_src)
+        self.assertIn("def _sync_loudness_tree_input_visibility(", ui_src)
+        self.assertIn("if current_method == \"LUFS\":", ui_src)
+        self.assertIn("text=\"Window (s)\"", ui_src)
+        self.assertIn("text=\"Overlap Ratio\"", ui_src)
+        self.assertIn("sock.hide = desired_hide", ui_src)
+
+        ops_src = _read("n_panel_operators.py")
+        self.assertIn("_sync_loudness_node_input_visibility(node)", ops_src)
+
+        menu_src = _read("gn_menu.py")
+        self.assertIn("_sync_loudness_node_input_visibility(node)", menu_src)
 
     def test_preview_audio_is_gated_to_timeline_playback(self):
         src = _read("audio_engine.py")
@@ -606,27 +630,23 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("!= \"source_mngmt\"", sync_body)
         self.assertIn("for node in nodes", sync_body)
 
-    def test_source_processing_is_forced_each_frame_per_graph(self):
+    def test_source_processing_is_demand_driven_and_legacy_scheduler_removed(self):
         engine_src = _read("audio_engine.py")
-        self.assertIn("if scheduler_mode == \"legacy\":", engine_src)
-        self.assertIn("source_task.get_output(self.current_frame, 0)", engine_src)
-        self.assertIn("if not (node.category == 'source_mngmt' and node.type == 'src')", engine_src)
-        self.assertIn("scheduler_mode: str = \"legacy\"", engine_src)
-        self.assertIn("graph.scheduler_mode = scheduler_mode", engine_src)
-        legacy_body = _slice_between(
-            engine_src,
-            "if scheduler_mode == \"legacy\":",
-            "if preview_allowed:",
-            label="legacy scheduler execute section",
-        )
-        self.assertIn("source_task.get_output(self.current_frame, 0)", legacy_body)
+        tasks_src = _read("audio_tasks_registry.py")
+        self.assertNotIn("if scheduler_mode == \"legacy\":", engine_src)
+        self.assertNotIn("scheduler_mode: str = \"legacy\"", engine_src)
+        self.assertNotIn("graph.scheduler_mode = scheduler_mode", engine_src)
+        self.assertIn("def _compute_required_node_ids_for_source(", engine_src)
+        self.assertIn("build_source_runtime_snapshot", engine_src)
+        self.assertIn("class ACESourceRuntimeSnapshot:", tasks_src)
+        self.assertIn("def build_source_runtime_snapshot(", tasks_src)
+        self.assertIn("def _runtime_snapshot(self) -> ACESourceRuntimeSnapshot:", tasks_src)
 
     def test_perf_and_timeslice_controls_exist(self):
         props_src = _read("properties.py")
         self.assertIn("ace_perf_enabled", props_src)
-        self.assertIn("ace_scheduler_mode", props_src)
+        self.assertNotIn("ace_scheduler_mode", props_src)
         self.assertIn("ace_timeslice_mode", props_src)
-        self.assertIn("default=\"demand\"", props_src)
         self.assertIn("default=\"fixed\"", props_src)
         self.assertIn("ace_parallel_mode", props_src)
         self.assertIn("(\"threads_io\", \"Threads-I/O\"", props_src)
@@ -1073,6 +1093,14 @@ class TestRegressionFindings(unittest.TestCase):
 
     def test_object_property_sink_updates_tag_depsgraph(self):
         proxy_src = _read("proxy_management.py")
+        update_body = _slice_between(
+            proxy_src,
+            "def update_object_property_sinks(",
+            "def prune_consumer_objects(",
+            label="update_object_property_sinks body",
+        )
+        self.assertIn("obj.update_tag(refresh={\"OBJECT\", \"DATA\"})", update_body)
+        self.assertIn("obj.update_tag(refresh={\"OBJECT\"})", update_body)
         self.assertIn("obj.update_tag(refresh={\"OBJECT\", \"DATA\"})", proxy_src)
         self.assertIn("obj.update_tag(refresh={\"OBJECT\"})", proxy_src)
 
@@ -1105,6 +1133,11 @@ class TestRegressionFindings(unittest.TestCase):
         )
         self.assertIn("def _frontend_record_sort_key(", discover_body)
         self.assertIn("for rec in sorted(by_ptr.values(), key=_frontend_record_sort_key):", discover_body)
+        self.assertIn("for shader_tree in self._iter_shader_frontend_trees(tree):", discover_body)
+
+        engine_src = _read("audio_engine.py")
+        self.assertIn("def _iter_shader_frontend_trees(", engine_src)
+        self.assertIn("def _shader_tree_contains_ace_frontend(", engine_src)
 
     def test_depsgraph_handler_tracks_geometry_shader_tree_and_object_frontends(self):
         engine_src = _read("audio_engine.py")
@@ -1121,12 +1154,18 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("seen_targets: set[int] = set()", handler_body)
         self.assertIn("def _queue_recompile_target(tree_obj) -> None:", handler_body)
         self.assertIn("if ACEAudioEngine._tree_is_ace_managed(_id):", handler_body)
+        self.assertIn("ACEAudioEngine._shader_tree_contains_ace_frontend(tree)", handler_body)
         self.assertIn("scene_rebuild_requested = False", handler_body)
-        self.assertIn("if _update_touches_ace_tree(obj):", handler_body)
+        self.assertIn("current_signature = ACEAudioEngine._object_frontend_membership_signature(obj)", handler_body)
+        self.assertIn("compiled_signature = engine._compiled_object_frontend_signature(", handler_body)
+        self.assertIn("and not current_signature", handler_body)
+        self.assertIn("and not compiled_signature", handler_body)
         self.assertIn("if scene_rebuild_requested:", handler_body)
         self.assertIn("engine.request_recompile(None)", handler_body)
         self.assertIn("for target in recompile_targets:", handler_body)
         self.assertIn("engine.request_recompile(target)", handler_body)
+        self.assertIn("def _object_frontend_membership_signature(", engine_src)
+        self.assertIn("def _compiled_object_frontend_signature(", engine_src)
 
     def test_preview_numba_is_forced_when_dependency_is_available(self):
         tasks_src = _read("audio_tasks_registry.py")
@@ -1175,6 +1214,8 @@ class TestRegressionFindings(unittest.TestCase):
         self.assertIn("source_chunks_raw = dict(job.get(\"source_chunks\", {}) or {})", worker_src)
         self.assertIn("def set_source_payloads(", worker_src)
         self.assertIn("source_chunks_shm", worker_src)
+        self.assertNotIn("job.get(\"source_chunk\")", worker_src)
+        self.assertNotIn("\"__default__\"", worker_src)
 
     def test_preview_latency_controls_exist(self):
         props_src = _read("properties.py")
@@ -1197,6 +1238,19 @@ class TestRegressionFindings(unittest.TestCase):
             self.assertIn(sid, scenarios)
             for stage in stages:
                 self.assertIn(stage, scenarios[sid])
+
+    def test_engine_perf_report_uses_exact_frame_metrics(self):
+        report = json.loads(_read("tests/engine_perf_report.json"))
+        strict = dict(dict(report.get("contract", {}) or {}).get("strict_gate", {}) or {})
+        self.assertIn("parallel_exact_frame_hit_rate_min", strict)
+        self.assertIn("parallel_sync_fallback_rate_max", strict)
+        self.assertNotIn("parallel_fresh_result_rate_min", strict)
+
+        scenarios = dict(report.get("scenarios", {}) or {})
+        realtime = dict(dict(dict(scenarios.get("1", {}) or {}).get("processes_dsp", {}) or {}).get("realtime", {}) or {})
+        self.assertIn("parallel_exact_frame_hit_rate", realtime)
+        self.assertIn("parallel_sync_fallback_rate", realtime)
+        self.assertNotIn("parallel_fresh_result_rate", realtime)
 
     def test_engine_perf_harness_exists_for_execute_next_frame_gate(self):
         src = _read("tests/engine_perf_harness.py")

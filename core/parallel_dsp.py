@@ -369,11 +369,10 @@ class _CompiledWorkerGraph:
                 if hasattr(task, "silence_buffer"):
                     task.silence_buffer = np.zeros(bs, dtype=np.float32)
         source_payloads = {str(k): dict(v or {}) for k, v in dict(payloads or {}).items()}
-        legacy_default = source_payloads.get("__default__")
         for src_task in self.source_tasks.values():
             src_payload = source_payloads.get(str(src_task.node_id))
             if not isinstance(src_payload, dict):
-                src_payload = dict(legacy_default or {})
+                src_payload = {}
             src_task.set_chunk(src_payload, frame_id=frame_id, block_size=bs)
 
     def close(self):
@@ -672,10 +671,8 @@ def _resolve_worker_shm_array(cache_key: str, spec: Dict[str, Any]) -> Optional[
 def _resolve_source_payloads(job: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Extract per-source audio payloads from a job dict, resolving SHM references.
 
-    Handles both the legacy single-source ``"source_chunk"`` key and the
-    current multi-source ``"source_chunks"`` dict.  Shared-memory arrays are
-    attached in-process so callers receive plain NumPy views with no extra
-    copies.
+    Shared-memory arrays are attached in-process so callers receive plain
+    NumPy views with no extra copies.
 
     Args:
         job: The raw job dict received by evaluate_parallel_job().
@@ -687,9 +684,6 @@ def _resolve_source_payloads(job: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         RuntimeError: If shared-memory segment resolution fails.
     """
     source_chunks_raw = dict(job.get("source_chunks", {}) or {})
-    if not source_chunks_raw and isinstance(job.get("source_chunk"), dict):
-        # Backward compatibility with legacy one-source payloads.
-        source_chunks_raw = {"__default__": dict(job.get("source_chunk", {}) or {})}
     source_chunks = {
         str(src_id): dict(payload or {})
         for src_id, payload in source_chunks_raw.items()
@@ -815,3 +809,67 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "values": values,
         "elapsed_s": float(max(time.perf_counter() - t0, 0.0)) if t0 is not None else 0.0,
     }
+
+
+def task_serialize_audio_cache(
+    audio_array: np.ndarray,
+    cache_dir: str,
+    sample_rate: int,
+    channels: int,
+) -> Dict[str, Any]:
+    """Serialize captured live-audio chunks to a WAV file on disk.
+
+    Designed to run in a daemon thread or subprocess worker — intentionally
+    bpy-free.  All arguments are plain Python / NumPy types.
+
+    Prefers ``scipy.io.wavfile`` (float32 WAV) when available; falls back to
+    stdlib ``wave`` with int16 conversion so the file is always written even
+    in minimal Python environments.
+
+    Args:
+        audio_array: (N, channels) float32 array of raw captured audio.
+        cache_dir:   Directory where the output file will be created.
+        sample_rate: Sample rate of the audio in Hz.
+        channels:    Number of channels in *audio_array*.
+
+    Returns:
+        ``{"frames_written": int, "output_path": str}`` on success.
+
+    Raises:
+        OSError: if the directory cannot be created or the file cannot be written.
+        ValueError: if *audio_array* has an unexpected number of dimensions.
+    """
+    import os as _os
+    import time as _time
+
+    arr = np.asarray(audio_array, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, max(1, int(channels)))
+    elif arr.ndim != 2:
+        raise ValueError(
+            f"task_serialize_audio_cache: expected 1-D or 2-D array, got shape {arr.shape}"
+        )
+
+    frames_written = int(arr.shape[0])
+    _os.makedirs(cache_dir, exist_ok=True)
+
+    # Millisecond timestamp to avoid collisions on repeated bakes within the same second.
+    ts_ms = int(_time.time() * 1000)
+    out_path = _os.path.join(cache_dir, f"ace_audio_cache_{ts_ms}.wav")
+
+    try:
+        from scipy.io import wavfile as _wavfile  # type: ignore
+        # scipy.io.wavfile.write accepts float32 directly and produces a valid WAV.
+        _wavfile.write(out_path, int(sample_rate), arr)
+    except ImportError:
+        # Fallback: stdlib wave — must convert to int16 (no float WAV support).
+        import wave as _wave
+        arr_i16 = (np.clip(arr, -1.0, 1.0) * 32767.0).astype(np.int16)
+        n_ch = int(arr_i16.shape[1]) if arr_i16.ndim == 2 else 1
+        with _wave.open(out_path, "w") as wf:
+            wf.setnchannels(n_ch)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(int(sample_rate))
+            wf.writeframes(arr_i16.tobytes())
+
+    return {"frames_written": frames_written, "output_path": out_path}

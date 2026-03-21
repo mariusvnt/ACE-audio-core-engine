@@ -1,4 +1,7 @@
+import sys
+import types
 import unittest
+import unittest.mock as mock
 
 try:
     import numpy as np
@@ -6,6 +9,9 @@ except Exception:
     np = None
 
 from module_loader import load_module
+
+# Sentinel distinguishes "key absent from sys.modules" from "key mapped to None".
+_MISSING = object()
 
 
 def _clear_worker_state(mod):
@@ -511,6 +517,328 @@ class TestParallelDSP(unittest.TestCase):
         frames_per_beat_val = float(values["specs:0"])
         self.assertAlmostEqual(frames_per_beat_val, expected_frames_per_beat, places=5,
                                msg="frames_per_beat should reflect injected BPM+FPS, not hardcoded defaults")
+
+
+class TestSerializeAudioCache(unittest.TestCase):
+    """Tests for task_serialize_audio_cache.
+
+    Guardrails enforced by this suite:
+    - The function executes correctly when ``bpy`` is absent from sys.modules.
+    - All disk I/O is mocked so the suite is fast and deterministic.
+    - Both the scipy (float32 WAV) and stdlib wave (int16 fallback) write paths
+      are exercised explicitly.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if np is None:
+            raise unittest.SkipTest("numpy unavailable in this environment")
+        # Reload to pick up task_serialize_audio_cache added in this session.
+        sys.modules.pop("ace_addon_testpkg.parallel_dsp", None)
+        sys.modules.pop("ace_addon_testpkg.audio_tasks_registry", None)
+        sys.modules.pop("ace_addon_testpkg.audio_influx", None)
+        cls.pds = load_module("parallel_dsp")
+        if not hasattr(cls.pds, "task_serialize_audio_cache"):
+            raise unittest.SkipTest(
+                "task_serialize_audio_cache not present in parallel_dsp — skipping"
+            )
+
+    def setUp(self):
+        _clear_worker_state(self.pds)
+
+    def tearDown(self):
+        _clear_worker_state(self.pds)
+
+    # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _fake_scipy():
+        """Build minimal scipy.io.wavfile stubs and return (scipy, io, wavfile, mock_write)."""
+        mock_write = mock.MagicMock(return_value=None)
+        fake_wavfile = types.ModuleType("scipy.io.wavfile")
+        fake_wavfile.write = mock_write
+        fake_scipy_io = types.ModuleType("scipy.io")
+        fake_scipy_io.wavfile = fake_wavfile
+        fake_scipy = types.ModuleType("scipy")
+        fake_scipy.io = fake_scipy_io
+        return fake_scipy, fake_scipy_io, fake_wavfile, mock_write
+
+    def _call_with_scipy_mock(self, arr, cache_dir="/fake/cache", sr=44100, ch=2):
+        """Helper: run task_serialize_audio_cache with mocked scipy path."""
+        fake_scipy, fake_scipy_io, fake_wavfile, mock_write = self._fake_scipy()
+        with mock.patch.dict(sys.modules, {
+            "scipy": fake_scipy,
+            "scipy.io": fake_scipy_io,
+            "scipy.io.wavfile": fake_wavfile,
+        }), mock.patch("os.makedirs"):
+            result = self.pds.task_serialize_audio_cache(
+                audio_array=arr,
+                cache_dir=cache_dir,
+                sample_rate=sr,
+                channels=ch,
+            )
+        return result, mock_write
+
+    # ------------------------------------------------------------------ no-bpy guard
+
+    def test_task_executes_when_bpy_is_masked_in_sys_modules(self):
+        """task_serialize_audio_cache must not touch bpy at call time.
+
+        sys.modules["bpy"] = None simulates a non-Blender Python interpreter.
+        Any accidental ``import bpy`` inside the function would raise ImportError,
+        causing the test to fail.
+        """
+        fake_scipy, fake_scipy_io, fake_wavfile, mock_write = self._fake_scipy()
+        arr = np.ones((256, 2), dtype=np.float32)
+
+        original = sys.modules.get("bpy", _MISSING)
+        try:
+            sys.modules["bpy"] = None  # type: ignore[assignment]
+            with mock.patch.dict(sys.modules, {
+                "scipy": fake_scipy,
+                "scipy.io": fake_scipy_io,
+                "scipy.io.wavfile": fake_wavfile,
+            }), mock.patch("os.makedirs"):
+                result = self.pds.task_serialize_audio_cache(
+                    audio_array=arr,
+                    cache_dir="/fake/dir",
+                    sample_rate=44100,
+                    channels=2,
+                )
+        finally:
+            if original is _MISSING:
+                sys.modules.pop("bpy", None)
+            else:
+                sys.modules["bpy"] = original  # type: ignore[assignment]
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("frames_written", result)
+        self.assertEqual(result["frames_written"], 256)
+        mock_write.assert_called_once()
+
+    def test_module_level_imports_do_not_reference_bpy(self):
+        """parallel_dsp must be importable in an environment without bpy.
+
+        Reload the module with bpy masked and confirm no ImportError is raised.
+        Any module-level ``import bpy`` would cause an ImportError here.
+        """
+        original = sys.modules.get("bpy", _MISSING)
+        try:
+            sys.modules["bpy"] = None  # type: ignore[assignment]
+            # Pop the cached copy to force a fresh load
+            for key in list(sys.modules):
+                if "parallel_dsp" in key or "audio_tasks_registry" in key or "audio_influx" in key:
+                    sys.modules.pop(key, None)
+            try:
+                reloaded = load_module("parallel_dsp")
+            except ImportError as exc:
+                self.fail(
+                    f"parallel_dsp import failed when bpy=None — "
+                    f"module has an unexpected bpy dependency: {exc}"
+                )
+        finally:
+            if original is _MISSING:
+                sys.modules.pop("bpy", None)
+            else:
+                sys.modules["bpy"] = original  # type: ignore[assignment]
+
+        self.assertTrue(callable(getattr(reloaded, "evaluate_parallel_job", None)))
+
+    # ------------------------------------------------------------------ scipy path
+
+    def test_scipy_path_calls_wavfile_write_with_correct_signature(self):
+        """scipy.io.wavfile.write receives (output_path, sample_rate, float32_array)."""
+        arr = np.ones((512, 2), dtype=np.float32) * 0.5
+        result, mock_write = self._call_with_scipy_mock(arr, sr=44100, ch=2)
+
+        self.assertEqual(result["frames_written"], 512)
+        self.assertIn("output_path", result)
+        self.assertTrue(str(result["output_path"]).endswith(".wav"))
+
+        mock_write.assert_called_once()
+        _, call_sr, call_arr = mock_write.call_args[0]
+        self.assertEqual(call_sr, 44100)
+        self.assertEqual(call_arr.shape, (512, 2))
+        self.assertEqual(call_arr.dtype, np.float32)
+
+    def test_frames_written_equals_input_frame_count(self):
+        """Return value frames_written must equal arr.shape[0] regardless of channels."""
+        for n_frames in (64, 512, 1337):
+            arr = np.zeros((n_frames, 2), dtype=np.float32)
+            result, _ = self._call_with_scipy_mock(arr, sr=48000, ch=2)
+            self.assertEqual(
+                result["frames_written"], n_frames,
+                f"frames_written mismatch for input with {n_frames} frames",
+            )
+
+    def test_output_path_is_inside_cache_dir(self):
+        """The returned output_path must be a child of the supplied cache_dir."""
+        cache_dir = "/some/specific/cache/dir"
+        arr = np.zeros((64, 1), dtype=np.float32)
+        result, _ = self._call_with_scipy_mock(arr, cache_dir=cache_dir, sr=44100, ch=1)
+        self.assertTrue(
+            str(result["output_path"]).startswith(cache_dir),
+            f"output_path '{result['output_path']}' is not inside '{cache_dir}'",
+        )
+
+    def test_output_path_filename_contains_wav_extension(self):
+        arr = np.zeros((128, 2), dtype=np.float32)
+        result, _ = self._call_with_scipy_mock(arr)
+        self.assertTrue(
+            result["output_path"].endswith(".wav"),
+            "output file must have a .wav extension",
+        )
+
+    def test_1d_input_is_reshaped_to_mono_before_writing(self):
+        """A 1-D input array must be reshaped to (N, 1) so wavfile.write gets 2-D data."""
+        arr_1d = np.ones(256, dtype=np.float32)
+        result, mock_write = self._call_with_scipy_mock(arr_1d, sr=22050, ch=1)
+
+        self.assertEqual(result["frames_written"], 256)
+        _, _, call_arr = mock_write.call_args[0]
+        self.assertEqual(call_arr.ndim, 2)
+        self.assertEqual(call_arr.shape, (256, 1))
+
+    def test_scipy_path_preserves_stereo_channel_order(self):
+        """Left/right channel data must not be transposed before passing to wavfile.write."""
+        left = np.ones((128, 1), dtype=np.float32)
+        right = np.full((128, 1), 0.5, dtype=np.float32)
+        arr = np.concatenate([left, right], axis=1)  # (128, 2): col0=L, col1=R
+        _, mock_write = self._call_with_scipy_mock(arr, sr=44100, ch=2)
+
+        _, _, call_arr = mock_write.call_args[0]
+        self.assertEqual(call_arr.shape, (128, 2))
+        np.testing.assert_array_almost_equal(call_arr[:, 0], 1.0)
+        np.testing.assert_array_almost_equal(call_arr[:, 1], 0.5)
+
+    # ------------------------------------------------------------------ stdlib wave fallback
+
+    def test_stdlib_wave_fallback_triggered_when_scipy_absent(self):
+        """When scipy is unavailable, the stdlib wave branch runs without error."""
+        written_payloads = []
+
+        class _FakeWaveWriter:
+            """Minimal context-manager stub for wave.open."""
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+            def setnchannels(self, n):
+                self.n_ch = n
+            def setsampwidth(self, n):
+                self.sampwidth = n
+            def setframerate(self, n):
+                self.framerate = n
+            def writeframes(self, data):
+                written_payloads.append(bytes(data))
+
+        arr = np.ones((256, 1), dtype=np.float32) * 0.5
+
+        with mock.patch.dict(sys.modules, {
+            "scipy": None,
+            "scipy.io": None,
+            "scipy.io.wavfile": None,
+        }), mock.patch("os.makedirs"), \
+             mock.patch("wave.open", return_value=_FakeWaveWriter()):
+            result = self.pds.task_serialize_audio_cache(
+                audio_array=arr,
+                cache_dir="/fake/cache",
+                sample_rate=22050,
+                channels=1,
+            )
+
+        self.assertEqual(result["frames_written"], 256)
+        self.assertIn("output_path", result)
+        # The wave writer must have been called exactly once
+        self.assertEqual(len(written_payloads), 1)
+
+    def test_stdlib_wave_fallback_encodes_as_int16(self):
+        """stdlib wave fallback must write int16 PCM data (2 bytes per sample)."""
+        written_payloads = []
+
+        class _CapturingWriter:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def setnchannels(self, n): pass
+            def setsampwidth(self, n): pass
+            def setframerate(self, n): pass
+            def writeframes(self, data): written_payloads.append(bytes(data))
+
+        arr = np.ones((128, 1), dtype=np.float32) * 0.5  # 0.5 → ≈16383 in int16
+
+        with mock.patch.dict(sys.modules, {
+            "scipy": None, "scipy.io": None, "scipy.io.wavfile": None,
+        }), mock.patch("os.makedirs"), \
+             mock.patch("wave.open", return_value=_CapturingWriter()):
+            self.pds.task_serialize_audio_cache(
+                audio_array=arr, cache_dir="/fake", sample_rate=44100, channels=1
+            )
+
+        raw = written_payloads[0]
+        decoded = np.frombuffer(raw, dtype=np.int16)
+        self.assertEqual(len(decoded), 128, "int16 frame count must equal input frames")
+        # 0.5 * 32767 ≈ 16383 (tolerance ±2 for rounding)
+        self.assertAlmostEqual(float(decoded[0]), 0.5 * 32767.0, delta=2.0)
+
+    def test_stdlib_wave_fallback_clips_beyond_unit_range(self):
+        """Values outside [-1, 1] must be clipped before int16 conversion."""
+        written_payloads = []
+
+        class _CapturingWriter:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def setnchannels(self, n): pass
+            def setsampwidth(self, n): pass
+            def setframerate(self, n): pass
+            def writeframes(self, data): written_payloads.append(bytes(data))
+
+        # Mix of over-range and in-range samples
+        arr = np.array([[2.0], [-3.0], [0.5]], dtype=np.float32)
+
+        with mock.patch.dict(sys.modules, {
+            "scipy": None, "scipy.io": None, "scipy.io.wavfile": None,
+        }), mock.patch("os.makedirs"), \
+             mock.patch("wave.open", return_value=_CapturingWriter()):
+            self.pds.task_serialize_audio_cache(
+                audio_array=arr, cache_dir="/fake", sample_rate=44100, channels=1
+            )
+
+        decoded = np.frombuffer(written_payloads[0], dtype=np.int16)
+        self.assertEqual(decoded[0], 32767, "2.0 must clip to max int16 (32767)")
+        self.assertEqual(decoded[1], -32767, "-3.0 must clip to min int16 (-32767)")
+
+    # ------------------------------------------------------------------ error handling
+
+    def test_raises_value_error_on_3d_input(self):
+        """task_serialize_audio_cache must raise ValueError for >2-D input arrays."""
+        arr_3d = np.zeros((4, 8, 2), dtype=np.float32)
+        with self.assertRaises(ValueError):
+            self.pds.task_serialize_audio_cache(
+                audio_array=arr_3d,
+                cache_dir="/tmp",
+                sample_rate=44100,
+                channels=2,
+            )
+
+    def test_makedirs_called_with_exist_ok(self):
+        """os.makedirs must be called with exist_ok=True so concurrent bakes don't race."""
+        fake_scipy, fake_scipy_io, fake_wavfile, _ = self._fake_scipy()
+        with mock.patch.dict(sys.modules, {
+            "scipy": fake_scipy, "scipy.io": fake_scipy_io,
+            "scipy.io.wavfile": fake_wavfile,
+        }), mock.patch("os.makedirs") as mock_makedirs:
+            self.pds.task_serialize_audio_cache(
+                audio_array=np.zeros((64, 1), dtype=np.float32),
+                cache_dir="/some/dir",
+                sample_rate=44100,
+                channels=1,
+            )
+        mock_makedirs.assert_called_once()
+        _, kwargs = mock_makedirs.call_args
+        self.assertTrue(
+            kwargs.get("exist_ok", False),
+            "os.makedirs must be called with exist_ok=True",
+        )
 
 
 if __name__ == "__main__":

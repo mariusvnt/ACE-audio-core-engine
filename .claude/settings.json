@@ -11,7 +11,10 @@
       "Bash(python -m pytest tests/test_regression_findings.py -x -q)",
       "Bash(ls -la *.py)",
       "Bash(python3:*)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(python -m pytest tests/test_audio_influx.py tests/test_parallel_dsp.py tests/test_proxy_management.py -v)",
+      "Bash(python -m unittest discover -s tests -p \"test_audio_influx.py\" -v)",
+      "Bash(python -m unittest test_audio_influx test_parallel_dsp test_proxy_management -v)"
     ],
     "additionalDirectories": [
       "c:\\Users\\mariu\\.claude\\projects\\c--Users-mariu-AppData-Roaming-Blender-Foundation-Blender-5-0-scripts-addons-AudioCore-Engine"

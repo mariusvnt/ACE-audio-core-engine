@@ -372,7 +372,7 @@ class ACEAudioSource(bpy.types.PropertyGroup):
     # --- LIVE SETTINGS ---
     live_latency_ms: bpy.props.IntProperty(                                                                                         # type: ignore
         name="Live Latency",
-        default=10,
+        default=5,
         min=1, max=1000,
         description="Desired latency buffer for live capture (ms)"
     )
@@ -506,15 +506,6 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
         ),
         default=False,
     )
-    ace_scheduler_mode: bpy.props.EnumProperty(                                                                                    # type: ignore
-        name="Scheduler Mode",
-        description="Runtime scheduling policy for source evaluation",
-        items=[
-            ("legacy", "Legacy", "Always tick source nodes each frame"),
-            ("demand", "Demand-Driven", "Evaluate sources only through reachable terminal outputs"),
-        ],
-        default="demand",
-    )
     ace_timeslice_mode: bpy.props.EnumProperty(                                                                                    # type: ignore
         name="Timeslice Mode",
         description="Block-size policy across frame deltas",
@@ -564,6 +555,52 @@ class ACEProjectSettings(bpy.types.PropertyGroup):
             ('LIVE', "Live Stream", "Real-time audio capture"),
         ],
         default='FILE'
+    )
+
+    # ── Visual Output ────────────────────────────────────────────────────────
+    viewport_output_path: bpy.props.StringProperty(                                                                                 # type: ignore
+        subtype='DIR_PATH',
+        name="Output Path",
+        description="Directory to save viewport captures",
+    )
+    viewport_capture_format: bpy.props.EnumProperty(                                                                               # type: ignore
+        items=[('PNG', "PNG", ""), ('JPEG', "JPEG", "")],
+        name="Format",
+        default='PNG',
+    )
+    bound_to_camera_view: bpy.props.BoolProperty(                                                                                  # type: ignore
+        name="Bound to Camera View",
+        default=False,
+    )
+    capture_audio_sources: bpy.props.BoolProperty(                                                                                 # type: ignore
+        name="Capture Audio Sources",
+        description="Cache all incoming audio chunks on viewport replay (useless for file audio sources)",
+    )
+    bake_start_frame: bpy.props.IntProperty(                                                                                       # type: ignore
+        name="Start",
+        default=1,
+        min=1,
+    )
+    bake_end_frame: bpy.props.IntProperty(                                                                                         # type: ignore
+        name="End",
+        default=1000,
+        min=1,
+    )
+    bake_cache_path: bpy.props.StringProperty(                                                                                     # type: ignore
+        subtype='DIR_PATH',
+        name="Cache Path",
+    )
+    is_baked: bpy.props.BoolProperty(                                                                                              # type: ignore
+        name="Is Baked",
+        default=False,
+        options={'HIDDEN'},
+        description="Internal state flag to toggle bake UI layout",
+    )
+    frames_in_memory: bpy.props.IntProperty(                                                                                       # type: ignore
+        name="Frames in memory",
+        default=0,
+        options={'HIDDEN'},
+        description="Read-only status of cached frames",
     )
 
 # ==============================================================================

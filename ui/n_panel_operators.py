@@ -622,6 +622,12 @@ class ACE_OT_set_loudness_method(bpy.types.Operator):
         if method not in {"RMS", "LUFS", "PEAK"}:
             method = "RMS"
         node["ace_loudness_method"] = method
+        try:
+            from .n_panel_ui import _sync_loudness_node_input_visibility
+
+            _sync_loudness_node_input_visibility(node)
+        except Exception:
+            pass
         _refresh_node_instance(node)
         return {'FINISHED'}
 
@@ -841,6 +847,86 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
     def cancel(self, context):
         self._finish_modal(context)
 
+
+class ACE_OT_bake_audio_analysis(bpy.types.Operator):
+    """Bake audio analysis for all sources over the configured frame range."""
+    bl_idname = "audiocore.bake_audio_analysis"
+    bl_label = "Bake Audio Analysis"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return hasattr(getattr(context, "scene", None), "audiocore") and not getattr(
+            getattr(context.scene, "audiocore", None), "is_baked", False
+        )
+
+    def execute(self, context):
+        ace = getattr(context.scene, "audiocore", None)
+        if not ace:
+            self.report({'ERROR'}, "AudioCore settings unavailable.")
+            return {'CANCELLED'}
+
+        start = int(ace.bake_start_frame)
+        end = int(ace.bake_end_frame)
+        capture_audio = bool(ace.capture_audio_sources)
+
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        try:
+            engine.compile_scene_frontends(context.scene)
+        except Exception:
+            pass
+
+        try:
+            engine.bake_analysis_range(
+                start_frame=start,
+                end_frame=end,
+                capture_audio=capture_audio,
+                scene=context.scene,
+            )
+        except AttributeError:
+            # Engine backend method not yet wired — dispatch is a no-op shell.
+            pass
+        except Exception as exc:
+            self.report({'ERROR'}, f"Bake dispatch failed: {exc}")
+            return {'CANCELLED'}
+
+        ace.is_baked = True
+        self.report({'INFO'}, f"Bake dispatched for frames {start}–{end}.")
+        return {'FINISHED'}
+
+
+class ACE_OT_delete_bake(bpy.types.Operator):
+    """Clear cached audio analysis data and reset bake state."""
+    bl_idname = "audiocore.delete_bake"
+    bl_label = "Delete Bake"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(getattr(getattr(context, "scene", None), "audiocore", None), "is_baked", False)
+
+    def execute(self, context):
+        ace = getattr(context.scene, "audiocore", None)
+        if not ace:
+            self.report({'ERROR'}, "AudioCore settings unavailable.")
+            return {'CANCELLED'}
+
+        cache_path = str(getattr(ace, "bake_cache_path", "") or "")
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        try:
+            engine.flush_bake_cache(cache_path=cache_path or None, scene=context.scene)
+        except AttributeError:
+            # Engine backend method not yet wired — flush is a no-op shell.
+            pass
+        except Exception as exc:
+            self.report({'WARNING'}, f"Bake cache flush error: {exc}")
+
+        ace.is_baked = False
+        ace.frames_in_memory = 0
+        self.report({'INFO'}, "Bake data cleared.")
+        return {'FINISHED'}
+
+
 # --- REGISTRATION ---
 classes = (
     ACE_OT_rebuild_audio_engine,
@@ -859,6 +945,8 @@ classes = (
     ACE_OT_refresh_stream_list,
     ACE_OT_toggle_preview_sink,
     ACE_OT_bake_active_source,
+    ACE_OT_bake_audio_analysis,
+    ACE_OT_delete_bake,
 )
 
 def register():

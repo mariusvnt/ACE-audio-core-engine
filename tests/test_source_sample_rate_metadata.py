@@ -24,7 +24,6 @@ class TestSourceSampleRateMetadata(unittest.TestCase):
     @staticmethod
     def _settings(sample_rate_cap: str):
         return types.SimpleNamespace(
-            ace_scheduler_mode="demand",
             ace_file_working_sample_rate=str(sample_rate_cap),
         )
 

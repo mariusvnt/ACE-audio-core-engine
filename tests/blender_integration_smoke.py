@@ -40,7 +40,7 @@ def main():
     _assert(ace is not None, "Scene.audiocore pointer is missing")
     eng_settings = getattr(ace, "engine_settings", None)
     _assert(eng_settings is not None, "Engine settings pointer is missing")
-    _assert(str(getattr(eng_settings, "ace_scheduler_mode", "")) == "demand", "Default scheduler mode must be demand-driven")
+    _assert(not hasattr(eng_settings, "ace_scheduler_mode"), "Legacy scheduler mode setting should be removed")
     _assert(str(getattr(eng_settings, "ace_timeslice_mode", "")) == "fixed", "Default timeslice mode must be fixed")
     _assert(str(getattr(eng_settings, "ace_parallel_mode", "")) == "processes_dsp", "Default parallel mode must be processes_dsp")
     _assert(bool(getattr(eng_settings, "ace_perf_enabled", True)) is False, "Performance metrics must be disabled by default")

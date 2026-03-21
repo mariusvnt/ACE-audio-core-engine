@@ -1,5 +1,7 @@
 import unittest
 import warnings
+import threading
+import types
 
 from module_loader import load_module
 
@@ -396,9 +398,84 @@ class TestAudioTasksRegistry(unittest.TestCase):
         task._last_live_retry_ts = 10.0 ** 12
 
         chunk = task._read_next_block_sync()
+        task._flush_pending_ctx_writes()
 
         self.assertIsNone(chunk)
         self.assertEqual(task.source_context.live_status, task.last_error)
+
+    def test_source_prefetch_thread_uses_runtime_snapshot_instead_of_ctx(self):
+        class GuardedSource:
+            def __init__(self):
+                self.off_thread_access = []
+
+            def __getattribute__(self, name):
+                if name in {"off_thread_access", "__class__", "__dict__", "__getattribute__"} or name.startswith("_"):
+                    return object.__getattribute__(self, name)
+                if threading.current_thread() is not threading.main_thread():
+                    object.__getattribute__(self, "off_thread_access").append(str(name))
+                    raise RuntimeError(f"off-thread access to guarded source field: {name}")
+                raise AttributeError(name)
+
+        class DummyReception:
+            def __init__(self):
+                self.reader = object()
+                self.kind = "file_reader"
+                self._cursor_sample = 0
+                self._eof = False
+
+            def seek(self, sample_idx):
+                self._cursor_sample = int(sample_idx)
+                return True
+
+            def read_block(self, block_size):
+                mono = np.ones(int(block_size), dtype=np.float32)
+                self._cursor_sample += int(block_size)
+                return mono, None, 48000
+
+            def close(self):
+                return None
+
+        task = atr.SourceTask("src_node", {}, block_size=64)
+        task.source_context = GuardedSource()
+        task.engine_settings = GuardedSource()
+        task.source_runtime_snapshot = atr.build_source_runtime_snapshot(
+            types.SimpleNamespace(
+                source_type="FILE",
+                filepath="prefetch.wav",
+                flow_identifier="",
+                live_latency_ms=10,
+                live_udp_sample_rate=0,
+                live_transport="",
+                live_device_selector="",
+                live_udp_port=0,
+                live_udp_channels=0,
+                enable_preprocessing=False,
+                freq_min=0.0,
+                freq_max=0.0,
+                envelope_attack=0.0,
+                envelope_release=0.0,
+                sample_rate=48000,
+                duration=1.0,
+            ),
+            types.SimpleNamespace(ace_timeslice_mode="fixed"),
+        )
+        task.scene_fps = 24.0
+        task.sample_rate = 48000
+        task.initialized = True
+        task.source_ready = True
+        task.reception = DummyReception()
+        task._last_config_signature = task._config_signature()
+        task._prefetch_target_frame = 8
+
+        try:
+            task._start_prefetch_thread()
+            task._prefetch_trigger.set()
+            self.assertTrue(task._prefetch_ready.wait(timeout=1.0))
+            self.assertIsNotNone(task._prefetch_chunk)
+            self.assertEqual(task.source_context.off_thread_access, [])
+            self.assertEqual(task.engine_settings.off_thread_access, [])
+        finally:
+            task._stop_prefetch_thread()
 
     def test_source_specs_outputs_frames_per_beat(self):
         class DummyCtx:

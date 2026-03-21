@@ -7,7 +7,9 @@ import hashlib
 import os
 import socket
 import tempfile
+import threading
 import wave
+from collections import deque
 from queue import Queue, Empty, Full
 from typing import Any, Dict, Optional, Tuple
 
@@ -256,6 +258,16 @@ class AudioReception:
         self._live_last_capture_sample: int = 0
         self._live_last_capture_block_samples: int = 0
 
+        # ── Viewport-replay audio cache (capture_audio_sources feature) ─────
+        # Accumulates raw (frames, channels) float32 arrays from LIVE streams.
+        # _cache_active is read in the sounddevice OS-thread callback: the CPython
+        # GIL makes bool attribute reads atomic, so no lock is needed on the
+        # hot read path.  deque.append() is likewise GIL-safe for single-producer
+        # use.  The lock guards multi-step operations (clear, snapshot).
+        self._cache_lock: threading.Lock = threading.Lock()
+        self._cache_active: bool = False
+        self._cache_buffer: deque = deque()  # each entry: (N, channels) float32
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -427,6 +439,50 @@ class AudioReception:
         out_mono = mono.astype(np.float32, copy=False)
         self._cursor_sample += int(out_mono.shape[-1])
         return out_mono, stereo, self.sample_rate
+
+    # ------------------------------------------------------------------
+    # Audio cache API (viewport-replay / capture_audio_sources)
+    # ------------------------------------------------------------------
+
+    def start_caching(self) -> None:
+        """Activate raw-audio accumulation for LIVE sources.
+
+        No-op for FILE sources — caching is only meaningful for real-time
+        streams.  Any previously buffered data is discarded so each bake
+        run starts with a clean buffer.
+        """
+        if self.source_type != "LIVE":
+            return
+        with self._cache_lock:
+            self._cache_buffer.clear()
+            self._cache_active = True
+
+    def stop_caching(self) -> None:
+        """Stop accumulation without discarding already-buffered data."""
+        with self._cache_lock:
+            self._cache_active = False
+
+    def get_cached_buffer(self) -> Optional[np.ndarray]:
+        """Return a single (N_total, channels) float32 array of all cached chunks.
+
+        Takes a GIL-safe snapshot of the deque so the callback can still
+        append while concatenation runs.  Returns None if the buffer is empty
+        or if concatenation fails.
+        """
+        with self._cache_lock:
+            chunks = list(self._cache_buffer)
+        if not chunks:
+            return None
+        try:
+            return np.concatenate(chunks, axis=0)
+        except Exception:
+            return None
+
+    def clear_cache(self) -> None:
+        """Discard all buffered chunks and deactivate caching."""
+        with self._cache_lock:
+            self._cache_active = False
+            self._cache_buffer.clear()
 
     # ------------------------------------------------------------------
     # Internal helpers (file IO)
@@ -1306,6 +1362,14 @@ class AudioReception:
         # Cache latest usable block for future fallback
         self._last_live_block = (mono, stereo, self.sample_rate)
 
+        # Accumulate raw multi-channel block for viewport-replay capture.
+        # data_arr is (frames, channels) float32 — the pre-downmix original.
+        if self._cache_active and data_arr is not None:
+            try:
+                self._cache_buffer.append(data_arr.astype(np.float32, copy=False))
+            except Exception:
+                pass
+
         return mono.astype(np.float32, copy=False), stereo, self.sample_rate
 
     def _read_live_udp_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
@@ -1394,6 +1458,23 @@ class AudioReception:
         sr = int(self._live_udp_sample_rate or self.sample_rate or 44100)
         self.sample_rate = sr
         self.channels = channels
+
+        # Accumulate raw block for viewport-replay capture.
+        # Rebuild the (frames, channels) interleaved array from what we have.
+        if self._cache_active:
+            try:
+                if channels >= 2 and mono is not None:
+                    # `arr` is (frames, channels) — defined in the channels>1 branch above.
+                    _frames = int(mono.shape[0])
+                    _raw_mc = raw[:_frames * channels].reshape(_frames, channels)
+                    self._cache_buffer.append(_raw_mc.astype(np.float32, copy=False))
+                elif mono is not None:
+                    self._cache_buffer.append(
+                        mono.reshape(-1, 1).astype(np.float32, copy=False)
+                    )
+            except Exception:
+                pass
+
         self._last_live_block = (
             mono.astype(np.float32, copy=False),
             stereo.astype(np.float32, copy=False) if stereo is not None else None,

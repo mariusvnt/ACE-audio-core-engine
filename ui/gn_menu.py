@@ -455,6 +455,13 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         # 4. Initialize deterministic attribute IDs for stream/spec nodes
         self._initialize_auto_attr_ids(node, context)
         self._show_attr_id_socket_values(node)
+        if self.category_key == "stream" and self.node_type_key == "loudness":
+            try:
+                from .n_panel_ui import _sync_loudness_node_input_visibility
+
+                _sync_loudness_node_input_visibility(node)
+            except Exception:
+                pass
         if tree_type == "ShaderNodeTree":
             try:
                 from ..core.audio_engine import ACEAudioEngine

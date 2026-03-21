@@ -1370,6 +1370,12 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 "ACE_FRONTEND_GN": geometry_snapshot,
                 "ACE_FRONTEND_SHADER": shader_snapshot,
             },
+            _undo_recovery_active=lambda: False,
+            _is_animation_playing=lambda: False,
+        )
+        engine._compiled_object_frontend_signature = types.MethodType(
+            self.engine_mod.ACEAudioEngine._compiled_object_frontend_signature,
+            engine,
         )
         settings = types.SimpleNamespace(auto_compile=True)
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
@@ -1435,7 +1441,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=material)]),
             )
-            engine.discover_scene_frontends = lambda _scene: []
+            obj.modifiers = []
+            obj.material_slots = []
             self.engine_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=obj)]),
@@ -1449,6 +1456,63 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(engine.requested[2], shader_tree)
         self.assertIsNone(engine.requested[3])
         self.assertEqual(len(engine.requested), 4)
+
+    def test_depsgraph_handler_rebuilds_for_transform_only_new_shader_consumer_object(self):
+        shader_snapshot = self.engine_mod._ACECompiledFrontendSnapshot(
+            uid="ACE_FRONTEND_SHADER",
+            kind="SHADER_NODES",
+            tree_name="ACE_Shader",
+            tree_bl_idname="ShaderNodeTree",
+            owner_keys=("Sphere",),
+            consumer_object_names=("Sphere",),
+            material_name="ACE Mat",
+            tree_ptr=707,
+        )
+        engine = types.SimpleNamespace(
+            requested=[],
+            _consume_geometry_eval_updates=lambda *_args, **_kwargs: None,
+            request_recompile=lambda tree: engine.requested.append(tree),
+            _compiled_frontend_snapshots={
+                "ACE_FRONTEND_SHADER": shader_snapshot,
+            },
+            _undo_recovery_active=lambda: False,
+            _is_animation_playing=lambda: False,
+        )
+        engine._compiled_object_frontend_signature = types.MethodType(
+            self.engine_mod.ACEAudioEngine._compiled_object_frontend_signature,
+            engine,
+        )
+        settings = types.SimpleNamespace(auto_compile=True)
+        scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
+
+        shader_tree = _FakeTree("ACE_Shader", "ShaderNodeTree", 707, ace_frontend_uid="ACE_FRONTEND_SHADER")
+        material = _FakeMaterial("ACE Mat", shader_tree)
+        new_obj = _FakeObject(
+            "Cube",
+            material_slots=[_FakeMaterialSlot(material)],
+        )
+        new_obj.bl_idname = "Object"
+        update = types.SimpleNamespace(
+            id=new_obj,
+            is_updated_geometry=False,
+            is_updated_shading=False,
+            is_updated_transform=True,
+        )
+
+        orig_ensure = self.engine_mod.ACEAudioEngine.ensure_instance
+        orig_get = self.engine_mod.ACEAudioEngine.get_instance
+        try:
+            self.engine_mod.ACEAudioEngine.ensure_instance = classmethod(lambda cls, _scene=None: engine)
+            self.engine_mod.ACEAudioEngine.get_instance = classmethod(lambda cls, _scene=None: engine)
+            self.engine_mod.depsgraph_update_handler(
+                scene,
+                types.SimpleNamespace(updates=[update]),
+            )
+        finally:
+            self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
+            self.engine_mod.ACEAudioEngine.get_instance = orig_get
+
+        self.assertEqual(engine.requested, [None])
 
     def test_frame_change_handler_keeps_runtime_alive_when_render_writes_are_unsafe(self):
         calls = []

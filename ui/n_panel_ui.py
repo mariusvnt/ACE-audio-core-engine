@@ -59,12 +59,14 @@ _has_ace_nodes_in_trees: bool = False
 # --- ACE node presence detection (for Active ACE Instances panel) ---
 
 def _tree_has_ace_nodes(tree) -> bool:
-    """Return True if *tree* contains at least one node with an ``ace_id`` custom property."""
+    """Return True when *tree* directly or indirectly hosts an ACE frontend."""
     if tree is None:
         return False
-    for node in getattr(tree, "nodes", []) or []:
-        if node.get("ace_id"):
-            return True
+    tree_type = str(getattr(tree, "bl_idname", "") or "")
+    if tree_type == "ShaderNodeTree":
+        return bool(ACEAudioEngine._iter_shader_frontend_trees(tree))
+    if tree_type == "GeometryNodeTree":
+        return bool(ACEAudioEngine._tree_has_ace_nodes(tree))
     return False
 
 
@@ -209,7 +211,7 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
                     continue
                 if fallback is None:
                     fallback = tree
-                if ACEAudioEngine._tree_has_ace_nodes(tree):
+                if _tree_has_ace_nodes(tree):
                     return (tree, fallback)
         return (None, fallback)
 
@@ -236,7 +238,7 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
             seen_ptrs.add(tree_ptr)
             if fallback is None:
                 fallback = tree
-            if ACEAudioEngine._tree_has_ace_nodes(tree):
+            if _tree_has_ace_nodes(tree):
                 return (tree, fallback)
         return (None, fallback)
 
@@ -246,7 +248,7 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
         nonlocal fallback
         if tree is None or not _is_supported_tree(tree):
             return None
-        if ACEAudioEngine._tree_has_ace_nodes(tree):
+        if _tree_has_ace_nodes(tree):
             return tree
         if fallback is None:
             fallback = tree
@@ -671,29 +673,52 @@ def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
     if not tree:
         return {}
 
+    def _merge_reader_lookup(source_tree, source_reader, dest: dict[str, str]) -> None:
+        node_id_by_ptr = getattr(source_reader, "_node_id_by_ptr", {}) or {}
+        for candidate in getattr(source_tree, "nodes", []):
+            try:
+                node_ptr = int(candidate.as_pointer())
+            except Exception:
+                node_ptr = id(candidate)
+            abstract_id = str(node_id_by_ptr.get(node_ptr, "") or "")
+            if not abstract_id:
+                continue
+            try:
+                blender_id = str(candidate.get("ace_id", "") or "")
+            except Exception:
+                blender_id = ""
+            if blender_id and ACEIdManager.parse_node_id(blender_id):
+                dest[abstract_id] = blender_id
+
     if reader is None:
-        try:
-            reader = ACEDummyTreeReader(tree)
-            reader.build()
-        except Exception:
-            return {}
+        tree_type = str(getattr(tree, "bl_idname", "") or "")
+        if tree_type == "ShaderNodeTree":
+            lookup_ids: dict[str, str] = {}
+            shader_frontend_trees = list(ACEAudioEngine._iter_shader_frontend_trees(tree))
+            if shader_frontend_trees:
+                for shader_tree in shader_frontend_trees:
+                    try:
+                        shader_reader = ACEShaderTreeReader(shader_tree)
+                        shader_reader.build()
+                    except Exception:
+                        continue
+                    _merge_reader_lookup(shader_tree, shader_reader, lookup_ids)
+                if lookup_ids:
+                    return lookup_ids
+            try:
+                reader = ACEShaderTreeReader(tree)
+                reader.build()
+            except Exception:
+                return {}
+        else:
+            try:
+                reader = ACEDummyTreeReader(tree)
+                reader.build()
+            except Exception:
+                return {}
 
     lookup_ids: dict[str, str] = {}
-    node_id_by_ptr = getattr(reader, "_node_id_by_ptr", {}) or {}
-    for candidate in getattr(tree, "nodes", []):
-        try:
-            node_ptr = int(candidate.as_pointer())
-        except Exception:
-            node_ptr = id(candidate)
-        abstract_id = str(node_id_by_ptr.get(node_ptr, "") or "")
-        if not abstract_id:
-            continue
-        try:
-            blender_id = str(candidate.get("ace_id", "") or "")
-        except Exception:
-            blender_id = ""
-        if blender_id and ACEIdManager.parse_node_id(blender_id):
-            lookup_ids[abstract_id] = blender_id
+    _merge_reader_lookup(tree, reader, lookup_ids)
     return lookup_ids
 
 
@@ -804,6 +829,55 @@ def _selected_node_description(context) -> str:
     if item is None:
         return ""
     return str(getattr(item, "description", "") or "").strip()
+
+
+def _loudness_method(node) -> str:
+    method = str(getattr(node, "get", lambda *_args, **_kwargs: "RMS")("ace_loudness_method", "RMS") or "RMS").upper()
+    return method if method in {"RMS", "LUFS", "PEAK"} else "RMS"
+
+
+def _sync_loudness_node_input_visibility(node) -> bool:
+    """Hide LUFS-only sockets on unified loudness nodes when they are inactive."""
+    if node is None or getattr(node, "type", "") != "GROUP":
+        return False
+    ace_id = str(getattr(node, "get", lambda *_args, **_kwargs: "")("ace_id", "") or "")
+    parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
+    if not parsed or parsed.get("category") != "stream" or parsed.get("type") != "loudness":
+        return False
+
+    show_lufs_controls = _loudness_method(node) == "LUFS"
+    changed = False
+    for sock_name in ("Window (s)", "Overlap Ratio"):
+        sock = next(
+            (candidate for candidate in getattr(node, "inputs", []) if getattr(candidate, "name", "") == sock_name),
+            None,
+        )
+        if sock is None:
+            continue
+        desired_hide = not show_lufs_controls
+        if hasattr(sock, "hide"):
+            try:
+                if bool(getattr(sock, "hide", False)) != desired_hide:
+                    sock.hide = desired_hide
+                    changed = True
+            except Exception:
+                pass
+        if show_lufs_controls and hasattr(sock, "hide_value"):
+            try:
+                if bool(getattr(sock, "hide_value", False)):
+                    sock.hide_value = False
+                    changed = True
+            except Exception:
+                pass
+    return changed
+
+
+def _sync_loudness_tree_input_visibility(tree) -> bool:
+    changed = False
+    for node in getattr(tree, "nodes", []) or []:
+        if _sync_loudness_node_input_visibility(node):
+            changed = True
+    return changed
 
 
 def _draw_selected_node_operator_settings(layout, context) -> bool:
@@ -950,13 +1024,26 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         drew_settings = True
         box = layout.box()
         box.label(text="Loudness", icon="SPEAKER")
-        current_method = str(node.get("ace_loudness_method", "RMS") or "RMS").upper()
-        if current_method not in {"RMS", "LUFS", "PEAK"}:
-            current_method = "RMS"
+        current_method = _loudness_method(node)
         row = box.row(align=True)
         for method_id, label in (("RMS", "RMS"), ("LUFS", "LUFS"), ("PEAK", "Peak")):
             op = row.operator("ace.set_loudness_method", text=label, depress=(current_method == method_id))
             op.method = method_id
+        if current_method == "LUFS":
+            window_sock = next(
+                (sock for sock in getattr(node, "inputs", []) if getattr(sock, "name", "") == "Window (s)"),
+                None,
+            )
+            overlap_sock = next(
+                (sock for sock in getattr(node, "inputs", []) if getattr(sock, "name", "") == "Overlap Ratio"),
+                None,
+            )
+            if window_sock is not None:
+                box.row(align=True).prop(window_sock, "default_value", text="Window (s)")
+            if overlap_sock is not None:
+                box.row(align=True).prop(overlap_sock, "default_value", text="Overlap Ratio")
+            if window_sock is None and overlap_sock is None:
+                box.label(text="LUFS controls are unavailable.", icon="INFO")
 
     return drew_settings
 
@@ -971,6 +1058,7 @@ def _draw_selected_node_description(layout, description: str):
 
 
 def _draw_bake_controls(layout, context):
+    """Legacy per-source bake controls (still used by ACE_PT_capture_influx)."""
     from ..utils import _get_active_source
 
     _, active_source = _get_active_source(context)
@@ -1334,6 +1422,15 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         return
 
     tree = _find_active_node_tree(context, editor_context_only=True)
+    if tree is not None:
+        try:
+            if _sync_loudness_tree_input_visibility(tree):
+                try:
+                    tree.update_tag()
+                except Exception:
+                    pass
+        except Exception:
+            pass
     source_uid = getattr(active_source, "stable_id", "") or ""
     source_proxy = getattr(active_source, "proxy_object_name", "") or ""
     tree_ptr = _tree_pointer(tree)
@@ -1349,12 +1446,20 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
     engine = ACEAudioEngine.get_instance(context.scene)
     engine_abstract = None
     engine_tree_ready = False
+    visible_frontend_uids: set[str] = set()
     if tree and engine:
         tree_ptr = 0
         try:
             tree_ptr = int(tree.as_pointer())
         except Exception:
             tree_ptr = 0
+        candidate_frontend_ptrs = {int(tree_ptr)} if tree_ptr else set()
+        if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
+            candidate_frontend_ptrs.update(
+                int(_tree_pointer(shader_tree))
+                for shader_tree in ACEAudioEngine._iter_shader_frontend_trees(tree)
+                if shader_tree is not None
+            )
         pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
         dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
         dirty_tree_match = bool((tree_ptr and pending_tree_ptr == tree_ptr) or (tree_ptr and tree_ptr in dirty_tree_ptrs))
@@ -1367,11 +1472,18 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             # any compiled tree gets engine_tree_ready = True and uses the
             # merged abstract tree directly instead of falling back to reader.build().
             compiled_frontend_ptrs = set(
-                (getattr(engine, "_compiled_frontend_ptrs", {}) or {}).values()
+                int(ptr or 0)
+                for ptr in (getattr(engine, "_compiled_frontend_ptrs", {}) or {}).values()
+                if int(ptr or 0)
             )
-            if compiled_ptr == int(tree_ptr) or int(tree_ptr) in compiled_frontend_ptrs:
+            if compiled_ptr == int(tree_ptr) or candidate_frontend_ptrs.intersection(compiled_frontend_ptrs):
                 engine_abstract = getattr(engine, "abstract_tree_ref", None)
                 engine_tree_ready = bool(engine_abstract)
+                visible_frontend_uids = {
+                    str(uid)
+                    for uid, ptr in dict(getattr(engine, "_compiled_frontend_ptrs", {}) or {}).items()
+                    if int(ptr or 0) in candidate_frontend_ptrs
+                }
 
     rebuild_topology = bool(
         tree
@@ -1413,14 +1525,41 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         if engine_tree_ready and engine_abstract is not None:
             abstract = engine_abstract
             node_lookup_ids = _build_ui_node_lookup_ids(tree)
+            nodes = list(abstract.nodes.values())
+            if visible_frontend_uids:
+                nodes = [
+                    node for node in nodes
+                    if str(getattr(node, "frontend_uid", "") or "") in visible_frontend_uids
+                ]
         else:
             if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
-                reader = ACEShaderTreeReader(tree)
+                shader_frontend_trees = list(ACEAudioEngine._iter_shader_frontend_trees(tree))
+                if shader_frontend_trees:
+                    node_lookup_ids = _build_ui_node_lookup_ids(tree)
+                    seen_node_ids: set[str] = set()
+                    nodes = []
+                    for shader_tree in shader_frontend_trees:
+                        try:
+                            reader = ACEShaderTreeReader(shader_tree)
+                            partial_abstract = reader.build()
+                        except Exception:
+                            continue
+                        for node in partial_abstract.nodes.values():
+                            node_id = str(getattr(node, "id", "") or "")
+                            if not node_id or node_id in seen_node_ids:
+                                continue
+                            seen_node_ids.add(node_id)
+                            nodes.append(node)
+                else:
+                    reader = ACEShaderTreeReader(tree)
+                    abstract = reader.build()
+                    node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
+                    nodes = list(abstract.nodes.values())
             else:
                 reader = ACEDummyTreeReader(tree)
-            abstract = reader.build()
-            node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
-        nodes = list(abstract.nodes.values())
+                abstract = reader.build()
+                node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
+                nodes = list(abstract.nodes.values())
         if nodes:
             bl_order: dict[str, int] = {}
             if tree:
@@ -2364,11 +2503,11 @@ class ACE_PT_information_streams_description(bpy.types.Panel):
         if description:
             _draw_selected_node_description(self.layout, description)
 
-class ACE_PT_capture_influx(bpy.types.Panel):
-    """Panel providing bake controls for writing stream outputs to f-curves."""
+class ACE_PT_VisualOutput(bpy.types.Panel):
+    """Top-level Visual Output management panel."""
 
-    bl_label = "Baking"
-    bl_idname = "ACE_PT_capture_influx"
+    bl_label = "Visual Output"
+    bl_idname = "ACE_PT_VisualOutput"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
@@ -2380,8 +2519,73 @@ class ACE_PT_capture_influx(bpy.types.Panel):
         return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
 
     def draw(self, context):
+        pass
+
+
+class ACE_PT_CaptureViewport(bpy.types.Panel):
+    """Sub-panel for viewport capture path and format settings."""
+
+    bl_label = "Capture Viewport"
+    bl_idname = "ACE_PT_CaptureViewport"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "AudioCore Engine"
+    bl_parent_id = "ACE_PT_VisualOutput"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
+
+    def draw(self, context):
         layout = self.layout
-        _draw_bake_controls(layout, context)
+        ace = context.scene.audiocore
+        layout.prop(ace, "viewport_output_path", icon='FILE_FOLDER')
+        layout.prop(ace, "viewport_capture_format")
+        layout.prop(ace, "bound_to_camera_view")
+
+
+class ACE_PT_RenderingConfiguration(bpy.types.Panel):
+    """Sub-panel for rendering/bake range and cache configuration."""
+
+    bl_label = "Rendering Configuration"
+    bl_idname = "ACE_PT_RenderingConfiguration"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "AudioCore Engine"
+    bl_parent_id = "ACE_PT_VisualOutput"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
+
+    def draw(self, context):
+        layout = self.layout
+        ace = context.scene.audiocore
+
+        layout.prop(ace, "capture_audio_sources")
+
+        frame_row = layout.row(align=True)
+        frame_row.prop(ace, "bake_start_frame")
+        frame_row.prop(ace, "bake_end_frame")
+
+        layout.label(text=f"Frames in memory: {ace.frames_in_memory}")
+
+        if not ace.is_baked:
+            layout.operator(
+                "audiocore.bake_audio_analysis",
+                text="Bake Audio Analysis",
+                icon="FILE_TICK",
+            )
+        else:
+            bake_row = layout.row(align=True)
+            bake_col = bake_row.row(align=True)
+            bake_col.active = False
+            bake_col.operator("audiocore.bake_audio_analysis", text="Bake")
+            bake_row.operator("audiocore.delete_bake", text="Del Bake", icon="TRASH")
+
+            layout.prop(ace, "bake_cache_path", icon='FILE_FOLDER')
 
 
 class ACE_PT_stream_confluence(bpy.types.Panel):
@@ -2449,7 +2653,9 @@ classes = (
     ACE_PT_sub_tempo_meter,
     ACE_PT_information_streams,
     ACE_PT_information_streams_description,
-    ACE_PT_capture_influx,
+    ACE_PT_VisualOutput,
+    ACE_PT_CaptureViewport,
+    ACE_PT_RenderingConfiguration,
     ACE_PT_stream_confluence,
 )
 

@@ -242,6 +242,36 @@ class ACEProxyManager:
         source_prop.proxy_object_name = ""
 
     # =========================================================================
+    # 2b. SCENE-LEVEL PROPERTY UPDATES
+    # =========================================================================
+
+    @staticmethod
+    def update_frames_in_memory(frames: int, scene=None) -> None:
+        """Write ``scene.audiocore.frames_in_memory`` on the main thread.
+
+        Called by the ``flush_bake_results()`` audio-cache drain path in
+        ``ACEAudioEngine`` after a serialisation worker posts its result.
+        Performs a no-op gracefully when the audiocore property group is
+        unavailable (e.g. during render or on an unregistered scene).
+
+        Args:
+            frames: New value for ``frames_in_memory``.  Clamped to >= 0.
+            scene:  Blender scene to update; resolved via ``_resolve_scene()``
+                    when None.
+        """
+        utils.assert_main_thread("update_frames_in_memory")
+        resolved = ACEProxyManager._resolve_scene(scene)
+        if resolved is None:
+            return
+        ace = getattr(resolved, "audiocore", None)
+        if ace is None:
+            return
+        try:
+            ace.frames_in_memory = max(0, int(frames))
+        except Exception:
+            pass
+
+    # =========================================================================
     # 3. ATTRIBUTE SYNCHRONIZATION / WRITING
     # =========================================================================
 
@@ -689,6 +719,14 @@ class ACEProxyManager:
 
         if changed_values:
             last_vals.update(changed_values)
+            # ShaderNodeAttribute object/uniform lookups stay visually stale
+            # unless the owning Object gets a recalc tag that render sync
+            # treats as an object update. In Blender 5.0, update_tag(refresh=
+            # {"OBJECT"}) maps to ID_RECALC_TRANSFORM, which Cycles uses to
+            # resync object-level attributes during incremental updates.
+            # The depsgraph handler now gates recompiles on frontend
+            # membership signatures, so this no longer forces false scene
+            # rebuilds on steady-state value writes.
             try:
                 if mirror_to_data:
                     obj.update_tag(refresh={"OBJECT", "DATA"})
@@ -737,7 +775,7 @@ class ACEProxyManager:
         keys = set(self.output_defs.keys()) if active_keys is None else set(active_keys)
         for attr_key in keys:
             info = self.output_defs.get(attr_key, {})
-            expected_attr_type = str(info.get("data_type", "FLOAT") or "FLOAT")
+            expected_attr_type = str(info.get("type", "FLOAT") or "FLOAT")
             for binding in list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or []):
                 sink_kind = str(getattr(binding, "sink_kind", "") or "")
                 object_name = str(getattr(binding, "target_object_name", "") or "")

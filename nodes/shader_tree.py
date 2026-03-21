@@ -487,7 +487,7 @@ class ACEShaderNodeFactory:
         for sock_type_str, sock_name in base_outputs:
             cls._new_socket(ng, str(sock_name), "OUTPUT", str(sock_type_str))
 
-        if str(category or "") == "stream" and str(node_type or "") == "lufs":
+        if str(category or "") == "stream" and str(node_type or "") in {"lufs", "loudness"}:
             for item in getattr(getattr(ng, "interface", None), "items_tree", []):
                 if getattr(item, "in_out", None) != "INPUT":
                     continue

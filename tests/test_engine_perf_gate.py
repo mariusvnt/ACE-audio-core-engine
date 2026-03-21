@@ -119,13 +119,13 @@ class TestEnginePerfGate(unittest.TestCase):
                     f"{queue_drop_rate:.3f} > {float(ENGINE_PERF_STRICT_QUEUE_DROP_RATE_MAX):.3f}"
                 ),
             )
-            fresh_result_rate = float(rt.get("parallel_exact_frame_hit_rate", 0.0) or 0.0)
+            exact_hit_rate = float(rt.get("parallel_exact_frame_hit_rate", 0.0) or 0.0)
             self.assertGreaterEqual(
-                fresh_result_rate,
+                exact_hit_rate,
                 float(ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN),
                 msg=(
                     f"Parallel exact-frame hit rate too low sid={sid}: "
-                    f"{fresh_result_rate:.3f} < {float(ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN):.3f}"
+                    f"{exact_hit_rate:.3f} < {float(ENGINE_PERF_STRICT_EXACT_HIT_RATE_MIN):.3f}"
                 ),
             )
             sync_fallback_rate = float(rt.get("parallel_sync_fallback_rate", 0.0) or 0.0)

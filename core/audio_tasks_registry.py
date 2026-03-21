@@ -88,6 +88,146 @@ SAMPLE_RATE = 44100
 MIN_BLOCK_SIZE = 512
 MAX_BLOCK_SIZE = 4096
 
+
+def _normalize_timeslice_mode_token(value: Any) -> str:
+    try:
+        mode = str(value or "fixed").strip().lower()
+    except Exception:
+        mode = "fixed"
+    return mode if mode in {"fixed", "adaptive"} else "fixed"
+
+
+@dataclass(frozen=True)
+class ACESourceRuntimeSnapshot:
+    """Immutable source/runtime config captured on the main thread."""
+
+    source_type: str = ""
+    filepath: str = ""
+    flow_identifier: str = ""
+    live_latency_ms: int = 10
+    live_udp_sample_rate: int = 0
+    live_transport: str = ""
+    live_device_selector: str = ""
+    live_udp_port: int = 0
+    live_udp_channels: int = 0
+    enable_preprocessing: bool = False
+    freq_min: float = 0.0
+    freq_max: float = 0.0
+    envelope_attack: float = 0.0
+    envelope_release: float = 0.0
+    bpm: float = 120.0
+    beats_per_bar: int = 4
+    sample_rate: float = float(SAMPLE_RATE)
+    duration: float = 0.0
+    timeslice_mode: str = "fixed"
+
+
+def build_source_runtime_snapshot(
+    source_context: Optional[Any],
+    engine_settings: Optional[Any] = None,
+) -> ACESourceRuntimeSnapshot:
+    """Capture Blender-owned source/runtime state into plain Python data."""
+
+    ctx = source_context
+    try:
+        source_type = str(getattr(ctx, "source_type", "") or "").strip().upper() if ctx is not None else ""
+    except Exception:
+        source_type = ""
+    try:
+        filepath = str(getattr(ctx, "filepath", "") or "") if ctx is not None else ""
+    except Exception:
+        filepath = ""
+    try:
+        flow_identifier = build_live_flow_identifier(ctx) if ctx is not None else ""
+    except Exception:
+        flow_identifier = ""
+    try:
+        live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx is not None else 10
+    except Exception:
+        live_latency_ms = 10
+    try:
+        live_udp_sample_rate = int(getattr(ctx, "live_udp_sample_rate", 0) or 0) if ctx is not None else 0
+    except Exception:
+        live_udp_sample_rate = 0
+    try:
+        live_transport = str(getattr(ctx, "live_transport", "") or "").strip().upper() if ctx is not None else ""
+    except Exception:
+        live_transport = ""
+    try:
+        live_device_selector = str(getattr(ctx, "live_device_selector", "") or "") if ctx is not None else ""
+    except Exception:
+        live_device_selector = ""
+    try:
+        live_udp_port = int(getattr(ctx, "live_udp_port", 0) or 0) if ctx is not None else 0
+    except Exception:
+        live_udp_port = 0
+    try:
+        live_udp_channels = int(getattr(ctx, "live_udp_channels", 0) or 0) if ctx is not None else 0
+    except Exception:
+        live_udp_channels = 0
+    try:
+        enable_preprocessing = bool(getattr(ctx, "enable_preprocessing", False)) if ctx is not None else False
+    except Exception:
+        enable_preprocessing = False
+    try:
+        freq_min = float(max(getattr(ctx, "freq_min", 0.0) or 0.0, 0.0)) if ctx is not None else 0.0
+    except Exception:
+        freq_min = 0.0
+    try:
+        freq_max = float(max(getattr(ctx, "freq_max", 0.0) or 0.0, 0.0)) if ctx is not None else 0.0
+    except Exception:
+        freq_max = 0.0
+    try:
+        envelope_attack = float(max(getattr(ctx, "envelope_attack", 0.0) or 0.0, 0.0)) if ctx is not None else 0.0
+    except Exception:
+        envelope_attack = 0.0
+    try:
+        envelope_release = float(max(getattr(ctx, "envelope_release", 0.0) or 0.0, 0.0)) if ctx is not None else 0.0
+    except Exception:
+        envelope_release = 0.0
+    try:
+        bpm = float(getattr(ctx, "bpm", 120.0) or 120.0) if ctx is not None else 120.0
+    except Exception:
+        bpm = 120.0
+    try:
+        beats_per_bar = int(getattr(ctx, "beats_per_bar", 4) or 4) if ctx is not None else 4
+    except Exception:
+        beats_per_bar = 4
+    try:
+        sample_rate = float(getattr(ctx, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE) if ctx is not None else float(SAMPLE_RATE)
+    except Exception:
+        sample_rate = float(SAMPLE_RATE)
+    try:
+        duration = float(getattr(ctx, "duration", 0.0) or 0.0) if ctx is not None else 0.0
+    except Exception:
+        duration = 0.0
+    timeslice_mode = _normalize_timeslice_mode_token(
+        getattr(engine_settings, "ace_timeslice_mode", "fixed") if engine_settings is not None else "fixed"
+    )
+
+    return ACESourceRuntimeSnapshot(
+        source_type=source_type,
+        filepath=filepath,
+        flow_identifier=flow_identifier,
+        live_latency_ms=live_latency_ms,
+        live_udp_sample_rate=live_udp_sample_rate,
+        live_transport=live_transport,
+        live_device_selector=live_device_selector,
+        live_udp_port=live_udp_port,
+        live_udp_channels=live_udp_channels,
+        enable_preprocessing=enable_preprocessing,
+        freq_min=freq_min,
+        freq_max=freq_max,
+        envelope_attack=envelope_attack,
+        envelope_release=envelope_release,
+        bpm=bpm,
+        beats_per_bar=max(int(beats_per_bar), 1),
+        sample_rate=sample_rate,
+        duration=duration,
+        timeslice_mode=timeslice_mode,
+    )
+
+
 # Thread-local flag set by PreviewSinkTask.process() to mark the Layer-3 preview
 # call path. _masked_mono_signal() checks this and logs an ERROR on violation since
 # calling iFFT reconstruction from Layer 3 would contaminate the time-domain output.
@@ -1333,6 +1473,7 @@ class ACEAudioTask:
         self.silence_buffer = np.zeros(block_size, dtype=np.float32)
         
         self.source_context = None
+        self.source_runtime_snapshot: Optional[ACESourceRuntimeSnapshot] = None
         self.scene_fps: float = 24.0
         self.scene_frame_start: int = 1
         self.engine_settings = None
@@ -1623,51 +1764,46 @@ class SourceTask(ACEAudioTask):
                 pass
         self._pending_ctx_writes.clear()
 
+    def _runtime_snapshot(self) -> ACESourceRuntimeSnapshot:
+        snapshot = getattr(self, "source_runtime_snapshot", None)
+        if isinstance(snapshot, ACESourceRuntimeSnapshot):
+            return snapshot
+        if threading.current_thread() is threading.main_thread():
+            snapshot = build_source_runtime_snapshot(
+                getattr(self, "source_context", None),
+                getattr(self, "engine_settings", None),
+            )
+            self.source_runtime_snapshot = snapshot
+            return snapshot
+        return build_source_runtime_snapshot(None, None)
+
     def _timeslice_mode_hint(self) -> str:
-        settings = getattr(self, "engine_settings", None)
-        try:
-            mode = str(getattr(settings, "ace_timeslice_mode", "fixed") or "fixed").strip().lower()
-        except Exception:
-            mode = "fixed"
-        if mode not in {"fixed", "adaptive"}:
-            mode = "fixed"
-        return mode
+        return _normalize_timeslice_mode_token(self._runtime_snapshot().timeslice_mode)
 
     def _config_signature(self) -> Tuple[Any, ...]:
-        ctx = self.source_context
-        source_type = str(getattr(ctx, "source_type", "") or "").strip().upper() if ctx else ""
-        filepath = str(getattr(ctx, "filepath", "") or "") if ctx else ""
-        flow_id = build_live_flow_identifier(ctx) if ctx else ""
-        live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx else 10
-        requested_sr = int(getattr(ctx, "live_udp_sample_rate", 0) or 0) if ctx else 0
-        live_transport = str(getattr(ctx, "live_transport", "") or "").strip().upper() if ctx else ""
-        live_device = str(getattr(ctx, "live_device_selector", "") or "") if ctx else ""
-        live_udp_port = int(getattr(ctx, "live_udp_port", 0) or 0) if ctx else 0
-        live_udp_channels = int(getattr(ctx, "live_udp_channels", 0) or 0) if ctx else 0
+        snapshot = self._runtime_snapshot()
         return (
-            source_type,
-            filepath,
-            flow_id,
-            live_latency_ms,
-            requested_sr,
-            live_transport,
-            live_device,
-            live_udp_port,
-            live_udp_channels,
+            snapshot.source_type,
+            snapshot.filepath,
+            snapshot.flow_identifier,
+            snapshot.live_latency_ms,
+            snapshot.live_udp_sample_rate,
+            snapshot.live_transport,
+            snapshot.live_device_selector,
+            snapshot.live_udp_port,
+            snapshot.live_udp_channels,
         )
 
     def _frontend_runtime_config(self) -> Optional[Tuple[float, float, float, float]]:
-        ctx = self.source_context
-        if not ctx or not bool(getattr(ctx, "enable_preprocessing", False)):
+        snapshot = self._runtime_snapshot()
+        if not bool(snapshot.enable_preprocessing):
             return None
-        try:
-            freq_min = float(max(getattr(ctx, "freq_min", 0.0) or 0.0, 0.0))
-            freq_max = float(max(getattr(ctx, "freq_max", 0.0) or 0.0, 0.0))
-            attack_ms = float(max(getattr(ctx, "envelope_attack", 0.0) or 0.0, 0.0))
-            release_ms = float(max(getattr(ctx, "envelope_release", 0.0) or 0.0, 0.0))
-        except Exception:
-            return None
-        return (freq_min, freq_max, attack_ms, release_ms)
+        return (
+            float(max(snapshot.freq_min, 0.0)),
+            float(max(snapshot.freq_max, 0.0)),
+            float(max(snapshot.envelope_attack, 0.0)),
+            float(max(snapshot.envelope_release, 0.0)),
+        )
 
     def _should_materialize_local_frontend(self) -> bool:
         engine = getattr(self, "engine_ref", None)
@@ -1792,13 +1928,14 @@ class SourceTask(ACEAudioTask):
         """Load source audio into memory and prepare analyzers."""
         self.initialized = True
         ctx = self.source_context
+        snapshot = self._runtime_snapshot()
 
-        source_type = getattr(ctx, "source_type", "") if ctx else ""
-        filepath = getattr(ctx, "filepath", "") if ctx else ""
-        flow_id = build_live_flow_identifier(ctx) if ctx else ""
+        source_type = str(snapshot.source_type or "")
+        filepath = str(snapshot.filepath or "")
+        flow_id = str(snapshot.flow_identifier or "")
         if ctx is not None:
             self._pending_ctx_writes["flow_identifier"] = flow_id
-        live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx else 10
+        live_latency_ms = int(snapshot.live_latency_ms or 10)
         target_sample_rate = None
         engine = getattr(self, "engine_ref", None)
         target_sr_resolver = getattr(engine, "_source_task_target_sample_rate", None)
@@ -1820,9 +1957,9 @@ class SourceTask(ACEAudioTask):
             self.sample_rate = self.reception.sample_rate
             self.source_ready = True
             self.last_error = ""
-            if ctx and getattr(ctx, "source_type", "") == "FILE":
+            if ctx is not None and source_type == "FILE":
                 self._pending_ctx_writes["ace_source_error"] = ""
-            if ctx and getattr(ctx, "source_type", "") == "LIVE":
+            if ctx is not None and source_type == "LIVE":
                 self._pending_ctx_writes["live_status"] = ""
             self.live_ready = True
         else:
@@ -1834,14 +1971,14 @@ class SourceTask(ACEAudioTask):
                 if rec is not None and hasattr(rec, "format_error_summary")
                 else (getattr(rec, "last_error", "") if rec is not None else "Source open failed")
             ) or "Source open failed"
-            if ctx and getattr(ctx, "source_type", "") == "LIVE":
+            if ctx is not None and source_type == "LIVE":
                 self._pending_ctx_writes["live_status"] = (
                     getattr(self.reception, "last_error", "") if self.reception else "Live input unavailable"
                 )
             self.reception = None
-            if ctx and getattr(ctx, "source_type", "") == "LIVE":
+            if ctx is not None and source_type == "LIVE":
                 self.live_ready = False
-            if ctx and getattr(ctx, "source_type", "") == "FILE":
+            if ctx is not None and source_type == "FILE":
                 self._pending_ctx_writes["ace_source_error"] = self.last_error
 
         # Recompute block size now that the real sample rate is known
@@ -1875,7 +2012,7 @@ class SourceTask(ACEAudioTask):
                 self._pending_ctx_writes["sample_rate"] = int(self.sample_rate)
                 self._pending_ctx_writes["native_sample_rate"] = int(native_sample_rate)
                 self._pending_ctx_writes["duration"] = duration_val
-                if hasattr(ctx, "live_status") and opened:
+                if opened:
                     self._pending_ctx_writes["live_status"] = ""
             except Exception:
                 pass
@@ -2032,7 +2169,7 @@ class SourceTask(ACEAudioTask):
     def _live_sample_clock_target(self, frame_index: int, latest_capture_sample: int) -> int:
         sr = max(int(self.sample_rate), 1)
         spf = self._samples_per_frame(sr)
-        live_latency_ms = float(getattr(self.source_context, "live_latency_ms", 0.0) or 0.0) if self.source_context else 0.0
+        live_latency_ms = float(self._runtime_snapshot().live_latency_ms or 0.0)
         latency_samples = (live_latency_ms / 1000.0) * float(sr)
         desired_target = float(latest_capture_sample) - latency_samples
 
@@ -2147,9 +2284,7 @@ class SourceTask(ACEAudioTask):
         Falls back to _read_next_block_sync on scrub/seek or first call.
         For LIVE sources: delegates directly to _read_next_block_sync.
         """
-        source_type = str(
-            getattr(getattr(self, "source_context", None), "source_type", "") or ""
-        ).upper()
+        source_type = str(self._runtime_snapshot().source_type or "").upper()
         frame_request = getattr(self, "_current_frame_request", None)
 
         if self._prefetch_enabled and source_type == "FILE" and frame_request is not None:
@@ -2180,6 +2315,7 @@ class SourceTask(ACEAudioTask):
         """Synchronous block read.  May perform file I/O or queue dequeue."""
         t0 = time.perf_counter()
         try:
+            snapshot = self._runtime_snapshot()
             current_signature = self._config_signature()
             if self.initialized and self._last_config_signature is not None and current_signature != self._last_config_signature:
                 # Source IO params changed at runtime: reopen cleanly so readers/analyzers follow.
@@ -2189,7 +2325,7 @@ class SourceTask(ACEAudioTask):
             if self._last_config_signature is None:
                 self._last_config_signature = current_signature
 
-            source_type = str(getattr(self.source_context, "source_type", "") or "").upper() if self.source_context else ""
+            source_type = str(snapshot.source_type or "").upper()
             if source_type != "LIVE" and not self.source_ready:
                 return None
 
@@ -2225,21 +2361,20 @@ class SourceTask(ACEAudioTask):
             if source_type == "LIVE":
                 if (self.reception is None or getattr(self.reception, "kind", "") == "live_stub"):
                     now = time.time()
-                    if hasattr(self.source_context, "live_status"):
+                    if self.source_context is not None:
                         message = (
                             (getattr(self.reception, "last_error", "") if self.reception else "")
                             or str(getattr(self, "last_error", "") or "")
-                            or str(getattr(self.source_context, "live_status", "") or "")
                             or "Live input unavailable"
                         )
-                        self.source_context.live_status = message or "Live input unavailable"
+                        self._pending_ctx_writes["live_status"] = message or "Live input unavailable"
                     if (now - self._last_live_retry_ts) > 2.0:
                         self._load_source()
                     self.live_ready = False
                     return None
-                elif hasattr(self.source_context, "live_status") and getattr(self.source_context, "live_status", ""):
+                elif self.source_context is not None:
                     # Stream recovered, clear any stale warning
-                    self.source_context.live_status = ""
+                    self._pending_ctx_writes["live_status"] = ""
                     self.live_ready = True
 
             mono = None
@@ -2328,7 +2463,7 @@ class SourceTask(ACEAudioTask):
                     mono_raw,
                     stereo_raw,
                 )
-            live_latency_ms = float(getattr(self.source_context, "live_latency_ms", 0.0) or 0.0) if source_type == "LIVE" else 0.0
+            live_latency_ms = float(snapshot.live_latency_ms or 0.0) if source_type == "LIVE" else 0.0
             sr = max(float(self.sample_rate), 1.0)
             block_latency_ms = (float(self.block_size) / sr) * 1000.0
             total_latency_ms = float(max(0.0, live_latency_ms + block_latency_ms))
@@ -2439,6 +2574,7 @@ class SourceSpecsTask(ACEAudioTask):
         # Preserve the audio path
         chunk_in = _ensure_audio_chunk(inputs.get(0), self.block_size)
         ctx = self.source_context
+        snapshot = self._runtime_snapshot()
         if ctx:
             # If the user changed BPM or meter after an automatic estimate, honor
             # that override and stop auto-updates for this source.
@@ -2463,12 +2599,18 @@ class SourceSpecsTask(ACEAudioTask):
             except Exception:
                 pass
         fps = getattr(self, "scene_fps", 24.0)
-        self._maybe_run_long_term_analysis(ctx)
+        self._maybe_run_long_term_analysis(ctx, snapshot)
 
         bpm = float(self._long_term_cache.get("bpm", getattr(ctx, "bpm", 120.0) if ctx else 120.0) or 120.0)
         beats_per_bar = int(getattr(ctx, "beats_per_bar", 4) or 4) if ctx else 4
-        sample_rate = float(getattr(ctx, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE) if ctx else float(SAMPLE_RATE)
-        duration = float(getattr(ctx, "duration", 0.0) or 0.0) if ctx else 0.0
+        sample_rate = (
+            float(getattr(ctx, "sample_rate", snapshot.sample_rate) or snapshot.sample_rate)
+            if ctx else float(snapshot.sample_rate or SAMPLE_RATE)
+        )
+        duration = (
+            float(getattr(ctx, "duration", snapshot.duration) or snapshot.duration)
+            if ctx else float(snapshot.duration or 0.0)
+        )
 
         fps_val = float(fps) if float(fps) > 0.0 else 24.0
         if (
@@ -2499,6 +2641,14 @@ class SourceSpecsTask(ACEAudioTask):
     def close(self):
         self._reset_long_term_analysis_state(clear_target=True)
 
+    def _runtime_snapshot(self) -> ACESourceRuntimeSnapshot:
+        snapshot = getattr(self, "source_runtime_snapshot", None)
+        if isinstance(snapshot, ACESourceRuntimeSnapshot):
+            return snapshot
+        return build_source_runtime_snapshot(
+            getattr(self, "source_context", None),
+            getattr(self, "engine_settings", None),
+        )
 
     @staticmethod
     def _user_overrode_tempo(ctx: Optional[Any]) -> bool:
@@ -3035,8 +3185,12 @@ class SourceSpecsTask(ACEAudioTask):
         if reached_end or self._analysis_total_samples >= max_samples:
             self._finalize_long_term_analysis(ctx)
 
-    def _maybe_run_long_term_analysis(self, ctx: Optional[Any]):
-        target = self.resolve_analysis_target(ctx)
+    def _maybe_run_long_term_analysis(
+        self,
+        ctx: Optional[Any],
+        runtime_snapshot: Optional[ACESourceRuntimeSnapshot] = None,
+    ):
+        target = self.resolve_analysis_target(runtime_snapshot or ctx)
         if target is None:
             self._reset_long_term_analysis_state(clear_target=True)
             return
@@ -5649,7 +5803,6 @@ class ACEAudioGraph:
         self.file_source_task_ids: List[str] = []
         self.block_size: int = 0
         self.source_uid: str = ""
-        self.scheduler_mode: str = "legacy"
         self.timeslice_mode: str = "fixed"
         self.execution_order: List[str] = []
         self.eval_plan_cache: Dict[Tuple[str, ...], List[str]] = {}

@@ -20,10 +20,10 @@
         36,
         50
       ],
-      "parallel_timeouts_max": 0.0,
       "parallel_exceptions_max": 0.0,
       "parallel_queue_drop_rate_max": 0.03,
-      "parallel_fresh_result_rate_min": 0.9
+      "parallel_exact_frame_hit_rate_min": 0.9,
+      "parallel_sync_fallback_rate_max": 0.02
     },
     "sla_topology": {
       "sample_rate_hz": 96000,
@@ -93,7 +93,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 1.0,
@@ -164,7 +168,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 33.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.275
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.275,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 1.0,
@@ -238,7 +246,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 4.0,
@@ -327,7 +339,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 31.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.25833333333333336
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.25833333333333336,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 4.0,
@@ -419,7 +435,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 12.0,
@@ -532,7 +552,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 17.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.14166666666666666
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.14166666666666666,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 12.0,
@@ -648,7 +672,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 24.0,
@@ -761,7 +789,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 26.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.21666666666666667
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.21666666666666667,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 24.0,
@@ -877,7 +909,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 36.0,
@@ -990,7 +1026,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 33.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.2773109243697479
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.2773109243697479,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 36.0,
@@ -1106,7 +1146,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 50.0,
@@ -1219,7 +1263,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 31.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.36904761904761907
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.36904761904761907,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 50.0,
@@ -1337,7 +1385,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 0.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 1.0
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 1.0,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 27.0,
@@ -1432,7 +1484,11 @@
           "parallel_fresh_results": 0.0,
           "parallel_completed_results": 126.0,
           "parallel_accepted_results": 0.0,
-          "parallel_fresh_result_rate": 0.35
+          "parallel_exact_frame_hits": 0.0,
+          "parallel_exact_frame_misses": 0.0,
+          "parallel_exact_frame_hit_rate": 0.35,
+          "parallel_sync_fallbacks": 0.0,
+          "parallel_sync_fallback_rate": 0.0
         },
         "parallel_meta": {
           "parallel_offload_attr_count": 27.0,

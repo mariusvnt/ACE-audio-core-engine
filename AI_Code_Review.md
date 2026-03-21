@@ -51,3 +51,7 @@ Host API Harmony (25 pts): Efficiency of bulk-writing to Blender's geometry attr
 
 Deliverable:
 Conclude with a "Critical Path to Industry Standard" section: a highly prioritized, sequential action plan detailing exactly what code needs to be deleted, rewritten, or refactored to achieve a perfect 100/100 score. Prioritize crash-risks and thread-safety first, followed by Blender API alignment, and finally micro-optimizations.
+
+# Ideas
+
+Change the default live latency buffer to 5 ms.

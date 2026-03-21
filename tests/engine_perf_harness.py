@@ -258,7 +258,6 @@ class _FakeEngineSettings:
     def __init__(self, parallel_mode: str):
         self.auto_compile = True
         self.ace_perf_enabled = True
-        self.ace_scheduler_mode = "demand"
         self.ace_timeslice_mode = "fixed"
         self.ace_parallel_mode = str(parallel_mode)
         self.ace_preview_block_size = "256"
@@ -392,7 +391,6 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     graph = atr.ACEAudioGraph(source, source.proxy_object_name)
     graph.source_uid = source.stable_id
     graph.block_size = 1024
-    graph.scheduler_mode = "demand"
     graph.timeslice_mode = "fixed"
     graph.manual_preview_task_ids = []
     graph.auto_preview_task_ids = []
@@ -504,7 +502,6 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     graph.source_uid = "sla_multi_source"
     graph.source_context = sources[0]
     graph.block_size = 1024
-    graph.scheduler_mode = "demand"
     graph.timeslice_mode = "fixed"
     graph.manual_preview_task_ids = []
     graph.auto_preview_task_ids = []
