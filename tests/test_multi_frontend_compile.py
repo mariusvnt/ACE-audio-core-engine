@@ -986,13 +986,22 @@ class TestMultiFrontendCompile(unittest.TestCase):
         geometry_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 606, ace_frontend_uid="ACE_FRONTEND_GN")
         shader_tree = _FakeTree("ACE_Shader", "ShaderNodeTree", 707, ace_frontend_uid="ACE_FRONTEND_SHADER")
         material = _FakeMaterial("ACE Mat", shader_tree)
-        material.bl_idname = "Material"
+        # As in Blender: ID types carry their type in bl_rna, not bl_idname.
+        material.bl_rna = types.SimpleNamespace(identifier="Material")
         obj = _FakeObject(
             "Cube",
             modifiers=[_FakeModifier("ACE GN", geometry_tree)],
             material_slots=[_FakeMaterialSlot(material)],
         )
-        obj.bl_idname = "Object"
+        obj.bl_rna = types.SimpleNamespace(identifier="Object")
+        # Depsgraph updates hand over evaluated copies; .original is the datablock.
+        evaluated_obj = types.SimpleNamespace(
+            original=obj,
+            bl_rna=obj.bl_rna,
+            name=obj.name,
+            modifiers=[],
+            material_slots=[],
+        )
 
         orig_ensure = self.engine_mod.ACEAudioEngine.ensure_instance
         orig_get = self.engine_mod.ACEAudioEngine.get_instance
@@ -1016,6 +1025,10 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=material)]),
             )
+            self.engine_mod.depsgraph_update_handler(
+                scene,
+                types.SimpleNamespace(updates=[types.SimpleNamespace(id=evaluated_obj)]),
+            )
         finally:
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
             self.engine_mod.ACEAudioEngine.get_instance = orig_get
@@ -1025,7 +1038,10 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(engine.requested[2], geometry_tree)
         self.assertEqual(engine.requested[3], shader_tree)
         self.assertEqual(engine.requested[4], shader_tree)
-        self.assertEqual(len(engine.requested), 5)
+        # The evaluated copy resolves to the original object's trees.
+        self.assertEqual(engine.requested[5], geometry_tree)
+        self.assertEqual(engine.requested[6], shader_tree)
+        self.assertEqual(len(engine.requested), 7)
 
     def test_frame_change_handler_skips_compile_and_sink_work_when_render_writes_are_unsafe(self):
         calls = []

@@ -3890,7 +3890,8 @@ class LUFSTask(ACEAudioTask):
       1. +4 dB high-shelf pre-filter at 1500 Hz (Q = 1/sqrt(2))
       2. RLB high-pass at 38 Hz (Q = 0.5)
 
-    The loudness output is computed from the running windowed mean-square:
+    The loudness output is recomputed every block from the mean-square of the
+    last ``Window (s)`` seconds of weighted signal:
       ``LUFS = -0.691 + 10 * log10(mean_square)``
 
     Output (normalized):
@@ -3898,7 +3899,6 @@ class LUFSTask(ACEAudioTask):
     """
 
     _DEFAULT_WINDOW_S = 0.4
-    _DEFAULT_OVERLAP_RATIO = 0.25
     _MIN_WINDOW_S = 0.05
     _MAX_WINDOW_S = 3.0
 
@@ -3910,13 +3910,11 @@ class LUFSTask(ACEAudioTask):
         self._prefilter_state: List[float] = [0.0, 0.0]
         self._rlb_state: List[float] = [0.0, 0.0]
         self._weighted_energy: np.ndarray = np.zeros(0, dtype=np.float64)
-        self._samples_since_update: int = 0
         self._last_lufs: float = 0.0
         self._last_frame_request: Optional[int] = None
 
     def _reset_temporal_state(self):
         self._weighted_energy = np.zeros(0, dtype=np.float64)
-        self._samples_since_update = 0
         self._last_lufs = 0.0
 
     def _reset_filter_state(self):
@@ -4072,7 +4070,6 @@ class LUFSTask(ACEAudioTask):
         self._rlb_coeffs = self._design_high_pass(sr)
         self._reset_filter_state()
         self._weighted_energy = np.zeros(0, dtype=np.float64)
-        self._samples_since_update = 0
 
     @staticmethod
     def _db_to_unit(db_value: float) -> float:
@@ -4091,7 +4088,7 @@ class LUFSTask(ACEAudioTask):
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
+        frame_idx = utils.as_int(getattr(self, "_current_frame_request", None), -1)
         last_frame = self._last_frame_request
         if last_frame is not None and frame_idx >= 0 and frame_idx < int(last_frame):
             self._reset_temporal_state()
@@ -4108,20 +4105,7 @@ class LUFSTask(ACEAudioTask):
             min_value=self._MIN_WINDOW_S,
             max_value=self._MAX_WINDOW_S,
         )
-        overlap_ratio = self._resolve_seconds(
-            inputs,
-            input_idx=2,
-            param_key="overlap_ratio",
-            fallback=self._DEFAULT_OVERLAP_RATIO,
-            min_value=0.0,
-            max_value=1.0,
-        )
-
         window_samples = max(int(round(window_s * float(sample_rate))), 1)
-        max_overlap_samples = max(window_samples - 1, 0)
-        overlap_samples = int(round(float(overlap_ratio) * float(max_overlap_samples)))
-        overlap_samples = int(np.clip(overlap_samples, 0, max_overlap_samples))
-        hop_samples = max(window_samples - max(overlap_samples, 0), 1)
 
         analysis_mono = _masked_mono_signal(chunk)
         if analysis_mono.size <= 0:
@@ -4140,18 +4124,15 @@ class LUFSTask(ACEAudioTask):
             self._weighted_energy = np.concatenate((self._weighted_energy, energy), axis=0)
             if self._weighted_energy.size > window_samples:
                 self._weighted_energy = self._weighted_energy[-window_samples:]
-        self._samples_since_update += int(energy.size)
 
-        if self._samples_since_update >= hop_samples or self._last_frame_request is None:
-            mean_square = float(np.mean(self._weighted_energy, dtype=np.float64)) if self._weighted_energy.size > 0 else 0.0
-            if (not np.isfinite(mean_square)) or mean_square <= 1e-12:
+        mean_square = float(np.mean(self._weighted_energy, dtype=np.float64)) if self._weighted_energy.size > 0 else 0.0
+        if (not np.isfinite(mean_square)) or mean_square <= 1e-12:
+            lufs = float("-inf")
+        else:
+            lufs = -0.691 + (10.0 * math.log10(mean_square))
+            if not np.isfinite(lufs):
                 lufs = float("-inf")
-            else:
-                lufs = -0.691 + (10.0 * math.log10(mean_square))
-                if not np.isfinite(lufs):
-                    lufs = float("-inf")
-            self._last_lufs = self._db_to_unit(lufs)
-            self._samples_since_update %= hop_samples
+        self._last_lufs = self._db_to_unit(lufs)
 
         if frame_idx >= 0:
             self._last_frame_request = frame_idx
@@ -4174,7 +4155,7 @@ class PeakTask(LUFSTask):
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
+        frame_idx = utils.as_int(getattr(self, "_current_frame_request", None), -1)
         last_frame = self._last_frame_request
         if last_frame is not None and frame_idx >= 0 and frame_idx < int(last_frame):
             self._reset_temporal_state()
@@ -5240,7 +5221,7 @@ class StreamAccumulatorTask(ACEAudioTask):
         value_arr = self._coerce_input_array(raw_value)
 
         try:
-            frame_idx = int(getattr(self, "_current_frame_request", -1) or -1)
+            frame_idx = utils.as_int(getattr(self, "_current_frame_request", None), -1)
         except Exception:
             frame_idx = -1
         manual_reset = self._manual_reset_requested(inputs)

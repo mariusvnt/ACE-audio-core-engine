@@ -10,6 +10,7 @@ started with it as ``BLENDER_USER_SCRIPTS``, and the add-on is enabled through
 
 Usage (from the repo root, with the system Python):
   python tests/run_in_blender.py [--blender PATH] [--script tests/other_script.py]
+                                 [--root OTHER_CHECKOUT] [-- script args]
 """
 
 import argparse
@@ -54,6 +55,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--blender", default="", help="path to the Blender executable")
     parser.add_argument("--script", default=str(DEFAULT_SCRIPT), help="script to run inside Blender")
+    parser.add_argument("--root", default=str(ROOT), help="add-on checkout to enable (default: this one)")
+    parser.add_argument("script_args", nargs="*", help="arguments passed to the script after --")
     args = parser.parse_args()
 
     blender = _find_blender(args.blender)
@@ -61,7 +64,7 @@ def main() -> int:
         addons_dir = Path(tmp) / "addons"
         addons_dir.mkdir()
         link = addons_dir / ADDON_MODULE
-        _link_dir(link, ROOT)
+        _link_dir(link, Path(args.root).resolve())
         env = dict(os.environ, BLENDER_USER_SCRIPTS=tmp, PYTHONDONTWRITEBYTECODE="1")
         cmd = [
             blender,
@@ -71,6 +74,8 @@ def main() -> int:
             "--python-expr", ENABLE_EXPR,
             "--python", args.script,
         ]
+        if args.script_args:
+            cmd += ["--", *args.script_args]
         try:
             result = subprocess.run(cmd, env=env)
         finally:

@@ -145,11 +145,9 @@ ACE_NODES: dict[str, Category] = {
                 "Normalized loudness output in 0..1 "
                 "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
                 "Window sets averaging time: larger values are smoother/slower, "
-                "smaller values react faster. "
-                "Overlap Ratio (0..1) controls update density: "
-                "0 = stepped window updates, 1 = maximally smooth updates."
+                "smaller values react faster. Updates every frame."
             ),
-            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)'), ('NodeSocketFloat', 'Overlap Ratio')],
+            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)')],
             "outputs": [('NodeSocketFloat', 'Loudness')],
             },
             "peak": {

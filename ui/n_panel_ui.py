@@ -1620,7 +1620,7 @@ def _ui_quick_state_key(context, scene, tree) -> str:
     src_idx = -1
     if ace is not None:
         try:
-            src_idx = int(getattr(ace, "active_audio_source_index", -1) or -1)
+            src_idx = utils.as_int(getattr(ace, "active_audio_source_index", None), -1)
         except Exception:
             src_idx = -1
         sources = getattr(ace, "audio_sources", None) or []

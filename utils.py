@@ -47,6 +47,32 @@ def assert_main_thread(context: str = "") -> None:
         log(msg, "ERROR")
 
 
+def as_int(value: Any, default: int) -> int:
+    """Return *value* as an int, or *default* when it is None, empty or not a number.
+
+    Unlike ``int(value or default)``, a real 0 stays 0.
+    """
+    if value is None or value == "":
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
+def as_float(value: Any, default: float) -> float:
+    """Return *value* as a float, or *default* when it is None, empty or not a number.
+
+    Unlike ``float(value or default)``, a real 0.0 stays 0.0.
+    """
+    if value is None or value == "":
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+
+
 def set_debug_logging(enabled: bool):
     """Enable or disable add-on debug logging.
 

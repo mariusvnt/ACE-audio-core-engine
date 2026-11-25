@@ -549,8 +549,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         loudness = task.process({0: chunk})
         self.assertAlmostEqual(float(loudness), 0.0, places=6)
 
-    # Fails until LUFS recomputes every block instead of once per window hop.
-    @unittest.expectedFailure
     def test_lufs_task_increases_with_signal_level(self):
         n = 2048
         sr = 48000
@@ -566,7 +564,23 @@ class TestAudioTasksRegistry(unittest.TestCase):
 
         self.assertGreater(float(high_lufs), float(low_lufs))
 
-    def test_lufs_task_accepts_window_and_overlap_inputs(self):
+    def test_lufs_follows_a_level_change_on_the_next_block(self):
+        n = 1024  # about one frame at 48 kHz / 47 fps
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        tone = np.sin(2.0 * np.pi * 1000.0 * t).astype(np.float32)
+        task = atr.LUFSTask("lufs_node", {}, block_size=n)
+        values = []
+        for frame in range(1, 9):
+            level = 0.05 if frame <= 4 else 0.5
+            task._current_frame_request = frame
+            values.append(float(task.process({0: atr.AudioChunk(level * tone, None, sr, lineage=("src", frame))})))
+        # Each block after the jump moves the output; nothing is held for a hop.
+        self.assertGreater(values[4], values[3])
+        self.assertGreater(values[5], values[4])
+        self.assertGreater(values[6], values[5])
+
+    def test_lufs_task_accepts_window_input(self):
         n = 1024
         sr = 44100
         t = np.arange(n, dtype=np.float32) / float(sr)
@@ -576,7 +590,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
             {
                 0: atr.AudioChunk(signal, None, sr, lineage=("src",)),
                 1: 0.8,   # window seconds
-                2: 0.2,   # overlap ratio (0..1)
             }
         )
         self.assertTrue(np.isfinite(float(loudness)))

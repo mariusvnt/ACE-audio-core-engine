@@ -134,7 +134,7 @@ class ACEDummyNodeFactory:
 
                 if ng:
                     if ACEDummyNodeFactory._node_group_needs_refresh(ng, type_key):
-                        ng.clear()
+                        ng.nodes.clear()
                         ng.interface.clear()
                         ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
                     ACEDummyNodeFactory._ensure_attr_interface_visible(ng, cat_key, type_key)
@@ -180,8 +180,8 @@ class ACEDummyNodeFactory:
 
         ng = bpy.data.node_groups.get(group_name)
         if ng:
-            ng.clear()             
-            ng.interface.clear()   
+            ng.nodes.clear()
+            ng.interface.clear()
         else:
             ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
         
@@ -280,7 +280,13 @@ class ACEDummyNodeFactory:
                 required_inputs.add("Attribute ID")
             for idx in range(1, int(value_output_count)):
                 required_inputs.add(f"Attribute ID {int(idx + 1)}")
-            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+            # Inputs the definition no longer declares (e.g. a removed control)
+            # also make the group stale.
+            return (
+                not required_inputs.issubset(inputs)
+                or not required_outputs.issubset(outputs)
+                or bool(inputs - required_inputs)
+            )
 
         # ── Delta nodes ──────────────────────────────────────────────────────
         # All delta nodes share a single "Audio" input; outputs are fixed named
@@ -413,21 +419,6 @@ class ACEDummyNodeFactory:
                             setattr(item, attr_name, value)
                         except Exception:
                             pass
-                elif name == "Overlap Ratio":
-                    try:
-                        item.default_value = 0.25
-                    except Exception:
-                        pass
-                    for attr_name, value in (
-                        ("min_value", 0.0),
-                        ("max_value", 1.0),
-                        ("soft_min", 0.0),
-                        ("soft_max", 1.0),
-                    ):
-                        try:
-                            setattr(item, attr_name, value)
-                        except Exception:
-                            pass
         
         # --- 2. INTERNALS SWITCH ---
         ACEDummyNodeFactory._create_dummy_internals(ng, inputs, outputs, category, node_type)
@@ -491,7 +482,7 @@ class ACEDummyNodeFactory:
         # =====================================================================
         elif category == 'stream':
             # Logic: Separate Bundle -> one Sample Index per non-bundle output.
-            # Stream nodes with extra numeric controls (e.g. LUFS window/overlap ratio)
+            # Stream nodes with extra numeric controls (e.g. the LUFS window)
             # consume those inputs via (sum * 0) fed into Sample Index[Index] so
             # sockets stay active and non-grey without altering sampled values.
 

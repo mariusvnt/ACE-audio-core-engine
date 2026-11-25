@@ -790,7 +790,7 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
         ace = getattr(getattr(context, "scene", None), "audiocore", None)
         if not ace:
             return False
-        idx = int(getattr(ace, "active_audio_source_index", -1) or -1)
+        idx = utils.as_int(getattr(ace, "active_audio_source_index", None), -1)
         sources = getattr(ace, "audio_sources", None)
         if sources is None or idx < 0 or idx >= len(sources):
             return False

@@ -7,6 +7,7 @@ the engine and the live device list.
 """
 import bpy                                                                                                                          # type: ignore
 import time
+from .utils import as_int as _as_int
 from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 
@@ -165,7 +166,7 @@ def _on_active_source_index_change(self, context):  # noqa: ARG001
     """Auto-open Tempo & Meter when selecting a source with configured input."""
     sources = getattr(self, "audio_sources", None) or []
     try:
-        idx = int(getattr(self, "active_audio_source_index", -1) or -1)
+        idx = _as_int(getattr(self, "active_audio_source_index", None), -1)
     except Exception:
         idx = -1
     if 0 <= idx < len(sources):

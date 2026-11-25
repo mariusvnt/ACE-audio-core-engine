@@ -7,11 +7,69 @@ Headless, from the repo root (enables the add-on from this checkout):
 
 import bpy  # type: ignore
 import importlib
+import os
+import tempfile
 
 
 def _assert(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifier, gn_tree, shader_tree):
+    """Depsgraph updates on an object or material reach request_recompile with the original trees."""
+    settings = scene.audiocore.engine_settings
+    previous_auto = bool(settings.auto_compile)
+    settings.auto_compile = True
+    requested = []
+    original_request = engine.request_recompile
+    engine.request_recompile = lambda tree: requested.append(tree)
+    try:
+        bpy.context.view_layer.update()
+        requested.clear()
+        modifier.show_viewport = not modifier.show_viewport
+        bpy.context.view_layer.update()
+        obj.data.materials[0].diffuse_color = (0.2, 0.4, 0.6, 1.0)
+        bpy.context.view_layer.update()
+    finally:
+        engine.request_recompile = original_request
+        settings.auto_compile = previous_auto
+    pointers = {t.as_pointer() for t in requested if t is not None}
+    _assert(gn_tree.as_pointer() in pointers, "Object edit did not queue its Geometry Nodes frontend")
+    _assert(shader_tree.as_pointer() in pointers, "Material edit did not queue its shader frontend")
+    _assert(all(not t.is_evaluated for t in requested if t is not None), "Recompile queued an evaluated copy")
+
+
+def _stale_ace_groups(addon_key):
+    dummy_tree = importlib.import_module(f"{addon_key}.nodes.dummy_tree")
+    shader_tree = importlib.import_module(f"{addon_key}.nodes.shader_tree")
+    ace_nodes = importlib.import_module(f"{addon_key}.vars").ACE_NODES
+    gn, sh = dummy_tree.ACEDummyNodeFactory, shader_tree.ACEShaderNodeFactory
+    stale = []
+    for cat_key, category in ace_nodes.items():
+        for type_key, node_def in category["nodes"].items():
+            group = bpy.data.node_groups.get(gn.get_group_name(cat_key, type_key))
+            if group is not None and gn._node_group_needs_refresh(group, type_key):
+                stale.append(group.name)
+            group = bpy.data.node_groups.get(sh.get_group_name(cat_key, type_key))
+            if group is not None and sh._node_group_needs_refresh(group, node_def, cat_key, type_key):
+                stale.append(group.name)
+    return stale
+
+
+def _check_loaded_files_get_current_node_groups(addon_key):
+    """Fresh groups are never stale, and a file's outdated groups are rebuilt on load."""
+    stale = _stale_ace_groups(addon_key)
+    _assert(not stale, f"Freshly built ACE groups count as stale (rebuilt on every load): {stale}")
+    dummy_tree = importlib.import_module(f"{addon_key}.nodes.dummy_tree")
+    lufs_name = dummy_tree.ACEDummyNodeFactory.get_group_name("stream", "lufs")
+    bpy.data.node_groups[lufs_name].interface.new_socket("Leftover", in_out="INPUT", socket_type="NodeSocketFloat")
+    path = os.path.join(tempfile.mkdtemp(prefix="ace_smoke_"), "outdated_groups.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+    bpy.ops.wm.open_mainfile(filepath=path)
+    names = [i.name for i in bpy.data.node_groups[lufs_name].interface.items_tree if i.in_out == "INPUT"]
+    _assert("Leftover" not in names, f"Outdated ACE group kept after load: {names}")
+    _assert(not _stale_ace_groups(addon_key), "ACE groups still stale after load")
 
 
 def main():
@@ -110,6 +168,10 @@ def main():
         frontend_shader_tree["ace_frontend_uid"] = "ACE_SMOKE_FRONTEND_SHADER"
         frontend_obj.data.materials.append(frontend_mat)
 
+        _check_object_and_material_edits_queue_recompile(
+            engine, scene, frontend_obj, frontend_mod, frontend_gn_tree, frontend_shader_tree
+        )
+
         discovered = engine.discover_scene_frontends(scene)
         kinds = sorted(rec.frontend_ref.kind for rec in discovered)
         _assert("GEOMETRY_NODES" in kinds, "Scene frontend discovery missed Geometry Nodes frontend")
@@ -135,6 +197,8 @@ def main():
     remove_result = bpy.ops.audiocore.remove_audio_source()
     _assert('FINISHED' in remove_result, "audiocore.remove_audio_source failed")
     _assert(len(ace.audio_sources) == before_count, "Audio source count did not return to initial value")
+
+    _check_loaded_files_get_current_node_groups(addon_key)
 
     print("[ACE smoke] Version, lifecycle, and scene frontend checks passed.")
     print(f"[ACE smoke] Enabled addon keys: {addon_keys}")

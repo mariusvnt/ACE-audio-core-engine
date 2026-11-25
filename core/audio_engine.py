@@ -2201,24 +2201,13 @@ class ACEAudioEngine:
                 str(k): self._sanitize_ir_value(v)
                 for k, v in dict(getattr(node, "parameters", {}) or {}).items()
             }
-            # Inject live scene BPM/FPS into SourceSpecs IR params so the
-            # worker replica (_WorkerSourceSpecsPassthroughTask) computes
-            # correct beat-phase and frames-per-beat values instead of using hardcoded defaults.
-            # Use the graph's own source context so multi-source setups each get
-            # their individual BPM, not the engine-wide active-source snapshot.
+            # The worker's SourceSpecs replica needs BPM/FPS for beat phase; each
+            # graph takes them from its own source.
             if node.category == "utilities" and node.type == "src_specs":
                 _specs_ctx = getattr(graph, "source_context", None)
-                params["scene_bpm"] = (
-                    float(getattr(_specs_ctx, "bpm", 120.0) or 120.0)
-                    if _specs_ctx is not None
-                    else float(getattr(self, "_current_scene_bpm", 120.0) or 120.0)
-                )
-                params["scene_fps"]           = float(getattr(self, "_current_scene_fps", 24.0) or 24.0)
-                params["scene_beats_per_bar"] = (
-                    float(getattr(_specs_ctx, "beats_per_bar", 4.0) or 4.0)
-                    if _specs_ctx is not None
-                    else float(getattr(self, "_current_scene_beats_per_bar", 4.0) or 4.0)
-                )
+                params["scene_bpm"] = float(getattr(_specs_ctx, "bpm", 120.0) or 120.0)
+                params["scene_fps"] = float(getattr(self, "_current_scene_fps", 24.0) or 24.0)
+                params["scene_beats_per_bar"] = float(getattr(_specs_ctx, "beats_per_bar", 4.0) or 4.0)
             nodes_ir[node_id] = {
                 "category": str(getattr(node, "category", "") or ""),
                 "type": str(getattr(node, "type", "") or ""),
@@ -2525,7 +2514,7 @@ class ACEAudioEngine:
                 self._parallel_drop_future(future_obj)
                 if not isinstance(payload, dict):
                     continue
-                generation_id = int(payload.get("generation_id", -1) or -1)
+                generation_id = utils.as_int(payload.get("generation_id"), -1)
                 if generation_id != int(self._parallel_generation_id):
                     continue
                 res_key = str(payload.get("graph_uid", "") or graph_key)
@@ -2539,7 +2528,7 @@ class ACEAudioEngine:
                         self._perf_add("dsp", worker_elapsed_s)
                     except Exception:
                         pass
-                frame_id = int(payload.get("frame_id", -1) or -1)
+                frame_id = utils.as_int(payload.get("frame_id"), -1)
                 if frame_id < (int(current_frame) - int(self._PARALLEL_STALE_FRAME_GRACE)):
                     self._parallel_stale_result_drops += 1
                     continue
@@ -3115,11 +3104,8 @@ class ACEAudioEngine:
             graph.source_task_ids = source_task_ids
             graph.live_source_task_ids = live_source_task_ids
             graph.file_source_task_ids = file_source_task_ids
-            # Expose the per-graph source context so _prepare_parallel_graph_ir()
-            # reads the correct BPM/beats-per-bar from the first compile frame
-            # instead of falling back to _current_scene_bpm (the engine-wide active-
-            # source snapshot, which may be from a different source or not yet set).
-            # This closes the one-frame LIVE source cold-start BPM lag.
+            # _prepare_parallel_graph_ir() reads BPM/beats-per-bar from this source
+            # context, so it must be set before the IR is built.
             graph.source_context = source
             self._prepare_parallel_graph_ir(graph, abstract_tree)
             self.graphs[src_uid] = graph
@@ -3775,7 +3761,7 @@ class ACEAudioEngine:
         frontend = frontends.get(frontend_uid)
         discovery_index = int(getattr(frontend, "discovery_index", 0) or 0)
         params = dict(getattr(node, "parameters", {}) or {})
-        frontend_node_index = int(params.get("frontend_node_index", -1) or -1)
+        frontend_node_index = utils.as_int(params.get("frontend_node_index"), -1)
         return (
             discovery_index,
             frontend_node_index,
@@ -5801,7 +5787,7 @@ class ACEAudioEngine:
             stereo_resized,
             int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE),
             provider=getattr(chunk, "provider", None),
-            frame_index=int(getattr(chunk, "frame_index", -1) or -1),
+            frame_index=utils.as_int(getattr(chunk, "frame_index", None), -1),
             band_indices=getattr(chunk, "band_indices", None),
             band_index_fft_size=getattr(chunk, "band_index_fft_size", None),
             band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
@@ -5909,7 +5895,7 @@ class ACEAudioEngine:
         different frame.
         """
         try:
-            chunk_frame = int(getattr(task, "_current_chunk_frame", -1) or -1)
+            chunk_frame = utils.as_int(getattr(task, "_current_chunk_frame", None), -1)
         except Exception:
             chunk_frame = -1
         if chunk_frame != int(frame_index):
@@ -6278,19 +6264,6 @@ class ACEAudioEngine:
         except Exception:
             fps = 24.0
         self._current_scene_fps = max(float(fps), 1.0)
-
-        # Capture BPM and beats-per-bar from the active source so they can be
-        # injected into worker graph IRs for SourceSpecs beat-phase computation.
-        try:
-            ace = getattr(scene, "audiocore", None)
-            _sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
-            _aidx = int(getattr(ace, "active_source_index", 0) or 0) if ace else 0
-            _src = _sources[_aidx] if _sources and 0 <= _aidx < len(_sources) else None
-            self._current_scene_bpm = float(getattr(_src, "bpm", 120.0) or 120.0) if _src else 120.0
-            self._current_scene_beats_per_bar = float(getattr(_src, "beats_per_bar", 4.0) or 4.0) if _src else 4.0
-        except Exception:
-            self._current_scene_bpm = 120.0
-            self._current_scene_beats_per_bar = 4.0
 
         # Keep per-source BPM / beats-per-bar in each graph's parallel IR fresh
         # so _WorkerSourceSpecsPassthroughTask always uses the current values.
@@ -7022,7 +6995,26 @@ class ACEAudioEngine:
 def _load_post_reset_engine(_dummy):
     """bpy.app.handlers.load_post: reset all engine instances after a file load."""
     ACEAudioEngine.shutdown_all_instances()
+    _refresh_loaded_node_groups()
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
+
+
+def _refresh_loaded_node_groups():
+    """Bring the ACE node groups of a newly loaded file up to the current definitions.
+
+    The factories skip their scan while the node registry hash is unchanged,
+    but that hash only describes the groups of the data that was loaded when
+    it was taken.
+    """
+    from ..nodes.dummy_tree import ACEDummyNodeFactory
+    from ..nodes.shader_tree import ACEShaderNodeFactory
+
+    for factory in (ACEDummyNodeFactory, ACEShaderNodeFactory):
+        factory._NODES_CONTENT_HASH = ""
+        try:
+            factory.ensure_node_groups_exist()
+        except Exception as exc:  # noqa: BLE001 boundary: a load must not fail on group refresh
+            utils.log(f"ACE node group refresh after load failed ({factory.__name__}): {exc}", "ERROR")
 
 
 @persistent
@@ -7177,6 +7169,26 @@ def render_cancel_handler(scene):
     render_post_handler(scene)
 
 
+def _original_id(update):
+    """Return the original datablock of a depsgraph update.
+
+    ``update.id`` is the evaluated copy, whose pointer differs from the one
+    dirty tracking and frontend discovery use.
+    """
+    update_id = getattr(update, "id", None)
+    return getattr(update_id, "original", None) or update_id
+
+
+def _id_type_name(id_block) -> str:
+    """Return the RNA type name ("Object", "Material", "GeometryNodeTree", ...).
+
+    ID types such as Object and Material have no ``bl_idname``; only
+    registrable types (node trees, nodes, operators) do.
+    """
+    identifier = getattr(getattr(id_block, "bl_rna", None), "identifier", "")
+    return str(identifier or getattr(id_block, "bl_idname", "") or "")
+
+
 @persistent
 def depsgraph_update_handler(scene, depsgraph):
     """bpy.app.handlers.depsgraph_update_post: react to node-tree edits in real time.
@@ -7194,7 +7206,7 @@ def depsgraph_update_handler(scene, depsgraph):
     auto_compile_enabled = bool(ace and engine_settings and engine_settings.auto_compile)
 
     def _update_touches_ace_tree(update_id) -> bool:
-        bl_idname = str(getattr(update_id, "bl_idname", "") or "")
+        bl_idname = _id_type_name(update_id)
         if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
             return bool(ACEAudioEngine._tree_is_ace_managed(update_id))
         if bl_idname == "Material":
@@ -7216,7 +7228,7 @@ def depsgraph_update_handler(scene, depsgraph):
     if engine is not None and engine._undo_recovery_active():
         if auto_compile_enabled:
             for update in getattr(depsgraph, "updates", []) or []:
-                if _update_touches_ace_tree(getattr(update, "id", None)):
+                if _update_touches_ace_tree(_original_id(update)):
                     try:
                         engine.request_recompile(None)
                     except Exception:
@@ -7264,8 +7276,8 @@ def depsgraph_update_handler(scene, depsgraph):
     discovered_frontends_by_uid = None
 
     for update in getattr(depsgraph, "updates", []):
-        _id = getattr(update, "id", None)
-        bl_idname = str(getattr(_id, "bl_idname", "") or "")
+        _id = _original_id(update)
+        bl_idname = _id_type_name(_id)
 
         if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
             if ACEAudioEngine._tree_is_ace_managed(_id):

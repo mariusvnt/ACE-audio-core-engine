@@ -101,7 +101,7 @@ class TestParallelDSP(unittest.TestCase):
                 "lufs": {
                     "category": "stream",
                     "type": "lufs",
-                    "parameters": {"window_size": 0.4, "overlap_ratio": 0.25},
+                    "parameters": {"window_size": 0.4},
                 },
             },
             "links": [

@@ -52,12 +52,17 @@ class ACEShaderNodeFactory:
         }
         return mapping.get(str(sock_type or ""), str(sock_type or "NodeSocketFloat"))
 
+    @staticmethod
+    def _shader_interface_supports(socket_type: str) -> bool:
+        """Shader node tree interfaces reject string and object sockets."""
+        return not any(token in str(socket_type or "") for token in ("String", "Object"))
+
     @classmethod
     def _new_socket(cls, ng, sock_name: str, in_out: str, socket_type: str):
         requested = str(socket_type or "NodeSocketFloat")
         mapped = cls._shader_socket_type(requested)
         candidates: list[str] = []
-        for candidate in (requested, mapped):
+        for candidate in (mapped, requested):
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
         # Do not silently downgrade string/bundle interfaces to float.
@@ -161,8 +166,9 @@ class ACEShaderNodeFactory:
     def _expected_interface_names(cls, node_def, category: str, node_type: str) -> tuple[set[str], set[str]]:
         input_names = {str(name) for _sock_type, name in node_def.get("inputs", [])}
         output_names = {str(name) for _sock_type, name in node_def.get("outputs", [])}
-        for _sock_type, extra_name, _default_value in cls._extra_inputs(category, node_type):
-            input_names.add(str(extra_name))
+        for sock_type, extra_name, _default_value in cls._extra_inputs(category, node_type):
+            if cls._shader_interface_supports(sock_type):
+                input_names.add(str(extra_name))
         for _output_idx, _sock_type, helper_name in cls._helper_input_specs(node_def):
             input_names.add(str(helper_name))
         return input_names, output_names
@@ -181,7 +187,8 @@ class ACEShaderNodeFactory:
         for sock_type, sock_name in node_def.get("outputs", []):
             output_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
         for sock_type, sock_name, _default_value in cls._extra_inputs(category, node_type):
-            input_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
+            if cls._shader_interface_supports(sock_type):
+                input_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
         for _output_idx, sock_type, helper_name in cls._helper_input_specs(node_def):
             input_types[str(helper_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
         return input_types, output_types
@@ -238,6 +245,9 @@ class ACEShaderNodeFactory:
         except Exception:
             return True
         if not expected_inputs.issubset(set(inputs.keys())) or not expected_outputs.issubset(set(outputs.keys())):
+            return True
+        if str(category or "") == "stream" and set(inputs.keys()) - expected_inputs:
+            # An input the definition no longer declares (e.g. a removed control).
             return True
         for sock_name, expected_type in expected_input_types.items():
             if not cls._socket_type_matches(expected_type, inputs.get(str(sock_name), "")):
@@ -517,21 +527,6 @@ class ACEShaderNodeFactory:
                             setattr(item, attr_name, value)
                         except Exception:
                             pass
-                elif name == "Overlap Ratio":
-                    try:
-                        item.default_value = 0.25
-                    except Exception:
-                        pass
-                    for attr_name, value in (
-                        ("min_value", 0.0),
-                        ("max_value", 1.0),
-                        ("soft_min", 0.0),
-                        ("soft_max", 1.0),
-                    ):
-                        try:
-                            setattr(item, attr_name, value)
-                        except Exception:
-                            pass
 
         for sock_type_str, sock_name, default_value in extra_inputs:
             cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
@@ -625,24 +620,17 @@ class ACEShaderNodeFactory:
                 pass
 
         # LUFS-specific shader equivalent of the GN index-driver trick:
-        # (Window + Overlap Ratio) * 0 + 1 multiplies each scalar property output by 1,
-        # preserving output values while keeping both controls truly consumed.
+        # Window * 0 + 1 multiplies each scalar property output by 1, preserving
+        # output values while keeping the control consumed (not greyed out).
         if str(category or "") == "stream" and str(node_type or "") == "lufs" and helper_source_by_idx:
             # Use name-based lookup — bundle sockets may shift numeric indices.
             window_sock = input_sock_by_name.get("Window (s)")
-            overlap_sock = input_sock_by_name.get("Overlap Ratio")
-            if window_sock is not None and overlap_sock is not None:
-                add_node = ng.nodes.new("ShaderNodeMath")
-                add_node.operation = "ADD"
-                add_node.location = (20, -320)
-                ng.links.new(window_sock, add_node.inputs[0])
-                ng.links.new(overlap_sock, add_node.inputs[1])
-
+            if window_sock is not None:
                 mul_zero = ng.nodes.new("ShaderNodeMath")
                 mul_zero.operation = "MULTIPLY"
                 mul_zero.inputs[1].default_value = 0.0
                 mul_zero.location = (220, -320)
-                ng.links.new(add_node.outputs[0], mul_zero.inputs[0])
+                ng.links.new(window_sock, mul_zero.inputs[0])
 
                 add_one = ng.nodes.new("ShaderNodeMath")
                 add_one.operation = "ADD"
@@ -1016,7 +1004,7 @@ class ACEShaderNodeFactory:
                 if node_name not in expected_name_to_idx:
                     continue
             try:
-                out_idx = int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, -1) or -1)
+                out_idx = utils.as_int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY), -1)
             except Exception:
                 out_idx = -1
             if out_idx < 0:
@@ -1056,7 +1044,7 @@ class ACEShaderNodeFactory:
         except Exception:
             pass
         try:
-            if int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY, -1) or -1) != int(output_idx):
+            if utils.as_int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY), -1) != int(output_idx):
                 helper_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
                 changed = True
         except Exception:
@@ -1451,7 +1439,7 @@ class ACEShaderNodeFactory:
         if ng is None:
             ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
         else:
-            ng.clear()
+            ng.nodes.clear()
             ng.interface.clear()
         cls._build_group_content(ng, node_def, cat_key, type_key)
 
@@ -1508,7 +1496,7 @@ class ACEShaderNodeFactory:
                 if ng is None:
                     ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
                 elif cls._node_group_needs_refresh(ng, node_def, cat_key, type_key):
-                    ng.clear()
+                    ng.nodes.clear()
                     ng.interface.clear()
                 else:
                     cls._ensure_attr_interface_visible(ng, cat_key, type_key)
