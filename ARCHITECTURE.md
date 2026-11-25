@@ -307,14 +307,19 @@ audio input parser/backends behavior
 task semantics and regression checks for splitters/preview/math/rolling-average/specs
 Blender integration smoke tests for handlers/source lifecycle/ACE_Sonar synchronization
 
+Tests outside Blender load the add-on modules against one shared fake `bpy`
+(`tests/fake_bpy.py`); every test file also passes when run on its own.
+Tests check behaviour, never source text.
+
 Primary test modules:
+`tests/test_invariants.py` (the README guardrails: bpy-free worker, time-domain preview, persistent handlers, render guard)
 `tests/test_audio_tasks_registry.py`
 `tests/test_audio_influx.py`
 `tests/test_audio_influx_backends.py`
 `tests/test_id_management.py`
-`tests/test_regression_findings.py`
-`tests/blender_integration_smoke.py`
-`tests/test_blender_integration_smoke.py`
+`tests/test_multi_frontend_compile.py`
+`tests/test_proxy_management.py`
+`tests/run_in_blender.py` (headless Blender smoke run: `blender -b --factory-startup --python tests/run_in_blender.py`)
 
 ## 16. Extension Guidelines
 When adding a new node type:

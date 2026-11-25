@@ -6,3 +6,8 @@ __pycache__/
 
 # Local tool settings
 .claude/
+
+# Generated test reports (machine-specific)
+tests/artifacts/
+tests/*_report.json
+_vendor/

@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,8 +33,8 @@ def _strict_mode_enabled() -> bool:
 class TestEnginePerfGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        out_path = Path(__file__).with_name("engine_perf_report.json")
-        cls.report = generate_engine_perf_report(output_path=out_path)
+        with tempfile.TemporaryDirectory(prefix="ace_engine_perf_") as tmp_dir:
+            cls.report = generate_engine_perf_report(output_path=Path(tmp_dir) / "engine_perf_report.json")
 
     def test_engine_perf_report_has_required_scenarios_and_modes(self):
         scenarios = dict(self.report.get("scenarios", {}) or {})

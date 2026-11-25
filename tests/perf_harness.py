@@ -207,7 +207,8 @@ def generate_baseline_report(frames: int = 180, output_path: Path | None = None)
     }
     if _perf_strict_enabled():
         _validate_perf_report_strict(report)
-    target = output_path or Path(__file__).with_name("perf_baseline_report.json")
+    target = output_path or (Path(__file__).parent / "artifacts" / "perf_baseline_report.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 

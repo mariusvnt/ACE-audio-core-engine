@@ -7,6 +7,12 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # minimal: the fallbacks users get before installing dependencies.
+        # full: what the add-on's dependency installer provides.
+        deps: [minimal, full]
     env:
       ACE_PERF_GATE_STRICT: "1"
       ACE_ENGINE_PERF_GATE_STRICT: "1"
@@ -16,13 +22,27 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # Blender 5.x bundles Python 3.11.
+          python-version: "3.11"
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy
+          if [ "${{ matrix.deps }}" = "full" ]; then
+            pip install numpy scipy soundfile numba audioflux
+          else
+            pip install numpy
+          fi
 
       - name: Run unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Run each test file on its own
+        # Catches tests that only pass because another file set up shared state.
+        working-directory: tests
         run: |
-          python -m unittest discover -s tests
+          status=0
+          for f in test_*.py; do
+            python -m unittest "${f%.py}" || { echo "::error::${f} fails on its own"; status=1; }
+          done
+          exit $status

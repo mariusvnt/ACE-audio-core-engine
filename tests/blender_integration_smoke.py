@@ -1,8 +1,8 @@
 """
 Run inside Blender (background or UI) after enabling the add-on.
 
-Example:
-  blender --background --python tests/blender_integration_smoke.py
+Headless, from the repo root (enables the add-on from this checkout):
+  python tests/run_in_blender.py
 """
 
 import bpy  # type: ignore
@@ -22,7 +22,7 @@ def main():
     addon_keys = [k for k in bpy.context.preferences.addons.keys() if "AudioCore" in k]
     _assert(bool(addon_keys), "AudioCore add-on is not enabled in current Blender session")
     addon_key = addon_keys[0]
-    engine_mod = importlib.import_module(f"{addon_key}.audio_engine")
+    engine_mod = importlib.import_module(f"{addon_key}.core.audio_engine")
     _assert(
         engine_mod.frame_change_handler in bpy.app.handlers.frame_change_pre,
         "frame_change_handler is not registered",

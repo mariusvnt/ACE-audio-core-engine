@@ -5,6 +5,8 @@ import unittest
 
 from module_loader import PKG_NAME, load_module
 
+import fake_bpy
+
 try:
     import numpy  # noqa: F401
 except Exception:  # pragma: no cover - environment dependent
@@ -18,60 +20,7 @@ def _purge_testpkg_modules():
 
 
 def _install_fake_bpy():
-    if "bpy" in sys.modules:
-        return
-
-    bpy_mod = types.ModuleType("bpy")
-    handlers_mod = types.ModuleType("bpy.app.handlers")
-    handlers_mod.persistent = lambda fn: fn
-    for name in (
-        "load_post",
-        "undo_post",
-        "redo_post",
-        "frame_change_pre",
-        "frame_change_post",
-        "render_pre",
-        "render_post",
-        "render_cancel",
-        "depsgraph_update_post",
-    ):
-        setattr(handlers_mod, name, [])
-
-    timers_ns = types.SimpleNamespace(
-        is_registered=lambda _fn: False,
-        register=lambda *_args, **_kwargs: None,
-        unregister=lambda *_args, **_kwargs: None,
-    )
-    app_ns = types.SimpleNamespace(
-        handlers=handlers_mod,
-        timers=timers_ns,
-        is_job_running=lambda _name: False,
-    )
-    app_mod = types.ModuleType("bpy.app")
-    app_mod.handlers = handlers_mod
-    app_mod.timers = timers_ns
-    app_mod.is_job_running = app_ns.is_job_running
-
-    bpy_mod.app = app_ns
-    bpy_mod.context = types.SimpleNamespace(scene=None, window_manager=types.SimpleNamespace(windows=[]))
-    bpy_mod.data = types.SimpleNamespace(
-        objects={},
-        node_groups={},
-        collections={},
-        scenes=[],
-        materials={},
-    )
-    bpy_mod.types = types.SimpleNamespace(
-        NodeTree=type("NodeTree", (), {}),
-        Object=type("Object", (), {}),
-        Scene=type("Scene", (), {}),
-        Collection=type("Collection", (), {}),
-        Node=type("Node", (), {}),
-    )
-
-    sys.modules["bpy"] = bpy_mod
-    sys.modules["bpy.app"] = app_mod
-    sys.modules["bpy.app.handlers"] = handlers_mod
+    return fake_bpy.install()
 
 
 def _install_properties_stub():
@@ -84,7 +33,7 @@ def _install_properties_stub():
     sys.modules[f"{PKG_NAME}.properties"] = properties_mod
 
 
-class _FakeTree(dict):
+class _FakeTree(fake_bpy.TruthyDict):
     def __init__(self, name: str, bl_idname: str, ptr: int, ace_frontend_uid: str = ""):
         super().__init__()
         self.name = name
@@ -128,7 +77,7 @@ class _FakeScene:
         self.objects = list(objects or [])
 
 
-class _FakePropertyCtx(dict):
+class _FakePropertyCtx(fake_bpy.TruthyDict):
     def __getattr__(self, name):
         try:
             return self[name]
@@ -153,7 +102,7 @@ class _FakeSocket:
         self.is_output = bool(is_output)
 
 
-class _FakeGroupNode(dict):
+class _FakeGroupNode(fake_bpy.TruthyDict):
     def __init__(self, name: str, node_tree, ace_source_id: str):
         super().__init__()
         self.type = "GROUP"
@@ -168,7 +117,7 @@ class _FakeGroupNode(dict):
         return id(self)
 
 
-class _FakeAttrNode(dict):
+class _FakeAttrNode(fake_bpy.TruthyDict):
     def __init__(self, ace_id: str, input_names=None, output_names=None):
         super().__init__()
         self.type = "GROUP"
@@ -189,7 +138,7 @@ class _FakeAttrNode(dict):
         return id(self)
 
 
-class _FakeLayoutNode(dict):
+class _FakeLayoutNode(fake_bpy.TruthyDict):
     def __init__(self, bl_idname: str, node_type: str, ace_id: str = "", output_names=None):
         super().__init__()
         self.bl_idname = bl_idname
@@ -903,12 +852,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
             self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
 
         expected_topology = "[\"src_b\"]|[]"
+        # Shader sinks are one custom property per node instance, so their
+        # names leave out the topology signature (it is still stored).
         expected_name = engine._build_auto_attr_name(
             "ACE_PROXY_b",
             "node_shader",
             "RMS",
             0,
-            topology_sig=expected_topology,
+            topology_sig="",
         )
         self.assertTrue(changed)
         self.assertEqual(changed_node_ids, {"node_shader"})
@@ -1025,6 +976,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
     def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
         engine = types.SimpleNamespace(
             requested=[],
+            _undo_recovery_active=lambda: False,
             _consume_geometry_eval_updates=lambda *_args, **_kwargs: None,
             request_recompile=lambda tree: engine.requested.append(tree),
         )
@@ -1079,6 +1031,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         calls = []
         engine = types.SimpleNamespace(
             graphs={},
+            _undo_recovery_active=lambda: False,
             _is_rendering_job=lambda: True,
             _unsafe_for_handler_writes=lambda _scene: True,
             _log_runtime=lambda *args, **kwargs: calls.append(("log", args, kwargs)),

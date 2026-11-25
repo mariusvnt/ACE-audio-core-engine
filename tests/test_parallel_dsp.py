@@ -144,7 +144,7 @@ class TestParallelDSP(unittest.TestCase):
             },
             "links": [
                 ("src_a", 0, "specs", 0),
-                ("specs", 3, "split", 0),
+                ("specs", 2, "split", 0),
                 ("split", 0, "rms", 0),
             ],
             "source_node_ids": ["src_a"],
@@ -438,13 +438,11 @@ class TestParallelDSP(unittest.TestCase):
                 },
             }
 
-            resolved_a, attached_a = self.pds._resolve_source_payloads(job)
-            resolved_b, attached_b = self.pds._resolve_source_payloads(job)
+            resolved_a = self.pds._resolve_source_payloads(job)
+            resolved_b = self.pds._resolve_source_payloads(job)
             mono_a = resolved_a["src_a"]["mono"]
             mono_b = resolved_b["src_a"]["mono"]
 
-            self.assertEqual(attached_a, [])
-            self.assertEqual(attached_b, [])
             self.assertIs(mono_a, mono_b)
             self.assertTrue(np.allclose(mono_a, mono))
             self.assertIn("src_a:mono", getattr(self.pds, "_WORKER_SHM_CACHE", {}))

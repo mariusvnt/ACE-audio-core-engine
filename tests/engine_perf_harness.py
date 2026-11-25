@@ -13,7 +13,9 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
-from module_loader import load_module, PKG_NAME
+from module_loader import PKG_NAME, ROOT, _ensure_package, load_module
+
+import fake_bpy
 
 
 ENGINE_PERF_CONTRACT_VERSION = "ace-engine-perf-v1"
@@ -95,68 +97,15 @@ def engine_perf_contract() -> Dict[str, Any]:
 
 
 def _install_fake_bpy():
-    if "bpy" in sys.modules:
-        return
-
-    bpy_mod = types.ModuleType("bpy")
-    bpy_mod.__dict__["_ace_fake_bpy"] = True
-
-    handlers_mod = types.ModuleType("bpy.app.handlers")
-
-    def _persistent(fn):
-        return fn
-
-    handlers_mod.persistent = _persistent
-    for name in (
-        "load_post",
-        "undo_post",
-        "redo_post",
-        "frame_change_pre",
-        "frame_change_post",
-        "render_pre",
-        "render_post",
-        "render_cancel",
-        "depsgraph_update_post",
-    ):
-        setattr(handlers_mod, name, [])
-
-    timers_ns = types.SimpleNamespace(
-        is_registered=lambda _fn: False,
-        register=lambda *_args, **_kwargs: None,
-        unregister=lambda *_args, **_kwargs: None,
-    )
-    app_ns = types.SimpleNamespace(
-        handlers=handlers_mod,
-        timers=timers_ns,
-        is_job_running=lambda _name: False,
-    )
-    wm_ns = types.SimpleNamespace(windows=[])
-    bpy_mod.app = app_ns
-    bpy_mod.context = types.SimpleNamespace(scene=None, window_manager=wm_ns)
-    bpy_mod.data = types.SimpleNamespace(objects={})
-    bpy_mod.types = types.SimpleNamespace(
-        NodeTree=type("NodeTree", (), {}),
-        Object=type("Object", (), {}),
-        Scene=type("Scene", (), {}),
-    )
-
-    app_mod = types.ModuleType("bpy.app")
-    app_mod.handlers = handlers_mod
-    app_mod.timers = timers_ns
-    app_mod.is_job_running = app_ns.is_job_running
-
-    sys.modules["bpy"] = bpy_mod
-    sys.modules["bpy.app"] = app_mod
-    sys.modules["bpy.app.handlers"] = handlers_mod
+    return fake_bpy.install()
 
 
 def _install_engine_import_stubs():
-    core_pkg = types.ModuleType(f"{PKG_NAME}.core")
-    core_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules.setdefault(f"{PKG_NAME}.core", core_pkg)
-    nodes_pkg = types.ModuleType(f"{PKG_NAME}.nodes")
-    nodes_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules.setdefault(f"{PKG_NAME}.nodes", nodes_pkg)
+    # Real package paths, so the engine's own relative imports still resolve
+    # whichever test loads the harness first.
+    _ensure_package(PKG_NAME, ROOT)
+    _ensure_package(f"{PKG_NAME}.core", ROOT / "core")
+    _ensure_package(f"{PKG_NAME}.nodes", ROOT / "nodes")
 
     properties_mod = types.ModuleType(f"{PKG_NAME}.properties")
 
@@ -1024,7 +973,8 @@ def generate_engine_perf_report(
             "evaluation": sla_eval,
         },
     }
-    target = output_path or Path(__file__).with_name("engine_perf_report.json")
+    target = output_path or (Path(__file__).parent / "artifacts" / "engine_perf_report.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 

@@ -5,6 +5,8 @@ import unittest
 
 from module_loader import PKG_NAME, load_module
 
+import fake_bpy
+
 try:
     import numpy  # noqa: F401
 except Exception:  # pragma: no cover - environment dependent
@@ -18,56 +20,10 @@ def _purge_testpkg_modules():
 
 
 def _install_fake_bpy():
-    if "bpy" in sys.modules:
-        return
-
-    bpy_mod = types.ModuleType("bpy")
-    handlers_mod = types.ModuleType("bpy.app.handlers")
-    handlers_mod.persistent = lambda fn: fn
-    for name in (
-        "load_post",
-        "undo_post",
-        "redo_post",
-        "frame_change_pre",
-        "frame_change_post",
-        "render_pre",
-        "render_post",
-        "render_cancel",
-        "depsgraph_update_post",
-    ):
-        setattr(handlers_mod, name, [])
-    timers_ns = types.SimpleNamespace(
-        is_registered=lambda _fn: False,
-        register=lambda *_args, **_kwargs: None,
-        unregister=lambda *_args, **_kwargs: None,
-    )
-    app_ns = types.SimpleNamespace(
-        handlers=handlers_mod,
-        timers=timers_ns,
-        is_job_running=lambda _name: False,
-    )
-    app_mod = types.ModuleType("bpy.app")
-    app_mod.handlers = handlers_mod
-    app_mod.timers = timers_ns
-    app_mod.is_job_running = app_ns.is_job_running
-
-    bpy_mod.app = app_ns
-    bpy_mod.context = types.SimpleNamespace(scene=None, window_manager=types.SimpleNamespace(windows=[]))
-    bpy_mod.data = types.SimpleNamespace(objects={}, node_groups={}, collections={}, scenes=[])
-    bpy_mod.types = types.SimpleNamespace(
-        NodeTree=type("NodeTree", (), {}),
-        Object=type("Object", (), {}),
-        Scene=type("Scene", (), {}),
-        Collection=type("Collection", (), {}),
-        Node=type("Node", (), {}),
-    )
-
-    sys.modules["bpy"] = bpy_mod
-    sys.modules["bpy.app"] = app_mod
-    sys.modules["bpy.app.handlers"] = handlers_mod
+    return fake_bpy.install()
 
 
-class _TrackingObject(dict):
+class _TrackingObject(fake_bpy.TruthyDict):
     def __init__(self, name: str):
         super().__init__()
         self.name = name
@@ -85,7 +41,7 @@ class _FaultyObject(_TrackingObject):
         super().__setitem__(key, value)
 
 
-class _TrackingMeshData(dict):
+class _TrackingMeshData(fake_bpy.TruthyDict):
     pass
 
 

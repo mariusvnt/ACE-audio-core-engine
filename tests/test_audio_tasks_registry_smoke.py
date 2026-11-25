@@ -5,13 +5,20 @@ import unittest
 from module_loader import load_module
 
 
+_MISSING = object()
+
+
 def _load_tasks_registry_with_fake_numpy():
     # Drop cached modules so this test validates importability without real NumPy.
     sys.modules.pop("ace_addon_testpkg.audio_tasks_registry", None)
     sys.modules.pop("ace_addon_testpkg.audio_influx", None)
 
-    had_numpy = "numpy" in sys.modules
-    original_numpy = sys.modules.get("numpy")
+    # Without NumPy the optional DSP packages that need it are unavailable too;
+    # None in sys.modules makes their import raise ImportError.
+    hidden = ("numpy", "audioflux", "numba", "scipy", "scipy.signal", "soundfile")
+    originals = {name: sys.modules.get(name, _MISSING) for name in hidden}
+    for name in hidden:
+        sys.modules[name] = None  # type: ignore[assignment]
 
     fake_np = types.ModuleType("numpy")
     fake_np.ndarray = object
@@ -20,10 +27,11 @@ def _load_tasks_registry_with_fake_numpy():
     try:
         module = load_module("audio_tasks_registry")
     finally:
-        if had_numpy:
-            sys.modules["numpy"] = original_numpy  # type: ignore[assignment]
-        else:
-            sys.modules.pop("numpy", None)
+        for name, original in originals.items():
+            if original is _MISSING:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
         # Do not leak fake-NumPy-loaded modules into later tests.
         sys.modules.pop("ace_addon_testpkg.audio_tasks_registry", None)
         sys.modules.pop("ace_addon_testpkg.audio_influx", None)
