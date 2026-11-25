@@ -30,6 +30,14 @@ ENABLE_EXPR = (
     "    raise exc\n"
     f"addon_utils.enable({ADDON_MODULE!r}, default_set=True, handle_error=_raise)\n"
 )
+
+
+def _enable_expr(extra_path: str) -> str:
+    if not extra_path:
+        return ENABLE_EXPR
+    return f"import sys\nsys.path.insert(0, {str(Path(extra_path).resolve())!r})\n" + ENABLE_EXPR
+
+
 WINDOWS_BLENDER = Path(r"C:\Program Files\Blender Foundation\Blender 5.0\blender.exe")
 
 
@@ -56,6 +64,7 @@ def main() -> int:
     parser.add_argument("--blender", default="", help="path to the Blender executable")
     parser.add_argument("--script", default=str(DEFAULT_SCRIPT), help="script to run inside Blender")
     parser.add_argument("--root", default=str(ROOT), help="add-on checkout to enable (default: this one)")
+    parser.add_argument("--extra-path", default="", help="folder put first on sys.path before the add-on loads (e.g. its optional libraries)")
     parser.add_argument("script_args", nargs="*", help="arguments passed to the script after --")
     args = parser.parse_args()
 
@@ -71,7 +80,7 @@ def main() -> int:
             "--background",
             "--factory-startup",
             "--python-exit-code", "1",
-            "--python-expr", ENABLE_EXPR,
+            "--python-expr", _enable_expr(args.extra_path),
             "--python", args.script,
         ]
         if args.script_args:
