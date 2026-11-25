@@ -20,7 +20,6 @@ _MODULE_PATHS = {
     "dynamic_audio_operators": ("nodes", ROOT / "nodes" / "dynamic_audio_operators.py"),
     "gn_menu": ("ui", ROOT / "ui" / "gn_menu.py"),
     "n_panel_operators": ("ui", ROOT / "ui" / "n_panel_operators.py"),
-    "n_panel_ui": ("ui", ROOT / "ui" / "n_panel_ui.py"),
     "prefs_library_manager": ("ui", ROOT / "ui" / "prefs_library_manager.py"),
     "prefs_panel_ui": ("ui", ROOT / "ui" / "prefs_panel_ui.py"),
     "properties": ("", ROOT / "properties.py"),

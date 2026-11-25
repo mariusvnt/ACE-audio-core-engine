@@ -113,7 +113,12 @@ MODULE_NAMES = [
     "ui",                            # 16. Package marker (ui/__init__.py)
     "ui.gn_menu",                    # 17. Geometry Node Editor add menus
     "ui.n_panel_operators",          # 18. N-Panel operators
-    "ui.n_panel_ui",                 # 19. N-Panel UI panels
+    "ui.panel",
+    "ui.panel.helpers",
+    "ui.panel.splitter",
+    "ui.panel.sync",
+    "ui.panel.selection",
+    "ui.panel.panels",
     "ui.prefs_library_manager",      # 20. Dependency installer
     "ui.prefs_panel_ui",             # 21. Add-on preferences UI
 ]

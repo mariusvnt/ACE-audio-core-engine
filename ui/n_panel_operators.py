@@ -27,7 +27,7 @@ def _resolve_panel_selected_node(context):
     Prefer the active graph list selection used by the N-panel UI itself.
     """
     with utils.logged_errors("n_panel_operators._resolve_panel_selected_node"):
-        from .n_panel_ui import _resolve_capture_node
+        from .panel.selection import _resolve_capture_node
         node, parsed = _resolve_capture_node(context)
         if node and parsed:
             return node, parsed
@@ -40,7 +40,7 @@ def _resolve_panel_selected_node(context):
             return node, parsed
 
     try:
-        from .n_panel_ui import _find_active_node_tree
+        from .panel.helpers import _find_active_node_tree
         tree = _find_active_node_tree(context)
     except Exception as exc:
         utils.note_swallowed("n_panel_operators._resolve_panel_selected_node#2", exc)
@@ -106,7 +106,7 @@ def _queue_engine_recompile(context, tree=None):
     resolved_tree = tree
     if resolved_tree is None:
         try:
-            from .n_panel_ui import _find_active_node_tree
+            from .panel.helpers import _find_active_node_tree
             resolved_tree = _find_active_node_tree(context)
         except Exception as exc:
             utils.note_swallowed("n_panel_operators._queue_engine_recompile", exc)
@@ -377,7 +377,8 @@ class ACE_OT_sort_splitter_freqs(bpy.types.Operator):
         _refresh_node_instance(node)
 
         try:
-            from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
+            from .panel.helpers import _find_active_node_tree
+            from .panel.sync import _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
         except Exception as exc:
             utils.note_swallowed("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#3", exc)
@@ -434,7 +435,8 @@ class ACE_OT_even_splitter_freqs(bpy.types.Operator):
         _refresh_node_instance(node)
 
         try:
-            from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
+            from .panel.helpers import _find_active_node_tree
+            from .panel.sync import _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
         except Exception as exc:
             utils.note_swallowed("n_panel_operators.ACE_OT_even_splitter_freqs.execute#3", exc)
@@ -459,7 +461,7 @@ class ACE_OT_sync_splitter_ramp(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            from .n_panel_ui import _sync_splitter_ramp_texture_from_node
+            from .panel.splitter import _sync_splitter_ramp_texture_from_node
             tex = _sync_splitter_ramp_texture_from_node(node, context.scene, force=True)
             if tex is None:
                 self.report({'ERROR'}, "Could not create ramp editor texture.")
@@ -518,12 +520,7 @@ class ACE_OT_apply_splitter_ramp(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            from .n_panel_ui import (
-                _ensure_splitter_ramp_texture,
-                _splitter_display_bounds,
-                _splitter_norm_to_hz,
-                _sync_splitter_ramp_texture_from_node,
-            )
+            from .panel.splitter import _ensure_splitter_ramp_texture, _splitter_display_bounds, _splitter_norm_to_hz, _sync_splitter_ramp_texture_from_node
             tex = _ensure_splitter_ramp_texture()
             if tex is None:
                 self.report({'ERROR'}, "Ramp editor is unavailable.")
@@ -543,7 +540,8 @@ class ACE_OT_apply_splitter_ramp(bpy.types.Operator):
         _refresh_node_instance(node)
 
         try:
-            from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
+            from .panel.helpers import _find_active_node_tree
+            from .panel.sync import _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
         except Exception as exc:
             utils.note_swallowed("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#3", exc)
@@ -646,7 +644,8 @@ class ACE_OT_refresh_stream_list(bpy.types.Operator):
 
     def execute(self, context):
         try:
-            from .n_panel_ui import _sync_ui_dummy_tree, _find_active_node_tree
+            from .panel.helpers import _find_active_node_tree
+            from .panel.sync import _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
             _queue_engine_recompile(context, tree=tree)
             _sync_ui_dummy_tree(context, force=False)
@@ -732,7 +731,8 @@ class ACE_OT_toggle_preview_sink(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
+            from .panel.helpers import _find_active_node_tree
+            from .panel.sync import _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
         except Exception as exc:
             utils.note_swallowed("n_panel_operators.ACE_OT_toggle_preview_sink.execute", exc)
