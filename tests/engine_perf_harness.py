@@ -181,7 +181,7 @@ def _install_engine_import_stubs():
 def _load_engine_stack():
     _install_fake_bpy()
     _install_engine_import_stubs()
-    forget_modules("core.engine", "core.worker", "core.tasks", "core.audio_influx", "core.abstract_tree", "audio_influx", "abstract_tree")
+    forget_modules("core.engine", "core.worker", "core.tasks", "core.input", "core.abstract_tree", "abstract_tree")
     ae = load_module("core.engine.engine")
     atr = load_tasks()
     abs_mod = load_module("abstract_tree")

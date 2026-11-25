@@ -10,7 +10,7 @@ _MISSING = object()
 
 def _load_tasks_registry_with_fake_numpy():
     # Drop cached modules so this test validates importability without real NumPy.
-    forget_modules("core.tasks", "core.audio_influx", "audio_influx")
+    forget_modules("core.tasks", "core.input")
 
     # Without NumPy the optional DSP packages that need it are unavailable too;
     # None in sys.modules makes their import raise ImportError.
@@ -32,7 +32,7 @@ def _load_tasks_registry_with_fake_numpy():
             else:
                 sys.modules[name] = original
         # Do not leak fake-NumPy-loaded modules into later tests.
-        forget_modules("core.tasks", "core.audio_influx", "audio_influx")
+        forget_modules("core.tasks", "core.input")
 
     return module
 

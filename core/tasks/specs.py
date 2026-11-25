@@ -7,7 +7,7 @@ import time
 from queue import Queue, Empty, Full
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
-from ..audio_influx import AudioReception
+from ..input.reception import AudioReception
 from ... import utils
 from .analyzer import AudioFluxAnalyzer
 from .base import ACEAudioTask

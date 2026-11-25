@@ -46,7 +46,12 @@ MODULE_NAMES = [
     "core",                          # 4.  Package marker (core/__init__.py)
     "core.abstract_tree",            # 5.  Abstract IR data structures
     "core.id_management",            # 6.  ID / hash utilities
-    "core.audio_influx",             # 7.  Audio I/O (file + live)
+    "core.input",
+    "core.input.resampler",
+    "core.input.file",
+    "core.input.udp",
+    "core.input.device",
+    "core.input.reception",
     "core.tasks",
     "core.tasks.chunk",
     "core.tasks.filters",

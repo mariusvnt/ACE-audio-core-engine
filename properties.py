@@ -101,7 +101,7 @@ def _on_filepath_change(self, context):
     if fp and str(getattr(self, "source_type", "FILE")) == "FILE":
         with utils.logged_errors("properties._on_filepath_change"):
             import os
-            from .core.audio_influx import AudioReception
+            from .core.input.reception import AudioReception
             if not os.path.isfile(fp):
                 error_msg = "File not found"
             elif not AudioReception.is_supported_file_path(fp):

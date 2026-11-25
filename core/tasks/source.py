@@ -7,7 +7,7 @@ from collections import deque
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
 from .filters import NUMBA_AVAILABLE
-from ..audio_influx import AudioReception, build_live_flow_identifier
+from ..input.reception import AudioReception, build_live_flow_identifier
 from ... import utils
 from .analyzer import AudioFluxAnalyzer
 from .base import ACEAudioTask

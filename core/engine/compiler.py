@@ -9,7 +9,7 @@ from ... import utils
 from ...nodes.dummy_tree import ACEDummyTreeReader
 from ...properties import ACEAudioSource
 from ..abstract_tree import ACEAbstractNode, ACEAbstractTree
-from ..audio_influx import build_live_flow_identifier
+from ..input.reception import build_live_flow_identifier
 from ..tasks.base import ACEAudioTask
 from ..tasks.chunk import SAMPLE_RATE
 from ..tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask

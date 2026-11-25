@@ -192,7 +192,7 @@ def generate_baseline_report(frames: int = 180, output_path: Path | None = None)
         raise RuntimeError("NumPy is required for perf harness")
     # Some smoke tests intentionally import modules with a fake NumPy object.
     # Drop cached registry modules so this harness always benchmarks the real stack.
-    forget_modules("core.tasks", "core.audio_influx", "audio_influx")
+    forget_modules("core.tasks", "core.input")
     atr = load_tasks()
     scenarios = PERF_REQUIRED_SCENARIOS
     report = {

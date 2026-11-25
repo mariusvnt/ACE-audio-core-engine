@@ -4,7 +4,7 @@ import threading
 from typing import Any, Dict, Optional
 from ... import utils
 from ...properties import ACEAudioSource
-from ..audio_influx import AudioReception
+from ..input.reception import AudioReception
 from ..tasks.chunk import SAMPLE_RATE
 from ..tasks.specs import SourceSpecsTask
 

@@ -266,7 +266,7 @@ class TestNodeIdentity(unittest.TestCase):
 class TestFileFormats(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.influx = load_module("audio_influx")
+        cls.influx = load_module("core.input.reception")
 
     def test_wav_is_always_supported_and_text_is_not(self):
         reception = self.influx.AudioReception

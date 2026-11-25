@@ -15,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 PKG_NAME = "ace_addon_testpkg"
 
 _MODULE_PATHS = {
-    "audio_influx": ("core", ROOT / "core" / "audio_influx.py"),
     "abstract_tree": ("core", ROOT / "core" / "abstract_tree.py"),
     "id_management": ("core", ROOT / "core" / "id_management.py"),
     "proxy_management": ("core", ROOT / "core" / "proxy_management.py"),
@@ -70,7 +69,7 @@ def load_tasks():
 def load_module(module_name: str):
     """
     Load add-on modules from this folder under a synthetic package namespace so
-    relative imports (e.g. from .audio_influx import ...) keep working.
+    relative imports (e.g. from .abstract_tree import ...) keep working.
     A dotted name ("core.tasks.chunk") is imported as a submodule of that namespace.
     """
     _ensure_package(PKG_NAME, ROOT)
