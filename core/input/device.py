@@ -26,36 +26,19 @@ class DeviceInput:
             try:
                 info = sd.query_devices(*args)  # type: ignore[misc]
             except Exception as exc:
-                utils.note_swallowed("audio_influx.AudioReception._query_sounddevice_input_info", exc)
+                utils.note_swallowed("device.DeviceInput._query_sounddevice_input_info", exc)
                 continue
             if isinstance(info, dict):
                 return info
         return None
 
     def _open_live_sounddevice(self, cfg: dict, kind: str = "sounddevice") -> bool:
-        """Open a sounddevice InputStream for live audio capture.
-
-        Re-attempts sounddevice import at call time in case the module became
-        available after add-on startup.  Applies WASAPI loopback settings on
-        Windows when the selected device is an output-only device or when the
-        caller sets cfg["loopback"]=True.  Falls back from stereo to mono if
-        the device rejects the requested channel count.
-
-        Args:
-            cfg: Configuration dict with keys: device (str|int|None),
-                channels (int), sample_rate (int, 0 to use device default),
-                loopback (bool, optional).
-            kind: String label stored in self.kind.
-
-        Returns:
-            True on success.  False on any sounddevice error, with
-            self.last_error set to a description.
-        """
+        """Open a sounddevice InputStream for live audio capture."""
         global sd, SOUNDDEVICE_AVAILABLE
         if not SOUNDDEVICE_AVAILABLE:
             # Re-attempt import — sounddevice may have been installed after startup
             # or the module-level import may have run before sys.path was fully set up.
-            with utils.logged_errors("audio_influx.AudioReception._open_live_sounddevice"):
+            with utils.logged_errors("device.DeviceInput._open_live_sounddevice"):
                 import sounddevice as _sd  # type: ignore
                 sd = _sd
                 SOUNDDEVICE_AVAILABLE = True
@@ -89,7 +72,7 @@ class DeviceInput:
                 try:
                     max_input_channels = int(device_info.get("max_input_channels", 0) or 0)
                 except Exception as exc:
-                    utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#3", exc)
+                    utils.note_swallowed("device.DeviceInput._open_live_sounddevice#2", exc)
                     max_input_channels = 0
                 if max_input_channels > 0 and not _use_wasapi_loopback:
                     # Normal input device — clamp to its channel count.
@@ -100,7 +83,7 @@ class DeviceInput:
                     try:
                         max_output_channels = int(device_info.get("max_output_channels", 0) or 0)
                     except Exception as exc:
-                        utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#4", exc)
+                        utils.note_swallowed("device.DeviceInput._open_live_sounddevice#3", exc)
                         max_output_channels = 0
                     if max_output_channels > 0:
                         channels = min(channels, max_output_channels)
@@ -117,7 +100,7 @@ class DeviceInput:
                 try:
                     default_sample_rate = int(float(device_info.get("default_samplerate", 0) or 0))
                 except Exception as exc:
-                    utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#5", exc)
+                    utils.note_swallowed("device.DeviceInput._open_live_sounddevice#4", exc)
                     default_sample_rate = 0
                 if sample_rate <= 0 and default_sample_rate > 0:
                     sample_rate = default_sample_rate
@@ -130,11 +113,9 @@ class DeviceInput:
             self._live_queue = Queue(maxsize=2)
 
             def _callback(indata, frames, time, status):  # type: ignore
-                # Note: do NOT return early on status — sounddevice sets status
-                # for minor events like input_overflow which are common at startup.
-                # Returning early would silently drop valid audio frames.
+                # A status flag (e.g. input overflow at startup) does not invalidate the frames.
                 if status:
-                    with utils.logged_errors("audio_influx.AudioReception._open_live_sounddevice._callback"):
+                    with utils.logged_errors("device.DeviceInput._open_live_sounddevice._callback"):
                         self._live_stream_error = str(status)
                 if not self._live_queue:
                     return
@@ -170,7 +151,7 @@ class DeviceInput:
                 try:
                     wasapi_extra = {"extra_settings": sd.WasapiSettings(loopback=True)}  # type: ignore
                 except Exception as exc:
-                    utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#6", exc)
+                    utils.note_swallowed("device.DeviceInput._open_live_sounddevice#5", exc)
                     wasapi_extra = None  # WASAPI not available on this platform
             channel_attempts = [channels]
             if channels > 1:
@@ -189,7 +170,7 @@ class DeviceInput:
                         open_error = None
                         break
                     except Exception as e:
-                        utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#7", e)
+                        utils.note_swallowed("device.DeviceInput._open_live_sounddevice#6", e)
                         open_error = e
                         self._live_stream = None
                 if self._live_stream is not None:
@@ -207,7 +188,7 @@ class DeviceInput:
             self._live_last_capture_block_samples = 0
             return True
         except Exception as e:
-            utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#2", e)
+            utils.note_swallowed("device.DeviceInput._open_live_sounddevice#7", e)
             self._live_stream = None
             self._live_queue = None
             self.kind = "live_stub"
@@ -215,30 +196,17 @@ class DeviceInput:
             return False
 
     def _live_stream_active(self) -> bool:
-        """Return True only if the sounddevice InputStream is still running."""
         stream = self._live_stream
         if stream is None:
             return False
         try:
             return bool(stream.active)
         except Exception as exc:
-            utils.note_swallowed("audio_influx.AudioReception._live_stream_active", exc)
+            utils.note_swallowed("device.DeviceInput._live_stream_active", exc)
             return False
 
     def _read_live_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
-        """Drain the sounddevice capture queue and return the freshest block.
-
-        Keeps only the most recently arrived audio block to minimise latency —
-        stale queue entries are discarded.  Returns the last valid block on a
-        transient queue-empty condition so the engine never stalls on a
-        scheduling gap.
-
-        Args:
-            block_size: Required number of samples in the returned block.
-
-        Returns:
-            (mono, stereo, sample_rate) or None if no audio has arrived yet.
-        """
+        """Drain the sounddevice capture queue and return the freshest block."""
         if self.kind in {"udp_stream", "daw_udp", "instrument_udp"}:
             return self._read_live_udp_block(block_size)
         if self.kind not in {"sounddevice", "daw_sounddevice", "instrument_sounddevice"} or not self._live_queue:

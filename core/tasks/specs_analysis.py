@@ -20,13 +20,13 @@ class LongTermAnalysis:
         self._release_global_analysis_slot(self._long_term_target)
         rec = self._analysis_rec
         if rec is not None:
-            with utils.logged_errors("audio_tasks_registry.self._reset_long_term_analysis_state"):
+            with utils.logged_errors("specs_analysis.LongTermAnalysis._reset_long_term_analysis_state"):
                 rec.close()
         self._analysis_rec = None
 
         analyzer = self._analysis_analyzer
         if analyzer is not None:
-            with utils.logged_errors("audio_tasks_registry.self._reset_long_term_analysis_state#2"):
+            with utils.logged_errors("specs_analysis.LongTermAnalysis._reset_long_term_analysis_state#2"):
                 AudioFluxAnalyzer.release(analyzer)
         self._analysis_analyzer = None
 
@@ -152,7 +152,7 @@ class LongTermAnalysis:
         cls._BG_STOP_EVENT.set()
         thread = cls._BG_THREAD
         if thread is not None and thread.is_alive():
-            with utils.logged_errors("audio_tasks_registry.cls.shutdown_background_worker"):
+            with utils.logged_errors("specs_analysis.LongTermAnalysis.shutdown_background_worker"):
                 thread.join(timeout=0.25)
         cls._BG_THREAD = None
         with cls._GLOBAL_CACHE_LOCK:
@@ -178,10 +178,7 @@ class LongTermAnalysis:
 
     @classmethod
     def flush_pending_ctx_writes(cls, task_registry: dict) -> None:
-        """Apply detected-tempo results to bpy PropertyGroup objects.
-
-        Must be called from the main thread.
-        """
+        """Apply detected-tempo results to bpy PropertyGroup objects."""
         utils.assert_main_thread("cls.flush_pending_ctx_writes")
         try:
             while True:
@@ -205,7 +202,7 @@ class LongTermAnalysis:
                     continue
                 if cls._user_overrode_tempo(ctx):
                     continue
-                with utils.logged_errors("audio_tasks_registry.cls.flush_pending_ctx_writes#2"):
+                with utils.logged_errors("specs_analysis.LongTermAnalysis.flush_pending_ctx_writes"):
                     ctx[task._auto_bpm_key] = float(bpm_val)
                     ctx[task._auto_meter_key] = int(max(1, beats_per_bar))
                     ctx.bpm = float(bpm_val)
@@ -215,7 +212,7 @@ class LongTermAnalysis:
         except Empty:
             pass
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.cls.flush_pending_ctx_writes", exc)
+            utils.note_swallowed("specs_analysis.LongTermAnalysis.flush_pending_ctx_writes#2", exc)
 
     @classmethod
     def _queue_background_analysis(cls, target: Tuple[str, float]) -> bool:
@@ -255,13 +252,13 @@ class LongTermAnalysis:
                         int(detected["beats_per_bar"]),
                     )
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.cls._background_worker_loop", exc)
+                utils.note_swallowed("specs_analysis.LongTermAnalysis._background_worker_loop", exc)
                 cls._store_global_analysis_failure(target)
             finally:
                 with cls._GLOBAL_CACHE_LOCK:
                     cls._BG_PENDING.discard(target)
                     cls._BG_QUEUED.discard(target)
-                with utils.logged_errors("audio_tasks_registry.cls._background_worker_loop#2"):
+                with utils.logged_errors("specs_analysis.LongTermAnalysis._background_worker_loop#2"):
                     cls._BG_TASK_QUEUE.task_done()
 
     def _start_long_term_analysis(self, target: Tuple[str, float]) -> bool:
@@ -277,8 +274,8 @@ class LongTermAnalysis:
         try:
             analyzer = AudioFluxAnalyzer(sr, block)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.self._start_long_term_analysis", exc)
-            with utils.logged_errors("audio_tasks_registry.self._start_long_term_analysis#2"):
+            utils.note_swallowed("specs_analysis.LongTermAnalysis._start_long_term_analysis", exc)
+            with utils.logged_errors("specs_analysis.LongTermAnalysis._start_long_term_analysis#2"):
                 rec.close()
             return False
 

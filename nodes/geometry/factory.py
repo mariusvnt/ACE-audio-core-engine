@@ -8,29 +8,11 @@ from ... import utils
 
 
 class ACEDummyNodeFactory:
-    """Creates and manages Blender node groups based on the ACE_NODES registry.
-
-    All groups are GeometryNodeTree datablocks with a leading "." in their
-    name so they are hidden from the default user-facing Add menu but remain
-    accessible for programmatic use.  Internal wiring uses Blender 5.0+
-    Bundle/Separate-Bundle nodes for audio passing.
-    """
+    """Creates and manages Blender node groups based on the ACE_NODES registry."""
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
-        """Return the canonical hidden datablock name for an ACE node group.
-
-        The leading "." prefix keeps the datablock out of the user-visible
-        Group list so it does not duplicate entries in the curated ACE add
-        menu.
-
-        Args:
-            category: ACE node category key (e.g. "stream", "delta").
-            node_type: ACE node type key within that category (e.g. "rms").
-
-        Returns:
-            The dot-prefixed name string, e.g. ".ACE_stream_rms".
-        """
+        """Return the canonical hidden datablock name for an ACE node group."""
         # Internal datablocks are hidden (leading ".") so the default Group list
         # does not duplicate the curated ACE add menu entries.
         return f".ACE_{category}_{node_type}"
@@ -39,21 +21,16 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def _ace_nodes_hash() -> str:
-        """Compute a stable hash of ACE_NODES to detect registry changes."""
         try:
             serialized = json.dumps(ACE_NODES, sort_keys=True, default=str).encode("utf-8")
             return hashlib.blake2b(serialized, digest_size=8).hexdigest()
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyNodeFactory._ace_nodes_hash", exc)
+            utils.note_swallowed("factory.ACEDummyNodeFactory._ace_nodes_hash", exc)
             return ""
 
     @staticmethod
     def ensure_node_groups_exist():
-        """
-        Iterates ACE_NODES and creates missing node groups.
-        A content hash of ACE_NODES short-circuits the O(N) scan when the
-        registry hasn't changed since the last invocation.
-        """
+        """Iterates ACE_NODES and creates missing node groups."""
         try:
             _ = bpy.data.node_groups
         except AttributeError:
@@ -62,7 +39,6 @@ class ACEDummyNodeFactory:
         current_hash = ACEDummyNodeFactory._ace_nodes_hash()
         if current_hash and current_hash == ACEDummyNodeFactory._NODES_CONTENT_HASH:
             return  # Registry unchanged — skip the full O(N) group scan.
-        # 1. Standard Nodes
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category['nodes'].items():
                 group_name = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
@@ -79,15 +55,12 @@ class ACEDummyNodeFactory:
                     ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
                     ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
 
-        # 2. Dynamic variants are ensured separately to keep sockets consistent.
-        with utils.logged_errors("dummy_tree.ACEDummyNodeFactory.ensure_node_groups_exist"):
+        with utils.logged_errors("factory.ACEDummyNodeFactory.ensure_node_groups_exist"):
             from ..dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
             ACESplitterManager.refresh_existing_variants("GeometryNodeTree")
             ACEAudioMathManager.refresh_existing_variants("GeometryNodeTree")
 
-        # Cache the hash so subsequent calls with an unchanged registry skip the scan.
-        # Also invalidate the ACEDummyTreeReader reverse-lookup so it is rebuilt on
-        # next compilation — prevents stale entries after a registry hot-reload.
+        # A registry change also invalidates the reader's group-name lookup.
         if current_hash:
             from .reader import ACEDummyTreeReader
 
@@ -97,16 +70,7 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def rebuild_node_group(cat_key: str, type_key: str):
-        """Force-rebuild a single node group from the current ACE_NODES definition.
-
-        Clears the existing group interface and internal wiring before
-        rebuilding, so stale sockets are removed even if the group already
-        exists in bpy.data.node_groups.
-
-        Args:
-            cat_key: ACE node category key (e.g. "stream").
-            type_key: ACE node type key within that category (e.g. "rms").
-        """
+        """Force-rebuild a single node group from the current ACE_NODES definition."""
         group_name = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
         
         try:
@@ -125,13 +89,7 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def prune_orphaned_ace_nodes(tree, scene) -> int:
-        """
-        Remove nodes from *tree* whose 'ace_source_id' property no longer corresponds
-        to any active audio source in the scene.  Called once per compile so
-        the node graph stays clean when sources are deleted.
-
-        Returns the number of nodes removed.
-        """
+        """Remove nodes from *tree* whose 'ace_source_id' property no longer corresponds to any active audio source in the scene."""
         if tree is None:
             return 0
         ace = getattr(scene, "audiocore", None)
@@ -165,7 +123,7 @@ class ACEDummyNodeFactory:
             inputs = {item.name for item in ng.interface.items_tree if getattr(item, "in_out", None) == 'INPUT'}
             outputs = {item.name for item in ng.interface.items_tree if getattr(item, "in_out", None) == 'OUTPUT'}
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyNodeFactory._node_group_needs_refresh", exc)
+            utils.note_swallowed("factory.ACEDummyNodeFactory._node_group_needs_refresh", exc)
             return True
 
         if node_type == "src":
@@ -185,9 +143,7 @@ class ACEDummyNodeFactory:
             # Sink: one Audio input, no outputs required.
             return "Audio" not in inputs
         if node_type == "audio_math":
-            # Verify sockets follow the "Audio" / "Audio N" naming convention.
-            # Checking merely for non-empty sets misses cases where sockets were
-            # manually renamed, which silently breaks the audio math task wiring.
+            # Renamed sockets break the audio math wiring, so check names, not counts.
             has_audio_in = any(n == "Audio" or n.startswith("Audio ") for n in inputs)
             has_audio_out = any(n == "Audio" or n.startswith("Audio ") for n in outputs)
             return not has_audio_in or not has_audio_out
@@ -225,11 +181,7 @@ class ACEDummyNodeFactory:
                 or bool(inputs - required_inputs)
             )
 
-        # ── Delta nodes ──────────────────────────────────────────────────────
-        # All delta nodes share a single "Audio" input; outputs are fixed named
-        # bundles specific to each type.  Without these branches, socket-schema
-        # changes to delta nodes were silently ignored at startup, leaving stale
-        # sockets until the user forced a manual reload.
+        # Delta nodes: one Audio input and type-specific bundle outputs.
         if node_type == "midside_splitter":
             return "Audio" not in inputs or not {"Mid", "Side"}.issubset(outputs)
         if node_type == "attackrelease_splitter":
@@ -250,20 +202,7 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def _attr_socket_names(category: str, node_type: str) -> tuple[str, ...]:
-        """Return the Attribute-ID socket names that must remain visible for a node.
-
-        The Attribute ID sockets are string inputs that let GN expressions read
-        named mesh attributes written by the ACE runtime.  They must not be
-        hidden (hide_value=False) so users can set them in the node properties.
-
-        Args:
-            category: ACE node category key.
-            node_type: ACE node type key.
-
-        Returns:
-            A tuple of socket name strings.  Empty tuple for node types that
-            carry no attribute-ID sockets.
-        """
+        """Return the Attribute-ID socket names that must remain visible for a node."""
         if category == "stream":
             stream_nodes = (
                 ACE_NODES.get("stream", {}).get("nodes", {})
@@ -290,16 +229,6 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def _ensure_attr_interface_visible(ng, category: str, node_type: str):
-        """Set hide_value=False on all Attribute-ID interface sockets of *ng*.
-
-        Blender may silently re-hide sockets after certain node group edits, so
-        this is called both during initial build and on refresh checks.
-
-        Args:
-            ng: The Blender GeometryNodeTree node group to patch.
-            category: ACE node category key.
-            node_type: ACE node type key.
-        """
         for attr_name in ACEDummyNodeFactory._attr_socket_names(category, node_type):
             item = next(
                 (
@@ -309,23 +238,12 @@ class ACEDummyNodeFactory:
                 None,
             )
             if item is not None and hasattr(item, "hide_value"):
-                with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._ensure_attr_interface_visible"):
+                with utils.logged_errors("factory.ACEDummyNodeFactory._ensure_attr_interface_visible"):
                     item.hide_value = False
 
     @staticmethod
     def _build_group_content(ng, node_def, category, node_type):
-        """Populate the interface sockets and internal wiring of a node group.
-
-        Delegates internal wiring to _create_dummy_internals() after building
-        the socket interface from *node_def*.
-
-        Args:
-            ng: The target GeometryNodeTree to populate.
-            node_def: The ACE_NODES node definition dict for this node type.
-            category: ACE node category key.
-            node_type: ACE node type key.
-        """
-        # --- 1. INTERFACE ---
+        """Populate the interface sockets and internal wiring of a node group."""
         inputs = node_def.get('inputs', [])
         for sock_type_str, sock_name in inputs:
             ng.interface.new_socket(sock_name, in_out='INPUT', socket_type=sock_type_str)
@@ -340,42 +258,35 @@ class ACEDummyNodeFactory:
                     continue
                 name = str(getattr(item, "name", "") or "")
                 if name == "Window (s)":
-                    with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._build_group_content"):
+                    with utils.logged_errors("factory.ACEDummyNodeFactory._build_group_content"):
                         item.default_value = 0.4
                     for attr_name, value in (
                         ("min_value", 0.05),
                         ("max_value", 3.0),
                     ):
-                        with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._build_group_content#2"):
+                        with utils.logged_errors("factory.ACEDummyNodeFactory._build_group_content#2"):
                             setattr(item, attr_name, value)
         
-        # --- 2. INTERNALS SWITCH ---
         ACEDummyNodeFactory._create_dummy_internals(ng, inputs, outputs, category, node_type)
         ACEDummyNodeFactory._ensure_attr_interface_visible(ng, category, node_type)
 
     @staticmethod
     def _create_dummy_internals(ng, inputs_def, outputs_def, category, node_type):
-        """
-        Constructs the internal node graph logic using Bundle nodes.
-        """
+        """Constructs the internal node graph logic using Bundle nodes."""
         input_node = ng.nodes.new('NodeGroupInput')
         output_node = ng.nodes.new('NodeGroupOutput')
         input_node.location = (-600, 0)
         output_node.location = (600, 0)
 
-        # =====================================================================
         # CASE A: SOURCE MANAGEMENT
-        # =====================================================================
         if category == 'source_mngmt':
 
             if node_type == 'src':
                 # Logic: Object Info (Proxy) -> Combine Bundle -> Group Output
 
-                # 1. Expose Object Socket on Group Input
                 if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
                     ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
 
-                # 2. Object Info
                 obj_info = ng.nodes.new('GeometryNodeObjectInfo')
                 obj_info.location = (-200, 0)
                 obj_info.transform_space = 'ORIGINAL'
@@ -385,7 +296,6 @@ class ACEDummyNodeFactory:
                 proxy_sock_idx = len(inputs_def)
                 ng.links.new(input_node.outputs[proxy_sock_idx], obj_info.inputs[0])
 
-                # 3. Combine Bundle (Blender 5.0)
                 bundle_node = ng.nodes.new('NodeCombineBundle')
                 bundle_node.bundle_items.new('GEOMETRY', "Proxy Geometry")
                 bundle_node.location = (200, 0)
@@ -393,9 +303,7 @@ class ACEDummyNodeFactory:
                 ng.links.new(obj_info.outputs['Geometry'], bundle_node.inputs["Proxy Geometry"])
                 ng.links.new(bundle_node.outputs[0], output_node.inputs[0])
 
-        # =====================================================================
         # CASE B: DELTA (Audio -> Audio)
-        # =====================================================================
         elif category == 'delta':
             # Logic: Use Join Bundle to drive outputs
             
@@ -406,16 +314,11 @@ class ACEDummyNodeFactory:
                     # Connect Input -> Join Bundle
                     ng.links.new(source_bundle, output_node.inputs[i])
 
-        # =====================================================================
         # CASE C: STREAM (Audio -> Float/Vector)
-        # =====================================================================
         elif category == 'stream':
-            # Logic: Separate Bundle -> one Sample Index per non-bundle output.
-            # Stream nodes with extra numeric controls (e.g. the LUFS window)
-            # consume those inputs via (sum * 0) fed into Sample Index[Index] so
-            # sockets stay active and non-grey without altering sampled values.
+            # One Sample Index per non-bundle output; extra numeric controls feed (sum * 0) into the index
+            # so their sockets stay active without changing the sampled value.
 
-            # 1. Attribute-ID sockets (one per output)
             value_output_count = sum(1 for sock_type, _sock_name in outputs_def if "Bundle" not in str(sock_type or ""))
             if value_output_count <= 0:
                 value_output_count = len(outputs_def)
@@ -425,7 +328,7 @@ class ACEDummyNodeFactory:
                 sock_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
                 if not any(s.name == sock_name for s in ng.interface.items_tree):
                     ng.interface.new_socket(sock_name, in_out='INPUT', socket_type='NodeSocketString')
-                with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._create_dummy_internals"):
+                with utils.logged_errors("factory.ACEDummyNodeFactory._create_dummy_internals"):
                     ng.interface.items_tree[sock_name].default_value = (
                         "ACE_undefined" if out_idx == 0 else f"ACE_undefined_{int(out_idx + 1)}"
                     )
@@ -433,7 +336,6 @@ class ACEDummyNodeFactory:
 
             attr_id_start_idx = len(inputs_def)
 
-            # 2. Nodes
             sep_bundle = ng.nodes.new('NodeSeparateBundle')
             sep_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
             sep_bundle.location = (-220, 0)
@@ -476,7 +378,6 @@ class ACEDummyNodeFactory:
                 ng.links.new(input_node.outputs[int(numeric_ctrl_indices[0])], math_mul.inputs[0])
                 index_driver_socket = math_mul.outputs[0]
 
-            # 3. Wiring
             if len(inputs_def) > 0:
                 ng.links.new(input_node.outputs[0], sep_bundle.inputs[0])
 
@@ -508,9 +409,7 @@ class ACEDummyNodeFactory:
                     ng.links.new(index_driver_socket, sample_idx.inputs['Index'])
                 ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
-        # =====================================================================
         # CASE D: UTILITIES
-        # =====================================================================
         elif category == 'utilities':
 
             if node_type == 'src_specs':
@@ -560,15 +459,11 @@ class ACEDummyNodeFactory:
                     ng.links.new(input_node.outputs[0], output_node.inputs[len(outputs_def) - 1])
 
             elif node_type == 'preview_sink':
-                # Monitoring sink: one Bundle Audio input, zero outputs.
-                # No internal wiring needed — the socket interface alone defines the contract.
-                # The facade must accept but not forward the bundle (it is a pure sink).
+                # Pure sink: one bundle input, no outputs.
                 pass
 
             elif node_type == 'audio_math':
-                # Transparent passthrough facade: input bundle i → output bundle i.
-                # The actual add/subtract/multiply logic runs in the Layer 2 backend.
-                # This wiring lets the user see the audio signal flow visually.
+                # Pass-through facade; the math runs in the backend.
                 for i in range(min(len(inputs_def), len(outputs_def))):
                     ng.links.new(input_node.outputs[i], output_node.inputs[i])
 
@@ -580,20 +475,13 @@ class ACEDummyNodeFactory:
 
                 attr_id_idx = len(inputs_def)  # 2: after Value (0) and Number of Frames (1)
 
-                # Proxy Object input — the source proxy mesh to read the attribute from.
-                # Auto-populated at node creation time (gn_menu._initialize_auto_attr_ids).
-                # Using an explicit Object socket (mirroring the src node) rather than
-                # Self Object keeps the node context-independent and lets the user
-                # inspect or override the target object.
+                # Explicit proxy Object input, filled at creation, so the node does not depend on Self Object.
                 if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
                     ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
 
                 proxy_obj_idx = len(inputs_def) + 1  # 3: after Attribute ID (2)
 
-                # ── Nodes ────────────────────────────────────────────────────
-                # (Value + Number of Frames) × 0 → always evaluates to 0.
-                # Feeds into Sample Index[Index] so sampling is always at element 0,
-                # while both inputs are genuinely consumed by compute nodes (no grey sockets).
+                # (Value + Number of Frames) * 0: both inputs are consumed and the index stays 0.
                 math_add = ng.nodes.new('ShaderNodeMath')
                 math_add.operation = 'ADD'
                 math_add.location = (-560, -160)
@@ -622,7 +510,6 @@ class ACEDummyNodeFactory:
                 sample_idx.domain = 'POINT'
                 sample_idx.location = (150, 0)
 
-                # ── Wiring ───────────────────────────────────────────────────
                 # A. Group Input (Proxy Object) → Object Info (Object)
                 ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
                 # B. Object Info (Geometry) → Sample Index (Geometry)
@@ -687,9 +574,7 @@ class ACEDummyNodeFactory:
                 if len(outputs_def) > 0:
                     ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
 
-        # =====================================================================
         # FALLBACK (unknown node type)
-        # =====================================================================
         else:
             for i, _ in enumerate(inputs_def):
                 reroute = ng.nodes.new('NodeReroute')

@@ -158,7 +158,7 @@ class TempoEstimation:
 
             return cls._estimate_tempo_from_flux(flux_vals, block, sr)
         finally:
-            with utils.logged_errors("audio_tasks_registry.cls._estimate_tempo_for_target"):
+            with utils.logged_errors("tempo.TempoEstimation._estimate_tempo_for_target"):
                 rec.close()
 
     def _apply_detected_tempo(
@@ -178,7 +178,7 @@ class TempoEstimation:
         if ctx and (not respect_override or not self._user_overrode_tempo(ctx)):
             target = self._long_term_target
             if target is not None:
-                with utils.logged_errors("audio_tasks_registry.self._apply_detected_tempo"):
+                with utils.logged_errors("tempo.TempoEstimation._apply_detected_tempo"):
                     self._PENDING_CTX_WRITES.put_nowait(
                         (
                             target,

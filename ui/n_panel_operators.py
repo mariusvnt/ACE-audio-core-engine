@@ -1,6 +1,4 @@
-"""
-n_panel_operators.py includes all the bpy.types.Operator classes called in the N-Panel.
-"""
+"""n_panel_operators.py includes all the bpy.types.Operator classes called in the N-Panel."""
 
 import bpy                                                                                                                              # type: ignore
 import math
@@ -22,10 +20,7 @@ def _supported_audio_filter_glob() -> str:
 
 
 def _resolve_panel_selected_node(context):
-    """
-    Resolve the ACE node currently targeted by the N-panel.
-    Prefer the active graph list selection used by the N-panel UI itself.
-    """
+    """Resolve the ACE node currently targeted by the N-panel."""
     with utils.logged_errors("n_panel_operators._resolve_panel_selected_node"):
         from .panel.selection import _resolve_capture_node
         node, parsed = _resolve_capture_node(context)
@@ -80,10 +75,6 @@ def _resolve_panel_selected_node(context):
 
 
 def _refresh_node_instance(node):
-    """
-    Refresh a GN node instance safely across Blender versions.
-    GeometryNodeGroup does not expose `update_tag()` in Blender 5.0.
-    """
     if not node:
         return
 
@@ -99,10 +90,7 @@ def _refresh_node_instance(node):
 
 
 def _queue_engine_recompile(context, tree=None):
-    """
-    Queue a non-blocking compile through the engine dirty-tree path.
-    Heavy compile work is handled by the engine timer/handler pipeline.
-    """
+    """Queue a non-blocking compile through the engine dirty-tree path."""
     resolved_tree = tree
     if resolved_tree is None:
         try:
@@ -298,7 +286,6 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
         # because the Python reference may become invalid after audio_sources.remove().
         src_uid = getattr(source, "stable_id", "") or ""
 
-        # --- PROXY CLEANUP ---
         ACEProxyManager.delete_proxy_for_source(source)
 
         ace.audio_sources.remove(idx)
@@ -315,9 +302,7 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
                 ace.gn_target_object = sonar_obj
         engine = ACEAudioEngine.get_instance(context.scene)
         if engine:
-            # Eagerly release the bake cache for this source so its SHM/disk
-            # entries are freed immediately rather than waiting for the next
-            # compile's _prune_bake_cache() sweep.
+            # Free this source's bake cache now instead of at the next compile.
             if src_uid:
                 entry = engine.bake._bake_cache.pop(src_uid, None)
                 if isinstance(entry, dict):
@@ -857,7 +842,6 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
     def cancel(self, context):
         self._finish_modal(context)
 
-# --- REGISTRATION ---
 classes = (
     ACE_OT_rebuild_audio_engine,
     ACE_OT_add_audio_sources_from_files,

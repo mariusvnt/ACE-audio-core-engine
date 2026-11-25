@@ -19,11 +19,6 @@ MAX_BLOCK_SIZE = 4096
 
 
 def _finite_copy(arr, dtype="float32"):
-    """Copy of `arr` with NaN and infinities set to 0 (np.nan_to_num's result, ~4x cheaper).
-
-    Always a new array, so callers may modify it in place. dtype=None keeps
-    the input dtype.
-    """
     out = np.array(arr, dtype=dtype, copy=True)
     bad = ~np.isfinite(out)
     if bad.any():
@@ -32,19 +27,6 @@ def _finite_copy(arr, dtype="float32"):
 
 
 def _make_silence_chunk(block_size: int, sample_rate: int = SAMPLE_RATE) -> "AudioChunk":
-    """Return a zero-filled AudioChunk used as a safe placeholder for broken sources.
-
-    Downstream DSP tasks always receive a well-formed chunk (not ``None``) so
-    Stage-B workers never encounter a missing input.  All analysis on the
-    returned chunk yields zero/silence values.
-
-    Args:
-        block_size: Number of samples in the silence block.
-        sample_rate: Sample rate to embed in the chunk (default: ``SAMPLE_RATE``).
-
-    Returns:
-        An ``AudioChunk`` whose ``mono`` array is all zeros.
-    """
     silence = np.zeros(max(int(block_size), 1), dtype=np.float32)
     return AudioChunk(silence, None, int(max(sample_rate, 1)), latency_ms=0.0)
 
@@ -53,20 +35,7 @@ _KEEP = object()
 
 
 class AudioChunk:
-    """Lightweight wrapper around one audio block passed between DSP task nodes.
-
-    Carries the raw mono/stereo signal, an optional preprocessed analysis track,
-    spectral metadata (band-mask indices, Hz bounds, lineage token), and a lazy
-    feature cache so derived quantities (RMS, centroid, …) are computed at most
-    once per frame per chunk.
-
-    The ``provider`` back-reference to the owning ``SourceTask`` allows downstream
-    analysis nodes to delegate to the source's long-lived ``AudioFluxAnalyzer``
-    rather than allocating a new BFT object on every call.
-
-    Slot layout is fixed (``__slots__``) to minimize per-instance memory overhead
-    in multi-source sessions where hundreds of chunks may be alive simultaneously.
-    """
+    """Lightweight wrapper around one audio block passed between DSP task nodes."""
     __slots__ = (
         "mono",
         "stereo",
@@ -113,7 +82,7 @@ class AudioChunk:
             try:
                 self.band_index_fft_size = max(int(band_index_fft_size), 1)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.AudioChunk.__init__", exc)
+                utils.note_swallowed("chunk.AudioChunk.__init__", exc)
                 self.band_index_fft_size = None
         elif band_indices is not None:
             # Default behavior: assume indices target the chunk FFT domain.
@@ -138,17 +107,7 @@ class AudioChunk:
         return self.mono
 
     def get_feature(self, key: str, compute_fn=None):
-        """Return a cached feature, optionally computing it on the first call.
-
-        Args:
-            key: Unique string key identifying the feature.
-            compute_fn: Zero-argument callable that computes the feature value.
-                        Called once and cached when the key is not already present.
-
-        Returns:
-            The cached (or freshly computed) feature value, or None if absent
-            and no ``compute_fn`` was supplied.
-        """
+        """Return a cached feature, optionally computing it on the first call."""
         if key in self.features:
             return self.features[key]
         if compute_fn:
@@ -176,16 +135,7 @@ def _spawn_audio_chunk(
     analysis_ops: Any = _KEEP,
     latency_ms: Any = _KEEP,
 ) -> AudioChunk:
-    """Create a new AudioChunk by overriding selected fields from *source*.
-
-    Unspecified keyword arguments default to the sentinel ``_KEEP``, which
-    causes the corresponding field to be copied verbatim from *source*.  This
-    avoids boilerplate in splitter tasks that only mutate the lineage or
-    band-mask fields while keeping all other metadata unchanged.
-
-    Returns:
-        A new AudioChunk with the merged field values.
-    """
+    """Create a new AudioChunk by overriding selected fields from *source*."""
     return AudioChunk(
         mono=(source.mono if mono is _KEEP else mono),
         stereo=(source.stereo if stereo is _KEEP else stereo),
@@ -206,11 +156,7 @@ def _spawn_audio_chunk(
 
 
 def _normalized_analysis_ops(chunk: AudioChunk) -> Tuple[Tuple[str, str], ...]:
-    """Return the chunk's ``analysis_ops`` as a normalised immutable tuple.
-
-    Each element is a ``(kind, mode)`` pair of lower-cased strings.  Malformed
-    entries (wrong type, missing fields, empty strings) are silently dropped.
-    """
+    """Return the chunk's ``analysis_ops`` as a normalised immutable tuple."""
     raw_ops = getattr(chunk, "analysis_ops", ()) or ()
     if isinstance(raw_ops, tuple):
         items = raw_ops
@@ -232,7 +178,6 @@ def _normalized_analysis_ops(chunk: AudioChunk) -> Tuple[Tuple[str, str], ...]:
 
 
 def _append_analysis_op(chunk: AudioChunk, kind: str, mode: str) -> Tuple[Tuple[str, str], ...]:
-    """Return the chunk's existing analysis ops with a new (kind, mode) entry appended."""
     ops = _normalized_analysis_ops(chunk)
     return ops + ((str(kind).strip().lower(), str(mode).strip().lower()),)
 
@@ -243,24 +188,7 @@ def _signal_for_chunk(
     prefer_analysis_track: bool = True,
     apply_analysis_ops: bool = True,
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Resolve the effective (mono, stereo) signal arrays for a chunk.
-
-    Applies any recorded ``analysis_ops`` (mid/side matrix, attack/release gate)
-    in sequence.  Results are memoised in ``chunk.features`` keyed by
-    ``("analysis_signal", prefer_analysis_track, ops_tuple)`` to avoid redundant
-    computation when the same chunk is consumed by multiple downstream tasks.
-
-    Args:
-        chunk: Source AudioChunk.
-        prefer_analysis_track: When True, uses the preprocessed ``analysis_mono``
-            / ``analysis_stereo`` arrays if present; falls back to raw ``mono``/``stereo``.
-        apply_analysis_ops: When False, ops are skipped and the base signal is
-            returned directly (used by PreviewSinkTask to separate band-limiting
-            from temporal ops).
-
-    Returns:
-        Tuple of (mono_1d, stereo_2d_or_None).
-    """
+    """Resolve the effective (mono, stereo) signal arrays for a chunk."""
     ops = _normalized_analysis_ops(chunk)
     if not apply_analysis_ops:
         ops = ()
@@ -328,12 +256,10 @@ def _signal_for_chunk(
 
 
 def _analysis_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Return analysis-domain (mono, stereo) with ops applied.  Prefers preprocessed track."""
     return _signal_for_chunk(chunk, prefer_analysis_track=True, apply_analysis_ops=True)
 
 
 def _preview_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Return raw-domain (mono, stereo) with ops applied.  Prefers unprocessed track."""
     return _signal_for_chunk(chunk, prefer_analysis_track=False, apply_analysis_ops=True)
 
 

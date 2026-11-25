@@ -9,12 +9,7 @@ from ... import utils
 class NodeIdentity:
     @classmethod
     def _ensure_group_name_lookup(cls):
-        """Populate (or invalidate and rebuild) _GROUP_NAME_LOOKUP from ACE_NODES.
-
-        Uses the same blake2b hash as ACEDummyNodeFactory to detect registry
-        changes.  The lookup is rebuilt on first use and whenever the registry
-        hash differs from the cached value.
-        """
+        """Populate (or invalidate and rebuild) _GROUP_NAME_LOOKUP from ACE_NODES."""
         current_hash = cls.FACTORY_CLS._ace_nodes_hash()
         if cls._GROUP_NAME_LOOKUP and current_hash and current_hash == cls._ACE_NODES_LOOKUP_HASH:
             return
@@ -31,16 +26,10 @@ class NodeIdentity:
 
     @staticmethod
     def _node_pointer(node) -> int:
-        """Return a stable integer identity for a Blender node.
-
-        Uses as_pointer() when available (Blender C-level pointer) and falls
-        back to Python id() so the result is always an int regardless of node
-        type.
-        """
         try:
             return int(node.as_pointer())
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._node_pointer", exc)
+            utils.note_swallowed("identity.NodeIdentity._node_pointer", exc)
             return id(node)
 
     def _reserve_unique_ace_id(
@@ -51,23 +40,7 @@ class NodeIdentity:
         node_type: str,
         deterministic_seed: str = "",
     ) -> str:
-        """Guarantee that *ace_id* is used by at most one Blender node per read pass.
-
-        If the ID is already claimed by a different node pointer (i.e. the user
-        duplicated a node with Shift+D), a fresh deterministic ID is generated
-        and persisted back into bl_node["ace_id"] so the duplicate gets a
-        stable unique identity on subsequent sessions.
-
-        Args:
-            bl_node: The Blender node whose ace_id is being resolved.
-            ace_id: Candidate ID string from the node's custom property.
-            category: ACE node category key.
-            node_type: ACE node type key.
-            deterministic_seed: Optional seed payload for collision resolution.
-
-        Returns:
-            A unique ACE ID string assigned to *bl_node* for this read pass.
-        """
+        """Guarantee that *ace_id* is used by at most one Blender node per read pass."""
         if not ace_id:
             return ""
         node_ptr = self._node_pointer(bl_node)
@@ -93,7 +66,7 @@ class NodeIdentity:
                 deterministic_seed=seed_payload,
             )
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._reserve_unique_ace_id", exc)
+            utils.note_swallowed("identity.NodeIdentity._reserve_unique_ace_id", exc)
             return ace_id
 
         self._ace_id_owner[new_id] = node_ptr
@@ -101,7 +74,7 @@ class NodeIdentity:
         self._reserved_node_ids.add(new_id)
         # Persist the disambiguated ID back into the node's custom property so
         # that duplicate nodes have stable unique IDs on the next session/reload.
-        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._reserve_unique_ace_id#2"):
+        with utils.logged_errors("identity.NodeIdentity._reserve_unique_ace_id#2"):
             bl_node["ace_id"] = new_id
         return new_id
 
@@ -124,9 +97,7 @@ class NodeIdentity:
         if result:
             return result
 
-        # Fallback: prefix-based scan for dynamic/specialized variants.
-        # This covers splitter/audio_math dynamic arity groups and shader
-        # per-instance groups such as ".ACE_SHADER_stream_rms_<hash>".
+        # Prefix scan for dynamic variants (splitter, audio math, per-instance shader groups).
         resolved_cat = ""
         resolved_type = ""
         clean_group_name = ACEIdManager._clean_string(norm_group_name).lower()
@@ -172,11 +143,11 @@ class NodeIdentity:
 
     @staticmethod
     def _socket_index_for(node, sock, is_input: bool) -> int:
-        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._socket_index_for"):
+        with utils.logged_errors("identity.NodeIdentity._socket_index_for"):
             idx_val = getattr(sock, "index")
             if idx_val is not None:
                 return int(idx_val)
-        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._socket_index_for#2"):
+        with utils.logged_errors("identity.NodeIdentity._socket_index_for#2"):
             seq = getattr(node, "inputs" if is_input else "outputs", [])
             for idx, ref in enumerate(seq):
                 if ref == sock:
@@ -186,7 +157,7 @@ class NodeIdentity:
     def _topology_signature(self, bl_node) -> dict[str, list[tuple[int, int, str]]]:
         incoming: list[tuple[int, int, str]] = []
         outgoing: list[tuple[int, int, str]] = []
-        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._topology_signature"):
+        with utils.logged_errors("identity.NodeIdentity._topology_signature"):
             for in_sock in getattr(bl_node, "inputs", []):
                 in_idx = self._socket_index_for(bl_node, in_sock, is_input=True)
                 for link in getattr(in_sock, "links", []):
@@ -196,7 +167,7 @@ class NodeIdentity:
                         continue
                     src_idx = self._socket_index_for(src_node, src_sock, is_input=False)
                     incoming.append((int(in_idx), int(src_idx), self._node_kind_token(src_node)))
-        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._topology_signature#2"):
+        with utils.logged_errors("identity.NodeIdentity._topology_signature#2"):
             for out_sock in getattr(bl_node, "outputs", []):
                 out_idx = self._socket_index_for(bl_node, out_sock, is_input=False)
                 for link in getattr(out_sock, "links", []):
@@ -223,7 +194,7 @@ class NodeIdentity:
             try:
                 source_context = str(bl_node.get("ace_source_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._build_deterministic_node_seed", exc)
+                utils.note_swallowed("identity.NodeIdentity._build_deterministic_node_seed", exc)
                 source_context = ""
         payload = {
             "frontend_uid": str(self.frontend_uid or ""),
@@ -240,21 +211,7 @@ class NodeIdentity:
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     def _ensure_ace_id(self, bl_node, root_id: str = "") -> str:
-        """Return the ACE ID for *bl_node*, generating one deterministically if absent.
-
-        All nodes derive their ID from a content hash of their socket
-        signature and topology context so that the same physical wiring always
-        yields the same ID without persisting state. Source management nodes
-        keep the stable source token separately in ``ace_source_id``.
-
-        Args:
-            bl_node: The Blender node to identify.
-            root_id: The source root identifier for deterministic seed scoping.
-
-        Returns:
-            A non-empty ACE ID string, or an empty string if the node is not an
-            ACE node group.
-        """
+        """Return the ACE ID for *bl_node*, generating one deterministically if absent."""
         node_ptr = self._node_pointer(bl_node)
         cached = self._node_id_by_ptr.get(node_ptr)
         if cached:
@@ -264,13 +221,11 @@ class NodeIdentity:
         if not resolved_cat:
             return ""
 
-        # Source nodes: use the stored ace_id as the primary identity (stable across topology
-        # changes) so that _sync_shader_output_ids / _sync_auto_attr_ids can look them up by
-        # bl_node["ace_id"] without the id drifting when connections change.
+        # Source nodes keep their stored ace_id so lookups survive topology changes.
         try:
             stored_ace_id = str(bl_node.get("ace_id", "") or "")
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._ensure_ace_id", exc)
+            utils.note_swallowed("identity.NodeIdentity._ensure_ace_id", exc)
             stored_ace_id = ""
         parsed_stored = ACEIdManager.parse_node_id(stored_ace_id) if stored_ace_id else None
         if parsed_stored and parsed_stored.get("category") == resolved_cat and parsed_stored.get("type") == resolved_type:
@@ -278,7 +233,7 @@ class NodeIdentity:
                 try:
                     source_id = str(bl_node.get("ace_source_id", "") or "")
                 except Exception as exc:
-                    utils.note_swallowed("dummy_tree.ACEDummyTreeReader._ensure_ace_id#2", exc)
+                    utils.note_swallowed("identity.NodeIdentity._ensure_ace_id#2", exc)
                     source_id = ""
                 # Must not accidentally use the source's own stable_id as the node id.
                 if stored_ace_id == source_id:
@@ -296,7 +251,7 @@ class NodeIdentity:
             )
             # Persist back so duplicated nodes (which get a new id from _reserve_unique_ace_id)
             # are also stable on the next compile.
-            with utils.logged_errors("dummy_tree.ACEDummyTreeReader._ensure_ace_id#3"):
+            with utils.logged_errors("identity.NodeIdentity._ensure_ace_id#3"):
                 if str(bl_node.get("ace_id", "") or "") != resolved_id:
                     bl_node["ace_id"] = resolved_id
             return resolved_id
@@ -315,7 +270,7 @@ class NodeIdentity:
                 deterministic_seed=seed,
             )
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._ensure_ace_id#4", exc)
+            utils.note_swallowed("identity.NodeIdentity._ensure_ace_id#4", exc)
             return ""
         resolved_id = self._reserve_unique_ace_id(
             bl_node,
@@ -326,7 +281,7 @@ class NodeIdentity:
         )
         # Persist the generated id so the next compile reuses it instead of re-generating
         # from topology (which changes whenever the user adds/removes links).
-        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._ensure_ace_id#5"):
+        with utils.logged_errors("identity.NodeIdentity._ensure_ace_id#5"):
             if str(bl_node.get("ace_id", "") or "") != resolved_id:
                 bl_node["ace_id"] = resolved_id
         return resolved_id

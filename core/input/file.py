@@ -16,12 +16,9 @@ from .resampler import _ACEStreamResampler
 
 
 class FileInput:
-    # ------------------------------------------------------------------
     # Internal helpers (file IO)
-    # ------------------------------------------------------------------
     def _close_file_reader(self):
-        """Close the active file reader (soundfile or wave) and clear the handle."""
-        with utils.logged_errors("audio_influx.AudioReception._close_file_reader"):
+        with utils.logged_errors("file.FileInput._close_file_reader"):
             if self.kind == "soundfile" and self.reader:
                 self.reader.close()  # type: ignore
             elif self.kind == "wave" and self.reader:
@@ -29,21 +26,7 @@ class FileInput:
         self.reader = None
 
     def _open_file_path(self, path: str) -> bool:
-        """Open a single file path, preferring soundfile then falling back to wave.
-
-        Populates self.channels, self.sample_rate, self.duration, and self.kind
-        on success.  Sets ``error_kind`` and ``last_error`` on failure:
-
-        * ``"not_found"`` — file does not exist on disk.
-        * ``"unsupported_format"`` — extension unsupported or soundfile refused it.
-        * ``"open_failed"`` — supported extension but open raised an unexpected error.
-
-        Args:
-            path: Absolute path to the audio file.
-
-        Returns:
-            True if the file was opened successfully, False otherwise.
-        """
+        """Open a single file path, preferring soundfile then falling back to wave."""
         self._close_file_reader()
 
         # Fast existence check — avoids confusing "file not found" with codec errors.
@@ -69,7 +52,7 @@ class FileInput:
                 try:
                     self.duration = float(len(self.reader)) / float(self.sample_rate)
                 except Exception as exc:
-                    utils.note_swallowed("audio_influx.AudioReception._open_file_path#2", exc)
+                    utils.note_swallowed("file.FileInput._open_file_path", exc)
                     self.duration = 0.0
                 self.kind = "soundfile"
                 self._eof = False
@@ -77,7 +60,7 @@ class FileInput:
                 self.error_kind = None
                 return True
             except Exception as e:
-                utils.note_swallowed("audio_influx.AudioReception._open_file_path", e)
+                utils.note_swallowed("file.FileInput._open_file_path#2", e)
                 self.last_error = f"soundfile open failed: {e}"
                 self.reader = None
                 # Fall through to wave fallback — soundfile may refuse the format even
@@ -90,7 +73,7 @@ class FileInput:
             try:
                 self.duration = float(self.reader.getnframes()) / float(self.sample_rate)
             except Exception as exc:
-                utils.note_swallowed("audio_influx.AudioReception._open_file_path#4", exc)
+                utils.note_swallowed("file.FileInput._open_file_path#3", exc)
                 self.duration = 0.0
             self.kind = "wave"
             self._eof = False
@@ -98,7 +81,7 @@ class FileInput:
             self.error_kind = None
             return True
         except Exception as e:
-            utils.note_swallowed("audio_influx.AudioReception._open_file_path#3", e)
+            utils.note_swallowed("file.FileInput._open_file_path#4", e)
             self.reader = None
             self.last_error = f"wave open failed: {e}"
 
@@ -108,14 +91,7 @@ class FileInput:
         return False
 
     def format_error_summary(self) -> str:
-        """Return a concise, user-facing description of the last error.
-
-        Consults ``error_kind`` for context-aware messaging, falling back to the
-        raw ``last_error`` string when no classification is available.
-
-        Returns:
-            A short string suitable for display in the N-panel.
-        """
+        """Return a concise, user-facing description of the last error."""
         _KIND_LABELS: Dict[str, str] = {
             "not_found": "File not found",
             "unsupported_format": "Unsupported audio format",
@@ -135,7 +111,6 @@ class FileInput:
 
     @staticmethod
     def _proxy_cache_dir() -> str:
-        """Return the OS temp directory path used for resampled WAV proxy files."""
         return os.path.join(tempfile.gettempdir(), "ace_audio_proxy_cache")
 
     @staticmethod
@@ -166,20 +141,7 @@ class FileInput:
         return os.path.join(self._proxy_cache_dir(), f"{sig}_{int(target_sample_rate)}.wav")
 
     def _build_resampled_proxy(self, input_path: str, output_path: str, target_sample_rate: int) -> bool:
-        """Stream-resample *input_path* to a WAV proxy at *target_sample_rate*.
-
-        Uses soundfile for non-WAV inputs when available, and falls back to
-        stdlib wave for plain WAV files.  Writes a PCM-16 WAV proxy to
-        *output_path*.
-
-        Args:
-            input_path: Source audio file path.
-            output_path: Destination WAV path for the resampled proxy.
-            target_sample_rate: Target sample rate in Hz.
-
-        Returns:
-            True if the proxy was written successfully, False on any error.
-        """
+        """Stream-resample *input_path* to a WAV proxy at *target_sample_rate*."""
         block_frames = 65_536
         os.makedirs(self._proxy_cache_dir(), exist_ok=True)
 
@@ -241,22 +203,7 @@ class FileInput:
         target_sample_rate: int,
         channels: int,
     ) -> Optional[str]:
-        """Return a path to a cached resampled WAV proxy, building it if missing.
-
-        The proxy path is derived deterministically from a blake2b hash of the
-        input file's absolute path, size, mtime, and the requested sample rate,
-        so the cache is automatically invalidated when the source file changes.
-
-        Args:
-            input_path: Absolute path to the original audio file.
-            source_sample_rate: Native sample rate of the source file.
-            target_sample_rate: Desired sample rate for the proxy.
-            channels: Channel count of the source file.
-
-        Returns:
-            Absolute path to the resampled WAV proxy, or None if the target
-            rate is not lower than the source rate or if proxy build failed.
-        """
+        """Return a path to a cached resampled WAV proxy, building it if missing."""
         if int(target_sample_rate) <= 0 or int(target_sample_rate) >= int(source_sample_rate):
             return None
 
@@ -270,7 +217,7 @@ class FileInput:
             return proxy_path
 
         tmp_path = f"{proxy_path}.tmp"
-        with utils.logged_errors("audio_influx.AudioReception._ensure_resampled_proxy"):
+        with utils.logged_errors("file.FileInput._ensure_resampled_proxy"):
             if os.path.isfile(tmp_path):
                 os.remove(tmp_path)
 
@@ -280,22 +227,15 @@ class FileInput:
             os.replace(tmp_path, proxy_path)
             return proxy_path
         except Exception as e:
-            utils.note_swallowed("audio_influx.AudioReception._ensure_resampled_proxy#2", e)
+            utils.note_swallowed("file.FileInput._ensure_resampled_proxy#2", e)
             self.last_error = f"proxy build failed: {e}"
-            with utils.logged_errors("audio_influx.AudioReception._ensure_resampled_proxy#3"):
+            with utils.logged_errors("file.FileInput._ensure_resampled_proxy#3"):
                 if os.path.isfile(tmp_path):
                     os.remove(tmp_path)
             return None
 
     def _open_file(self) -> bool:
-        """Open self.filepath, optionally through a resampled WAV proxy.
-
-        Sets self.proxy_filepath when a proxy is used so callers can
-        distinguish proxy from native reads.
-
-        Returns:
-            True if a readable file handle is available after the call.
-        """
+        """Open self.filepath, optionally through a resampled WAV proxy."""
         if not self.filepath or not os.path.isfile(self.filepath):
             self.last_error = "file path does not exist"
             return False
@@ -335,7 +275,7 @@ class FileInput:
                 self._eof = False
                 self._cursor_sample = 0
             except Exception as exc:
-                utils.note_swallowed("audio_influx.AudioReception._reset_file", exc)
+                utils.note_swallowed("file.FileInput._reset_file", exc)
                 self.reader = None
         elif self.kind == "wave" and self.reader is not None:
             try:
@@ -343,18 +283,13 @@ class FileInput:
                 self._eof = False
                 self._cursor_sample = 0
             except Exception as exc:
-                utils.note_swallowed("audio_influx.AudioReception._reset_file#2", exc)
+                utils.note_swallowed("file.FileInput._reset_file#2", exc)
                 self.reader = None
 
-    # ------------------------------------------------------------------
     # Internal helpers (byte decoding)
-    # ------------------------------------------------------------------
     @staticmethod
     def _decode_wave_bytes(frames: bytes, sampwidth: int, channels: int):
-        """
-        Decode PCM bytes to float32 mono/stereo numpy arrays.
-        Supports 8/16/24/32-bit PCM and float32/float64.
-        """
+        """Decode PCM bytes to float32 mono/stereo numpy arrays."""
         mono = None
         stereo = None
 
@@ -416,7 +351,7 @@ class FileInput:
                 scale = float(1 << ((8 * int(sampwidth)) - 1))
                 mono = (data / max(scale, 1.0)).astype(np.float32, copy=False)
             except Exception as exc:
-                utils.note_swallowed("audio_influx.AudioReception._decode_wave_bytes", exc)
+                utils.note_swallowed("file.FileInput._decode_wave_bytes", exc)
                 mono = np.zeros(0, dtype=np.float32)
 
         if channels > 1 and mono is not None:

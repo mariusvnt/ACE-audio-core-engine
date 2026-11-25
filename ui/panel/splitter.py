@@ -24,16 +24,6 @@ _splitter_ramp_last_sig = ""
 
 
 def _splitter_hz_to_norm(hz: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: float = _SPLITTER_HIGH_HZ) -> float:
-    """Map a frequency in Hz to [0, 1] on a logarithmic scale.
-
-    Args:
-        hz: Frequency value in Hz.
-        low_hz: Lower bound of the display range in Hz.
-        high_hz: Upper bound of the display range in Hz.
-
-    Returns:
-        Normalised position in [0, 1].
-    """
     import math
     low = max(float(low_hz), 1e-3)
     high = max(float(high_hz), low + 1e-3)
@@ -42,18 +32,6 @@ def _splitter_hz_to_norm(hz: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: f
 
 
 def _splitter_norm_to_hz(t: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: float = _SPLITTER_HIGH_HZ) -> float:
-    """Map a normalised [0, 1] position back to a frequency in Hz.
-
-    Inverse of _splitter_hz_to_norm.
-
-    Args:
-        t: Normalised position in [0, 1].
-        low_hz: Lower bound of the display range in Hz.
-        high_hz: Upper bound of the display range in Hz.
-
-    Returns:
-        Frequency in Hz.
-    """
     import math
     low = max(float(low_hz), 1e-3)
     high = max(float(high_hz), low + 1e-3)
@@ -62,12 +40,7 @@ def _splitter_norm_to_hz(t: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: fl
 
 
 def _splitter_display_bounds(scene) -> tuple[float, float]:
-    """Return the (low_hz, high_hz) display range for the splitter ramp.
-
-    The upper bound is clamped to just below the Nyquist frequency of the
-    active source when its sample rate is known, so cut-point sliders never
-    exceed the useful analysis range.
-    """
+    """Return the (low_hz, high_hz) display range for the splitter ramp."""
     low_hz = float(_SPLITTER_LOW_HZ)
     high_hz = float(_SPLITTER_HIGH_HZ)
     ace = getattr(scene, "audiocore", None)
@@ -84,17 +57,7 @@ def _splitter_display_bounds(scene) -> tuple[float, float]:
 
 
 def _splitter_cut_sockets(node) -> list:
-    """Return the unlinked cut-frequency input sockets of a FrequencySplitter node.
-
-    Skips the first input (Audio bundle) and any linked sockets since linked
-    values are not user-editable cut points.
-
-    Args:
-        node: A Blender GeometryNodeGroup node.
-
-    Returns:
-        List of NodeSocket objects representing cut-frequency inputs.
-    """
+    """Return the unlinked cut-frequency input sockets of a FrequencySplitter node."""
     sockets = []
     for i, sock in enumerate(getattr(node, "inputs", [])):
         if i == 0:
@@ -104,22 +67,17 @@ def _splitter_cut_sockets(node) -> list:
         try:
             _ = float(getattr(sock, "default_value", 0.0))
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._splitter_cut_sockets", exc)
+            utils.note_swallowed("splitter._splitter_cut_sockets", exc)
             continue
         sockets.append(sock)
     return sockets
 
 
 def _splitter_node_signature(node, scene) -> str:
-    """Build a cache-key string representing the current splitter cut-point configuration.
-
-    Encodes the display bounds (Hz) and all unlinked cut-frequency socket values
-    so the ramp texture is only redrawn when the configuration actually changes.
-    """
     low_hz, high_hz = _splitter_display_bounds(scene)
     values = []
     for sock in _splitter_cut_sockets(node):
-        with utils.logged_errors("n_panel_ui._splitter_node_signature"):
+        with utils.logged_errors("splitter._splitter_node_signature"):
             values.append(float(getattr(sock, "default_value", 0.0)))
     values = sorted(values)
     rounded = ",".join(f"{v:.3f}" for v in values)
@@ -127,15 +85,12 @@ def _splitter_node_signature(node, scene) -> str:
 
 
 def _ensure_splitter_ramp_texture():
-    """
-    Returns an RNA owner that exposes a `color_ramp` property for
-    `layout.template_color_ramp(...)`.
-    """
+    """Returns an RNA owner that exposes a `color_ramp` property for `layout.template_color_ramp(...)`."""
     scene = getattr(getattr(bpy, "context", None), "scene", None)
     try:
         node_groups = bpy.data.node_groups
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._ensure_splitter_ramp_texture", exc)
+        utils.note_swallowed("splitter._ensure_splitter_ramp_texture", exc)
         return None
 
     tree = node_groups.get(_SPLITTER_RAMP_NODETREE_NAME)
@@ -150,7 +105,7 @@ def _ensure_splitter_ramp_texture():
         try:
             tree = node_groups.new(_SPLITTER_RAMP_NODETREE_NAME, 'ShaderNodeTree')
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._ensure_splitter_ramp_texture#2", exc)
+            utils.note_swallowed("splitter._ensure_splitter_ramp_texture#2", exc)
             return None
 
     ramp_node = tree.nodes.get(_SPLITTER_RAMP_NODE_NAME)
@@ -163,21 +118,14 @@ def _ensure_splitter_ramp_texture():
             ramp_node.label = "ACE Splitter Ramp"
             ramp_node.location = (0, 0)
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._ensure_splitter_ramp_texture#3", exc)
+            utils.note_swallowed("splitter._ensure_splitter_ramp_texture#3", exc)
             return None
 
     return ramp_node
 
 
 def _sync_splitter_ramp_texture_from_node(node, scene, force: bool = False):
-    """Update the hidden splitter ramp ColorRamp from the current node cut-point values.
-
-    Rate-limited by a signature cache: the ramp is only redrawn when the cut-point
-    configuration has changed since the last call.  Pass ``force=True`` to skip the
-    cache check (used when the node selection changes).
-
-    Returns the ramp_owner node, or None if the ShaderNodeTree could not be created.
-    """
+    """Update the hidden splitter ramp ColorRamp from the current node cut-point values."""
     global _splitter_ramp_last_key, _splitter_ramp_last_sig
     ramp_owner = _ensure_splitter_ramp_texture()
     if ramp_owner is None:
@@ -190,7 +138,7 @@ def _sync_splitter_ramp_texture_from_node(node, scene, force: bool = False):
 
     cut_values = []
     for sock in _splitter_cut_sockets(node):
-        with utils.logged_errors("n_panel_ui._sync_splitter_ramp_texture_from_node"):
+        with utils.logged_errors("splitter._sync_splitter_ramp_texture_from_node"):
             cut_values.append(float(getattr(sock, "default_value", 0.0)))
     cut_values = sorted(cut_values)
 
@@ -224,21 +172,6 @@ def _splitter_ramp_ascii(
     low_hz: float = _SPLITTER_LOW_HZ,
     high_hz: float = _SPLITTER_HIGH_HZ,
 ) -> str:
-    """Render splitter cut-point positions as a compact ASCII ruler string.
-
-    Positions each frequency as a ``|`` mark on a ``-``-filled ruler of the
-    given *width*, using a logarithmic frequency scale.  Used for compact
-    text-based band visualisation in the N-panel header.
-
-    Args:
-        freqs: List of cut-point frequencies in Hz.
-        width: Total character width of the output string.
-        low_hz: Lower Hz bound for the logarithmic scale.
-        high_hz: Upper Hz bound for the logarithmic scale.
-
-    Returns:
-        A string of length *width* consisting of ``-`` and ``|`` characters.
-    """
     if width <= 2:
         return ""
     marks = ["-"] * width

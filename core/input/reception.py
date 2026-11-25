@@ -17,33 +17,14 @@ from .udp import UdpInput
 
 
 def build_live_flow_identifier(source_like: Any) -> str:
-    """
-    Compatibility wrapper around the shared live-route token builder.
-    """
+    """Compatibility wrapper around the shared live-route token builder."""
     return _compose_live_flow_identifier(source_like)
 class AudioReception(FileInput, UdpInput, DeviceInput):
-    """Unified audio reception for both file and live flow sources.
-
-    Supports FILE sources (WAV via stdlib wave, plus additional formats via
-    soundfile) and LIVE sources (sounddevice capture, UDP float32 streaming,
-    DAW bridge, and instrument capture routes).  The public API is:
-
-    - open() / close() / reset() for lifecycle management
-    - read_block() to pull the next block of audio
-    - seek() for frame-locked playback sync (file sources only)
-
-    The source type is determined at construction time via *source_type*
-    ("FILE" or "LIVE").  Live sources auto-detect the backend from the
-    *flow_id* token format (see _parse_live_backend()).
-    """
+    """Unified audio reception for both file and live flow sources."""
 
     @staticmethod
     def supported_file_extensions() -> tuple[str, ...]:
-        """
-        Conservative extension list supported by current file backends.
-        `.wav/.wave` are always supported via Python `wave`.
-        Additional formats require `soundfile`.
-        """
+        """Conservative extension list supported by current file backends."""
         exts = [".wav", ".wave"]
         if SF_AVAILABLE:
             exts.extend([
@@ -79,19 +60,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
 
     @staticmethod
     def is_supported_file_path(filepath: str) -> bool:
-        """Return True if *filepath* exists and can be opened by a supported backend.
-
-        WAV/WAVE files are always considered valid (pure-Python wave fallback).
-        All other formats require soundfile to be available and the file to open
-        without error.
-
-        Args:
-            filepath: Absolute or relative path to the audio file.
-
-        Returns:
-            True when the path exists, has a supported extension, and the file
-            can be opened by the best available backend.
-        """
+        """Return True if *filepath* exists and can be opened by a supported backend."""
         if not filepath or not os.path.isfile(filepath):
             return False
         ext = str(os.path.splitext(filepath)[1] or "").lower()
@@ -106,22 +75,10 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
             handle.close()
             return True
         except Exception as exc:
-            utils.note_swallowed("audio_influx.AudioReception.is_supported_file_path", exc)
+            utils.note_swallowed("reception.AudioReception.is_supported_file_path", exc)
             return False
 
     def __init__(self, source_type: str, filepath: str = "", flow_id: str = "", live_latency_ms: int = 50):
-        """Initialise a reception object without opening any IO resources.
-
-        Args:
-            source_type: "FILE" or "LIVE".
-            filepath: Path to the audio file (FILE sources only).
-            flow_id: Live routing token.  Format:
-                ``sd:<device>`` | ``udp:<port>[:channels[:sample_rate]]`` |
-                ``daw:<udp-or-sd-selector>`` |
-                ``instrument:<sd-or-udp-selector>``
-            live_latency_ms: Requested sounddevice stream latency in
-                milliseconds (LIVE sources only).  Clamped to >=1 ms.
-        """
         self.source_type = source_type
         self.filepath = filepath
         self.flow_id = flow_id
@@ -154,26 +111,9 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         self._live_last_capture_sample: int = 0
         self._live_last_capture_block_samples: int = 0
 
-    # ------------------------------------------------------------------
     # Public API
-    # ------------------------------------------------------------------
     def open(self, block_size: Optional[int] = None, target_sample_rate: Optional[int] = None) -> bool:
-        """Open the underlying IO resource and populate metadata fields.
-
-        For FILE sources, builds a resampled proxy WAV at *target_sample_rate*
-        if the file's native rate exceeds the target.  For LIVE sources,
-        initialises the appropriate backend (sounddevice stream or UDP socket).
-
-        Args:
-            block_size: Preferred read block size in samples.  Passed as a hint
-                to the sounddevice stream blocksize parameter.
-            target_sample_rate: If > 0 and less than the file's native rate, a
-                resampled WAV proxy is built and used for reading.
-
-        Returns:
-            True on success, False on any IO or configuration failure (see
-            self.last_error for a description).
-        """
+        """Open the underlying IO resource and populate metadata fields."""
         self.preferred_block_size = block_size
         self.target_sample_rate = (
             max(int(target_sample_rate), 1)
@@ -193,12 +133,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         return self._open_file()
 
     def reset(self):
-        """Reset the read cursor to the beginning without closing IO resources.
-
-        For LIVE sources, flushes the capture queue and clears the last-block
-        cache so the next read produces fresh data.  For FILE sources, seeks
-        to frame 0.
-        """
+        """Reset the read cursor to the beginning without closing IO resources."""
         if self.source_type == "LIVE":
             if self._live_queue:
                 with self._live_queue.mutex:
@@ -214,7 +149,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         """Release any underlying IO resources."""
         # Close live stream
         if self._live_stream:
-            with utils.logged_errors("audio_influx.AudioReception.close"):
+            with utils.logged_errors("reception.AudioReception.close"):
                 self._live_stream.stop()
                 self._live_stream.close()
             self._live_stream = None
@@ -223,7 +158,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
                 self._live_queue.queue.clear()
             self._live_queue = None
         if self._live_udp_socket:
-            with utils.logged_errors("audio_influx.AudioReception.close#2"):
+            with utils.logged_errors("reception.AudioReception.close#2"):
                 self._live_udp_socket.close()
             self._live_udp_socket = None
 
@@ -249,23 +184,13 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
                 self._cursor_sample = int(sample_index)
                 return True
         except Exception as e:
-            utils.note_swallowed("audio_influx.AudioReception.seek", e)
+            utils.note_swallowed("reception.AudioReception.seek", e)
             self.last_error = f"seek failed: {e}"
             return False
         return False
 
     def read_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
-        """Read the next block of audio from the source.
-
-        Args:
-            block_size: Number of samples to read per channel.
-
-        Returns:
-            A (mono, stereo, sample_rate) tuple where *mono* is a 1-D float32
-            array of length *block_size*, *stereo* is a (2, block_size) float32
-            array or None for mono sources, and *sample_rate* is an int.
-            Returns None at EOF, on IO error, or if the source is not open.
-        """
+        """Read the next block of audio from the source."""
         if self.source_type == "LIVE":
             return self._read_live_block(block_size)
 
@@ -298,7 +223,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
                     if mono is not None and mono.shape[-1] < block_size:
                         reached_eof = True
         except Exception as e:
-            utils.note_swallowed("audio_influx.AudioReception.read_block", e)
+            utils.note_swallowed("reception.AudioReception.read_block", e)
             self.last_error = f"read_block failed ({self.kind}): {e}"
             self.error_kind = "read_failed"
             return None
@@ -325,22 +250,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         return out_mono, stereo, self.sample_rate
 
     def _parse_live_backend(self):
-        """Determine the live backend type and configuration from self.flow_id.
-
-        Dispatches on the token prefix:
-        - ``daw:`` → DAW bridge (UDP or sounddevice)
-        - ``instrument:`` → instrument capture (sounddevice or UDP)
-        - ``udp:`` / ``udp://`` → raw UDP float32 stream
-        - ``sd:`` / ``sounddevice:`` → sounddevice InputStream
-        - loopback prefix → sounddevice with WASAPI loopback flag
-        - bare token → sounddevice with device name/index
-
-        Returns:
-            A (backend_name, cfg_dict) tuple.  *backend_name* is one of
-            "udp", "daw_udp", "instrument_udp", "sounddevice",
-            "daw_sounddevice", "instrument_sounddevice", "invalid", or
-            "unsupported".
-        """
+        """Determine the live backend type and configuration from self.flow_id."""
         token = (self.flow_id or "").strip()
         if not token:
             return "sounddevice", {"device": None, "channels": 2}
@@ -374,14 +284,7 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         return "sounddevice", {"device": token, "channels": 2}
 
     def _open_live(self) -> bool:
-        """
-        Initialize a live backend.
-        Supported:
-        - sounddevice capture (`sd:` or plain device token)
-        - UDP float32 streaming (`udp:<port>[:channels[:sample_rate]]`)
-        - DAW bridge (`daw:` prefix routed to dedicated UDP/sounddevice handlers)
-        - Instrument capture (`instrument:` prefix routed to dedicated sounddevice/UDP handlers)
-        """
+        """Initialize a live backend."""
         backend, cfg = self._parse_live_backend()
         if backend == "udp":
             return self._open_live_udp(cfg, kind="udp_stream")

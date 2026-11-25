@@ -149,13 +149,13 @@ class GraphEvaluation:
                 if int(getattr(upstream, "last_frame_processed", -1)) == frame_idx:
                     extract_fn = getattr(upstream, "_extract_result", None)
                     if callable(extract_fn):
-                        with utils.logged_errors("audio_engine.ACEAudioEngine._evaluate_graph_plan_iterative"):
+                        with utils.logged_errors("evaluation.GraphEvaluation._evaluate_graph_plan_iterative"):
                             input_data[input_idx] = extract_fn(socket_idx)
                             continue
                 try:
                     input_data[input_idx] = upstream.get_output(frame_idx, socket_idx)
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine._evaluate_graph_plan_iterative#2", exc)
+                    utils.note_swallowed("evaluation.GraphEvaluation._evaluate_graph_plan_iterative#2", exc)
                     input_data[input_idx] = None
 
             try:
@@ -167,7 +167,7 @@ class GraphEvaluation:
                     tag_fn(task.cached_output, frame_idx)
                 task.last_frame_processed = frame_idx
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._evaluate_graph_plan_iterative#3", exc)
+                utils.note_swallowed("evaluation.GraphEvaluation._evaluate_graph_plan_iterative#3", exc)
                 continue
 
     def _collect_graph_results_for_frame(
@@ -194,7 +194,7 @@ class GraphEvaluation:
                     try:
                         val = extract_fn(socket_idx)
                     except Exception as exc:
-                        utils.note_swallowed("audio_engine.ACEAudioEngine._collect_graph_results_for_frame", exc)
+                        utils.note_swallowed("evaluation.GraphEvaluation._collect_graph_results_for_frame", exc)
                         val = task.get_output(frame_index, socket_idx)
                 else:
                     val = task.get_output(frame_index, socket_idx)
@@ -208,7 +208,6 @@ class GraphEvaluation:
         return results
 
     def _refresh_source_specs_task_registry(self) -> None:
-        """Rebuild the lookup used to flush SourceSpecsTask main-thread ctx writes."""
         registry: Dict[tuple[str, float], SourceSpecsTask] = {}
         for graph in (self.engine.graphs or {}).values():
             for task in (getattr(graph, "tasks", {}) or {}).values():
@@ -227,7 +226,7 @@ class GraphEvaluation:
             val = str(getattr(settings, "ace_scheduler_mode", "demand") or "demand").strip().lower()
             return val if val in {"demand", "legacy"} else "demand"
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._scheduler_mode", exc)
+            utils.note_swallowed("evaluation.GraphEvaluation._scheduler_mode", exc)
             return "demand"
 
     @classmethod
@@ -237,5 +236,5 @@ class GraphEvaluation:
             val = str(getattr(settings, "ace_timeslice_mode", "fixed") or "fixed").strip().lower()
             return val if val in {"fixed", "adaptive"} else "fixed"
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._timeslice_mode", exc)
+            utils.note_swallowed("evaluation.GraphEvaluation._timeslice_mode", exc)
             return "fixed"

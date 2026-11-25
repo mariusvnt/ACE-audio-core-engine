@@ -41,7 +41,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             ).encode("utf-8")
             return hashlib.blake2b(serialized, digest_size=8).hexdigest()
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._ace_nodes_hash", exc)
+            utils.note_swallowed("factory.ACEShaderNodeFactory._ace_nodes_hash", exc)
             return ""
 
     @staticmethod
@@ -72,7 +72,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     changed = True
                     break
                 except Exception as exc:
-                    utils.note_swallowed("shader_tree.cls._set_attr_node_defaults", exc)
+                    utils.note_swallowed("factory.ACEShaderNodeFactory._set_attr_node_defaults", exc)
                     continue
         name = str(attr_name or "").strip()
         if not name:
@@ -88,11 +88,11 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             try:
                 current_name = str(getattr(attr_node, prop_name, "") or "")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._set_attr_node_defaults#2", exc)
+                utils.note_swallowed("factory.ACEShaderNodeFactory._set_attr_node_defaults#2", exc)
                 current_name = ""
             if current_name == name:
                 continue
-            with utils.logged_errors("shader_tree.cls._set_attr_node_defaults#3"):
+            with utils.logged_errors("factory.ACEShaderNodeFactory._set_attr_node_defaults#3"):
                 setattr(attr_node, prop_name, name)
                 changed = True
         return changed
@@ -123,7 +123,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         try:
             sink_node = ng.nodes.new("ShaderNodeAttribute")
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._create_output_sink_node", exc)
+            utils.note_swallowed("factory.ACEShaderNodeFactory._create_output_sink_node", exc)
             return None
         sink_kind = "ATTRIBUTE"
         cls._set_attr_node_defaults(
@@ -133,14 +133,14 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         out_sock = cls._shader_attr_output_socket(sink_node, socket_type)
 
         sink_node.location = (300, -200 - (int(output_idx) * 150))
-        with utils.logged_errors("shader_tree.cls._create_output_sink_node#2"):
+        with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#2"):
             sink_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
-        with utils.logged_errors("shader_tree.cls._create_output_sink_node#3"):
+        with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#3"):
             sink_node[cls._OUTPUT_NODE_KIND_KEY] = str(sink_kind)
-        with utils.logged_errors("shader_tree.cls._create_output_sink_node#4"):
+        with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#4"):
             sink_node["ace_shader_output_name"] = str(socket_name or "")
         if out_sock is not None:
-            with utils.logged_errors("shader_tree.cls._create_output_sink_node#5"):
+            with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#5"):
                 ng.links.new(out_sock, output_node.inputs[int(output_idx)])
         return sink_node
 
@@ -158,13 +158,13 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                 None,
             )
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._set_socket_default", exc)
+            utils.note_swallowed("factory.ACEShaderNodeFactory._set_socket_default", exc)
             item = None
         if item is None:
             return
         if not hasattr(item, "default_value"):
             return
-        with utils.logged_errors("shader_tree.cls._set_socket_default#2"):
+        with utils.logged_errors("factory.ACEShaderNodeFactory._set_socket_default#2"):
             item.default_value = default_value
 
     @classmethod
@@ -179,7 +179,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                 None,
             )
             if item is not None and hasattr(item, "hide_value"):
-                with utils.logged_errors("shader_tree.cls._ensure_attr_interface_visible"):
+                with utils.logged_errors("factory.ACEShaderNodeFactory._ensure_attr_interface_visible"):
                     item.hide_value = False
 
     @staticmethod
@@ -205,7 +205,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             try:
                 return bundle_node.bundle_items.new(item_type, item_name)
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._safe_bundle_item", exc)
+                utils.note_swallowed("factory.ACEShaderNodeFactory._safe_bundle_item", exc)
                 continue
         return None
 
@@ -217,7 +217,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             ng.links.new(source_socket, reroute.inputs[0])
             return True
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._link_or_consume_reroute", exc)
+            utils.note_swallowed("factory.ACEShaderNodeFactory._link_or_consume_reroute", exc)
             return False
 
     @classmethod
@@ -238,13 +238,13 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     continue
                 name = str(getattr(item, "name", "") or "")
                 if name == "Window (s)":
-                    with utils.logged_errors("shader_tree.cls._build_group_content"):
+                    with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content"):
                         item.default_value = 0.4
                     for attr_name, value in (
                         ("min_value", 0.05),
                         ("max_value", 3.0),
                     ):
-                        with utils.logged_errors("shader_tree.cls._build_group_content#2"):
+                        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#2"):
                             setattr(item, attr_name, value)
 
         for sock_type_str, sock_name, default_value in extra_inputs:
@@ -253,11 +253,8 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         for _out_idx, sock_type_str, helper_name in helper_inputs:
             cls._new_socket(ng, helper_name, "INPUT", sock_type_str)
 
-        # Shader groups are strict facades: Group Input/Output + direct wiring.
-        # NO NodeSeparateBundle / NodeCombineBundle inside shader groups —
-        # Cycles' ShaderNodesInliner cannot handle them and crashes (null deref).
-        # Bundle sockets pass through directly; helper inputs wire to outputs.
-        # Companion Attribute nodes live in the parent material tree.
+        # No bundle nodes inside shader groups: Cycles' shader inliner crashes on them.
+        # Bundles pass straight through; helper Attribute nodes live in the material tree.
         input_node = ng.nodes.new("NodeGroupInput")
         output_node = ng.nodes.new("NodeGroupOutput")
         input_node.location = (-760, 0)
@@ -274,10 +271,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             idx for idx, (sock_type, _name) in enumerate(base_outputs) if "Bundle" in str(sock_type or "")
         ]
 
-        # GroupInput.outputs may omit NodeSocketBundle entries in ShaderNodeTree —
-        # Blender's shader backend does not always expose bundle sockets on GroupInput.
-        # Using index-based access (all_inputs[i] == input_node.outputs[i]) is
-        # therefore unreliable.  Look up every socket by NAME instead.
+        # Shader GroupInput may omit bundle sockets, so sockets are matched by name, not index.
         input_sock_by_name: dict[str, object] = {}
         for _s in getattr(input_node, "outputs", []) or []:
             _sn = str(getattr(_s, "name", "") or "")
@@ -304,7 +298,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             if _bundle_in is not None:
                 for output_idx in bundle_output_indices:
                     if output_idx < len(getattr(output_node, "inputs", [])):
-                        with utils.logged_errors("shader_tree.cls._build_group_content#3"):
+                        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#3"):
                             ng.links.new(_bundle_in, output_node.inputs[int(output_idx)])
 
         # Consume every non-helper, non-primary-bundle input via reroute.
@@ -331,12 +325,10 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             source_out = helper_source_by_idx.get(int(output_idx))
             if source_out is None:
                 continue
-            with utils.logged_errors("shader_tree.cls._build_group_content#4"):
+            with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#4"):
                 ng.links.new(source_out, output_node.inputs[int(output_idx)])
 
-        # LUFS-specific shader equivalent of the GN index-driver trick:
-        # Window * 0 + 1 multiplies each scalar property output by 1, preserving
-        # output values while keeping the control consumed (not greyed out).
+        # Window * 0 + 1 keeps the control consumed without changing the output.
         if str(category or "") == "stream" and str(node_type or "") == "lufs" and helper_source_by_idx:
             # Use name-based lookup — bundle sockets may shift numeric indices.
             window_sock = input_sock_by_name.get("Window (s)")
@@ -362,7 +354,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     socket_type = str(base_outputs[output_idx][0] or "")
                     target_input = output_node.inputs[int(output_idx)]
                     for link in list(getattr(target_input, "links", []) or []):
-                        with utils.logged_errors("shader_tree.cls._build_group_content#5"):
+                        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#5"):
                             ng.links.remove(link)
                     if source_out is None:
                         continue
@@ -376,7 +368,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                         try:
                             scale_input = vec_mul.inputs.get("Scale")
                         except Exception as exc:
-                            utils.note_swallowed("shader_tree.cls._build_group_content#6", exc)
+                            utils.note_swallowed("factory.ACEShaderNodeFactory._build_group_content#6", exc)
                             scale_input = None
                         if scale_input is None and len(getattr(vec_mul, "inputs", [])) > 1:
                             scale_input = vec_mul.inputs[1]
@@ -448,7 +440,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
 
         changed = False
         if current_group != group:
-            with utils.logged_errors("shader_tree.cls._ensure_shared_group_for_node"):
+            with utils.logged_errors("factory.ACEShaderNodeFactory._ensure_shared_group_for_node"):
                 node.node_tree = group
                 changed = True
         return group, changed
@@ -467,7 +459,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             try:
                 bpy.data.node_groups.remove(ng)
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls.rebuild_node_group", exc)
+                utils.note_swallowed("factory.ACEShaderNodeFactory.rebuild_node_group", exc)
                 ng = None
             else:
                 ng = None
@@ -480,12 +472,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
 
     @classmethod
     def _cleanup_legacy_drivers(cls):
-        """Strip stale driver FCurves from ACE shader node groups.
-
-        Legacy scenes may contain driver-based sink nodes (ShaderNodeValue,
-        ShaderNodeCombineXYZ, ShaderNodeRGB with driver FCurves).  This method
-        removes those FCurves so they do not cause evaluation overhead.
-        """
+        """Strip stale driver FCurves from ACE shader node groups."""
         try:
             node_groups = bpy.data.node_groups
         except AttributeError:
@@ -501,7 +488,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             if drivers is None or len(drivers) == 0:
                 continue
             for fc in list(drivers):
-                with utils.logged_errors("shader_tree.cls._cleanup_legacy_drivers"):
+                with utils.logged_errors("factory.ACEShaderNodeFactory._cleanup_legacy_drivers"):
                     drivers.remove(fc)
 
     @classmethod
@@ -523,7 +510,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     try:
                         bpy.data.node_groups.remove(ng)
                     except Exception as exc:
-                        utils.note_swallowed("shader_tree.cls.ensure_node_groups_exist", exc)
+                        utils.note_swallowed("factory.ACEShaderNodeFactory.ensure_node_groups_exist", exc)
                         ng = None
                     else:
                         ng = None
@@ -536,7 +523,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     cls._ensure_attr_interface_visible(ng, cat_key, type_key)
                     continue
                 cls._build_group_content(ng, node_def, cat_key, type_key)
-        with utils.logged_errors("shader_tree.cls.ensure_node_groups_exist#2"):
+        with utils.logged_errors("factory.ACEShaderNodeFactory.ensure_node_groups_exist#2"):
             from ..dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 
             ACESplitterManager.refresh_existing_variants("ShaderNodeTree")

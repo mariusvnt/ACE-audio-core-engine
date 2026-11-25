@@ -15,8 +15,7 @@ class FrontendTracker:
 
     def __init__(self, engine):
         self.engine = engine
-        # Legacy compatibility slots: keep these unset so the engine never holds
-        # long-lived RNA object references across undo/redo.
+        # Empty between compiles: no RNA reference may outlive an undo.
         self._pending_tree: Optional[bpy.types.NodeTree] = None
         self._pending_scene_rebuild: bool = False
         self._last_request_time: float = 0.0
@@ -31,11 +30,10 @@ class FrontendTracker:
 
     @staticmethod
     def _node_tree_pointer(tree) -> int:
-        """Return a stable integer identity for a node tree (pointer or id())."""
         if tree is None:
             return 0
         if hasattr(tree, "as_pointer"):
-            with utils.logged_errors("audio_engine.ACEAudioEngine._node_tree_pointer"):
+            with utils.logged_errors("frontends.FrontendTracker._node_tree_pointer"):
                 return int(tree.as_pointer())
         return id(tree)
 
@@ -46,7 +44,7 @@ class FrontendTracker:
         try:
             return str(tree.get("ace_frontend_uid", "") or "")
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._tree_frontend_uid", exc)
+            utils.note_swallowed("frontends.FrontendTracker._tree_frontend_uid", exc)
             return ""
 
     @staticmethod
@@ -64,7 +62,7 @@ class FrontendTracker:
     def _tree_has_ace_nodes(tree: bpy.types.NodeTree | None) -> bool:
         if not tree:
             return False
-        with utils.logged_errors("audio_engine.ACEAudioEngine._tree_has_ace_nodes"):
+        with utils.logged_errors("frontends.FrontendTracker._tree_has_ace_nodes"):
             if bool(tree.get("ace_frontend_uid", "")):
                 return True
         try:
@@ -84,7 +82,7 @@ class FrontendTracker:
                     return True
             return False
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._tree_has_ace_nodes#2", exc)
+            utils.note_swallowed("frontends.FrontendTracker._tree_has_ace_nodes#2", exc)
             return False
 
     @staticmethod
@@ -388,16 +386,7 @@ class FrontendTracker:
         return (tuple(node_sig), links, output_links, frontend_sig, consumer_sig)
 
     def _maybe_compile_dirty(self, scene) -> bool:
-        """Recompile the dirty scene frontends if the quiet window is met.
-
-        Requires ``_last_dirty_time`` to have been stable for 350 ms AND
-        ``_last_compile_time`` to be at least 350 ms ago.  Both guards are
-        bypassed when the dirty state has persisted for more than 2 s (rapid
-        link-editing bursts that keep resetting the quiet timer).
-
-        Returns:
-            True if a recompile was performed, False otherwise.
-        """
+        """Recompile the dirty scene frontends if the quiet window is met."""
         if self.engine._undo_recovery_active():
             return False
         now = time.time()
@@ -436,9 +425,7 @@ class FrontendTracker:
                 min_interval=5.0,
             )
             return False
-        # Require a quiet window and minimum spacing between rebuilds.
-        # Exception: bypass the quiet window if dirty state has persisted for >2 s
-        # (catches rapid link-editing bursts that perpetually reset the quiet timer).
+        # Rebuild after a quiet window, or after 2 s of continuous edits.
         first_dirty = getattr(self, "_first_dirty_time", 0.0)
         bypass_quiet = first_dirty > 0.0 and (now - first_dirty) >= 2.0
         if not bypass_quiet and (now - self._last_dirty_time) < 0.35:
@@ -480,15 +467,7 @@ class FrontendTracker:
         return compiled
 
     def request_recompile(self, bl_tree: bpy.types.NodeTree | None):
-        """Mark scene frontends as needing recompilation on the next compile poll.
-
-        Rate-limited: multiple calls within 150 ms of each other update only
-        ``_last_dirty_time`` without re-triggering the cooldown so rapid source
-        property edits do not spam recompiles.
-
-        Args:
-            bl_tree: Tree to mark dirty, or None to request a scene-wide rebuild.
-        """
+        """Mark scene frontends as needing recompilation on the next compile poll."""
         now = time.time()
         if self.engine._undo_recovery_active():
             self._pending_scene_rebuild = True

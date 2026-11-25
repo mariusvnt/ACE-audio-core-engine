@@ -78,7 +78,7 @@ def resolve_context_block_size(
     try:
         delta_mag = abs(float(delta_frames))
     except Exception as exc:
-        utils.note_swallowed("audio_tasks_registry.resolve_context_block_size", exc)
+        utils.note_swallowed("block_size.resolve_context_block_size", exc)
         delta_mag = 1.0
     if not math.isfinite(delta_mag):
         delta_mag = 1.0

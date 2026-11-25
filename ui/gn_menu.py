@@ -24,9 +24,6 @@ def _allowed_categories_for_context(context) -> tuple[str, ...]:
     return tuple(_ALLOWED_CATEGORIES_BY_TREE_TYPE.get(_menu_tree_type(context), ()))
 
 
-# ==============================================================================
-# 1. THE OPERATOR (Logic)
-# ==============================================================================
 
 class ACE_OT_add_node_group(bpy.types.Operator):
     """
@@ -334,7 +331,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         splitter_bands = 2
         audio_math_inputs = 2
         
-        # 1. Resolve the Group data-block
         if self.category_key == "delta" and self.node_type_key == "frequency_splitter":
             try:
                 ace = getattr(getattr(context, "scene", None), "audiocore", None)
@@ -369,12 +365,10 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             self.report({'ERROR'}, "Could not resolve node group.")
             return {'CANCELLED'}
 
-        # 2. Create the Node instance
         node = tree.nodes.new(group_node_type)
         node.node_tree = group
         node.location = context.space_data.cursor_location
         
-        # 3. CRITICAL: Assign the Unique ID
         # This ties the visual node to the backend logic
         try:
             # We pass existing IDs to ensure absolute uniqueness
@@ -409,11 +403,10 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 self._ensure_shader_frontend_uid(tree, context)
             self._initialize_source_binding(node, context)
 
-        # 4. Initialize deterministic attribute IDs for stream/spec nodes
         self._initialize_auto_attr_ids(node, context)
         self._show_attr_id_socket_values(node)
         if tree_type == "ShaderNodeTree":
-            with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#4"):
+            with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#3"):
                 from ..core.engine.engine import ACEAudioEngine
 
                 scene = getattr(context, "scene", None)
@@ -435,7 +428,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                         scene=scene,
                     )
 
-        # 5. UI Cleanup (Selection)
         for n in tree.nodes:
             n.select = False
         node.select = True
@@ -443,9 +435,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         
         return {'FINISHED'}
 
-# ==============================================================================
-# 2. THE MENUS (View)
-# ==============================================================================
 
 class ACE_MT_add_node_menu_base(bpy.types.Menu):
     """Generic Helper to draw items for a specific category"""
@@ -468,7 +457,6 @@ class ACE_MT_add_node_menu_base(bpy.types.Menu):
             op.category_key = category_key
             op.node_type_key = type_key
 
-# --- Submenus for each Top-Level Category ---
 
 class ACE_MT_delta(ACE_MT_add_node_menu_base):
     bl_idname = "ACE_MT_delta"
@@ -514,7 +502,6 @@ class ACE_MT_utilities(ACE_MT_add_node_menu_base):
     def draw(self, context):
         self.draw_category_items(context, "utilities")
 
-# --- Main Entry Point ---
 
 class ACE_MT_add_node_menu(bpy.types.Menu):
     bl_idname = "ACE_MT_add_node_menu"
@@ -550,9 +537,6 @@ def add_shader_category_menu_func(self, context):
     self.layout.separator()
     self.layout.menu("ACE_MT_add_node_menu", icon='SOUND')
 
-# ==============================================================================
-# 3. REGISTRATION
-# ==============================================================================
 
 classes = (
     ACE_OT_add_node_group,

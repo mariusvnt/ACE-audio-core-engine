@@ -10,7 +10,6 @@ from . import sync
 from .sync import _engine_latency_metrics, _ui_has_pending_engine_changes, _ui_load_post, _ui_sync_timer
 
 
-# --- Lists & Menus ---
 class ACE_UL_source_list(bpy.types.UIList):
     """UIList row renderer for the audio source collection.
 
@@ -46,7 +45,6 @@ class ACE_UL_dummy_tree(bpy.types.UIList):
             layout.label(text="", icon='NODE')
 
 
-# --- Panels & Sub-Panels ---
 class ACE_PT_presentation_panel(bpy.types.Panel):
     """Panel displaying the add-on logo."""
     bl_label = "AudioCore Engine"
@@ -293,9 +291,7 @@ class ACE_PT_audio_sources(bpy.types.Panel):
 
         proxy_name = getattr(active_source, "proxy_object_name", "")
 
-        # Parallel DSP disabled warning — shown when restart limit was exhausted.
-        # disabled_sources is keyed by source_uid (stable_id), with proxy_name
-        # as a fallback when stable_id is absent, so check both.
+        # disabled_sources holds source uids, or proxy names for sources without one.
         engine = ACEAudioEngine.get_instance(context.scene)
         disabled_srcs = set(getattr(getattr(engine, "parallel", None), "disabled_sources", set()) or set())
         src_uid = getattr(active_source, "stable_id", "") or ""
@@ -365,7 +361,7 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
 
         panel_prop = getattr(layout, "panel_prop", None)
         if callable(panel_prop):
-            with utils.logged_errors("n_panel_ui.ACE_PT_sub_tempo_meter.draw"):
+            with utils.logged_errors("panels.ACE_PT_sub_tempo_meter.draw"):
                 header, panel = panel_prop(src, "tempo_meter_panel_open")
                 header.label(text=self.bl_label)
                 if panel is None:
@@ -387,7 +383,7 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
             detect_status = str(src.get("ace_tempo_detect_status", "") or "")
             detect_message = str(src.get("ace_tempo_detect_message", "") or "")
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui.ACE_PT_sub_tempo_meter.draw#2", exc)
+            utils.note_swallowed("panels.ACE_PT_sub_tempo_meter.draw#2", exc)
             detect_status = ""
             detect_message = ""
         if detect_status == "pending":
@@ -531,7 +527,6 @@ class ACE_PT_stream_confluence(bpy.types.Panel):
                 )
 
 
-# --- REGISTRATION ---
 classes = (
     ACE_UL_source_list,
     ACE_UL_dummy_tree,

@@ -44,26 +44,18 @@ def _ensure_variant_group(name: str, tree_or_type) -> bpy.types.NodeTree | None:
     return ng
 
 class ACESplitterManager:
-    """
-    Manages independent variants of the Frequency Splitter.
-    Generates hidden Node Groups like '.ACE_delta_frequency_splitter_3_bands'.
-    """
+    """Manages independent variants of the Frequency Splitter."""
     _INTERNAL_VERSION_TAG = "ACE_SPLITTER_INTERNALS_V5"
 
     @staticmethod
     def get_or_create_variant(band_count: int, tree_or_type="GeometryNodeTree") -> bpy.types.NodeTree:
-        """
-        Retrieves (or builds) the Node Group data block for a specific band count.
-        Creates it if it doesn't exist.
-        """
+        """Retrieves (or builds) the Node Group data block for a specific band count."""
         band_count = max(2, min(int(band_count), 8))
-        # 1. Construct the unique name for this variant
         factory_cls = _factory_for_tree(tree_or_type)
         tree_type = _tree_bl_idname(tree_or_type)
         base_name = factory_cls.get_group_name('delta', 'frequency_splitter')
         variant_name = f"{base_name}_{band_count}_bands"
 
-        # 2. Return if exists (after migration checks)
         if variant_name in bpy.data.node_groups:
             ng = bpy.data.node_groups[variant_name]
             if getattr(ng, "bl_idname", "") == tree_type:
@@ -73,15 +65,11 @@ class ACESplitterManager:
             with utils.logged_errors("dynamic_audio_operators.ACESplitterManager.get_or_create_variant"):
                 bpy.data.node_groups.remove(ng)
             
-        # 3. Create New Blueprint
         return ACESplitterManager._build_variant(variant_name, band_count, tree_or_type)
 
     @staticmethod
     def refresh_existing_variants(tree_or_type="GeometryNodeTree"):
-        """
-        Migrate already-existing splitter variants in-place so older projects
-        immediately benefit from range constraints and non-greyed controls.
-        """
+        """Migrate already-existing splitter variants in-place so older projects immediately benefit from range constraints and non-greyed controls."""
         tree_type = _tree_bl_idname(tree_or_type)
         base_name = _factory_for_tree(tree_or_type).get_group_name('delta', 'frequency_splitter')
         prefix = f"{base_name}_"
@@ -101,9 +89,7 @@ class ACESplitterManager:
 
     @staticmethod
     def apply_variant_to_node(node: bpy.types.Node, band_count: int):
-        """
-        Swaps the node_tree of a specific node instance to the requested variant.
-        """
+        """Swaps the node_tree of a specific node instance to the requested variant."""
         if not node or node.type != 'GROUP': return
         
         # Get the blueprint
@@ -124,7 +110,6 @@ class ACESplitterManager:
 
     @staticmethod
     def _default_split_freq(split_idx: int, split_count: int, low_hz: float = 20.0, high_hz: float = 20000.0) -> float:
-        """Log-spaced split defaults across the audible range."""
         if split_count <= 0:
             return 1000.0
         low = max(float(low_hz), 1e-3)
@@ -184,10 +169,7 @@ class ACESplitterManager:
         marker.label = "ACE Splitter Internals"
         marker.location = (-520, 260)
 
-        # Minimal dummy internals:
-        # - keep proxy geometry in each output bundle
-        # - add all split frequencies into each output bundle as float items
-        # Backend reads split values from node sockets; this just keeps UI sockets active.
+        # Facade only: bundles keep the sockets active; the backend reads split values from the node.
         sep_bundle = ng.nodes.new('NodeSeparateBundle')
         sep_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
         sep_bundle.location = (-500, 0)
@@ -270,15 +252,11 @@ class ACESplitterManager:
 
     @staticmethod
     def _build_variant(name: str, band_count: int, tree_or_type="GeometryNodeTree") -> bpy.types.NodeTree:
-        """
-        Constructs the internal node graph for a splitter variant.
-        Wires inputs/outputs to internal dummy nodes to prevent UI 'grey-out'.
-        """
+        """Constructs the internal node graph for a splitter variant."""
         ng = _ensure_variant_group(name, tree_or_type)
         if ng is None:
             raise RuntimeError(f"Could not create splitter variant '{name}'")
         
-        # --- DYNAMIC SOCKET GENERATION ---
         
         # Input 0: Main Audio
         ng.interface.new_socket("Audio", in_out='INPUT', socket_type=_mapped_socket_type(tree_or_type, 'NodeSocketBundle'))
@@ -309,10 +287,7 @@ class ACESplitterManager:
 
 
 class ACEAudioMathManager:
-    """
-    Manages independent variants of the Audio Math node.
-    Generates hidden Node Groups like '.ACE_utilities_audio_math_3_inputs'.
-    """
+    """Manages independent variants of the Audio Math node."""
     _INTERNAL_VERSION_TAG = "ACEAudioMathInternals_v3"
 
     @staticmethod

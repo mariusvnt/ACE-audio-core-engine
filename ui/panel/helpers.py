@@ -12,7 +12,6 @@ _ui_label_icon_ids: set[str] | None = None
 
 
 def _tree_has_ace_nodes(tree) -> bool:
-    """Return True if *tree* contains at least one node with an ``ace_id`` custom property."""
     if tree is None:
         return False
     for node in getattr(tree, "nodes", []) or []:
@@ -21,23 +20,13 @@ def _tree_has_ace_nodes(tree) -> bool:
     return False
 
 
-# --- Deal-breaker handling ---
 def _deal_breakers():
-    """Return a list of blocking configuration issue strings.
-
-    These issues prevent any ACE panel from drawing meaningful UI.  Currently
-    checks Blender version (>=5.0 required) and AudioFlux availability.
-
-    Returns:
-        A list of human-readable issue description strings.  Empty when the
-        configuration is valid.
-    """
     issues = []
     try:
         if tuple(getattr(bpy.app, "version", (0, 0, 0))) < (5, 0, 0):
             issues.append("Blender 5.0+ is required.")
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._deal_breakers", exc)
+        utils.note_swallowed("helpers._deal_breakers", exc)
         issues.append("Unable to read Blender version.")
     if not utils.is_module_installed("audioflux"):
         issues.append("AudioFlux is not installed although it is one of the core elements of the engine; see add-on preferences to install it.")
@@ -45,18 +34,11 @@ def _deal_breakers():
 
 
 def _ui_is_blocked(context):
-    """Return True when one or more deal-breaker issues prevent drawing the UI."""
     return len(_deal_breakers()) > 0
 
 
-# --- Active UI Dummy Tree Helpers ---
 def _iter_visible_node_editor_trees(context):
-    """Yield unique supported trees from visible Node Editor areas.
-
-    The 3D View N-panel runs outside a node editor context, so this helper
-    inspects open windows/screens for visible ``NODE_EDITOR`` areas and yields
-    their active ``edit_tree``/``node_tree`` values.
-    """
+    """Yield unique supported trees from visible Node Editor areas."""
     seen_tree_ptrs: set[int] = set()
     seen_area_ptrs: set[int] = set()
 
@@ -91,7 +73,7 @@ def _iter_visible_node_editor_trees(context):
             try:
                 area_ptr = int(area.as_pointer())
             except Exception as exc:
-                utils.note_swallowed("n_panel_ui._iter_visible_node_editor_trees", exc)
+                utils.note_swallowed("helpers._iter_visible_node_editor_trees", exc)
                 area_ptr = id(area)
             if area_ptr in seen_area_ptrs:
                 continue
@@ -105,22 +87,7 @@ def _iter_visible_node_editor_trees(context):
 
 
 def _find_active_node_tree(context, editor_context_only: bool = False):
-    """Return the most relevant active ACE authoring tree for the current context.
-
-    Priority order:
-    1. Active node-editor context tree (when currently in a Node Editor).
-    2. Trees visible in open Node Editor areas (current window first).
-    3. Broad scene/object fallback (unless ``editor_context_only=True``).
-
-    Returns the first found ACE-node tree, or a non-ACE fallback if nothing
-    else is available.
-
-    Args:
-        context: Blender context.
-        editor_context_only: When True, only resolve from visible/editor
-            context trees and skip object/material fallbacks. This is used by
-            the N-panel active-node list so it tracks editor context.
-    """
+    """Return the most relevant active ACE authoring tree for the current context."""
     scene = getattr(context, "scene", None)
     ace = getattr(scene, "audiocore", None)
     target_obj = getattr(ace, "gn_target_object", None) if ace else None
@@ -185,7 +152,7 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
     # Respect Blender's context resolver only when currently in the Node Editor.
     space = getattr(context, "space_data", None)
     if getattr(space, "type", "") == 'NODE_EDITOR':
-        with utils.logged_errors("n_panel_ui._find_active_node_tree"):
+        with utils.logged_errors("helpers._find_active_node_tree"):
             resolver = getattr(getattr(bpy, "types", None), "NodeTree", None)
             if resolver is not None and hasattr(resolver, "get_from_context"):
                 resolved = resolver.get_from_context(context)
@@ -256,16 +223,14 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
 
 
 def _describe_node(cat: str, typ: str) -> str:
-    """Return the human-readable description string for an ACE node type, or ''."""
     try:
         return ACE_NODES[cat]["nodes"][typ]["description"]
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._describe_node", exc)
+        utils.note_swallowed("helpers._describe_node", exc)
         return ""
 
 
 def _compiled_abstract_tree(scene):
-    """Return the last compiled ACEAbstractTree for *scene*, or None."""
     if scene is None:
         return None
     engine = ACEAudioEngine.get_instance(scene)
@@ -275,7 +240,6 @@ def _compiled_abstract_tree(scene):
 
 
 def _scene_audio_sources_by_id(scene) -> dict[str, object]:
-    """Return a stable-id keyed lookup of scene audio source properties."""
     ace = getattr(scene, "audiocore", None) if scene is not None else None
     sources = getattr(ace, "audio_sources", []) if ace is not None else []
     return {
@@ -286,7 +250,6 @@ def _scene_audio_sources_by_id(scene) -> dict[str, object]:
 
 
 def _source_display_name(source_prop, source_node) -> str:
-    """Return the preferred display name for a source ledger row."""
     if source_prop is not None:
         name = str(getattr(source_prop, "name", "") or "").strip()
         if name:
@@ -299,7 +262,6 @@ def _source_display_name(source_prop, source_node) -> str:
 
 
 def _source_list_icon(source_prop) -> str:
-    """Return the same source icon policy used by ACE_UL_source_list rows."""
     if source_prop is None:
         return "SPEAKER"
     proxy_name = str(getattr(source_prop, "proxy_object_name", "") or "")
@@ -313,7 +275,6 @@ def _source_list_icon(source_prop) -> str:
 
 
 def _frontend_object_name(frontend_ref) -> str:
-    """Return the object name hosting *frontend_ref* (without modifier suffix)."""
     owner_keys = tuple(getattr(frontend_ref, "owner_keys", ()) or ())
     if not owner_keys:
         return "Unknown Object"
@@ -325,7 +286,6 @@ def _frontend_object_name(frontend_ref) -> str:
 
 
 def _frontend_instance_type(frontend_kind: str) -> str:
-    """Return a compact instance-type label for Active ACE Instances rows."""
     kind = str(frontend_kind or "").strip().upper()
     if kind == "GEOMETRY_NODES":
         return "Geometry"
@@ -351,13 +311,12 @@ def _label_icon_supported(icon_name: str) -> bool:
                 if str(getattr(item, "identifier", "") or "")
             }
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._label_icon_supported", exc)
+            utils.note_swallowed("helpers._label_icon_supported", exc)
             _ui_label_icon_ids = set()
     return icon_name in (_ui_label_icon_ids or set())
 
 
 def _frontend_kind_icon(frontend_kind: str) -> str:
-    """Return a robust icon id for frontend rows in N-panel ledgers."""
     kind = str(frontend_kind or "").strip().upper()
     if kind == "GEOMETRY_NODES":
         if _label_icon_supported("GEOMETRY_NODES"):
@@ -458,56 +417,34 @@ def _compiled_source_instance_rows(scene):
 
 
 def _source_display_sample_rate(source) -> int:
-    """Return the sample rate to display in the UI for *source*.
-
-    For FILE sources, prefers native_sample_rate (the rate before any working
-    rate cap is applied) so the user sees the file's actual rate.  Falls back
-    to the engine working sample_rate for live and unchecked sources.
-
-    Args:
-        source: An ACEAudioSource property-group instance.
-
-    Returns:
-        Sample rate in Hz, or 0 if not yet known.
-    """
+    """Return the sample rate to display in the UI for *source*."""
     source_type = str(getattr(source, "source_type", "") or "").strip().upper()
     if source_type == "FILE":
         try:
             sr = int(getattr(source, "native_sample_rate", 0) or 0)
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._source_display_sample_rate", exc)
+            utils.note_swallowed("helpers._source_display_sample_rate", exc)
             sr = 0
         if sr > 0:
             return sr
     try:
         return int(getattr(source, "sample_rate", 0) or 0)
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._source_display_sample_rate#2", exc)
+        utils.note_swallowed("helpers._source_display_sample_rate#2", exc)
         return 0
 
 
 def _node_type_display(cat: str, typ: str) -> str:
-    """Return the human-readable category label for an ACE node, falling back to the raw key."""
     try:
         cat_label = str(ACE_NODES[cat]["meta"]["label"] or "").strip()
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._node_type_display", exc)
+        utils.note_swallowed("helpers._node_type_display", exc)
         cat_label = str(cat or "").replace("_", " ").strip()
     return cat_label
 
 
 def _find_tree_node_by_ace_id(tree, node_id: str):
-    """Find a Blender GN node in *tree* matching *node_id* via its ace_id property.
-
-    Args:
-        tree: A bpy.types.NodeTree (GeometryNodeTree).
-        node_id: An ACE node ID string to search for.
-
-    Returns:
-        A (node, parsed) tuple where *node* is the matching bpy.types.Node and
-        *parsed* is the result of ACEIdManager.parse_node_id().  Both elements
-        are None when no match is found.
-    """
+    """Find a Blender GN node in *tree* matching *node_id* via its ace_id property."""
     parsed = ACEIdManager.parse_node_id(str(node_id or ""))
     if not tree or not parsed:
         return None, None
@@ -517,7 +454,7 @@ def _find_tree_node_by_ace_id(tree, node_id: str):
         try:
             ace_id = str(candidate.get("ace_id", "") or "")
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._find_tree_node_by_ace_id", exc)
+            utils.note_swallowed("helpers._find_tree_node_by_ace_id", exc)
             ace_id = ""
         if ace_id == node_id:
             return candidate, parsed
@@ -525,11 +462,7 @@ def _find_tree_node_by_ace_id(tree, node_id: str):
 
 
 def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
-    """
-    Map abstract tree node ids back to the real Blender node `ace_id` values.
-    The active graph list is sourced from abstract nodes, while Capture Influx
-    needs the live GN node instance for editable properties.
-    """
+    """Map abstract tree node ids back to the real Blender node `ace_id` values."""
     if not tree:
         return {}
 
@@ -538,7 +471,7 @@ def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
             reader = ACEDummyTreeReader(tree)
             reader.build()
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._build_ui_node_lookup_ids", exc)
+            utils.note_swallowed("helpers._build_ui_node_lookup_ids", exc)
             return {}
 
     lookup_ids: dict[str, str] = {}
@@ -547,7 +480,7 @@ def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
         try:
             node_ptr = int(candidate.as_pointer())
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._build_ui_node_lookup_ids#2", exc)
+            utils.note_swallowed("helpers._build_ui_node_lookup_ids#2", exc)
             node_ptr = id(candidate)
         abstract_id = str(node_id_by_ptr.get(node_ptr, "") or "")
         if not abstract_id:
@@ -555,7 +488,7 @@ def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
         try:
             blender_id = str(candidate.get("ace_id", "") or "")
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._build_ui_node_lookup_ids#3", exc)
+            utils.note_swallowed("helpers._build_ui_node_lookup_ids#3", exc)
             blender_id = ""
         if blender_id and ACEIdManager.parse_node_id(blender_id):
             lookup_ids[abstract_id] = blender_id
@@ -569,11 +502,10 @@ def _ui_node_lookup_id(node_obj, lookup_ids: dict[str, str]) -> str:
 
 
 def _tree_pointer(tree) -> int:
-    """Return a stable integer identity for *tree* usable as a dict key."""
     if tree is None:
         return 0
     try:
         return int(tree.as_pointer())
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._tree_pointer", exc)
+        utils.note_swallowed("helpers._tree_pointer", exc)
         return id(tree)

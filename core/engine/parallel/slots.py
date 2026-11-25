@@ -66,10 +66,7 @@ def _close_unlink(shm_obj):
 
 
 class PayloadSlots:
-    """Shared-memory blocks per (graph, source), reference-counted and reused across frames.
-
-    Jobs of one frame share a slot; a slot returns to its free list when no job reads it.
-    """
+    """Shared-memory blocks per (graph, source), reference-counted and reused across frames."""
 
     def __init__(self):
         self.slots: Dict[str, Dict[str, Any]] = {}

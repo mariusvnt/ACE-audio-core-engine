@@ -13,19 +13,7 @@ from .spectral import _remap_indices_fft_domain
 
 
 class PreviewSinkTask(ACEAudioTask):
-    """Terminal monitor sink for branch-audio preview.
-
-    Implements strict Layer-3 time-domain filtering: no iFFT/iBFT is performed.
-    Frequency-band selection is translated to equivalent time-domain filter chains:
-
-    * **Contiguous bounds** (``band_hz_bounds``): cascaded 2×2nd-order Butterworth
-      highpass + lowpass sections (4th-order equivalent slope).
-    * **Sparse/non-contiguous masks** (``band_indices``): the mask is converted to
-      contiguous Hz ranges which are individually band-limited and summed.
-    * **No mask**: raw signal is passed through unchanged.
-
-    Numba JIT acceleration is used whenever available (see ``_numba_turbo_enabled``).
-    """
+    """Terminal monitor sink for branch-audio preview."""
 
     _MAX_SPARSE_SECTIONS = 16
 
@@ -53,7 +41,7 @@ class PreviewSinkTask(ACEAudioTask):
             low_hz = float(bounds[0])
             high_hz = float(bounds[1])
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.PreviewSinkTask._resolve_bounds", exc)
+            utils.note_swallowed("preview.PreviewSinkTask._resolve_bounds", exc)
             return None
         if high_hz <= low_hz:
             return None
@@ -78,7 +66,7 @@ class PreviewSinkTask(ACEAudioTask):
         try:
             src_fft_size = max(int(src_fft_size), 1)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.PreviewSinkTask._resolve_sparse_mask", exc)
+            utils.note_swallowed("preview.PreviewSinkTask._resolve_sparse_mask", exc)
             src_fft_size = max(int(n), 1)
         arr = _remap_indices_fft_domain(
             arr,
@@ -101,7 +89,7 @@ class PreviewSinkTask(ACEAudioTask):
             low_hz = float(bounds[0])
             high_hz = float(bounds[1])
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.PreviewSinkTask._coerce_bounds", exc)
+            utils.note_swallowed("preview.PreviewSinkTask._coerce_bounds", exc)
             return None
         nyquist = 0.5 * max(float(sample_rate), 1.0)
         low = max(0.0, min(low_hz, nyquist - 2.0))
@@ -298,10 +286,7 @@ class PreviewSinkTask(ACEAudioTask):
             return
         self._sparse_iir_key = key
         self._iir_state.clear()
-        # Clear the coefficient cache on layout change: stale entries for the old
-        # section layout (e.g. a previous chromagram frame) waste memory and can
-        # pollute cache hits if the same (sr, low, high) key reappears later with
-        # different surrounding context.
+        # Coefficients depend on the section layout; drop them when it changes.
         self._section_coeff_cache.clear()
 
     @staticmethod
@@ -318,10 +303,7 @@ class PreviewSinkTask(ACEAudioTask):
         if stereo is not None:
             _s = stereo.astype(np.float32, copy=False)
             if _s.ndim == 2:
-                # Normalise to channels-first layout (shape: [channels, samples]).
-                # Incoming stereo from Stage-B workers is always (2, N); guard
-                # against any caller that passes (N, 2) by transposing when the
-                # second axis is the shorter one.
+                # Channels-first; (N, 2) input is transposed.
                 if _s.shape[0] > _s.shape[1] and _s.shape[1] in (1, 2):
                     _s = _s.T
                 stereo_scaled = (_s * gain).astype(np.float32, copy=False)
@@ -330,10 +312,7 @@ class PreviewSinkTask(ACEAudioTask):
         if mono_scaled.size == 0:
             return mono_scaled, stereo_scaled
 
-        # Per-sample look-ahead limiter using instant-attack vectorized numpy.
-        # Replaces the previous single-block peak divider (0.98/peak) which
-        # produced audible level-pumping: a single loud transient made the
-        # entire block quiet even when most samples were at a normal level.
+        # Per-sample limiter with instant attack: one transient does not quiet the whole block.
         ceiling = np.float32(0.98)
         abs_mono = np.abs(mono_scaled)
         if stereo_scaled is not None and stereo_scaled.ndim == 2 and stereo_scaled.size > 0:
@@ -348,9 +327,7 @@ class PreviewSinkTask(ACEAudioTask):
             np.float32(1.0),
         ).astype(np.float32, copy=False)
 
-        # Instant-attack via running minimum: gain is only allowed to fall,
-        # never rise within a block.  This prevents inter-sample pumping while
-        # keeping quiet regions at full gain.
+        # Running minimum: gain only falls within a block.
         gain_arr = np.minimum.accumulate(desired)
 
         mono_out = (mono_scaled * gain_arr).astype(np.float32, copy=False)
@@ -373,10 +350,7 @@ class PreviewSinkTask(ACEAudioTask):
 
     def _process_impl(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        # Fetch the raw signal WITHOUT applying analysis_ops so that biquad
-        # filtering runs on the unmodified audio.  analysis_ops (midside matrix,
-        # attackrelease gate) are applied AFTER the filter chain to preserve the
-        # correct order: band-limit first, then gate/matrix.
+        # Filter the raw signal; analysis ops apply after the filters (band first, then gate or matrix).
         mono_base, stereo_base = _signal_for_chunk(
             chunk, prefer_analysis_track=False, apply_analysis_ops=False
         )
@@ -477,9 +451,6 @@ class PreviewSinkTask(ACEAudioTask):
 
         mono, stereo_out = self._apply_preview_gain(mono, stereo_out, coverage)
 
-        # Apply analysis_ops (midside matrix / attackrelease gate) to the
-        # already-filtered signal so the processing order mirrors the abstract
-        # graph: frequency-band first, then temporal/spatial processing.
         if analysis_ops:
             _filtered = AudioChunk(
                 mono,

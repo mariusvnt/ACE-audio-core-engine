@@ -47,7 +47,7 @@ class SinkResolver:
         try:
             return bpy.data.objects.get(str(proxy_name))
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._lookup_proxy_object", exc)
+            utils.note_swallowed("sinks.SinkResolver._lookup_proxy_object", exc)
             return None
 
     @staticmethod
@@ -215,7 +215,7 @@ class SinkResolver:
             try:
                 ace_id = bl_node.get("ace_id", "")
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._sync_auto_attr_ids", exc)
+                utils.note_swallowed("sinks.SinkResolver._sync_auto_attr_ids", exc)
                 ace_id = ""
             if not ace_id:
                 continue
@@ -280,7 +280,7 @@ class SinkResolver:
             if not desired_map:
                 continue
 
-            with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#2"):
+            with utils.logged_errors("sinks.SinkResolver._sync_auto_attr_ids#2"):
                 node_tree = getattr(bl_node, "node_tree", None)
                 if node_tree is not None:
                     for item in getattr(node_tree.interface, "items_tree", []):
@@ -292,7 +292,7 @@ class SinkResolver:
                             item.hide_value = False
             for sock in getattr(bl_node, "inputs", []):
                 if getattr(sock, "name", "") in socket_map:
-                    with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#3"):
+                    with utils.logged_errors("sinks.SinkResolver._sync_auto_attr_ids#3"):
                         sock.hide_value = False
 
             socket_bindings: list[tuple[Any, str, str]] = []
@@ -307,12 +307,12 @@ class SinkResolver:
             for sock, current, target in socket_bindings:
                 if not target or current == target:
                     continue
-                with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#4"):
+                with utils.logged_errors("sinks.SinkResolver._sync_auto_attr_ids#4"):
                     sock.default_value = target
                     changed = True
                     changed_node_ids.add(str(abs_node.id))
 
-            with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#5"):
+            with utils.logged_errors("sinks.SinkResolver._sync_auto_attr_ids#5"):
                 if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
                     bl_node["ace_auto_attr_topology_json"] = topology_sig
                     changed = True
@@ -352,7 +352,7 @@ class SinkResolver:
             try:
                 ace_id = str(bl_node.get("ace_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._refresh_abstract_attr_params_from_tree", exc)
+                utils.note_swallowed("sinks.SinkResolver._refresh_abstract_attr_params_from_tree", exc)
                 ace_id = ""
             if not ace_id or ace_id not in node_id_set:
                 continue
@@ -411,10 +411,10 @@ class SinkResolver:
             from ...nodes.shader.factory import ACEShaderNodeFactory as _ACEShaderNodeFactory
             shader_factory = _ACEShaderNodeFactory
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._sync_shader_output_ids", exc)
+            utils.note_swallowed("sinks.SinkResolver._sync_shader_output_ids", exc)
             shader_factory = None
         if shader_factory is not None and not shader_tree_mutations_unsafe:
-            with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#2"):
+            with utils.logged_errors("sinks.SinkResolver._sync_shader_output_ids#2"):
                 if shader_factory.cleanup_tree_helper_nodes(bl_tree):
                     changed = True
 
@@ -436,7 +436,7 @@ class SinkResolver:
             try:
                 ace_id = str(bl_node.get("ace_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._sync_shader_output_ids#3", exc)
+                utils.note_swallowed("sinks.SinkResolver._sync_shader_output_ids#3", exc)
                 ace_id = ""
             if not ace_id:
                 continue
@@ -458,12 +458,7 @@ class SinkResolver:
             desired_map: Dict[str, str] = {}
             socket_map: Dict[str, str] = {}
             if proxy_name:
-                # Shader sinks write to consumer object custom properties — one
-                # per node instance — so topology_sig is NOT needed for
-                # disambiguation and must be omitted to keep the name stable.
-                # Using topology_sig here creates a mismatch with
-                # _resolve_sink_bindings_for_graph's fallback path (which also
-                # omits it) and with the initial gn_menu sync.
+                # One property per node instance: no topology signature, so the name matches the other sync paths.
                 if is_stream and len(abs_node.outputs) > 0:
                     for out_idx, out_sock in enumerate(abs_node.outputs):
                         desired_map[str(out_idx)] = self._build_auto_attr_name(
@@ -518,21 +513,17 @@ class SinkResolver:
                     target = desired_map.get(socket_key, "")
                     current = str(getattr(sock, "default_value", "") or "")
                     if target and target != current:
-                        with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#4"):
+                        with utils.logged_errors("sinks.SinkResolver._sync_shader_output_ids#4"):
                             sock.default_value = target
                             changed = True
                             changed_node_ids.add(str(abs_node.id))
-                with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#5"):
+                with utils.logged_errors("sinks.SinkResolver._sync_shader_output_ids#5"):
                     if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
                         bl_node["ace_auto_attr_topology_json"] = topology_sig
                         changed = True
-            # Allow sync during viewport Material Preview / Rendered view —
-            # only a full render job (use_lock_interface=False) is truly unsafe.
-            # Viewport renders re-sync Cycles per frame anyway, so updating the
-            # ShaderNodeAttribute attribute_name or creating a missing helper
-            # node during viewport render is safe and necessary.
+            # Only a full render (use_lock_interface off) is unsafe; viewport renders re-sync every frame.
             if shader_factory is not None and not shader_tree_mutations_unsafe:
-                with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#6"):
+                with utils.logged_errors("sinks.SinkResolver._sync_shader_output_ids#6"):
                     _names_by_idx = {int(k): str(v) for k, v in desired_map.items() if v} or None
                     if shader_factory.sync_node_instance_group_bindings(
                         bl_node,
@@ -542,9 +533,7 @@ class SinkResolver:
                     ):
                         changed = True
                         changed_node_ids.add(str(abs_node.id))
-            # Write computed attr names into abstract tree params so that
-            # _emit_consumer_intents / _resolve_sink_data_name use the same
-            # names that were set on the companion ShaderNodeAttribute helpers.
+            # Store the names so consumer intents match the helper Attribute nodes.
             if desired_map:
                 params = dict(getattr(abs_node, "parameters", {}) or {})
                 for out_key, attr_name in desired_map.items():

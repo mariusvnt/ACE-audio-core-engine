@@ -54,22 +54,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self._compiled_tree_bl_idname: str = ""
 
     def compile(self, abstract_tree: ACEAbstractTree, blender_scene):
-        """Build one ACEAudioGraph per audio source from the abstract tree.
-
-        Shuts down any existing graphs, resets the parallel generation counter,
-        resolves sample rates and block sizes for each source, creates all task
-        objects (SourceTask, stream tasks, PreviewSinkTask, etc.), wires their
-        inputs according to the abstract tree links, prepares the parallel IR for
-        worker offload, and ensures Blender proxy attributes exist.
-
-        Should only be called from the main thread.  For tree-change-triggered
-        recompiles, prefer ``compile_from_blender_tree()`` which also parses the
-        GN node tree and syncs attribute IDs.
-
-        Args:
-            abstract_tree: Parsed representation of the Geometry Nodes tree.
-            blender_scene: The active ``bpy.types.Scene`` object.
-        """
+        """Build one ACEAudioGraph per audio source from the abstract tree."""
         utils.assert_main_thread("compile")
         self.engine.scene_key = self.engine._scene_key(blender_scene)
         self.engine.scene_name = self.engine._scene_name(blender_scene)
@@ -137,7 +122,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         if self.engine.writer is not None and sink_writes_allowed:
             self._prune_stale_consumer_properties()
 
-        with utils.logged_errors("audio_engine.ACEAudioEngine.compile#7"):
+        with utils.logged_errors("compiler.GraphCompiler.compile"):
             ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
         self._last_compile_time = time.time()
 
@@ -162,7 +147,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 try:
                     state = dict(export_fn() or {})
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine.compile", exc)
+                    utils.note_swallowed("compiler.GraphCompiler._export_stream_accumulator_state", exc)
                     state = {}
                 if state:
                     stream_accumulator_state[(source_key, str(node_id))] = state
@@ -179,7 +164,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             try:
                 proxy_obj = ACEProxyManager.ensure_proxy_for_source(source, scene=blender_scene)
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine.compile#2", exc)
+                utils.note_swallowed("compiler.GraphCompiler._resolve_sources", exc)
                 proxy_obj = None
             src_uid = ACEIdManager.ensure_source_uid(source, existing_ids=existing_ids)
             if src_uid and src_uid not in existing_ids:
@@ -190,7 +175,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                     getattr(source, "name", "") or src_uid or "Source",
                     stable_seed=src_uid or getattr(source, "name", "") or "source",
                 )
-                with utils.logged_errors("audio_engine.ACEAudioEngine.compile#3"):
+                with utils.logged_errors("compiler.GraphCompiler._resolve_sources#2"):
                     source.proxy_object_name = src_proxy_name
 
             if src_uid:
@@ -240,7 +225,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         """Remove ACE_* custom properties that no graph writes any more."""
         # Runs after every graph's sink bindings are resolved; the caller checks
         # that a writer exists and sink writes are allowed.
-        with utils.logged_errors("audio_engine.ACEAudioEngine.compile#6"):
+        with utils.logged_errors("compiler.GraphCompiler._prune_stale_consumer_properties"):
             active_props_by_object: Dict[str, Set[str]] = {}
             for g in self.engine.graphs.values():
                 for bindings in getattr(g, "sink_bindings_by_attr", {}).values():
@@ -254,12 +239,6 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             self.engine.writer.prune_consumer_objects(active_props_by_object)
 
     def _block_size_resolver(self, fps, source_sr, source_type, graph):
-        """Block-size callback for a task: follows the graph's timeslice mode and the frame delta.
-
-        Tasks call it as (sample_rate, fps, source_type=..., timeslice_mode=...,
-        delta_frames=...); the source type, the graph's timeslice mode and the
-        engine's frame delta are the ones that count, so those hints are ignored.
-        """
         eng = self.engine
         return lambda sr=None, fps_val=fps, **_caller_hints: eng.frame._resolve_block_size(
             sr or source_sr,
@@ -312,7 +291,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         # Shader driver bindings need concrete proxy object names before the
         # frontend sync stage; ensure proxies are materialized up-front.
         for source in sources:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends"):
+            with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends"):
                 ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
         reserved_node_ids: set[str] = set()
         merged_tree = ACEAbstractTree()
@@ -325,13 +304,13 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 continue
 
             if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends#2"):
+                with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#2"):
                     from ....nodes.geometry.factory import ACEDummyNodeFactory
                     removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
                     if removed:
                         utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
 
-            with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends#3"):
+            with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#3"):
                 ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
 
             if frontend_kind == FRONTEND_KIND_SHADER:
@@ -361,7 +340,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 else:
                     changed, changed_node_ids = self.engine.sinks._sync_auto_attr_ids(tree, partial_tree, scene)
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine.compile_scene_frontends#4", exc)
+                utils.note_swallowed("compiler.GraphCompiler.compile_scene_frontends#4", exc)
                 changed = False
                 changed_node_ids = set()
             if changed:
@@ -398,20 +377,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         bl_tree: bpy.types.NodeTree,
         scene,
     ):
-        """Compatibility wrapper for scene-scoped frontend compilation.
-
-        Public operators and older call sites still pass a specific Blender
-        tree here. The actual compile path is now scene-wide:
-          1. Discover all managed Geometry Nodes and Shader frontends.
-          2. Parse and merge them into one ``ACEAbstractTree``.
-          3. Compile one ``ACEAudioGraph`` per source.
-
-        Must be called from the main thread (asserted via ``utils.assert_main_thread``).
-
-        Args:
-            bl_tree: Preferred frontend tree for compatibility bookkeeping.
-            scene: The active ``bpy.types.Scene``.
-        """
+        """Compatibility wrapper for scene-scoped frontend compilation."""
         utils.assert_main_thread("compile_from_blender_tree")
         if not scene:
             return

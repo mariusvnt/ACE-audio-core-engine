@@ -1,16 +1,11 @@
-"""
-Structure of the 'AbstractTree' object, which is an abstract representation of
-scene frontends.
-"""
+"""Structure of the 'AbstractTree' object, which is an abstract representation of scene frontends."""
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
 @dataclass
 class ACEAbstractSocket:
-    """
-    Represents an input or output connection point.
-    """
+    """Represents an input or output connection point."""
     id: str  # Unique ID for the socket (useful for UI mapping)
     name: str # The internal name (e.g., "Value", "Vector")
     socket_idx: int
@@ -51,9 +46,7 @@ class ACEConsumerIntent:
 
 @dataclass
 class ACEAbstractNode:
-    """
-    Represents a processing unit.
-    """
+    """Represents a processing unit."""
     id: str
     name: str
     category: str
@@ -72,9 +65,7 @@ class ACEAbstractNode:
 
 @dataclass
 class ACEAbstractLink:
-    """
-    Represents data flow between two sockets.
-    """
+    """Represents data flow between two sockets."""
     source_node_id: str
     target_node_id: str
     
@@ -83,10 +74,7 @@ class ACEAbstractLink:
 
 @dataclass
 class ACEAbstractOutputLink:
-    """
-    Represents an ACE output socket that is connected to the GN Group Output.
-    Used to derive default preview-monitor branches.
-    """
+    """Represents an ACE output socket that is connected to the GN Group Output."""
     source_node_id: str
     source_socket_idx: int
     target_socket_idx: int
@@ -96,9 +84,7 @@ class ACEAbstractOutputLink:
 
 @dataclass
 class ACEAbstractTree:
-    """
-    The complete graph container.
-    """
+    """The complete graph container."""
     nodes: Dict[str, ACEAbstractNode] = field(default_factory=dict)
     links: List[ACEAbstractLink] = field(default_factory=list)
     group_output_links: List[ACEAbstractOutputLink] = field(default_factory=list)

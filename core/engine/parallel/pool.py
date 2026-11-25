@@ -57,10 +57,7 @@ class WorkerPool:
             return False
 
     def warm(self, demand: int) -> bool:
-        """Submit one warm-up job per needed worker; True once all have answered.
-
-        Raises the first warm-up failure.
-        """
+        """Submit one warm-up job per needed worker; True once all have answered."""
         if self.warmup_futures is None:
             if demand <= 0:
                 return False

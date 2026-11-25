@@ -16,18 +16,11 @@ from .source_clock import SourceClock
 from .source_frontend import SourceFrontendStage
 
 
-# Per-filepath open locks: prevents simultaneous AudioReception.open() calls on the
-# same file from different threads (SourceSpecsTask BPM thread + SourceTask prefetch),
-# which on Windows can hit exclusive-lock failures.
+# One open per file at a time: the tempo thread and the prefetcher may open the same file (exclusive on Windows).
 _FILE_OPEN_LOCKS: Dict[str, threading.Lock] = {}
 _FILE_OPEN_LOCKS_MUTEX = threading.Lock()
 _FILE_OPEN_LOCKS_MAX = 128  # Max dict entries before evicting idle (unlocked) entries.
 def _get_file_open_lock(filepath: str) -> threading.Lock:
-    """Return (creating if needed) a per-filepath Lock to serialize open() calls.
-
-    When the dict exceeds _FILE_OPEN_LOCKS_MAX entries, idle (unlocked) locks are
-    evicted to prevent unbounded growth in long sessions with many different files.
-    """
     with _FILE_OPEN_LOCKS_MUTEX:
         lock = _FILE_OPEN_LOCKS.get(filepath)
         if lock is None:
@@ -40,19 +33,12 @@ def _get_file_open_lock(filepath: str) -> threading.Lock:
                 _FILE_OPEN_LOCKS.pop(k, None)
         return lock
 def _clear_file_open_locks():
-    """Remove all idle filepath locks. Called on engine shutdown to reclaim memory."""
     with _FILE_OPEN_LOCKS_MUTEX:
         idle = [k for k, v in _FILE_OPEN_LOCKS.items() if not v.locked()]
         for k in idle:
             _FILE_OPEN_LOCKS.pop(k, None)
 class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
-    """Audio source bridge task — supplies raw audio chunks to downstream nodes.
-
-    Holds a reference to an ``AudioReception`` instance that owns the actual
-    I/O (file prefetch or live ring buffer).  Each ``process()`` call returns
-    the current audio chunk together with lightweight metadata (sample rate,
-    latency estimate) for downstream tasks.
-    """
+    """Audio source bridge task — supplies raw audio chunks to downstream nodes."""
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
         self.read_cursor = 0
@@ -100,7 +86,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         # Pending bpy PropertyGroup writes deferred from non-main threads.
         self._pending_ctx_writes: dict[str, Any] = {}
 
-        # --- Prefetch double-buffer (FILE sources only) ---
         # A daemon thread pre-reads the next sequential block while the main
         # thread processes the current one, eliminating file I/O from the hot path.
         self._prefetch_enabled: bool = False
@@ -113,7 +98,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self._prefetch_thread: Optional[threading.Thread] = None
 
     def _start_prefetch_thread(self):
-        """Start the background pre-reader thread (FILE sources only)."""
         if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
             return
         self._prefetch_stop.clear()
@@ -128,7 +112,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         t.start()
 
     def _stop_prefetch_thread(self):
-        """Stop the background pre-reader thread and drain its state."""
         self._prefetch_enabled = False
         self._prefetch_stop.set()
         self._prefetch_trigger.set()   # Unblock a waiting thread
@@ -141,10 +124,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self._prefetch_for_frame = None
 
     def _prefetch_loop(self):
-        """
-        Worker body: waits for a trigger, reads one block via _read_next_block_sync,
-        stores it, and signals ready.  Only active for FILE sources.
-        """
+        """Worker body: waits for a trigger, reads one block via _read_next_block_sync, stores it, and signals ready."""
         while not self._prefetch_stop.is_set():
             self._prefetch_trigger.wait(timeout=0.5)
             if self._prefetch_stop.is_set():
@@ -160,7 +140,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             try:
                 chunk = self._read_next_block_sync(track_perf_stage=False)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.SourceTask._prefetch_loop", exc)
+                utils.note_swallowed("source.SourceTask._prefetch_loop", exc)
                 chunk = None
             finally:
                 # Only restore the previous value if the main thread hasn't
@@ -183,7 +163,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         return self.silence_buffer
 
     def _flush_pending_ctx_writes(self) -> None:
-        """Apply deferred PropertyGroup writes. Call only from the main thread."""
+        """Apply deferred PropertyGroup writes."""
         if not self._pending_ctx_writes:
             return
         engine = getattr(self, "engine_ref", None)
@@ -197,7 +177,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             self._pending_ctx_writes.clear()
             return
         for attr, val in list(self._pending_ctx_writes.items()):
-            with utils.logged_errors("audio_tasks_registry.SourceTask._flush_pending_ctx_writes"):
+            with utils.logged_errors("source.SourceTask._flush_pending_ctx_writes"):
                 setattr(ctx, attr, val)
         self._pending_ctx_writes.clear()
 
@@ -206,7 +186,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         try:
             mode = str(getattr(settings, "ace_timeslice_mode", "fixed") or "fixed").strip().lower()
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.SourceTask._timeslice_mode_hint", exc)
+            utils.note_swallowed("source.SourceTask._timeslice_mode_hint", exc)
             mode = "fixed"
         if mode not in {"fixed", "adaptive"}:
             mode = "fixed"
@@ -253,11 +233,11 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
 
     def _reopen_for_config_change(self):
         if self.reception is not None:
-            with utils.logged_errors("audio_tasks_registry.SourceTask._reopen_for_config_change"):
+            with utils.logged_errors("source.SourceTask._reopen_for_config_change"):
                 self.reception.close()
         self.reception = None
         if self.analysis is not None:
-            with utils.logged_errors("audio_tasks_registry.SourceTask._reopen_for_config_change#2"):
+            with utils.logged_errors("source.SourceTask._reopen_for_config_change#2"):
                 AudioFluxAnalyzer.release(self.analysis)
         self.analysis = None
         self._reset_sample_clocks()
@@ -287,7 +267,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             try:
                 target_sample_rate = target_sr_resolver(self)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.SourceTask._load_source", exc)
+                utils.note_swallowed("source.SourceTask._load_source", exc)
                 target_sample_rate = None
 
         self.reader_path = filepath
@@ -331,7 +311,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         try:
             delta_frames = float(getattr(getattr(self, "engine_ref", None), "_current_delta_frames", 1.0) or 1.0)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.SourceTask._load_source#2", exc)
+            utils.note_swallowed("source.SourceTask._load_source#2", exc)
             delta_frames = 1.0
         timeslice_mode = self._timeslice_mode_hint()
         try:
@@ -350,7 +330,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self._reset_sample_clocks()
 
         if ctx:
-            with utils.logged_errors("audio_tasks_registry.SourceTask._load_source#3"):
+            with utils.logged_errors("source.SourceTask._load_source#3"):
                 duration_val = float(getattr(self.reception, "duration", 0.0) or 0.0)
                 native_sample_rate = int(getattr(self.reception, "native_sample_rate", 0) or 0)
                 if native_sample_rate <= 0:
@@ -378,7 +358,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self._last_live_retry_ts = time.time()
 
     def _apply_block_size(self, new_size: int):
-        """Update local buffers and ask the engine to retarget the graph size."""
         if new_size <= 0 or new_size == self.block_size:
             return
         self._set_block_size_from_engine(int(new_size))
@@ -396,7 +375,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         # reception.read_block() after the underlying resource is freed.
         self._stop_prefetch_thread()
         if self.reception:
-            with utils.logged_errors("audio_tasks_registry.SourceTask.close"):
+            with utils.logged_errors("source.SourceTask.close"):
                 self.reception.close()
             self.reception = None
         if self.analysis:

@@ -13,24 +13,7 @@ from .feeder import _ACEPreviewFeeder
 
 
 class _ACEPreviewAudioMonitor:
-    """sounddevice-backed real-time audio monitor for branch preview output.
-
-    Manages a hardware output stream at a fixed block size and feeds it from a
-    small ring buffer.  Audio is prepared (limiter, resampling, stereo layout)
-    on a dedicated ``ACEPreviewMonitor`` daemon thread and then handed to an
-    ``_ACEPreviewFeeder`` instance that paces delivery to the ring at the
-    hardware drain rate.
-
-    Lifecycle:
-      - ``push_chunk()`` enqueues an ``AudioChunk`` from the main thread.
-      - The prepare thread calls ``_prepare_preview_payload()`` which runs the
-        safety limiter and routes the result through the feeder.
-      - The sounddevice callback drains the ring in real time.
-      - ``close()`` stops the prepare thread and the hardware stream.
-
-    Thread safety: all ring and statistic fields are protected by ``self._lock``.
-    The prepare thread is coordinated via ``self._prepare_condition``.
-    """
+    """sounddevice-backed real-time audio monitor for branch preview output."""
 
     def __init__(self):
         self._backend = None
@@ -131,12 +114,7 @@ class _ACEPreviewAudioMonitor:
         return 512
 
     def hint_block_size(self, block_size: int) -> None:
-        """Inform the monitor of the current analysis block size.
-
-        When non-zero, this value is used instead of _preferred_block_size() as
-        the hardware stream block size, aligning the hardware drain cadence with
-        the DSP chunk cadence and reducing preview latency by up to 2×.
-        """
+        """Inform the monitor of the current analysis block size."""
         self._analysis_block_size_hint = max(int(block_size), 0)
 
     @staticmethod
@@ -145,7 +123,7 @@ class _ACEPreviewAudioMonitor:
             mono = np.asarray(getattr(chunk, "mono", None), dtype=np.float32).reshape(-1)
             return int(mono.shape[0] or 0)
         except Exception as exc:
-            utils.note_swallowed("audio_engine._ACEPreviewAudioMonitor._chunk_frame_count", exc)
+            utils.note_swallowed("monitor._ACEPreviewAudioMonitor._chunk_frame_count", exc)
             return 0
 
     def _drop_prepare_payload_locked(self, payload):
@@ -195,7 +173,7 @@ class _ACEPreviewAudioMonitor:
                 self._preview_consecutive_errors = 0
             except Exception as _exc:
                 self._preview_consecutive_errors += 1
-                with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._prepare_loop"):
+                with utils.logged_errors("monitor._ACEPreviewAudioMonitor._prepare_loop"):
                     import traceback as _tb
                     utils.log(
                         f"[ACE-Preview] _prepare_preview_payload error "
@@ -260,7 +238,7 @@ class _ACEPreviewAudioMonitor:
 
         outdata[:, :] = out
         if ring_frames_after < refill_threshold:
-            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._callback"):
+            with utils.logged_errors("monitor._ACEPreviewAudioMonitor._callback"):
                 self._feeder.notify_ring_low()
 
     def _ensure_stream(self, sample_rate: int):
@@ -313,10 +291,7 @@ class _ACEPreviewAudioMonitor:
             return False
 
     def _apply_safety_limiter(self, frames: np.ndarray, sample_rate: int) -> np.ndarray:
-        """
-        Protect preview output from clipping spikes.
-        Instant attack, timed release, and final hard-cap at -1 dBFS.
-        """
+        """Protect preview output from clipping spikes."""
         arr = np.asarray(frames, dtype=np.float32)
         if arr.size == 0:
             return arr
@@ -328,7 +303,7 @@ class _ACEPreviewAudioMonitor:
 
         gain = float(min(max(self._limiter_gain, 0.0), 1.0))
         if _NUMBA_AVAILABLE:
-            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._apply_safety_limiter"):
+            with utils.logged_errors("monitor._ACEPreviewAudioMonitor._apply_safety_limiter"):
                 out, gain = _preview_limiter_block_numba(arr, ceiling, release_step, gain)
                 np.clip(out, -ceiling, ceiling, out=out)
                 self._limiter_gain = float(min(max(gain, 0.0), 1.0))
@@ -351,9 +326,7 @@ class _ACEPreviewAudioMonitor:
         all_desired[0] = float(gain)
         all_desired[1:] = desired
         attack_gains = np.minimum.accumulate(all_desired)  # shape (n_frames+1,)
-        # Release: per-frame recovery increments toward desired, accumulated via maximum.
-        # np.maximum.accumulate gives the running maximum of the release potential,
-        # which bounds how much the gain can recover within this block.
+        # The running maximum of the release potential bounds the gain recovery in this block.
         release_increments = np.maximum(0.0, desired - attack_gains[1:]) * float(release_step)
         release_ceiling = np.maximum.accumulate(
             np.concatenate(([0.0], release_increments))
@@ -369,7 +342,6 @@ class _ACEPreviewAudioMonitor:
         return out
 
     def _feeder_ring_append(self, block: np.ndarray):
-        """Thread-safe ring append called by the feeder daemon thread."""
         with self._lock:
             self._append_ring_block_locked(block)
 
@@ -379,13 +351,7 @@ class _ACEPreviewAudioMonitor:
         self._feeder.update_fps(self._scene_fps)
 
     def _prepare_preview_payload(self, payload: Dict[str, Any]):
-        """Apply the safety limiter to a queued payload and route it through the feeder.
-
-        Called from the prepare thread.  Extracts stereo frames from the chunk,
-        ensures the hardware stream exists at the correct sample rate, runs the
-        limiter, then hands the result to the autonomous feeder rather than writing
-        directly to the ring so that hardware drain pacing is preserved.
-        """
+        """Apply the safety limiter to a queued payload and route it through the feeder."""
         chunk = payload.get("chunk")
         sample_rate = int(payload.get("sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
         frames = self._chunk_to_stereo_frames(chunk)
@@ -395,9 +361,7 @@ class _ACEPreviewAudioMonitor:
             return
         frames = self._apply_safety_limiter(frames, sample_rate)
         arr = np.asarray(frames, dtype=np.float32)
-        # Update push statistics under lock, but route audio through the feeder
-        # (not directly to the ring) so the daemon thread paces delivery at the
-        # hardware block rate, preventing underruns caused by Blender timer jitter.
+        # The feeder paces delivery at the device block rate; Blender timers jitter.
         with self._lock:
             self._preview_push_count += 1
             self._preview_push_frames += int(arr.shape[0] or 0)
@@ -408,12 +372,7 @@ class _ACEPreviewAudioMonitor:
         self._feeder.push_frames(arr)
 
     def push_chunk(self, chunk) -> bool:
-        """Enqueue an AudioChunk for asynchronous prepare and playback.
-
-        Called from the main thread.  Returns True if the chunk was accepted
-        into the prepare queue; False if the backend is unavailable, the
-        sample rate is invalid, or the worker is stopped.
-        """
+        """Enqueue an AudioChunk for asynchronous prepare and playback."""
         sample_rate = int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
         if sample_rate <= 0:
             return False
@@ -430,18 +389,7 @@ class _ACEPreviewAudioMonitor:
         return True
 
     def diagnostics_snapshot(self, reset: bool = False) -> Dict[str, float]:
-        """Return accumulated playback diagnostics as a flat float dict.
-
-        Args:
-            reset: When True, clear all counters and history after sampling.
-
-        Returns:
-            Dict with keys: preview_pushes, preview_pushed_frames,
-            preview_underruns, preview_underrun_frames, preview_queue_drops,
-            preview_queue_pressure, preview_callback_p95_ms,
-            preview_latency_p95_ms, preview_prepare_drops,
-            preview_prepare_drop_frames, preview_prepare_queue_pressure.
-        """
+        """Return accumulated playback diagnostics as a flat float dict."""
         with self._prepare_condition:
             prepare_depth = int(len(self._prepare_queue))
             prepare_capacity = max(int(self._prepare_queue_limit), 1)
@@ -478,16 +426,7 @@ class _ACEPreviewAudioMonitor:
             return snapshot
 
     def current_snapshot(self) -> Dict[str, float]:
-        """Return a real-time latency snapshot for the N-panel live display.
-
-        Unlike ``diagnostics_snapshot``, this method computes instantaneous
-        values (current buffer backlog, latest callback interval) rather than
-        accumulating history, and does not support a reset flag.
-
-        Returns:
-            Dict with keys: preview_branch_latency_ms, preview_output_buffer_ms,
-            preview_callback_ms.  All values are 0.0 when preview is inactive.
-        """
+        """Return a real-time latency snapshot for the N-panel live display."""
         now_ts = time.perf_counter()
         feeder_frames = int(self._feeder.buffered_frame_count())
         with self._prepare_condition:
@@ -519,9 +458,7 @@ class _ACEPreviewAudioMonitor:
         )
         output_buffer_ms = 0.0
         if preview_is_active and sample_rate > 0:
-            # The monitor intentionally keeps a healthy amount of headroom in its
-            # ring/feeder buffers to prevent crackles from Blender timer jitter.
-            # Report only excess backlog above that steady-state headroom.
+            # Report backlog above the steady-state headroom only.
             scene_fps = max(float(self._scene_fps), 1.0)
             rt_frames = max(int(round(float(sample_rate) / scene_fps)), 1)
             healthy_ring_frames = int(
@@ -552,12 +489,7 @@ class _ACEPreviewAudioMonitor:
             self._last_push_ts = 0.0
 
     def _close_stream_only(self):
-        """Stop the feeder and hardware stream without touching the prepare thread.
-
-        Stops the autonomous feeder first so it cannot append frames to the ring
-        concurrently with teardown, then stops and closes the sounddevice stream.
-        Resets stream-related state but leaves the prepare thread running.
-        """
+        """Stop the feeder and hardware stream without touching the prepare thread."""
         # Stop the feeder before clearing the ring so it cannot push new frames
         # concurrently with the ring teardown.
         self._feeder.stop()
@@ -567,9 +499,9 @@ class _ACEPreviewAudioMonitor:
             self._last_callback_ts = 0.0
             self._last_push_ts = 0.0
         if self._stream is not None:
-            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._close_stream_only"):
+            with utils.logged_errors("monitor._ACEPreviewAudioMonitor._close_stream_only"):
                 self._stream.stop()
-            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._close_stream_only#2"):
+            with utils.logged_errors("monitor._ACEPreviewAudioMonitor._close_stream_only#2"):
                 self._stream.close()
         self._stream = None
         self._sample_rate = 0
@@ -587,6 +519,6 @@ class _ACEPreviewAudioMonitor:
             worker = self._prepare_thread
             self._prepare_thread = None
         if worker is not None and worker is not threading.current_thread():
-            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor.close"):
+            with utils.logged_errors("monitor._ACEPreviewAudioMonitor.close"):
                 worker.join(timeout=0.5)
         self._close_stream_only()

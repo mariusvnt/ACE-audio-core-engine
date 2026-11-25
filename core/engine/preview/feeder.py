@@ -8,30 +8,7 @@ from .... import utils
 
 
 class _ACEPreviewFeeder:
-    """
-    Autonomous rate-converting audio feeder for the preview monitor ring buffer.
-
-    The sounddevice hardware callback drains the ring at a fixed hardware rate
-    (~11.6 ms per 512-sample block at 44100 Hz), but Blender's frame handler
-    pushes audio at an irregular, frame-rate-coupled rate (~33 ms per frame at
-    30 fps). With only ~446 samples in the ring at minimum fill (one analysis
-    block minus two callbacks), any Blender jitter ≥ 2 ms causes an underrun
-    and produces an audible silence gap / crackle.
-
-    This class absorbs that jitter by:
-      1. Accumulating incoming audio in an internal linear buffer via push_frames().
-      2. Running a daemon thread that wakes on demand when the sounddevice
-         callback reports low ring fill, then refilling the ring up to a target
-         level without depending on time.sleep().
-      3. Applying a soft drift-correction trim: when the analysis block size
-         slightly exceeds the real-time frame size (typical due to integer
-         rounding), old audio is silently trimmed from the internal buffer to
-         prevent A/V delay from accumulating over long playback sessions.
-
-    Thread safety: push_frames() is called from the prepare thread; the feed
-    loop runs in its own daemon thread. All shared state is protected by
-    self._lock / self._work_event.
-    """
+    """Autonomous rate-converting audio feeder for the preview monitor ring buffer."""
 
     _TARGET_FILL: float = 0.35   # Desired ring fill fraction [0..1]
     _RT_FRAMES_CAP_MULTIPLIER: int = 4   # Internal buffer cap in real-time frame multiples
@@ -39,11 +16,7 @@ class _ACEPreviewFeeder:
     _MIN_PUSH_FRAMES: int = 64
 
     def __init__(self):
-        """Initialise the feeder with empty buffers and a stopped thread."""
-        # Internal audio store: deque of (n, 2) float32 blocks + total frame count.
-        # Using a deque avoids the per-push np.concatenate allocation of the old
-        # single-ndarray approach; blocks are appended without copying and consumed
-        # from the front in _loop via _pop_frames_locked().
+        # Blocks of (n, 2) float32 and their total frame count.
         self._deque: deque = deque()
         self._deque_frames: int = 0
         self._lock = threading.Lock()
@@ -57,9 +30,7 @@ class _ACEPreviewFeeder:
         self._ring_pressure_fn = None  # callable() → float [0..1]
         self._prefilled: bool = False
 
-    # ------------------------------------------------------------------
     # Configuration & lifecycle
-    # ------------------------------------------------------------------
 
     def configure(
         self,
@@ -69,7 +40,7 @@ class _ACEPreviewFeeder:
         ring_append_fn,
         ring_pressure_fn,
     ):
-        """(Re-)configure the feeder. Flushes the internal buffer on change."""
+        """(Re-)configure the feeder."""
         with self._lock:
             self._deque.clear()
             self._deque_frames = 0
@@ -87,12 +58,7 @@ class _ACEPreviewFeeder:
             self._fps = max(float(fps), 1.0)
 
     def push_frames(self, frames: np.ndarray):
-        """Accept stereo float32 audio from the prepare thread.
-
-        Appends *frames* as a new block in the internal deque without copying or
-        allocating a merged array.  The soft drift-correction cap evicts the oldest
-        block(s) when the total frame count exceeds the real-time window ceiling.
-        """
+        """Accept stereo float32 audio from the prepare thread."""
         arr = np.asarray(frames, dtype=np.float32)
         if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] == 0:
             return
@@ -151,18 +117,10 @@ class _ACEPreviewFeeder:
         if t is not None and t is not threading.current_thread():
             t.join(timeout=1.0)
 
-    # ------------------------------------------------------------------
     # Feed loop
-    # ------------------------------------------------------------------
 
     def _pop_frames_locked(self, n: int) -> np.ndarray:
-        """Pop exactly *n* stereo frames from the front of the deque.
-
-        Must be called while holding self._lock.  Handles partial head-block
-        reads without copying the entire buffer — only the head slice is
-        materialised when a block spans the take boundary.  For the common case
-        where *n* == block size the head block is returned directly (zero copy).
-        """
+        """Pop exactly *n* stereo frames from the front of the deque."""
         out: list = []
         remaining = n
         while remaining > 0 and self._deque:
@@ -209,12 +167,7 @@ class _ACEPreviewFeeder:
                 if ring_append_fn is None:
                     break
 
-                # ring_pressure_fn reads _ACEPreviewAudioMonitor._ring_frames without
-                # holding the monitor's lock.  On CPython the GIL makes integer reads
-                # atomic, so the worst case is a momentarily stale fill estimate that
-                # causes at most one extra block pushed into the ring — acceptable.
-                # Adding the monitor lock here would create a cross-lock dependency and
-                # is not warranted for a soft pressure signal.
+                # Read without the monitor lock: a stale fill estimate costs at most one extra block.
                 pressure = (
                     float(ring_pressure_fn())
                     if ring_pressure_fn is not None
@@ -251,13 +204,10 @@ class _ACEPreviewFeeder:
                 try:
                     ring_append_fn(block)
                 except Exception as _ring_exc:
-                    # Log the first ring-append failure only to avoid flooding the
-                    # console in the audio-callback hot path.  Subsequent failures are
-                    # silent because the feeder continues running and will retry on the
-                    # next loop iteration.
+                    # Log the first failure only; the loop retries.
                     if not getattr(self, "_ring_append_error_logged", False):
                         self._ring_append_error_logged = True
-                        with utils.logged_errors("audio_engine._ACEPreviewFeeder._loop"):
+                        with utils.logged_errors("feeder._ACEPreviewFeeder._loop"):
                             utils.log(
                                 f"[ACE-Feeder] ring_append_fn failed (audio may drop): {_ring_exc!r}",
                                 "WARNING",

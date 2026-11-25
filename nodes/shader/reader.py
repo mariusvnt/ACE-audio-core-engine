@@ -34,14 +34,14 @@ class ACEShaderTreeReader(ACEDummyTreeReader):
         """Return True when *tree* is a shader frontend containing ACE nodes."""
         if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
             return False
-        with utils.logged_errors("shader_tree.ACEShaderTreeReader.is_managed_tree"):
+        with utils.logged_errors("reader.ACEShaderTreeReader.is_managed_tree"):
             if bool(tree.get("ace_frontend_uid", "")):
                 return True
         for node in getattr(tree, "nodes", []) or []:
-            with utils.logged_errors("shader_tree.ACEShaderTreeReader.is_managed_tree#2"):
+            with utils.logged_errors("reader.ACEShaderTreeReader.is_managed_tree#2"):
                 if bool(node.get("ace_id", "")):
                     return True
-            with utils.logged_errors("shader_tree.ACEShaderTreeReader.is_managed_tree#3"):
+            with utils.logged_errors("reader.ACEShaderTreeReader.is_managed_tree#3"):
                 if bool(node.get("ace_source_id", "")):
                     return True
             if str(getattr(node, "type", "") or "") != "GROUP":

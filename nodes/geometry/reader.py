@@ -20,19 +20,9 @@ from .identity import NodeIdentity
 
 
 class ACEDummyTreeReader(NodeIdentity):
-    """Parse an active Blender GeometryNodeTree into an ACEAbstractTree.
+    """Parse an active Blender GeometryNodeTree into an ACEAbstractTree."""
 
-    Performs a breadth-first traversal from all managed source nodes,
-    assigning or verifying ACE IDs for each ACE node group encountered,
-    wiring abstract links, and capturing socket-level parameters.
-
-    The resulting ACEAbstractTree is consumed by ACEAudioEngine.compile()
-    to build the parallel DSP graph IR.
-    """
-
-    # Reverse lookup: group_name (and its stripped variant) → (cat_key, type_key).
-    # Rebuilt automatically when ACE_NODES content hash changes so add-on reloads
-    # and registry extensions are reflected without a full Blender restart.
+    # Group name -> (category, type), rebuilt when the node registry changes.
     _GROUP_NAME_LOOKUP: dict[str, tuple[str, str]] = {}
     _ACE_NODES_LOOKUP_HASH: str = ""
     FACTORY_CLS = ACEDummyNodeFactory
@@ -73,12 +63,7 @@ class ACEDummyTreeReader(NodeIdentity):
             )
 
     def build(self) -> ACEAbstractTree:
-        """Execute the full parse pass and return the populated ACEAbstractTree.
-
-        Returns:
-            The ACEAbstractTree built from the Blender node tree supplied at
-            construction time.  Returns an empty tree if bl_tree is None.
-        """
+        """Execute the full parse pass and return the populated ACEAbstractTree."""
         if not self.bl_tree: return self.abstract_tree
         sources = self._find_source_nodes()
         if sources:
@@ -88,12 +73,7 @@ class ACEDummyTreeReader(NodeIdentity):
         return self.abstract_tree
 
     def _validate_cross_source_links(self):
-        """
-        Warn when a non-AudioMath node receives inputs from distinct root sources.
-        Cross-source mixing is only valid through AudioMathTask; any other target
-        produces silently undefined analysis output because the audio chains are
-        never synchronized.
-        """
+        """Warn when a non-AudioMath node receives inputs from distinct root sources."""
         for link in self.abstract_tree.links:
             src_node = self.abstract_tree.nodes.get(link.source_node_id)
             tgt_node = self.abstract_tree.nodes.get(link.target_node_id)
@@ -167,17 +147,7 @@ class ACEDummyTreeReader(NodeIdentity):
                     )
 
     def _find_source_nodes(self):
-        """Return all managed source placeholder nodes in the Blender tree.
-
-        Only nodes that carry a valid ace_source_id (written by
-        ACEProxyManager._sync_sonar_tree) are included.  Ad-hoc group nodes
-        that look like source nodes but lack a bound source are excluded so
-        unlinked placeholder copies do not generate phantom graph sources.
-
-        Returns:
-            A list of Blender node objects of type 'GROUP' with category
-            "source_mngmt" and type "src".
-        """
+        """Return all managed source placeholder nodes in the Blender tree."""
         sources = []
         for node in self.bl_tree.nodes:
             root_id = self._resolve_root_id(node)
@@ -191,7 +161,7 @@ class ACEDummyTreeReader(NodeIdentity):
                 try:
                     source_id = str(node.get("ace_source_id", "") or "")
                 except Exception as exc:
-                    utils.note_swallowed("dummy_tree.ACEDummyTreeReader._find_source_nodes", exc)
+                    utils.note_swallowed("reader.ACEDummyTreeReader._find_source_nodes", exc)
                     source_id = ""
                 if not source_id or not ACEIdManager.parse_node_id(source_id):
                     continue
@@ -275,7 +245,7 @@ class ACEDummyTreeReader(NodeIdentity):
                         if len(getattr(current_bl_node, "inputs", [])) > 0:
                             target_socket_idx = 0
                     except Exception as exc:
-                        utils.note_swallowed("dummy_tree.ACEDummyTreeReader._traverse_from_sources", exc)
+                        utils.note_swallowed("reader.ACEDummyTreeReader._traverse_from_sources", exc)
                         target_socket_idx = None
 
                 if target_socket_idx is not None:
@@ -313,7 +283,7 @@ class ACEDummyTreeReader(NodeIdentity):
         try:
             return f"idx:{int(getattr(sock, 'index'))}"
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._socket_state_key", exc)
+            utils.note_swallowed("reader.ACEDummyTreeReader._socket_state_key", exc)
             return f"obj:{id(sock)}"
 
     @staticmethod
@@ -326,7 +296,7 @@ class ACEDummyTreeReader(NodeIdentity):
         try:
             target_socket_idx = next((i for i, s in enumerate(target_node.inputs) if s == to_socket), None)
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#2", exc)
+            utils.note_swallowed("reader.ACEDummyTreeReader._resolve_target_socket_idx", exc)
             target_socket_idx = None
         if target_socket_idx is not None:
             return target_socket_idx
@@ -335,7 +305,7 @@ class ACEDummyTreeReader(NodeIdentity):
         try:
             sock_name = getattr(to_socket, "name", "") or ""
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#3", exc)
+            utils.note_swallowed("reader.ACEDummyTreeReader._resolve_target_socket_idx#2", exc)
             sock_name = ""
         if sock_name:
             try:
@@ -344,7 +314,7 @@ class ACEDummyTreeReader(NodeIdentity):
                     None,
                 )
             except Exception as exc:
-                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#4", exc)
+                utils.note_swallowed("reader.ACEDummyTreeReader._resolve_target_socket_idx#3", exc)
                 target_socket_idx = None
         if target_socket_idx is not None:
             return target_socket_idx
@@ -353,7 +323,7 @@ class ACEDummyTreeReader(NodeIdentity):
         try:
             sock_identifier = getattr(to_socket, "identifier", "") or ""
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#5", exc)
+            utils.note_swallowed("reader.ACEDummyTreeReader._resolve_target_socket_idx#4", exc)
             sock_identifier = ""
         if sock_identifier:
             try:
@@ -362,20 +332,17 @@ class ACEDummyTreeReader(NodeIdentity):
                     None,
                 )
             except Exception as exc:
-                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#6", exc)
+                utils.note_swallowed("reader.ACEDummyTreeReader._resolve_target_socket_idx#5", exc)
                 target_socket_idx = None
         return target_socket_idx
 
     def _resolve_root_id(self, bl_node) -> str:
-        """
-        Try to derive a stable source identifier from the source node:
-        prefer explicit ace_source_id, then the proxy object name, else the node ace_id.
-        """
+        """Try to derive a stable source identifier from the source node: prefer explicit ace_source_id, then the proxy object name, else the node ace_id."""
         root_id = ""
         try:
             root_id = bl_node.get("ace_source_id", "")
         except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_root_id", exc)
+            utils.note_swallowed("reader.ACEDummyTreeReader._resolve_root_id", exc)
             root_id = ""
         if not root_id:
             try:
@@ -387,7 +354,7 @@ class ACEDummyTreeReader(NodeIdentity):
                     else:
                         root_id = getattr(proxy_value, "name", "") or ""
             except Exception as exc:
-                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_root_id#2", exc)
+                utils.note_swallowed("reader.ACEDummyTreeReader._resolve_root_id#2", exc)
                 root_id = ""
         return root_id
 

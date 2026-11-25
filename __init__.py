@@ -2,7 +2,7 @@ bl_info = {
     "name": "AudioCore Engine",
     "author": "Marius Viennot",
     "version": (0, 5, 0),
-    "blender": (5, 0, 0), # 5.0 needed for 'NodeSocketBundle'
+    "blender": (5, 0, 0),  # NodeSocketBundle
     "location": "Node Editor > Add Menu / N-Panel",
     "description": (
         "Drive Geometry Node Trees with information streams extracted from audio sources in real-time. "
@@ -15,14 +15,9 @@ import importlib
 import sys
 import os
 
-# --- CONFIGURATION ---
 PACKAGE_NAME = __name__
 
-# --- DEPENDENCY HANDLING ---
 def _ensure_dependency_paths():
-    """
-    Ensure add-on local vendored packages are importable.
-    """
     try:
         from . import utils as _ace_utils
         _ace_utils.ensure_dependency_vendor_path(create=True)
@@ -33,19 +28,14 @@ def _ensure_dependency_paths():
 
 _ensure_dependency_paths()
 
-# --- MODULE REGISTRY ---
-# Order matters: Primitives -> Core DSP -> Nodes -> UI -> Orchestration
-# Sub-package __init__ modules are listed first so they are in sys.modules
-# before their children are imported/reloaded (required for correct hot-reload).
+# Dependency order; packages come before their modules so a reload re-imports parents first.
 MODULE_NAMES = [
-    # ── Root ────────────────────────────────────────────────────────────────
-    "vars",                          # 1.  Constants / definitions
-    "utils",                         # 2.  Global helpers
-    "properties",                    # 3.  Blender property groups (Scene data)
-    # ── core/ sub-package ───────────────────────────────────────────────────
-    "core",                          # 4.  Package marker (core/__init__.py)
-    "core.abstract_tree",            # 5.  Abstract IR data structures
-    "core.id_management",            # 6.  ID / hash utilities
+    "vars",
+    "utils",
+    "properties",
+    "core",
+    "core.abstract_tree",
+    "core.id_management",
     "core.input",
     "core.input.resampler",
     "core.input.file",
@@ -106,8 +96,7 @@ MODULE_NAMES = [
     "core.engine.frame.runner",
     "core.engine.engine",
     "core.engine.handlers",
-    # ── nodes/ sub-package ──────────────────────────────────────────────────
-    "nodes",                         # 12. Package marker (nodes/__init__.py)
+    "nodes",
     "nodes.frontend",
     "nodes.geometry",
     "nodes.geometry.factory",
@@ -119,19 +108,18 @@ MODULE_NAMES = [
     "nodes.shader.helpers",
     "nodes.shader.factory",
     "nodes.shader.reader",
-    "nodes.dynamic_audio_operators", # 15. Dynamic splitter/math variants
-    # ── ui/ sub-package ─────────────────────────────────────────────────────
-    "ui",                            # 16. Package marker (ui/__init__.py)
-    "ui.gn_menu",                    # 17. Geometry Node Editor add menus
-    "ui.n_panel_operators",          # 18. N-Panel operators
+    "nodes.dynamic_audio_operators",
+    "ui",
+    "ui.gn_menu",
+    "ui.n_panel_operators",
     "ui.panel",
     "ui.panel.helpers",
     "ui.panel.splitter",
     "ui.panel.sync",
     "ui.panel.selection",
     "ui.panel.panels",
-    "ui.prefs_library_manager",      # 20. Dependency installer
-    "ui.prefs_panel_ui",             # 21. Add-on preferences UI
+    "ui.prefs_library_manager",
+    "ui.prefs_panel_ui",
 ]
 
 modules = []
@@ -144,7 +132,6 @@ def _import_or_reload_submodule(module_name: str):
     return importlib.import_module(f".{module_name}", PACKAGE_NAME)
 
 def _remove_handlers_and_timers(log):
-    """Remove ACE handlers and timers; safe to call when they were never added."""
     try:
         from .core.engine.handlers import unregister_handlers
         unregister_handlers()
@@ -159,7 +146,6 @@ def _remove_handlers_and_timers(log):
         log(f"Removing the live-device timer failed: {exc}", 'ERROR')
 
 
-# --- MAIN REGISTRATION ---
 
 def register():
     """Register all submodules in the correct order."""
@@ -213,10 +199,8 @@ def unregister():
 
     from .utils import log
 
-    # 1. Remove Handlers
     _remove_handlers_and_timers(log)
 
-    # 2. Unregister Blender Classes
     for module in reversed(list(modules)):
         if hasattr(module, "unregister"):
             try:

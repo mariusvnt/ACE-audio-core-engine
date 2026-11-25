@@ -75,13 +75,7 @@ _has_ace_nodes_in_trees: bool = False
 
 
 def _refresh_ace_nodes_in_trees_flag(scene) -> None:
-    """Update the module-level ``_has_ace_nodes_in_trees`` flag.
-
-    Scans all GN modifiers and shader material trees attached to objects in
-    *scene* for the presence of any ACE node (identified by the ``ace_id``
-    custom property).  Designed to be called from the UI sync timer so the
-    expensive scene walk is not repeated every redraw.
-    """
+    """Update the module-level ``_has_ace_nodes_in_trees`` flag."""
     global _has_ace_nodes_in_trees
     if scene is None:
         _has_ace_nodes_in_trees = False
@@ -103,11 +97,7 @@ def _refresh_ace_nodes_in_trees_flag(scene) -> None:
 
 
 def _resolve_ui_list_selected_node(context):
-    """
-    Resolve the node selected in the active graph list shown in the N-panel.
-    In the 3D View N-panel this should take precedence over a stale GN editor
-    active node so Capture Influx follows the user's list selection.
-    """
+    """Resolve the node selected in the active graph list shown in the N-panel."""
     from ...utils import _get_active_source
 
     _, active_source = _get_active_source(context)
@@ -139,9 +129,7 @@ def _resolve_ui_list_selected_node(context):
         if node and parsed:
             return node, parsed
 
-    # If Blender is still holding the same ACE node as active in another area,
-    # allow that direct reference to satisfy the selection without overriding it
-    # with some unrelated active node.
+    # A node still active in another editor counts as the selection.
     active_node = getattr(context, "active_node", None)
     active_id = str(active_node.get("ace_id", "") or "") if active_node and hasattr(active_node, "get") else ""
     if active_node and active_id == node_id:
@@ -150,18 +138,7 @@ def _resolve_ui_list_selected_node(context):
 
 
 def _ui_tree_topology_signature(tree) -> str:
-    """Compute a short content hash representing the current GN tree topology.
-
-    Hashes node identities, ACE metadata custom properties, attribute-ID
-    socket values, link wiring, and socket counts.  The resulting digest is
-    used to detect changes that should trigger a UI sync rebuild.
-
-    Args:
-        tree: A Blender GeometryNodeTree or None.
-
-    Returns:
-        A hex digest string, or "" when *tree* is None.
-    """
+    """Compute a short content hash representing the current GN tree topology."""
     if tree is None:
         return ""
 
@@ -184,23 +161,23 @@ def _ui_tree_topology_signature(tree) -> str:
         try:
             ace_id = str(node.get("ace_id", "") or "")
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._ui_tree_topology_signature", exc)
+            utils.note_swallowed("sync._ui_tree_topology_signature", exc)
             ace_id = ""
         if ace_id:
             try:
                 source_id = str(node.get("ace_source_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#2", exc)
+                utils.note_swallowed("sync._ui_tree_topology_signature#2", exc)
                 source_id = ""
             try:
                 op_value = str(node.get("ace_op", "") or "")
             except Exception as exc:
-                utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#3", exc)
+                utils.note_swallowed("sync._ui_tree_topology_signature#3", exc)
                 op_value = ""
             try:
                 preview_enabled = bool(node.get("ace_preview_enabled", True))
             except Exception as exc:
-                utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#4", exc)
+                utils.note_swallowed("sync._ui_tree_topology_signature#4", exc)
                 preview_enabled = True
 
         proxy_name = ""
@@ -211,7 +188,7 @@ def _ui_tree_topology_signature(tree) -> str:
                 try:
                     proxy_name = str(getattr(getattr(sock, "default_value", None), "name", "") or "")
                 except Exception as exc:
-                    utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#5", exc)
+                    utils.note_swallowed("sync._ui_tree_topology_signature#5", exc)
                     proxy_name = ""
             if sock_name not in attr_socket_names or bool(getattr(sock, "is_linked", False)):
                 continue
@@ -257,12 +234,12 @@ def _ui_tree_topology_signature(tree) -> str:
         try:
             from_sock_idx = int(getattr(from_socket, "index", -1))
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#6", exc)
+            utils.note_swallowed("sync._ui_tree_topology_signature#6", exc)
             from_sock_idx = -1
         try:
             to_sock_idx = int(getattr(to_socket, "index", -1))
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#7", exc)
+            utils.note_swallowed("sync._ui_tree_topology_signature#7", exc)
             to_sock_idx = -1
 
         link_tokens.append(
@@ -282,18 +259,6 @@ def _ui_tree_topology_signature(tree) -> str:
 
 
 def _ui_nodes_match(active_source, node_ids: list[str]) -> bool:
-    """Return True when the ui_nodes collection exactly matches *node_ids*.
-
-    Used to decide whether to do a cheaper in-place update or a full clear
-    and rebuild of the ui_nodes collection property.
-
-    Args:
-        active_source: An ACEAudioSource property-group instance.
-        node_ids: The ordered list of node ID strings to compare against.
-
-    Returns:
-        True only if counts and all IDs match in order.
-    """
     try:
         ui_nodes = getattr(active_source, "ui_nodes", None)
         if ui_nodes is None or len(ui_nodes) != len(node_ids):
@@ -303,7 +268,7 @@ def _ui_nodes_match(active_source, node_ids: list[str]) -> bool:
                 return False
         return True
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._ui_nodes_match", exc)
+        utils.note_swallowed("sync._ui_nodes_match", exc)
         return False
 
 
@@ -318,7 +283,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
     if not active_source:
         utils.log("UI sync skipped: no active source.", "DEBUG")
         return
-    with utils.logged_errors("n_panel_ui._sync_ui_dummy_tree"):
+    with utils.logged_errors("sync._sync_ui_dummy_tree"):
         ACEIdManager.ensure_source_uid(active_source)
     # Abort if collection is not writable in the current context (e.g., during draw in some areas)
     if not hasattr(active_source, "ui_nodes"):
@@ -346,7 +311,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         try:
             tree_ptr = int(tree.as_pointer())
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#2", exc)
+            utils.note_swallowed("sync._sync_ui_dummy_tree#2", exc)
             tree_ptr = 0
         pending_tree_ptr = int(getattr(getattr(engine, "frontends", None), "_pending_tree_ptr", 0) or 0)
         dirty_tree_ptrs = getattr(getattr(engine, "frontends", None), "_dirty_tree_ptrs", set()) or set()
@@ -355,10 +320,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             tree_dirty_hint = tree_dirty_hint or dirty_tree_match
         if not tree_dirty_hint:
             compiled_ptr = int(getattr(getattr(engine, "compiler", None), "_compiled_tree_ptr", 0) or 0)
-            # In Multiple-Trees-Support, _compiled_tree_ptr only tracks the
-            # preferred (first) tree. Check all compiled frontend pointers so
-            # any compiled tree gets engine_tree_ready = True and uses the
-            # merged abstract tree directly instead of falling back to reader.build().
+            # Any compiled frontend tree uses the merged abstract tree.
             compiled_frontend_ptrs = set(
                 (getattr(getattr(engine, "compiler", None), "_compiled_frontend_ptrs", {}) or {}).values()
             )
@@ -421,7 +383,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
                     try:
                         _ace_id = str(_bl_node.get("ace_id", "") or "")
                     except Exception as exc:
-                        utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#3", exc)
+                        utils.note_swallowed("sync._sync_ui_dummy_tree#3", exc)
                         _ace_id = ""
                     if _ace_id:
                         bl_order[_ace_id] = _idx
@@ -515,7 +477,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
                 col = attr.data[0].color
                 return float(sum(col) / len(col))
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree._read_attr_value", exc)
+            utils.note_swallowed("sync._sync_ui_dummy_tree._read_attr_value", exc)
             return None
         return None
 
@@ -538,7 +500,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             try:
                 item = active_source.ui_nodes[idx]
             except Exception as exc:
-                utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#4", exc)
+                utils.note_swallowed("sync._sync_ui_dummy_tree#4", exc)
                 continue
             _write_ui_item(item, node)
     else:
@@ -555,7 +517,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
                 break
             _write_ui_item(item, node)
 
-    with utils.logged_errors("n_panel_ui._sync_ui_dummy_tree#5"):
+    with utils.logged_errors("sync._sync_ui_dummy_tree#5"):
         if active_source.active_ui_node_index >= len(active_source.ui_nodes):
             active_source.active_ui_node_index = max(0, len(active_source.ui_nodes) - 1)
     _ui_sync_last_key = sync_key
@@ -563,16 +525,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
 
 
 def _refresh_active_source_metadata(scene, now: float | None = None):
-    """Trigger an async metadata probe for the active file source if needed.
-
-    Probes are rate-limited to _UI_METADATA_PROBE_INTERVAL seconds per source
-    to avoid blocking the main thread.  Clears the probe record once both
-    duration and native_sample_rate are available.
-
-    Args:
-        scene: The active Blender scene.
-        now: Current monotonic timestamp in seconds, or None to read it here.
-    """
+    """Trigger an async metadata probe for the active file source if needed."""
     global _ui_source_probe_last
     if scene is None:
         return
@@ -603,18 +556,13 @@ def _refresh_active_source_metadata(scene, now: float | None = None):
         return
 
     _ui_source_probe_last[source_key] = ts_now
-    with utils.logged_errors("n_panel_ui._refresh_active_source_metadata"):
+    with utils.logged_errors("sync._refresh_active_source_metadata"):
         engine = ACEAudioEngine.ensure_instance(scene)
         engine.probes._probe_source_metadata(src)
 
 
 def _ui_quick_state_key(context, scene, tree) -> str:
-    """Build a cheap string key capturing the most volatile UI state.
-
-    Used by the sync timer to detect whether a full panel redraw/sync is
-    needed without running the expensive tree-topology hash every tick.  The
-    key encodes the active tree pointer, active source index, and source UID.
-    """
+    """Build a cheap string key capturing the most volatile UI state."""
     ace = getattr(scene, "audiocore", None)
     src_uid = ""
     src_idx = -1
@@ -622,7 +570,7 @@ def _ui_quick_state_key(context, scene, tree) -> str:
         try:
             src_idx = utils.as_int(getattr(ace, "active_audio_source_index", None), -1)
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._ui_quick_state_key", exc)
+            utils.note_swallowed("sync._ui_quick_state_key", exc)
             src_idx = -1
         sources = getattr(ace, "audio_sources", None) or []
         if 0 <= src_idx < len(sources):
@@ -632,16 +580,7 @@ def _ui_quick_state_key(context, scene, tree) -> str:
 
 
 def _ui_has_pending_engine_changes(scene, tree) -> bool:
-    """Return True when the engine has a pending recompile or dirty tree.
-
-    Args:
-        scene: The active Blender scene.
-        tree: The currently viewed GeometryNodeTree, or None.
-
-    Returns:
-        True if the engine has a pending rebuild for *tree* or if *tree* is in
-        the engine's dirty tree-pointer set.
-    """
+    """Return True when the engine has a pending recompile or dirty tree."""
     engine = ACEAudioEngine.get_instance(scene)
     if not engine:
         return False
@@ -652,7 +591,7 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
     if pending_tree_ptr:
         if tree is None:
             return True
-        with utils.logged_errors("n_panel_ui._ui_has_pending_engine_changes"):
+        with utils.logged_errors("sync._ui_has_pending_engine_changes"):
             if int(tree.as_pointer()) == pending_tree_ptr:
                 return True
     if not dirty_tree_ptrs:
@@ -662,25 +601,12 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
     try:
         return int(tree.as_pointer()) in dirty_tree_ptrs
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._ui_has_pending_engine_changes#2", exc)
+        utils.note_swallowed("sync._ui_has_pending_engine_changes#2", exc)
         return False
 
 
 def _engine_latency_metrics(context) -> dict[str, float | bool]:
-    """Collect and cache per-stage latency metrics for the active source.
-
-    Reads perf and diagnostics data from the engine and aggregates them into
-    named sub-totals (input, DSP, preview, Blender geometry, render).  Results
-    are cached for _UI_LATENCY_UPDATE_INTERVAL_S seconds to keep draw() calls
-    cheap.
-
-    Args:
-        context: The current Blender context.
-
-    Returns:
-        A dict mapping metric names to float values or bool flags.  All keys
-        are always present; values default to 0.0 / False when not available.
-    """
+    """Collect and cache per-stage latency metrics for the active source."""
     global _ui_latency_cache
     scene = getattr(context, "scene", None)
     engine = ACEAudioEngine.get_instance(scene)
@@ -816,18 +742,9 @@ def _engine_latency_metrics(context) -> dict[str, float | bool]:
 
 
 def _ui_sync_timer():
-    """Blender persistent timer callback: drive background UI sync.
-
-    Runs at ``_UI_SYNC_TIMER_INTERVAL_ACTIVE`` during playback or when engine
-    changes are pending, and at ``_UI_SYNC_TIMER_INTERVAL_IDLE`` otherwise.
-    Each tick optionally triggers ``_sync_ui_dummy_tree()`` when the quick
-    state key changes or the idle interval has elapsed.
-
-    Returns:
-        Float interval in seconds for the next timer invocation.
-    """
+    """Blender persistent timer callback: drive background UI sync."""
     global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts
-    with utils.logged_errors("n_panel_ui._ui_sync_timer"):
+    with utils.logged_errors("sync._ui_sync_timer"):
         context = getattr(bpy, "context", None)
         scene = getattr(context, "scene", None) if context else None
         if not scene:
@@ -855,7 +772,7 @@ def _ui_sync_timer():
         allow_dirty_rebuild = bool(force_sync)
 
         _refresh_active_source_metadata(scene, now=now)
-        with utils.logged_errors("n_panel_ui._ui_sync_timer#2"):
+        with utils.logged_errors("sync._ui_sync_timer#2"):
             engine = ACEAudioEngine.ensure_instance(scene)
             ace = getattr(scene, "audiocore", None)
             sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
@@ -870,7 +787,7 @@ def _ui_sync_timer():
             )
             engine = ACEAudioEngine.get_instance(scene)
             if engine is not None:
-                with utils.logged_errors("n_panel_ui._ui_sync_timer#3"):
+                with utils.logged_errors("sync._ui_sync_timer#3"):
                     engine.diagnostics._perf_add("ui_sync", time.perf_counter() - t0)
             _ui_timer_last_quick_key = quick_key
             _ui_timer_last_sync_ts = now

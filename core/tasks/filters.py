@@ -16,21 +16,12 @@ except ImportError:
 from ... import utils
 
 
-# One-time warning flag: emitted the first time the Tier-3 Python biquad loop
-# is entered (Numba absent AND scipy absent).  Suppresses log spam while still
-# surfacing the dropout risk once per engine session.
-# Reset by reset_biquad_fallback_warned(), called from ACEAudioEngine.shutdown_all_instances().
+# Warn once per session when the pure-Python biquad runs (no numba, no scipy).
 _BIQUAD_PYTHON_FALLBACK_WARNED: bool = False
 
 
 def reset_biquad_fallback_warned() -> None:
-    """Reset the one-time Tier-3 biquad fallback warning flag.
-
-    Called by ``ACEAudioEngine.shutdown_all_instances()`` so the warning fires
-    once per engine session rather than once per Python interpreter lifetime.
-    This ensures users are re-warned on a fresh session if Numba and scipy are
-    still absent.
-    """
+    """Reset the one-time Tier-3 biquad fallback warning flag."""
     global _BIQUAD_PYTHON_FALLBACK_WARNED
     _BIQUAD_PYTHON_FALLBACK_WARNED = False
 
@@ -98,35 +89,12 @@ def _run_biquad(
     state: List[float],
     use_numba: bool = True,
 ) -> np.ndarray:
-    """Apply a single Direct-Form-II biquad section to *signal* in-place on the state.
-
-    Three-tier implementation:
-
-    * **Tier 1** — Numba JIT kernel: zero Python overhead, preferred when available.
-    * **Tier 2** — ``scipy.signal.lfilter``: vectorized C, ~100× faster than the
-      Python loop.  Used when Numba is absent.  Reports a WARNING on unexpected
-      failure so the user is not left debugging silent audio dropouts.
-    * **Tier 3** — Pure-Python sample loop: last resort.  Emits a one-time WARNING
-      because at 512 samples/block this path takes ~10 ms on the preview thread and
-      will cause audible dropouts.
-
-    Args:
-        signal:    1-D float32 input samples (length N).
-        coeffs:    Normalised biquad coefficients (b0, b1, b2, a1, a2) — a0 already
-                   divided out.
-        state:     Two-element list [z1, z2] carrying the filter state between calls.
-                   Updated in-place.
-        use_numba: Allow Tier-1 (Numba JIT).  Pass ``False`` to force Tier-2/3.
-
-    Returns:
-        Filtered float32 array of the same length as *signal*.
-    """
+    """Apply a single Direct-Form-II biquad section to *signal* in-place on the state."""
     global _BIQUAD_PYTHON_FALLBACK_WARNED
     b0, b1, b2, a1, a2 = coeffs
     z1, z2 = float(state[0]), float(state[1])
     src = signal.astype(np.float32, copy=False)
 
-    # ── Tier 1: Numba JIT ────────────────────────────────────────────────────
     if use_numba and NUMBA_AVAILABLE:
         try:
             out, z1_new, z2_new = _biquad_filter_block(
@@ -139,10 +107,9 @@ def _run_biquad(
             state[1] = float(z2_new)
             return out
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry._run_biquad", exc)
+            utils.note_swallowed("filters._run_biquad", exc)
             pass  # Fall through to Tier 2.
 
-    # ── Tier 2: scipy.signal.lfilter ─────────────────────────────────────────
     # Converts Direct Form I coefficients to the [b0,b1,b2] / [1,a1,a2] vectors
     # scipy expects, and passes the DF-II state as initial conditions.
     if SCIPY_AVAILABLE:
@@ -160,7 +127,6 @@ def _run_biquad(
                 "WARNING",
             )
 
-    # ── Tier 3: Pure-Python sample loop ──────────────────────────────────────
     # Last resort.  At 512 samples/block this path takes ~10 ms on the preview
     # thread and will cause audible dropouts.  Emit a one-time WARNING.
     if not _BIQUAD_PYTHON_FALLBACK_WARNED:

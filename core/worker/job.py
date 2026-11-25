@@ -32,7 +32,6 @@ _WORKER_SHM_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _trim_worker_cache():
-    """Evict least-recently-used entries from _WORKER_GRAPH_CACHE."""
     while len(_WORKER_GRAPH_CACHE) > _WORKER_CACHE_MAX:
         _key, graph = _WORKER_GRAPH_CACHE.popitem(last=False)
         if graph is not None:
@@ -40,32 +39,22 @@ def _trim_worker_cache():
 
 
 def _close_worker_shm_cache_entry(cache_key: str):
-    """Close and remove one shared-memory attachment from _WORKER_SHM_CACHE."""
     entry = _WORKER_SHM_CACHE.pop(str(cache_key), None)
     if not isinstance(entry, dict):
         return
     shm_obj = entry.get("shm")
     if shm_obj is None:
         return
-    with utils.logged_errors("parallel_dsp._close_worker_shm_cache_entry"):
+    with utils.logged_errors("job._close_worker_shm_cache_entry"):
         shm_obj.close()
 
 
 def _close_worker_shm_cache():
-    """Close and release all shared-memory attachments in _WORKER_SHM_CACHE."""
     for cache_key in list(_WORKER_SHM_CACHE.keys()):
         _close_worker_shm_cache_entry(cache_key)
 
 
 def _prune_worker_cache_for_generation(generation_id: int):
-    """Drop all cached graphs from previous generations and flush the SHM cache.
-
-    Called when the worker detects a generation change, indicating that the
-    main process has recompiled and all previously cached IRs are stale.
-
-    Args:
-        generation_id: The new active generation ID.
-    """
     stale_keys = [key for key in list(_WORKER_GRAPH_CACHE.keys()) if int(key[0]) != int(generation_id)]
     for key in stale_keys:
         graph = _WORKER_GRAPH_CACHE.pop(key, None)
@@ -75,22 +64,7 @@ def _prune_worker_cache_for_generation(generation_id: int):
 
 
 def _resolve_worker_shm_array(cache_key: str, spec: Dict[str, Any]) -> Optional[np.ndarray]:
-    """Attach to or retrieve a named shared-memory segment as a NumPy view.
-
-    Caches the attachment in _WORKER_SHM_CACHE to avoid re-opening the same
-    segment every frame.  Returns None when shared memory is unavailable or
-    the spec is incomplete.
-
-    Args:
-        cache_key: A stable string key used for the internal SHM attachment
-            cache (e.g. "src0:mono").
-        spec: Dict with at least ``"name"`` (shared-memory block name) and
-            ``"shape"`` (tuple of ints).
-
-    Returns:
-        A float32 NumPy array backed by the shared-memory segment, or None on
-        any failure.
-    """
+    """Attach to or retrieve a named shared-memory segment as a NumPy view."""
     if not _SHARED_MEMORY_AVAILABLE:
         return None
     name = str(spec.get("name", "") or "")
@@ -120,25 +94,9 @@ def _resolve_worker_shm_array(cache_key: str, spec: Dict[str, Any]) -> Optional[
 
 
 def _resolve_source_payloads(job: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Extract per-source audio payloads from a job dict, resolving SHM references.
-
-    Handles both the legacy single-source ``"source_chunk"`` key and the
-    current multi-source ``"source_chunks"`` dict.  Shared-memory arrays are
-    attached in-process so callers receive plain NumPy views with no extra
-    copies.
-
-    Args:
-        job: The raw job dict received by evaluate_parallel_job().
-
-    Returns:
-        Mapping from source node ID to resolved payload dict.
-
-    Raises:
-        RuntimeError: If shared-memory segment resolution fails.
-    """
+    """Extract per-source audio payloads from a job dict, resolving SHM references."""
     source_chunks_raw = dict(job.get("source_chunks", {}) or {})
     if not source_chunks_raw and isinstance(job.get("source_chunk"), dict):
-        # Backward compatibility with legacy one-source payloads.
         source_chunks_raw = {"__default__": dict(job.get("source_chunk", {}) or {})}
     source_chunks = {
         str(src_id): dict(payload or {})
@@ -180,10 +138,7 @@ def _resolve_source_payloads(job: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process-pool entrypoint.
-    Accepts only plain dict/list/number/NumPy payloads.
-    """
+    """Process-pool entrypoint."""
     t0 = time.perf_counter() if "time" in globals() else None
     generation_id = int(job.get("generation_id", 0) or 0)
     graph_uid = str(job.get("graph_uid", "") or "")
@@ -253,7 +208,7 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
         try:
             raw_val = task.get_output(frame_id, socket_idx)
         except Exception as exc:
-            utils.note_swallowed("parallel_dsp.evaluate_parallel_job", exc)
+            utils.note_swallowed("job.evaluate_parallel_job", exc)
             continue
         if raw_val is None:
             continue
@@ -281,7 +236,7 @@ def warm_worker():
     try:
         _warm_evaluation()
     except Exception as exc:  # noqa: BLE001 boundary: a failed warm-up must not break the pool
-        utils.note_swallowed("parallel_dsp.warm_worker", exc)
+        utils.note_swallowed("job.warm_worker", exc)
 
 
 def _warm_evaluation():
@@ -308,7 +263,7 @@ def _warm_evaluation():
         for frame_id in range(2):
             graph.set_source_payloads({"src": payload}, frame_id=frame_id, block_size=block_size)
             for spec in output_specs.values():
-                with utils.logged_errors("parallel_dsp._warm_evaluation"):
+                with utils.logged_errors("job._warm_evaluation"):
                     graph.tasks[spec["node_id"]].get_output(frame_id, 0)
     finally:
         graph.close()

@@ -29,17 +29,7 @@ class SourceProbes:
             self._probe_in_flight.clear()
 
     def _probe_source_metadata(self, source: ACEAudioSource, allow_io: bool = True):
-        """Populate ``source.sample_rate``, ``native_sample_rate``, and ``duration``.
-
-        Uses the in-memory meta cache when available and not stale.  On a cache
-        miss, dispatches ``_dispatch_async_probe()`` so the main thread is never
-        blocked.  Results are applied on the next frame via ``_flush_probe_updates()``.
-
-        Args:
-            source: The ACEAudioSource property group to probe.
-            allow_io: Kept for interface compatibility; blocking I/O is no longer
-                performed directly here regardless of this flag.
-        """
+        """Populate ``source.sample_rate``, ``native_sample_rate``, and ``duration``."""
         if getattr(source, "source_type", "") != "FILE":
             return
         fp = getattr(source, "filepath", "")
@@ -56,7 +46,7 @@ class SourceProbes:
         cache_key = f"FILE:{fp}"
         cached = self._meta_cache.get(cache_key)
         if cached and cached.get("mtime") == mtime and (time.time() - cached.get("ts", 0.0) <= self._meta_cache_ttl):
-            with utils.logged_errors("audio_engine.ACEAudioEngine._probe_source_metadata"):
+            with utils.logged_errors("probes.SourceProbes._probe_source_metadata"):
                 cached_sample_rate = int(cached.get("sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
                 if should_refresh_working_rate:
                     source.sample_rate = cached_sample_rate
@@ -68,7 +58,7 @@ class SourceProbes:
         self._dispatch_async_probe(fp)
 
     def _dispatch_async_probe(self, fp: str):
-        """Schedule a background file-metadata probe. Thread-safe; no-op if already in flight."""
+        """Schedule a background file-metadata probe."""
         if not fp:
             return
         undo_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
@@ -102,7 +92,7 @@ class SourceProbes:
                     )
                     duration = float(getattr(rec, "duration", 0.0) or 0.0)
                 finally:
-                    with utils.logged_errors("audio_engine.ACEAudioEngine._run_probe_in_bg#2"):
+                    with utils.logged_errors("probes.SourceProbes._run_probe_in_bg"):
                         rec.close()
                 with self._probe_thread_lock:
                     if int(undo_generation) != int(getattr(self.engine, "undo_generation", 0) or 0):
@@ -116,17 +106,13 @@ class SourceProbes:
                         "undo_generation": int(undo_generation),
                     }
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._run_probe_in_bg", exc)
+            utils.note_swallowed("probes.SourceProbes._run_probe_in_bg#2", exc)
         finally:
             with self._probe_thread_lock:
                 self._probe_in_flight.discard(fp)
 
     def _flush_probe_updates(self, sources, scene=None, preferred_tree_ptr: int = 0) -> bool:
-        """
-        Flush background-probe results into bpy source props and meta_cache.
-        Must be called from the main thread. Returns True if any update was applied
-        (callers may wish to request a recompile so the new sample-rate is honoured).
-        """
+        """Flush background-probe results into bpy source props and meta_cache."""
         with self._probe_thread_lock:
             if not self._probe_pending_updates:
                 return False
@@ -143,7 +129,7 @@ class SourceProbes:
             result = updates[fp]
             if int(result.get("undo_generation", active_generation) or active_generation) != active_generation:
                 continue
-            with utils.logged_errors("audio_engine.ACEAudioEngine._flush_probe_updates"):
+            with utils.logged_errors("probes.SourceProbes._flush_probe_updates"):
                 native_sr = int(result.get("native_sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
                 source.native_sample_rate = native_sr
                 source.duration = float(result.get("duration", 0.0) or 0.0)
@@ -160,7 +146,7 @@ class SourceProbes:
                     self._meta_cache.pop(stale_key, None)
             any_updated = True
         if any_updated:
-            with utils.logged_errors("audio_engine.ACEAudioEngine._flush_probe_updates#2"):
+            with utils.logged_errors("probes.SourceProbes._flush_probe_updates#2"):
                 preferred_tree = self.engine.frontends._resolve_preferred_tree_from_discoveries(
                     self.engine.frontends.discover_scene_frontends(scene) if scene is not None else [],
                     frontend_uid=str(getattr(self.engine.compiler, "_compiled_tree_frontend_uid", "") or ""),
@@ -186,7 +172,7 @@ class SourceProbes:
             source["ace_tempo_detect_message"] = f"Detected {float(bpm):.2f} BPM / {int(beats_per_bar)} BPB"
             return True
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._apply_tempo_detection_to_source", exc)
+            utils.note_swallowed("probes.SourceProbes._apply_tempo_detection_to_source", exc)
             return False
 
     def request_source_tempo_detection(self, source: Optional[ACEAudioSource]) -> tuple[bool, str]:
@@ -197,13 +183,13 @@ class SourceProbes:
 
         target = SourceSpecsTask.resolve_analysis_target(source)
         if target is None:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection"):
+            with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection"):
                 source["ace_tempo_detect_status"] = "failed"
                 source["ace_tempo_detect_message"] = "Select a valid file source before detecting tempo."
             return False, "Select a valid file source before detecting tempo."
 
         filepath, mtime = target
-        with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection#2"):
+        with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#2"):
             source["ace_tempo_detect_status"] = "pending"
             source["ace_tempo_detect_message"] = "Analyzing source tempo in the background..."
             source["ace_tempo_detect_filepath"] = str(filepath)
@@ -214,14 +200,14 @@ class SourceProbes:
             if cached.get("bpm", None) is not None and self._apply_tempo_detection_to_source(source, cached):
                 return True, "Tempo detection updated from cache."
             error_msg = str(cached.get("error", "") or "Tempo analysis failed.")
-            with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection#3"):
+            with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#3"):
                 source["ace_tempo_detect_status"] = "failed"
                 source["ace_tempo_detect_message"] = error_msg
             return False, error_msg
 
         queued = SourceSpecsTask._queue_background_analysis(target)
         if not queued:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection#4"):
+            with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#4"):
                 source["ace_tempo_detect_status"] = "failed"
                 source["ace_tempo_detect_message"] = "Tempo analysis queue is full. Try again in a moment."
             return False, "Tempo analysis queue is full. Try again in a moment."
@@ -238,7 +224,7 @@ class SourceProbes:
             try:
                 status = str(source.get("ace_tempo_detect_status", "") or "")
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates", exc)
+                utils.note_swallowed("probes.SourceProbes.flush_source_tempo_detection_updates", exc)
                 status = ""
             if status != "pending":
                 continue
@@ -247,7 +233,7 @@ class SourceProbes:
                 filepath = str(source.get("ace_tempo_detect_filepath", "") or "")
                 mtime = float(source.get("ace_tempo_detect_mtime", 0.0) or 0.0)
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates#2", exc)
+                utils.note_swallowed("probes.SourceProbes.flush_source_tempo_detection_updates#2", exc)
                 filepath = ""
                 mtime = 0.0
             if not filepath or mtime <= 0.0:
@@ -255,7 +241,7 @@ class SourceProbes:
 
             current_target = SourceSpecsTask.resolve_analysis_target(source)
             if current_target is None or str(current_target[0]) != filepath or abs(float(current_target[1]) - mtime) > 1e-6:
-                with utils.logged_errors("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates#3"):
+                with utils.logged_errors("probes.SourceProbes.flush_source_tempo_detection_updates#3"):
                     source["ace_tempo_detect_status"] = "failed"
                     source["ace_tempo_detect_message"] = "Source changed. Run tempo detection again."
                 any_updated = True
@@ -266,7 +252,7 @@ class SourceProbes:
                 continue
 
             if cached.get("bpm", None) is None:
-                with utils.logged_errors("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates#4"):
+                with utils.logged_errors("probes.SourceProbes.flush_source_tempo_detection_updates#4"):
                     source["ace_tempo_detect_status"] = "failed"
                     source["ace_tempo_detect_message"] = str(
                         cached.get("error", "") or "Tempo analysis failed."

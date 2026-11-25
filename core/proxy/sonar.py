@@ -9,21 +9,9 @@ from ... import utils
 
 
 class Sonar:
-    # =========================================================================
-    # 4. SONAR OBJECT / DEFAULT TREE
-    # =========================================================================
     @staticmethod
     def _cube_vertices_faces(size: float = 2.0):
-        """Return vertex and face lists for an axis-aligned cube.
-
-        Args:
-            size: Full edge length of the cube.  Default is 2.0 (unit cube
-                spanning -1 to +1 on each axis).
-
-        Returns:
-            A (verts, faces) tuple where verts is a list of 8 (x, y, z) triples
-            and faces is a list of 6 quad index tuples.
-        """
+        """Return vertex and face lists for an axis-aligned cube."""
         h = size * 0.5
         verts = [
             (-h, -h, -h),
@@ -48,16 +36,14 @@ class Sonar:
     @classmethod
     def _ensure_cube_mesh(cls, mesh: bpy.types.Mesh):
         verts, faces = cls._cube_vertices_faces()
-        with utils.logged_errors("proxy_management.cls._ensure_cube_mesh"):
+        with utils.logged_errors("sonar.Sonar._ensure_cube_mesh"):
             mesh.clear_geometry()
         mesh.from_pydata(verts, [], faces)
         mesh.update()
 
     @classmethod
     def ensure_sonar_setup(cls, scene, sources):
-        """
-        Create or refresh the ACE_Sonar object and its Geometry Nodes modifier.
-        """
+        """Create or refresh the ACE_Sonar object and its Geometry Nodes modifier."""
         if scene is None:
             return None
 
@@ -84,19 +70,19 @@ class Sonar:
         if tree is None and sources:
             tree = bpy.data.node_groups.new(cls.SONAR_TREE_NAME, 'GeometryNodeTree')
         if tree is not None:
-            with utils.logged_errors("proxy_management.cls.ensure_sonar_setup"):
+            with utils.logged_errors("sonar.Sonar.ensure_sonar_setup"):
                 tree.is_modifier = True
         mod.node_group = tree
 
         if tree:
             cls._sync_sonar_tree(tree, sources or [])
         cls.ensure_sonar_shader_setup(scene, sources, obj=obj)
-        with utils.logged_errors("proxy_management.cls.ensure_sonar_setup#2"):
+        with utils.logged_errors("sonar.Sonar.ensure_sonar_setup#2"):
             ace = getattr(scene, "audiocore", None)
             if ace and not getattr(ace, "gn_target_object", None):
                 ace.gn_target_object = obj
         if created:
-            with utils.logged_errors("proxy_management.cls.ensure_sonar_setup#3"):
+            with utils.logged_errors("sonar.Sonar.ensure_sonar_setup#3"):
                 view_layer = None
                 if scene is not None:
                     view_layers = list(getattr(scene, "view_layers", []) or [])
@@ -150,11 +136,11 @@ class Sonar:
                         linked = True
                         break
                 if not linked:
-                    with utils.logged_errors("proxy_management.cls.ensure_sonar_shader_setup"):
+                    with utils.logged_errors("sonar.Sonar.ensure_sonar_shader_setup"):
                         obj_materials.append(material)
                         linked = True
             if not linked:
-                with utils.logged_errors("proxy_management.cls.ensure_sonar_shader_setup#2"):
+                with utils.logged_errors("sonar.Sonar.ensure_sonar_shader_setup#2"):
                     obj.active_material = material
 
         if material is None:
@@ -165,7 +151,7 @@ class Sonar:
         if tree is None:
             return None
 
-        with utils.logged_errors("proxy_management.cls.ensure_sonar_shader_setup#4"):
+        with utils.logged_errors("sonar.Sonar.ensure_sonar_shader_setup#3"):
             cls.sync_managed_source_tree(tree, sources or [], scene=scene)
         return tree
 
@@ -211,7 +197,7 @@ class Sonar:
             return
 
         factory_cls = cls._source_group_factory_for_tree(tree)
-        with utils.logged_errors("proxy_management.cls.sync_managed_source_tree"):
+        with utils.logged_errors("sonar.Sonar.sync_managed_source_tree"):
             factory_cls.ensure_node_groups_exist()
 
         frontend_kind = cls._frontend_kind_for_tree(tree)
@@ -230,7 +216,7 @@ class Sonar:
             try:
                 src_id = ACEIdManager.ensure_source_uid(src, existing_ids=existing_source_ids)
             except Exception as exc:
-                utils.note_swallowed("proxy_management.cls.sync_managed_source_tree#2", exc)
+                utils.note_swallowed("sonar.Sonar.sync_managed_source_tree#2", exc)
                 src_id = getattr(src, "stable_id", "") or getattr(src, "name", "Source")
             if src_id and src_id not in existing_source_ids:
                 existing_source_ids.append(src_id)
@@ -239,14 +225,14 @@ class Sonar:
         def _is_managed_source_node(node: bpy.types.Node) -> bool:
             if getattr(node, "type", "") != "GROUP":
                 return False
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree._is_managed_source_node"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree._is_managed_source_node"):
                 if node.get("ace_source_id"):
                     return True
             ace_id = ""
             try:
                 ace_id = str(node.get("ace_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("proxy_management.cls.sync_managed_source_tree._is_managed_source_node#2", exc)
+                utils.note_swallowed("sonar.Sonar.sync_managed_source_tree._is_managed_source_node#2", exc)
                 ace_id = ""
             parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
             if not parsed:
@@ -264,7 +250,7 @@ class Sonar:
             try:
                 src_id = str(node.get("ace_source_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("proxy_management.cls.sync_managed_source_tree#3", exc)
+                utils.note_swallowed("sonar.Sonar.sync_managed_source_tree#3", exc)
                 src_id = ""
             if src_id:
                 if src_id in node_by_source_id:
@@ -274,14 +260,14 @@ class Sonar:
             else:
                 unassigned_nodes.append(node)
         for node in duplicate_nodes:
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#4"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#4"):
                 tree.nodes.remove(node)
 
         desired_ids = {src_id for src_id, _src_name, _src in desired_sources if src_id}
         for src_id, node in list(node_by_source_id.items()):
             if src_id in desired_ids:
                 continue
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#5"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#5"):
                 tree.nodes.remove(node)
             node_by_source_id.pop(src_id, None)
 
@@ -312,52 +298,49 @@ class Sonar:
             ace_id = cls._managed_source_ace_id(frontend_uid, src_id, existing_ids=existing_node_ids)
             if ace_id and ace_id not in existing_node_ids:
                 existing_node_ids.append(ace_id)
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#6"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#6"):
                 node["ace_id"] = ace_id
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#7"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#7"):
                 node["ace_source_id"] = src_id
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#8"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#8"):
                 node["ace_source_name"] = src_name
             node.label = src_name
             node.name = src_name
             if created_node:
-                with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#9"):
+                with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#9"):
                     node.location = (0, -220 * idx)
 
             if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#10"):
+                with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#10"):
                     proxy_obj = bpy.data.objects.get(getattr(src, "proxy_object_name", ""))
                     proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                     if proxy_obj and proxy_socket:
                         proxy_socket.default_value = proxy_obj
             elif frontend_kind == FRONTEND_KIND_SHADER:
-                with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#11"):
+                with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#11"):
                     proxy_name = str(getattr(src, "proxy_object_name", "") or "")
                     proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                     if proxy_socket and proxy_name:
                         try:
                             current = getattr(proxy_socket, "default_value", None)
                         except Exception as exc:
-                            utils.note_swallowed("proxy_management.cls.sync_managed_source_tree#12", exc)
+                            utils.note_swallowed("sonar.Sonar.sync_managed_source_tree#12", exc)
                             current = None
                         if isinstance(current, str):
                             proxy_socket.default_value = proxy_name
 
         for node in unassigned_nodes:
-            with utils.logged_errors("proxy_management.cls.sync_managed_source_tree#13"):
+            with utils.logged_errors("sonar.Sonar.sync_managed_source_tree#13"):
                 tree.nodes.remove(node)
 
     @classmethod
     def _sync_sonar_tree(cls, tree: bpy.types.NodeTree, sources):
-        """
-        Incrementally updates the sonar GN tree to include one managed ACE source
-        node per audio source without touching user processing nodes.
-        """
+        """Incrementally updates the sonar GN tree to include one managed ACE source node per audio source without touching user processing nodes."""
         utils.assert_main_thread("_sync_sonar_tree")
         if tree is None:
             return
 
-        with utils.logged_errors("proxy_management.cls._sync_sonar_tree"):
+        with utils.logged_errors("sonar.Sonar._sync_sonar_tree"):
             ACEDummyNodeFactory.ensure_node_groups_exist()
 
         # Ensure mandatory IO nodes exist
@@ -378,13 +361,13 @@ class Sonar:
                 if getattr(item, "in_out", None) == 'OUTPUT'
             }
             if "Geometry" not in output_names:
-                with utils.logged_errors("proxy_management.cls._sync_sonar_tree#2"):
+                with utils.logged_errors("sonar.Sonar._sync_sonar_tree#2"):
                     tree.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
             if "Audio" not in output_names:
-                with utils.logged_errors("proxy_management.cls._sync_sonar_tree#3"):
+                with utils.logged_errors("sonar.Sonar._sync_sonar_tree#3"):
                     tree.interface.new_socket("Audio", in_out='OUTPUT', socket_type='NodeSocketBundle')
         geom_out_sock = next((s for s in output_node.inputs if s.name == "Geometry"), None)
         if "Geometry" in input_node.outputs and geom_out_sock and not geom_out_sock.is_linked:
-            with utils.logged_errors("proxy_management.cls._sync_sonar_tree#4"):
+            with utils.logged_errors("sonar.Sonar._sync_sonar_tree#4"):
                 tree.links.new(input_node.outputs["Geometry"], geom_out_sock)
         cls.sync_managed_source_tree(tree, sources or [])

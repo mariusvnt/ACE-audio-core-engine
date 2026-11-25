@@ -19,33 +19,13 @@ from .spectral import _analysis_signals_normalized, _remap_indices_fft_domain, _
 
 
 class AudioFluxAnalyzer:
-    """Pool-managed wrapper around long-lived audioflux BFT / Spectral / Pitch objects.
-
-    Creating a BFT object is expensive (~few ms) so instances are never thrown
-    away: ``borrow()`` retrieves a ready-to-use analyzer from the pool (keyed by
-    sample_rate × block_size) and ``release()`` returns it after each DSP frame.
-
-    A class-level ``_GLOBAL_SPECTRUM_CACHE`` is shared across all instances so
-    that multi-band sources (FrequencySplitter with N outputs) pay exactly one
-    BFT call per audio frame instead of N.  The cache is keyed by
-    ``(chunk_token, "full_spectrum", frame_index)`` to prevent spectra from
-    bleeding across frames.
-
-    When ``audioflux`` is not installed the analyzer degrades gracefully:
-    ``compute_feature()`` returns None for spectrum-dependent features (centroid,
-    flux, pitch) and falls back to a pure-numpy ZCR and RMS path.
-    """
+    """Pool-managed wrapper around long-lived audioflux BFT / Spectral / Pitch objects."""
     _POOL: Dict[Tuple[int, int], list['AudioFluxAnalyzer']] = {}
     _MAX_POOL_PER_KEY = 4
     _MAX_POOL_KEYS = 16
     _MAX_PREV_MASK_ENTRIES = 128
-    # Cross-instance BFT cache: keyed by (chunk_token, "full_spectrum", frame_index).
-    # Shared across all AudioFluxAnalyzer instances so multi-band FrequencySplitter
-    # sources pay exactly 1 BFT call per chunk instead of N (one per band).
-    # THREAD-SAFETY NOTE: Each Stage-B worker process is single-threaded (no
-    # internal BLAS thread-pool enabled), so this class-level dict is safe without
-    # a Lock under the current architecture. If worker-internal threading is ever
-    # introduced, protect all mutations with a threading.Lock here.
+    # Spectra shared by all analyzers: one transform per chunk and frame for every splitter band.
+    # Worker processes are single-threaded, so no lock.
     _GLOBAL_SPECTRUM_CACHE: "OrderedDict[Any, np.ndarray]" = OrderedDict()
     _GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT = 64
 
@@ -103,7 +83,7 @@ class AudioFluxAnalyzer:
                 )
                 self.pitch_buffer = np.zeros(self.pitch.auto_length, dtype=np.float32)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer.__init__", exc)
+                utils.note_swallowed("analyzer.AudioFluxAnalyzer.__init__", exc)
                 self.bft = None
                 self.spectral = None
                 self.pitch = None
@@ -111,11 +91,7 @@ class AudioFluxAnalyzer:
 
     @classmethod
     def borrow(cls, sample_rate: int, block_size: int) -> 'AudioFluxAnalyzer':
-        """Retrieve an analyzer from the pool or create a new one.
-
-        The returned instance has its per-frame state cleared via ``reset_state()``
-        so it is safe to use immediately.
-        """
+        """Retrieve an analyzer from the pool or create a new one."""
         key = (int(sample_rate), int(block_size))
         pool = cls._POOL.get(key)
         if pool:
@@ -141,7 +117,6 @@ class AudioFluxAnalyzer:
 
     @classmethod
     def _global_spectrum_cache_limit(cls) -> int:
-        """Return the global cross-instance spectrum cache capacity."""
         try:
             raw = int(
                 os.environ.get(
@@ -151,7 +126,7 @@ class AudioFluxAnalyzer:
                 or cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT
             )
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._global_spectrum_cache_limit", exc)
+            utils.note_swallowed("analyzer.AudioFluxAnalyzer._global_spectrum_cache_limit", exc)
             raw = int(cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT)
         return int(min(max(raw, 16), 1024))
 
@@ -162,14 +137,12 @@ class AudioFluxAnalyzer:
         self.cache.clear()
 
     def _prepare_frame_cache(self, frame_index: int):
-        """Invalidate the feature cache when a new frame begins."""
         if self.cache_frame != frame_index:
             self.cache_frame = frame_index
             self.cache.clear()
 
     @staticmethod
     def _chunk_token(chunk: AudioChunk):
-        """Return a hashable cache key for the chunk's audio content and ops."""
         token = getattr(chunk, "spectrum_token", None)
         if token is None:
             if getattr(chunk, "lineage", None):
@@ -183,14 +156,7 @@ class AudioFluxAnalyzer:
         return token
 
     def _resolve_chunk_mask_indices(self, chunk: AudioChunk) -> Optional[np.ndarray]:
-        """Resolve the effective FFT-bin mask for this analyzer's FFT domain.
-
-        Remaps any ``band_indices`` from the chunk's source FFT domain to this
-        analyzer's domain, then intersects with indices derived from
-        ``band_hz_bounds`` when both are present.
-
-        Returns None when no mask constraints are set on the chunk.
-        """
+        """Resolve the effective FFT-bin mask for this analyzer's FFT domain."""
         indices = getattr(chunk, "band_indices", None)
         if indices is not None:
             if not isinstance(indices, np.ndarray):
@@ -204,7 +170,7 @@ class AudioFluxAnalyzer:
                 try:
                     src_fft_size = max(int(src_fft_size), 1)
                 except Exception as exc:
-                    utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._resolve_chunk_mask_indices", exc)
+                    utils.note_swallowed("analyzer.AudioFluxAnalyzer._resolve_chunk_mask_indices", exc)
                     src_fft_size = self.fft_length
                 indices = _remap_indices_fft_domain(
                     np.asarray(indices, dtype=np.int64),
@@ -221,7 +187,7 @@ class AudioFluxAnalyzer:
         try:
             low_hz, high_hz = float(bounds[0]), float(bounds[1])
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._resolve_chunk_mask_indices#2", exc)
+            utils.note_swallowed("analyzer.AudioFluxAnalyzer._resolve_chunk_mask_indices#2", exc)
             return indices
         if high_hz <= low_hz:
             return indices
@@ -242,11 +208,7 @@ class AudioFluxAnalyzer:
         if spec_key in self.cache:
             return self.cache[spec_key]
 
-        # Check the cross-instance global cache before running BFT.
-        # This reduces multi-band FrequencySplitter sources from N BFT calls to 1 per frame.
-        # frame_index is included so cached spectra never bleed across frames — without it,
-        # the lineage-derived chunk_token is stable across frames and the first frame's
-        # spectrum would be returned indefinitely, causing constant RMS/centroid outputs.
+        # Keyed by frame too: the chunk token is stable across frames.
         global_key = (chunk_token, "full_spectrum", int(chunk.frame_index))
         global_mag = AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.get(global_key)
         if global_mag is not None:
@@ -272,7 +234,7 @@ class AudioFluxAnalyzer:
 
         mag = np.abs(spec)
         time_len = mag.shape[-1]
-        with utils.logged_errors("audio_tasks_registry.AudioFluxAnalyzer._ensure_spectrum"):
+        with utils.logged_errors("analyzer.AudioFluxAnalyzer._ensure_spectrum"):
             self.spectral.set_time_length(time_len)
 
         self.cache[spec_key] = mag
@@ -284,7 +246,7 @@ class AudioFluxAnalyzer:
             try:
                 AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.popitem(last=False)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._ensure_spectrum#2", exc)
+                utils.note_swallowed("analyzer.AudioFluxAnalyzer._ensure_spectrum#2", exc)
                 break
         if self.bft.is_temporal:
             try:
@@ -297,11 +259,6 @@ class AudioFluxAnalyzer:
         return mag
 
     def _get_mask_key(self, indices: Optional[np.ndarray]) -> Optional[Tuple[int, int]]:
-        """Return a compact (count, digest) cache key for a bin-index array.
-
-        Uses a blake2b-8 digest so per-frame feature cache keys remain small
-        even for large masks with many bin entries.
-        """
         if indices is None:
             return None
         if not isinstance(indices, np.ndarray):
@@ -365,15 +322,8 @@ class AudioFluxAnalyzer:
                 self.prev_masked_mag.pop(next(iter(self.prev_masked_mag)), None)
             return 0.0
 
-        # Compute positive spectral flux directly from magnitude arrays.
-        # The audioFlux spectral.flux() API requires set_time_length() to match
-        # the input's time dimension; when called after _ensure_spectrum() has
-        # already set a different time_length the library can return a per-bin
-        # array (not a scalar), causing float() to raise and the except to return
-        # 0.0 every frame.  Computing from first principles avoids the API contract
-        # entirely while producing the identical mathematical result:
-        #   positive_flux = sum(max(current - previous, 0)) / sum(previous + ε)
-        # This is consistent with the fallback path in SpectralFluxTask._fallback_flux.
+        # Positive flux, sum(max(cur - prev, 0)) / sum(prev + eps), computed here because
+        # audioflux's flux() depends on a time length set elsewhere.
         try:
             prev_f = prev_store.astype(np.float64)
             curr_f = current_frame.astype(np.float64)
@@ -390,9 +340,7 @@ class AudioFluxAnalyzer:
         return val
 
     def compute_feature(self, name: str, chunk: AudioChunk):
-        """
-        Compute (and cache) a feature for the given frame.
-        """
+        """Compute (and cache) a feature for the given frame."""
         self._prepare_frame_cache(chunk.frame_index)
         chunk_token = self._chunk_token(chunk)
         mask_indices = self._resolve_chunk_mask_indices(chunk)
@@ -459,11 +407,7 @@ class AudioFluxAnalyzer:
                 val = self._compute_flux(mag, chunk_token, mask_indices)
                 self.cache[cache_key] = val
                 return val
-            # "onset" intentionally not handled here: the adaptive envelope-based
-            # detection in OnsetTask._fallback_onset() is the correct implementation.
-            # Returning raw flux here would produce a [0, 10] value contradicting the
-            # node description "0 = smooth, 1 = sharp transient". Returning None causes
-            # OnsetTask.process() to fall through to _fallback_onset().
+            # Onset comes from OnsetTask's own envelope detector.
 
         if name == "pitch":
             if not self.pitch or self.pitch_buffer is None:

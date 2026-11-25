@@ -1,6 +1,4 @@
-"""
-vars.py include all the hard-coded information of the add-on, especially the registry of all available audio nodes.
-"""
+"""vars.py include all the hard-coded information of the add-on, especially the registry of all available audio nodes."""
 from typing import TypedDict
 
 # Global Parameters

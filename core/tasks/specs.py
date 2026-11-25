@@ -12,10 +12,7 @@ from .tempo import TempoEstimation
 
 
 class SourceSpecsTask(TempoEstimation, LongTermAnalysis, ACEAudioTask):
-    """
-    Outputs static metadata about the source with lightweight long-term analysis.
-    Passes the incoming audio through unchanged on the last output.
-    """
+    """Outputs static metadata about the source with lightweight long-term analysis."""
     _GLOBAL_LONG_TERM_CACHE: Dict[Tuple[str, float], Dict[str, Any]] = {}
     _GLOBAL_ACTIVE_ANALYSIS: Dict[Tuple[str, float], int] = {}
     _GLOBAL_CACHE_TTL = 120.0  # seconds
@@ -64,7 +61,7 @@ class SourceSpecsTask(TempoEstimation, LongTermAnalysis, ACEAudioTask):
         if ctx:
             # If the user changed BPM or meter after an automatic estimate, honor
             # that override and stop auto-updates for this source.
-            with utils.logged_errors("audio_tasks_registry.self.process"):
+            with utils.logged_errors("specs.SourceSpecsTask.process"):
                 auto_val = ctx.get(self._auto_bpm_key, None) if hasattr(ctx, "get") else None
                 if auto_val is not None:
                     current = float(getattr(ctx, "bpm", 120.0))
@@ -72,7 +69,7 @@ class SourceSpecsTask(TempoEstimation, LongTermAnalysis, ACEAudioTask):
                         ctx["ace_bpm_user_override"] = True
                         self._long_term_done = True
                         self._reset_long_term_analysis_state(clear_target=False)
-            with utils.logged_errors("audio_tasks_registry.self.process#2"):
+            with utils.logged_errors("specs.SourceSpecsTask.process#2"):
                 auto_meter = ctx.get(self._auto_meter_key, None) if hasattr(ctx, "get") else None
                 if auto_meter is not None:
                     current_meter = int(getattr(ctx, "beats_per_bar", 4) or 4)
@@ -127,6 +124,6 @@ class SourceSpecsTask(TempoEstimation, LongTermAnalysis, ACEAudioTask):
                 if getter("ace_bpm_user_override", False) or getter("ace_meter_user_override", False):
                     return True
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.cls._user_overrode_tempo", exc)
+                utils.note_swallowed("specs.SourceSpecsTask._user_overrode_tempo", exc)
                 return False
         return False

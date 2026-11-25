@@ -30,7 +30,7 @@ class FrequencySplitterTask(ACEAudioTask):
                 parent_low = float(parent_bounds[0])
                 parent_high = float(parent_bounds[1])
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.FrequencySplitterTask._resolve_band_limits", exc)
+                utils.note_swallowed("delta.FrequencySplitterTask._resolve_band_limits", exc)
                 parent_low, parent_high = audible_low, audible_high
             low = max(audible_low, parent_low)
             high = min(audible_high, parent_high)
@@ -256,11 +256,7 @@ class ChromagramTask(ACEAudioTask):
         fft_size: int,
         sample_rate: int,
     ) -> np.ndarray:
-        """
-        Coarse FFT grids can miss a chroma class entirely in narrow parent bands.
-        When that happens, pick the closest bins in the available domain so the
-        branch remains usable instead of collapsing to silence.
-        """
+        """Coarse FFT grids can miss a chroma class entirely in narrow parent bands."""
         dom = np.asarray(domain_indices, dtype=np.int64).ravel()
         if dom.size == 0:
             return np.zeros(0, dtype=np.int64)
@@ -366,10 +362,7 @@ class AutoComponentSplitterTask(ACEAudioTask):
         latency_ms = base_latency_ms + _block_duration_ms(sr, fft_size)
         upstream_idx = _resolve_effective_bin_indices(chunk, fft_size)
 
-        # Build a simple per-bin transient mask instead of performing HPSS:
-        # - bins with higher flux than the median+std are tagged percussive
-        # - quieter bins go to residual
-        # - everything else is considered harmonic
+        # Per-bin mask instead of HPSS: flux above median + std is percussive, quieter bins are residual, the rest harmonic.
         analysis_mono, _ = _analysis_signal_for_chunk(chunk)
         mag = np.abs(np.fft.rfft(analysis_mono, n=fft_size))
         if mag.size == 0:

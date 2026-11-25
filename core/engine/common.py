@@ -79,13 +79,6 @@ else:
     _preview_limiter_block_numba = None
 @contextlib.contextmanager
 def _main_script_hidden_from_spawn():
-    """Keep spawned DSP workers from re-running Blender's ``--python`` script.
-
-    ``spawn`` re-imports ``__main__`` from its file in each new worker; under
-    ``blender --python script.py`` that is the script, which imports bpy and
-    kills the worker. Workers start inside ``submit()``, so the file is hidden
-    only around it.
-    """
     main_module = sys.modules.get("__main__")
     main_file = getattr(main_module, "__file__", None)
     if main_module is None or main_file is None:

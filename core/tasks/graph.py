@@ -7,18 +7,7 @@ from .base import ACEAudioTask
 
 
 class ACEAudioGraph:
-    """Complete DSP processing chain for a single audio source.
-
-    Each graph owns a dictionary of ``ACEAudioTask`` nodes keyed by their
-    node ID, plus the serialized parallel IR used to dispatch Stage-B worker
-    jobs.  Graphs are compiled from the abstract tree IR by
-    ``ACEAudioEngine.compile()`` and evaluated each frame in
-    ``ACEAudioEngine.execute_next_frame()``.
-
-    Filter state, block-size buffers, and parallel bookkeeping are isolated
-    per-graph so that multiple simultaneous sources never share mutable DSP
-    state.
-    """
+    """Complete DSP processing chain for a single audio source."""
     def __init__(self, source_context: Any, proxy_name: str):
         self.source_context = source_context
         self.proxy_name = proxy_name
@@ -54,7 +43,7 @@ class ACEAudioGraph:
             try:
                 return resolver(str(self.proxy_name or ""))
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.ACEAudioGraph.get_proxy_object", exc)
+                utils.note_swallowed("graph.ACEAudioGraph.get_proxy_object", exc)
                 return None
         return None
 

@@ -9,13 +9,7 @@ from ...tasks.source import SourceTask
 
 class BlockSizing:
     def adjust_graph_block_size_for_task(self, task: ACEAudioTask, new_block_size: int):
-        """Update the block size for all tasks in the graph that owns *task*.
-
-        SourceTask instances are updated via ``_set_block_size_from_engine``
-        (which handles prefetch buffer resize).  All other tasks have their
-        ``block_size``, ``silence_buffer``, and cached array attributes reset
-        directly so stale workspace allocations are not reused.
-        """
+        """Update the block size for all tasks in the graph that owns *task*."""
         target_graph = None
         for graph in self.engine.graphs.values():
             if task in graph.tasks.values():
@@ -32,7 +26,7 @@ class BlockSizing:
                 try:
                     t._set_block_size_from_engine(new_block_size)
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine.adjust_graph_block_size_for_task", exc)
+                    utils.note_swallowed("block_size.BlockSizing.adjust_graph_block_size_for_task", exc)
                     t.block_size = new_block_size
                     t.silence_buffer = np.zeros(new_block_size, dtype=np.float32)
                     t._ensure_frontend_workspace(new_block_size)
@@ -82,23 +76,7 @@ class BlockSizing:
         proposed_size: int,
         mode: str = "fixed",
     ) -> int:
-        """Apply hysteresis to block-size changes in adaptive timeslice mode.
-
-        In ``fixed`` mode the proposed size is returned immediately.  In
-        ``adaptive`` mode small changes must persist for
-        ``_BLOCK_SIZE_HYSTERESIS_FRAMES`` consecutive frames before being
-        accepted; large changes (≥ ``_BLOCK_SIZE_IMMEDIATE_DELTA`` samples)
-        are always applied immediately to handle timeline scrubs.
-
-        Args:
-            graph_key: Stable key used to track per-graph hysteresis state.
-            current_size: Currently active block size for this graph.
-            proposed_size: Block size calculated from the current frame delta.
-            mode: ``"fixed"`` or ``"adaptive"``.
-
-        Returns:
-            The block size to use for this frame.
-        """
+        """Apply hysteresis to block-size changes in adaptive timeslice mode."""
         curr = int(max(current_size or 0, 0))
         prop = int(max(proposed_size or 0, 0))
         timeslice_mode = str(mode or "fixed").strip().lower()

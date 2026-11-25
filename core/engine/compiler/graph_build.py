@@ -73,7 +73,7 @@ class GraphBuild:
                             continue
                         import_fn = getattr(task, "import_state", None)
                         if callable(import_fn):
-                            with utils.logged_errors("audio_engine.ACEAudioEngine.compile#4"):
+                            with utils.logged_errors("graph_build.GraphBuild._create_graph_tasks"):
                                 import_fn(state)
                         break
                 task.engine_ref = self.engine
@@ -234,7 +234,7 @@ class GraphBuild:
         self.engine._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
 
         if self.engine.writer is not None and sink_writes_allowed:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.compile#5"):
+            with utils.logged_errors("graph_build.GraphBuild._register_graph"):
                 self.engine.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
                 self.engine._last_attr_sync_frame[src_uid] = int(self.engine.current_frame)
         elif self.engine.writer is not None and self.engine._is_rendering_job():
@@ -309,7 +309,7 @@ class GraphBuild:
             try:
                 socket_idx = int(sock_idx_str) if sock_idx_str else 0
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._rebuild_graph_output_slot_specs", exc)
+                utils.note_swallowed("graph_build.GraphBuild._rebuild_graph_output_slot_specs", exc)
                 socket_idx = 0
             specs.append((str(attr_key), str(node_id), int(socket_idx)))
         graph.output_slot_specs = specs
@@ -359,7 +359,7 @@ class GraphBuild:
             try:
                 socket_idx = int(sock_idx_str) if sock_idx_str else 0
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._graph_output_slot_specs", exc)
+                utils.note_swallowed("graph_build.GraphBuild._graph_output_slot_specs", exc)
                 socket_idx = 0
             subset.append((str(attr_key), str(node_id), int(socket_idx)))
         subset_cache[key_tuple] = subset

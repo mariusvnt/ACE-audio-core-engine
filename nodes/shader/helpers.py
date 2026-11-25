@@ -12,10 +12,7 @@ class HelperAttributeNodes:
     def _find_helper_attr_nodes(cls, tree, ace_id: str) -> dict[int, object]:
         found: dict[int, object] = {}
         target_ace_id = str(ace_id or "")
-        # Pre-compute expected node names so we can match by name when
-        # _HELPER_NODE_OWNER_KEY is stale or unset (e.g. after an ace_id
-        # scheme change).  Name-based matching prevents _ensure_helper_attr_node
-        # from creating a duplicate alongside the existing node.
+        # Expected names also identify helpers whose owner key is missing.
         expected_name_to_idx: dict[str, int] = {
             cls._helper_node_name(target_ace_id, i): i for i in range(16)
         }
@@ -25,7 +22,7 @@ class HelperAttributeNodes:
             try:
                 owner = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._find_helper_attr_nodes", exc)
+                utils.note_swallowed("helpers.HelperAttributeNodes._find_helper_attr_nodes", exc)
                 owner = ""
             matched_by_owner = bool(target_ace_id and owner == target_ace_id)
             if not matched_by_owner:
@@ -37,7 +34,7 @@ class HelperAttributeNodes:
             try:
                 out_idx = utils.as_int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY), -1)
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._find_helper_attr_nodes#2", exc)
+                utils.note_swallowed("helpers.HelperAttributeNodes._find_helper_attr_nodes#2", exc)
                 out_idx = -1
             if out_idx < 0:
                 # Derive index from the node name if the custom property is missing.
@@ -65,34 +62,34 @@ class HelperAttributeNodes:
             try:
                 helper_node = tree.nodes.new("ShaderNodeAttribute")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._ensure_helper_attr_node", exc)
+                utils.note_swallowed("helpers.HelperAttributeNodes._ensure_helper_attr_node", exc)
                 return None, False
             changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_attr_node#2"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_attr_node#2"):
             if str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "") != str(ace_id or ""):
                 helper_node[cls._HELPER_NODE_OWNER_KEY] = str(ace_id or "")
                 changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_attr_node#3"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_attr_node#3"):
             if utils.as_int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY), -1) != int(output_idx):
                 helper_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
                 changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_attr_node#4"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_attr_node#4"):
             if str(helper_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "") != "TOP_LEVEL_ATTRIBUTE":
                 helper_node[cls._OUTPUT_NODE_KIND_KEY] = "TOP_LEVEL_ATTRIBUTE"
                 changed = True
         helper_name = cls._helper_node_name(ace_id, output_idx)
-        with utils.logged_errors("shader_tree.cls._ensure_helper_attr_node#5"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_attr_node#5"):
             if str(getattr(helper_node, "name", "") or "") != helper_name:
                 helper_node.name = helper_name
                 changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_attr_node#6"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_attr_node#6"):
             label = f"ACE {str(output_name or f'Out {int(output_idx + 1)}')}"
             if str(getattr(helper_node, "label", "") or "") != label:
                 helper_node.label = label
                 changed = True
         if cls._ensure_helper_node_compact_display(helper_node):
             changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_attr_node#7"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_attr_node#7"):
             if location is not None:
                 helper_node.location = (float(location[0]), float(location[1]))
         return helper_node, changed
@@ -105,12 +102,12 @@ class HelperAttributeNodes:
             if str(getattr(sock, "name", "") or "") not in helper_names:
                 continue
             if hasattr(sock, "hide"):
-                with utils.logged_errors("shader_tree.cls._hide_helper_inputs"):
+                with utils.logged_errors("helpers.HelperAttributeNodes._hide_helper_inputs"):
                     if not bool(getattr(sock, "hide", False)):
                         sock.hide = True
                         changed = True
             if hasattr(sock, "hide_value"):
-                with utils.logged_errors("shader_tree.cls._hide_helper_inputs#2"):
+                with utils.logged_errors("helpers.HelperAttributeNodes._hide_helper_inputs#2"):
                     if not bool(getattr(sock, "hide_value", False)):
                         sock.hide_value = True
                         changed = True
@@ -124,10 +121,10 @@ class HelperAttributeNodes:
         for link in list(getattr(target_input, "links", []) or []):
             if getattr(link, "from_node", None) == helper_node and getattr(link, "from_socket", None) == helper_output:
                 return changed
-            with utils.logged_errors("shader_tree.cls._ensure_helper_link"):
+            with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_link"):
                 tree.links.remove(link)
                 changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_link#2"):
+        with utils.logged_errors("helpers.HelperAttributeNodes._ensure_helper_link#2"):
             tree.links.new(helper_output, target_input)
             changed = True
         return changed
@@ -140,7 +137,7 @@ class HelperAttributeNodes:
         try:
             current_name = str(helper_node.get(cls._HELPER_ATTR_NAME_KEY, "") or "")
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._store_helper_attr_name", exc)
+            utils.note_swallowed("helpers.HelperAttributeNodes._store_helper_attr_name", exc)
             current_name = ""
         if current_name == target_name:
             return False
@@ -148,7 +145,7 @@ class HelperAttributeNodes:
             helper_node[cls._HELPER_ATTR_NAME_KEY] = target_name
             return True
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._store_helper_attr_name#2", exc)
+            utils.note_swallowed("helpers.HelperAttributeNodes._store_helper_attr_name#2", exc)
             return False
 
     @classmethod
@@ -168,7 +165,7 @@ class HelperAttributeNodes:
         try:
             prev_location = cls._node_local_location(helper_node)
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._rebuild_helper_attr_node", exc)
+            utils.note_swallowed("helpers.HelperAttributeNodes._rebuild_helper_attr_node", exc)
             prev_location = None
 
         preserved_links: list[tuple[str, object]] = []
@@ -183,7 +180,7 @@ class HelperAttributeNodes:
         try:
             tree.nodes.remove(helper_node)
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._rebuild_helper_attr_node#2", exc)
+            utils.note_swallowed("helpers.HelperAttributeNodes._rebuild_helper_attr_node#2", exc)
             return helper_node, False
 
         rebuilt_node, changed = cls._ensure_helper_attr_node(
@@ -215,7 +212,7 @@ class HelperAttributeNodes:
                 source_socket = fallback_output
             if source_socket is None or target_socket is None:
                 continue
-            with utils.logged_errors("shader_tree.cls._rebuild_helper_attr_node#3"):
+            with utils.logged_errors("helpers.HelperAttributeNodes._rebuild_helper_attr_node#3"):
                 tree.links.new(source_socket, target_socket)
                 changed = True
         return rebuilt_node, changed
@@ -230,13 +227,11 @@ class HelperAttributeNodes:
             try:
                 ace_id = str(node.get("ace_id", "") or "")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls.cleanup_tree_helper_nodes", exc)
+                utils.note_swallowed("helpers.HelperAttributeNodes.cleanup_tree_helper_nodes", exc)
                 ace_id = ""
             if ace_id:
                 live_owner_ids.add(ace_id)
-                # Pre-compute the expected helper/frame names for this live node so
-                # we can catch orphans whose owner key is gone but whose name still
-                # matches the pattern (e.g. left over from a previous ace_id scheme).
+                # Names catch orphans whose owner key is gone.
                 for out_idx in range(16):
                     live_node_names.add(cls._helper_node_name(ace_id, out_idx))
                 live_node_names.add(cls._helper_frame_name(ace_id))
@@ -249,19 +244,19 @@ class HelperAttributeNodes:
                 try:
                     owner_id = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
                 except Exception as exc:
-                    utils.note_swallowed("shader_tree.cls.cleanup_tree_helper_nodes#2", exc)
+                    utils.note_swallowed("helpers.HelperAttributeNodes.cleanup_tree_helper_nodes#2", exc)
                     owner_id = ""
             elif cls._is_frame_node(helper_node):
                 try:
                     owner_id = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
                 except Exception as exc:
-                    utils.note_swallowed("shader_tree.cls.cleanup_tree_helper_nodes#3", exc)
+                    utils.note_swallowed("helpers.HelperAttributeNodes.cleanup_tree_helper_nodes#3", exc)
                     owner_id = ""
                 if owner_id:
                     has_children = any(getattr(node, "parent", None) == helper_node for node in getattr(tree, "nodes", []) or [])
                     if has_children and owner_id in live_owner_ids:
                         continue
-                    with utils.logged_errors("shader_tree.cls.cleanup_tree_helper_nodes#4"):
+                    with utils.logged_errors("helpers.HelperAttributeNodes.cleanup_tree_helper_nodes#4"):
                         tree.nodes.remove(helper_node)
                         changed = True
                     continue
@@ -271,13 +266,11 @@ class HelperAttributeNodes:
             # Primary check: owner key points at a live ace_id.
             if owner_id and owner_id in live_owner_ids:
                 continue
-            # Fallback: the node's name is one of the expected helper names — keep it.
-            # This handles nodes whose owner key was written with an old id scheme but
-            # whose name still matches the current live node.
+            # A node named like one of this node's helpers is kept.
             if node_name and node_name in live_node_names:
                 continue
             # Neither check passed — orphan, remove it.
-            with utils.logged_errors("shader_tree.cls.cleanup_tree_helper_nodes#5"):
+            with utils.logged_errors("helpers.HelperAttributeNodes.cleanup_tree_helper_nodes#5"):
                 tree.nodes.remove(helper_node)
                 changed = True
         return changed
@@ -294,9 +287,9 @@ class HelperAttributeNodes:
             try:
                 scene = getattr(getattr(bpy, "context", None), "scene", None)
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls.sync_node_instance_group_bindings", exc)
+                utils.note_swallowed("helpers.HelperAttributeNodes.sync_node_instance_group_bindings", exc)
                 scene = None
-        with utils.logged_errors("shader_tree.cls.sync_node_instance_group_bindings#2"):
+        with utils.logged_errors("helpers.HelperAttributeNodes.sync_node_instance_group_bindings#2"):
             from ...core.engine.engine import ACEAudioEngine
             if not ACEAudioEngine._structural_tree_writes_allowed(
                 scene,
@@ -307,7 +300,7 @@ class HelperAttributeNodes:
         try:
             ace_id = str(node.get("ace_id", "") or "")
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls.sync_node_instance_group_bindings#3", exc)
+            utils.note_swallowed("helpers.HelperAttributeNodes.sync_node_instance_group_bindings#3", exc)
             ace_id = ""
         parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
         if not parsed:
@@ -333,7 +326,7 @@ class HelperAttributeNodes:
             try:
                 out_idx = int(raw_idx)
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls.sync_node_instance_group_bindings#4", exc)
+                utils.note_swallowed("helpers.HelperAttributeNodes.sync_node_instance_group_bindings#4", exc)
                 continue
             sanitized = cls._sanitize_explicit_name(str(raw_name or ""))
             if sanitized:
@@ -364,7 +357,7 @@ class HelperAttributeNodes:
         for stale_idx, stale_node in list(helper_nodes_by_idx.items()):
             if int(stale_idx) in expected_idx_set:
                 continue
-            with utils.logged_errors("shader_tree.cls.sync_node_instance_group_bindings#5"):
+            with utils.logged_errors("helpers.HelperAttributeNodes.sync_node_instance_group_bindings#5"):
                 tree.nodes.remove(stale_node)
                 changed = True
             helper_nodes_by_idx.pop(int(stale_idx), None)
@@ -404,10 +397,7 @@ class HelperAttributeNodes:
             if helper_changed:
                 changed = True
                 helper_nodes_by_idx[int(out_idx)] = helper_node
-            # Update attribute_name in place — never rebuild (remove + recreate) the node.
-            # Rebuilding is both unnecessary (only attribute_name needs to change) and
-            # dangerous: if the removal is interrupted the old node stays while a new one
-            # is also inserted, causing accumulation.
+            # Update in place: an interrupted remove-and-recreate would leave duplicates.
             if cls._set_attr_node_defaults(helper_node, target_name):
                 changed = True
             if cls._store_helper_attr_name(helper_node, target_name):

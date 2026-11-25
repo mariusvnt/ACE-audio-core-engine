@@ -16,21 +16,7 @@ from ..tasks.utility import AudioMathTask, StreamAccumulatorTask
 
 
 def _coerce_worker_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:
-    """Coerce arbitrary payload data into a typed AudioChunk.
-
-    If *data* is already an AudioChunk it is returned unchanged.  Otherwise
-    the value is cast to a float32 NumPy array, zero-padded or truncated to
-    *block_size*, and wrapped in a minimal AudioChunk with default metadata.
-
-    Args:
-        data: Raw audio payload — may be None, an ndarray, a list, or an
-            existing AudioChunk.
-        block_size: Required number of samples in the returned chunk.
-        sample_rate: Sample rate to attach to the new chunk.
-
-    Returns:
-        An AudioChunk of exactly *block_size* samples.
-    """
+    """Coerce arbitrary payload data into a typed AudioChunk."""
     if isinstance(data, AudioChunk):
         return data
 
@@ -51,22 +37,11 @@ def _coerce_worker_audio_chunk(data: Any, block_size: int, sample_rate: int = SA
 
 
 class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
-    """
-    Worker-safe replacement for SourceSpecsTask.
-
-    Reads scene_bpm, scene_fps, and scene_beats_per_bar from self.parameters,
-    which are injected by ACEAudioEngine.prepare_graph_ir() at
-    graph-IR compilation time.  Falls back to neutral defaults (120 BPM,
-    4/4 time, 24 FPS) only when the graph IR has not been updated yet so
-    that the worker never crashes on a missing key.
-    """
+    """Worker-safe replacement for SourceSpecsTask."""
 
     def process(self, inputs):
         chunk_in = _coerce_worker_audio_chunk(inputs.get(0), self.block_size)
-        # Read live scene values injected during graph IR compilation.
-        # Fallback constants are intentionally kept identical to the previous
-        # hard-coded values to avoid silent downstream breakage when the IR
-        # has not been populated yet (e.g. first frame after pool start).
+        # Defaults for an IR without tempo values.
         bpm           = float(self.parameters.get("scene_bpm", 120.0) or 120.0)
         beats_per_bar = float(self.parameters.get("scene_beats_per_bar", 4.0) or 4.0)
         fps           = float(self.parameters.get("scene_fps", 24.0) or 24.0)
@@ -79,12 +54,7 @@ class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
 
 
 class _WorkerSourceProvider:
-    """Light provider shim exposing `compute_feature` for stream tasks.
-
-    Wraps a borrowed AudioFluxAnalyzer and re-borrows it whenever the
-    sample-rate or block-size changes so every source bridge task gets a
-    correctly configured analyzer without allocating one per task.
-    """
+    """Light provider shim exposing `compute_feature` for stream tasks."""
 
     def __init__(self, sample_rate: int, block_size: int):
         self.sample_rate = max(int(sample_rate), 1)
@@ -92,12 +62,7 @@ class _WorkerSourceProvider:
         self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
 
     def ensure_context(self, sample_rate: int, block_size: int):
-        """Re-borrow the analyzer when audio parameters change.
-
-        Args:
-            sample_rate: New sample rate in Hz.
-            block_size: New block size in samples.
-        """
+        """Re-borrow the analyzer when audio parameters change."""
         sr = max(int(sample_rate), 1)
         bs = max(int(block_size), 1)
         if sr == self.sample_rate and bs == self.block_size and self.analysis is not None:
@@ -109,15 +74,7 @@ class _WorkerSourceProvider:
         self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
 
     def compute_feature(self, name: str, chunk: AudioChunk):
-        """Delegate feature computation to the underlying analyzer.
-
-        Args:
-            name: Feature name (e.g. "rms", "centroid").
-            chunk: The audio chunk to analyze.
-
-        Returns:
-            The computed feature value, or None if no analyzer is available.
-        """
+        """Delegate feature computation to the underlying analyzer."""
         if self.analysis is None:
             return None
         return self.analysis.compute_feature(name, chunk)
@@ -130,10 +87,7 @@ class _WorkerSourceProvider:
 
 
 class _WorkerSourceBridgeTask:
-    """
-    Source placeholder used in worker graphs.
-    The main thread injects source chunk payloads each frame.
-    """
+    """Source placeholder used in worker graphs."""
 
     def __init__(
         self,
@@ -193,9 +147,7 @@ class _WorkerSourceBridgeTask:
             elif arr.ndim == 2 and arr.shape[0] == mono.shape[0]:
                 stereo = arr.T.astype(np.float32, copy=False)
             else:  # ndim != 2 OR both shape axes mismatch mono length
-                # utils.log() cannot be used here: this module is intentionally
-                # bpy-free (Stage-B worker process). print() to stderr is the only
-                # safe fallback — this is an explicit deviation from project style.
+                # This module is bpy-free, so utils.log is unavailable.
                 print(
                     f"[ACE WARNING] Worker stereo shape mismatch: stereo={arr.shape}, "
                     f"mono_len={mono.shape[0]}, frame={frame_id}. Dropping stereo.",
@@ -207,7 +159,7 @@ class _WorkerSourceBridgeTask:
             try:
                 band_indices = np.asarray(band_indices, dtype=np.int64).reshape(-1)
             except Exception as exc:
-                utils.note_swallowed("parallel_dsp._WorkerSourceBridgeTask.set_chunk", exc)
+                utils.note_swallowed("graph._WorkerSourceBridgeTask.set_chunk", exc)
                 band_indices = None
 
         band_hz_bounds = payload.get("band_hz_bounds")
@@ -215,7 +167,7 @@ class _WorkerSourceBridgeTask:
             try:
                 band_hz_bounds = (float(band_hz_bounds[0]), float(band_hz_bounds[1]))
             except Exception as exc:
-                utils.note_swallowed("parallel_dsp._WorkerSourceBridgeTask.set_chunk#2", exc)
+                utils.note_swallowed("graph._WorkerSourceBridgeTask.set_chunk#2", exc)
                 band_hz_bounds = None
         else:
             band_hz_bounds = None
@@ -230,7 +182,7 @@ class _WorkerSourceBridgeTask:
                     float(frontend_config[3] or 0.0),
                 )
             except Exception as exc:
-                utils.note_swallowed("parallel_dsp._WorkerSourceBridgeTask.set_chunk#3", exc)
+                utils.note_swallowed("graph._WorkerSourceBridgeTask.set_chunk#3", exc)
                 frontend_config = None
         else:
             frontend_config = None
@@ -287,13 +239,7 @@ class _WorkerSourceBridgeTask:
 
 
 class _CompiledWorkerGraph:
-    """A fully instantiated, wired task graph ready for per-frame evaluation.
-
-    Created once per (generation_id, graph_uid, block_size, graph_ir_digest)
-    cache key and reused across frames.  Source chunks are injected each frame
-    via set_source_payloads(); output values are read via get_output() calls on
-    individual tasks.
-    """
+    """A fully instantiated, wired task graph ready for per-frame evaluation."""
 
     def __init__(
         self,
@@ -310,14 +256,7 @@ class _CompiledWorkerGraph:
         self.block_size = max(int(block_size), 1)
 
     def set_source_payloads(self, payloads: Dict[str, Dict[str, Any]], frame_id: int, block_size: int):
-        """Inject per-source audio chunks for the current frame.
-
-        Args:
-            payloads: Mapping from source node ID to a payload dict containing
-                at minimum ``"mono"`` and optionally ``"stereo"`` arrays.
-            frame_id: The current frame index used to validate stale chunks.
-            block_size: Expected number of samples per block.
-        """
+        """Inject per-source audio chunks for the current frame."""
         bs = max(int(block_size), 1)
         if bs != self.block_size:
             self.block_size = bs
@@ -339,7 +278,7 @@ class _CompiledWorkerGraph:
         for task in self.tasks.values():
             close_fn = getattr(task, "close", None)
             if callable(close_fn):
-                with utils.logged_errors("parallel_dsp._CompiledWorkerGraph.close"):
+                with utils.logged_errors("graph._CompiledWorkerGraph.close"):
                     close_fn()
         closed = set()
         for provider in self.source_providers.values():
@@ -351,21 +290,7 @@ class _CompiledWorkerGraph:
 
 
 def _create_worker_task(node_id: str, category: str, node_type: str, params: Dict[str, Any], block_size: int):
-    """Instantiate the correct ACEAudioTask subclass for a given node IR entry.
-
-    Falls back to a bare ACEAudioTask for unknown category/type combinations
-    so unrecognised nodes produce silence rather than crashing the worker.
-
-    Args:
-        node_id: Unique node identifier string from the graph IR.
-        category: ACE node category (e.g. "stream", "delta", "utilities").
-        node_type: ACE node type within the category (e.g. "rms", "pitch").
-        params: Parameter dict from the node IR record.
-        block_size: Analysis block size in samples.
-
-    Returns:
-        An ACEAudioTask (or subclass) instance.
-    """
+    """Instantiate the correct ACEAudioTask subclass for a given node IR entry."""
     cat = str(category or "")
     typ = str(node_type or "")
     bs = max(int(block_size), 1)
@@ -422,7 +347,6 @@ _VARIABLE_OUTPUT_TYPES = {("delta", "frequency_splitter")}
 
 
 def _declared_output_count(category: str, node_type: str) -> Optional[int]:
-    """Output count from the node registry, or None when it is unknown or variable."""
     if not category or (category, node_type) in _VARIABLE_OUTPUT_TYPES:
         return None
     node_def = ACE_NODES.get(category, {}).get("nodes", {}).get(node_type)
@@ -432,20 +356,7 @@ def _declared_output_count(category: str, node_type: str) -> Optional[int]:
 
 
 def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size: int) -> _CompiledWorkerGraph:
-    """Build a _CompiledWorkerGraph from a serialised graph IR dict.
-
-    Creates source bridge tasks, regular analysis tasks, and wires all links
-    from the IR before returning the ready-to-evaluate graph.
-
-    Args:
-        graph_ir: Serialised graph IR as produced by
-            ACEAudioEngine.prepare_graph_ir().
-        sample_rate: Default sample rate to assign to source providers.
-        block_size: Initial analysis block size in samples.
-
-    Returns:
-        A fully wired _CompiledWorkerGraph instance.
-    """
+    """Build a _CompiledWorkerGraph from a serialised graph IR dict."""
     bs = max(int(block_size), 1)
     sr = max(int(sample_rate), 1)
     nodes = dict(graph_ir.get("nodes", {}) or {})
@@ -518,16 +429,7 @@ def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size
 
 
 def _normalize_worker_value(attr_type: str, value: Any):
-    """Convert a raw task output to the scalar or tuple form expected by the main process.
-
-    Args:
-        attr_type: Blender attribute type string — "FLOAT", "FLOAT_VECTOR", or
-            "FLOAT_COLOR".
-        value: Raw value from a task's get_output() call.
-
-    Returns:
-        A plain float for FLOAT, or a tuple of 3 or 4 floats for vector/color types.
-    """
+    """Convert a raw task output to the scalar or tuple form expected by the main process."""
     attr = str(attr_type or "FLOAT")
     if attr == "FLOAT":
         if isinstance(value, (int, float, np.integer, np.floating)):

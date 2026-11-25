@@ -41,7 +41,7 @@ class EngineDiagnostics:
         try:
             return bool(getattr(settings, "ace_perf_enabled", False))
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._perf_enabled", exc)
+            utils.note_swallowed("diagnostics.EngineDiagnostics._perf_enabled", exc)
             return False
 
     def _perf_add(self, stage: str, duration_s: float):
@@ -115,14 +115,14 @@ class EngineDiagnostics:
         try:
             name = str(getattr(datablock, "name_full", "") or getattr(datablock, "name", "") or "")
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._id_metric_token", exc)
+            utils.note_swallowed("diagnostics.EngineDiagnostics._id_metric_token", exc)
             name = ""
         if not name:
             return ""
         try:
             type_name = str(getattr(getattr(datablock, "bl_rna", None), "identifier", "") or type(datablock).__name__)
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._id_metric_token#2", exc)
+            utils.note_swallowed("diagnostics.EngineDiagnostics._id_metric_token#2", exc)
             type_name = type(datablock).__name__
         return f"{type_name}:{name}"
 

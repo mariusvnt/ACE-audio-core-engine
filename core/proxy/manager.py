@@ -13,17 +13,7 @@ from .sonar import Sonar
 
 
 class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
-    """Manage concrete Stage-C sinks for compiled ACE outputs.
-
-    A proxy object is a single-vertex mesh stored in the hidden ACE_Internals
-    collection.  Stream analysis results (floats, vectors, colors) are written
-    either to named point-domain attributes on the proxy mesh each frame or to
-    object custom properties so Geometry Nodes and Shader Attribute nodes can
-    read them passively.
-
-    The manager caches attribute RNA handles and last-written values to avoid
-    redundant Blender API calls on frames where values have not changed.
-    """
+    """Manage concrete Stage-C sinks for compiled ACE outputs."""
 
     # "Pro" name for the invisible collection
     COLLECTION_NAME = "ACE_Internals"
@@ -44,21 +34,9 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
         if abstract_tree:
             self._cache_output_defs()
 
-    # =========================================================================
-    # 1. COLLECTION MANAGEMENT
-    # =========================================================================
 
     @staticmethod
     def _resolve_scene(scene=None):
-        """Return a valid Blender scene, falling back to bpy.context then bpy.data.
-
-        Args:
-            scene: A Blender scene to return directly when provided.
-
-        Returns:
-            The first available Blender scene, or None if Blender data is not
-            accessible in the current context.
-        """
         if scene is not None:
             return scene
         active_scene = getattr(getattr(bpy, "context", None), "scene", None)
@@ -73,7 +51,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
         try:
             from ..engine.engine import ACEAudioEngine
         except Exception as exc:
-            utils.note_swallowed("proxy_management.cls._shader_tree_writes_are_unsafe", exc)
+            utils.note_swallowed("manager.ACEProxyManager._shader_tree_writes_are_unsafe", exc)
             return False
         try:
             return not bool(
@@ -84,16 +62,16 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
                 )
             )
         except Exception as exc:
-            utils.note_swallowed("proxy_management.cls._shader_tree_writes_are_unsafe#2", exc)
+            utils.note_swallowed("manager.ACEProxyManager._shader_tree_writes_are_unsafe#2", exc)
             return False
 
     @classmethod
     def _defer_shader_tree_sync(cls, tree, scene=None) -> None:
         if tree is None:
             return
-        with utils.logged_errors("proxy_management.cls._defer_shader_tree_sync"):
+        with utils.logged_errors("manager.ACEProxyManager._defer_shader_tree_sync"):
             ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, [])
-        with utils.logged_errors("proxy_management.cls._defer_shader_tree_sync#2"):
+        with utils.logged_errors("manager.ACEProxyManager._defer_shader_tree_sync#2"):
             from ..engine.engine import ACEAudioEngine
             resolved_scene = cls._resolve_scene(scene)
             engine = ACEAudioEngine.get_instance(resolved_scene)
@@ -104,19 +82,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
 
     @classmethod
     def _ensure_internal_collection(cls, scene=None) -> bpy.types.Collection:
-        """Create or retrieve the hidden ACE_Internals collection.
-
-        Links the collection into the target scene if not already present, marks
-        it blue (COLOR_05) for visual distinction, and hides it from both viewport
-        and render so proxy objects never appear in the user's scene.
-
-        Args:
-            scene: Optional Blender scene to link the collection into.  Resolved
-                via _resolve_scene() when None.
-
-        Returns:
-            The ACE_Internals bpy.types.Collection.
-        """
+        """Create or retrieve the hidden ACE_Internals collection."""
         utils.assert_main_thread("_ensure_internal_collection")
         if cls.COLLECTION_NAME in bpy.data.collections:
             col = bpy.data.collections[cls.COLLECTION_NAME]
@@ -138,28 +104,12 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
 
         return col
 
-    # =========================================================================
-    # 2. PROXY OBJECT LIFECYCLE
-    # =========================================================================
 
     @classmethod
     def ensure_proxy_for_source(cls, source_prop, scene=None) -> bpy.types.Object:
-        """Create or retrieve the single-vertex proxy mesh for an audio source.
-
-        Derives the proxy name deterministically from the source name and
-        stable_id so the same proxy is found across sessions without relying
-        on Python object identity.  Moves the proxy into the hidden
-        ACE_Internals collection if it is not there already.
-
-        Args:
-            source_prop: An ACEAudioSource property-group instance.
-            scene: Optional Blender scene; resolved via _resolve_scene() when None.
-
-        Returns:
-            The proxy Blender Object.  Also writes source_prop.proxy_object_name.
-        """
+        """Create or retrieve the single-vertex proxy mesh for an audio source."""
         utils.assert_main_thread("ensure_proxy_for_source")
-        with utils.logged_errors("proxy_management.cls.ensure_proxy_for_source"):
+        with utils.logged_errors("manager.ACEProxyManager.ensure_proxy_for_source"):
             ACEIdManager.ensure_source_uid(source_prop)
         stable_id = getattr(source_prop, "stable_id", "") or ""
         source_name = getattr(source_prop, "name", "") or "Source"
@@ -205,12 +155,6 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
 
     @classmethod
     def _move_to_internal_collection(cls, obj, scene=None):
-        """Move an object into ACE_Internals, unlinking it from all other collections.
-
-        Args:
-            obj: The bpy.types.Object to relocate.
-            scene: Optional Blender scene; forwarded to _ensure_internal_collection().
-        """
         utils.assert_main_thread("_move_to_internal_collection")
         target_col = cls._ensure_internal_collection(scene=scene)
         if obj.name in target_col.objects:
@@ -223,15 +167,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
 
     @staticmethod
     def delete_proxy_for_source(source_prop):
-        """Remove the proxy object and its orphaned mesh data block from Blender.
-
-        Clears source_prop.proxy_object_name on completion so subsequent calls
-        are no-ops.  Safe to call when no proxy has been created yet.
-
-        Args:
-            source_prop: An ACEAudioSource property-group instance whose
-                proxy_object_name identifies the object to delete.
-        """
+        """Remove the proxy object and its orphaned mesh data block from Blender."""
         utils.assert_main_thread("delete_proxy_for_source")
         if not source_prop.proxy_object_name:
             return
@@ -245,20 +181,9 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
 
         source_prop.proxy_object_name = ""
 
-    # =========================================================================
-    # 3. ATTRIBUTE SYNCHRONIZATION / WRITING
-    # =========================================================================
 
     def set_abstract_tree(self, abstract_tree: ACEAbstractTree):
-        """Replace the active abstract tree and rebuild the output definition cache.
-
-        Clears all previously cached output definitions before re-running
-        _cache_output_defs() so stale attribute slugs from the old tree are not
-        carried forward.
-
-        Args:
-            abstract_tree: The new ACEAbstractTree to use for output definitions.
-        """
+        """Replace the active abstract tree and rebuild the output definition cache."""
         self.abstract_tree = abstract_tree
         self.output_defs.clear()
         self._object_prop_cache.clear()
@@ -266,13 +191,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
         self._cache_output_defs()
 
     def clear_runtime_caches(self):
-        """Discard all cached RNA handles, last-written values, and write buffers.
-
-        Call this after the proxy object is replaced or after the attribute layout
-        is known to have changed outside the manager's control (e.g., manual
-        attribute deletion in the Properties editor) to force a full cold-path
-        read on the next update_proxy_object() call.
-        """
+        """Discard all cached RNA handles, last-written values, and write buffers."""
         self._attr_cache.clear()
         self._last_values.clear()
         self._object_prop_cache.clear()
@@ -352,9 +271,6 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
             self.update_object_property_sinks(object_name, prop_values, object_prop_types.get(object_name, {}))
         return geometry_proxy_names
 
-    # =========================================================================
-    # 5. UTILS
-    # =========================================================================
     @staticmethod
     def get_proxy_object(source_prop):
         """Safe getter"""

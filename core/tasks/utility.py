@@ -10,17 +10,7 @@ from .spectral import _aligned_signal_length, _analysis_signals_normalized, _res
 
 
 class RollingAvgTask(ACEAudioTask):
-    """Computes a rolling (moving) average of a scalar attribute stream.
-
-    Receives a float ``Value`` from a connected stream operator and maintains a
-    fixed-size frame buffer whose capacity is derived from ``Number of Frames``.
-    Each call to ``process()`` appends the current value and returns the mean of
-    the buffer.  The buffer is resized automatically when the frame count
-    changes, preserving as many recent samples as possible.
-
-    This is a scalar post-processing node: it does not touch the time-domain
-    audio signal and is therefore transparent to the Layer-3 preview chain.
-    """
+    """Computes a rolling (moving) average of a scalar attribute stream."""
 
     def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
         super().__init__(node_id, parameters, block_size)
@@ -28,7 +18,6 @@ class RollingAvgTask(ACEAudioTask):
         self._buffer_maxlen: int = 1
 
     def process(self, inputs):
-        # ── Resolve current value ─────────────────────────────────────────────
         raw_value = inputs.get(0)
         if raw_value is None:
             raw_value = self.parameters.get("in_0", 0.0)
@@ -37,7 +26,6 @@ class RollingAvgTask(ACEAudioTask):
         except (TypeError, ValueError):
             value = 0.0
 
-        # ── Resolve frame count ───────────────────────────────────────────────
         raw_frame_count = inputs.get(1)
         if raw_frame_count is None:
             raw_frame_count = self.parameters.get("in_1", 1)
@@ -46,7 +34,6 @@ class RollingAvgTask(ACEAudioTask):
         except (TypeError, ValueError):
             frame_count = 1
 
-        # ── Resize buffer when capacity changes ───────────────────────────────
         new_maxlen = max(1, int(frame_count))
         if new_maxlen != self._buffer_maxlen:
             # Preserve as many recent samples as fit in the new capacity.
@@ -59,13 +46,7 @@ class RollingAvgTask(ACEAudioTask):
 
 
 class StreamAccumulatorTask(ACEAudioTask):
-    """Running sum utility for scalar or vector stream values.
-
-    Maintains accumulator state in the task instance so values persist across
-    frames in Stage-B worker execution.  Resets automatically on timeline
-    rewind / first frame and supports an optional manual reset trigger through
-    ``parameters`` keys (``manual_reset``, ``reset_trigger``, ``reset``).
-    """
+    """Running sum utility for scalar or vector stream values."""
 
     def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
         super().__init__(node_id, parameters, block_size)
@@ -80,7 +61,7 @@ class StreamAccumulatorTask(ACEAudioTask):
         try:
             acc = np.asarray(self._accumulator, dtype=np.float64).reshape(-1)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask.export_state", exc)
+            utils.note_swallowed("utility.StreamAccumulatorTask.export_state", exc)
             return {}
         if acc.size <= 0:
             return {}
@@ -107,7 +88,7 @@ class StreamAccumulatorTask(ACEAudioTask):
         try:
             self._last_frame_request = int(raw_last) if raw_last is not None else None
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask.import_state", exc)
+            utils.note_swallowed("utility.StreamAccumulatorTask.import_state", exc)
             self._last_frame_request = None
         self._manual_reset_latched = bool(state.get("manual_reset_latched", False))
         return True
@@ -124,7 +105,7 @@ class StreamAccumulatorTask(ACEAudioTask):
         try:
             arr = np.asarray(raw_value, dtype=np.float64).reshape(-1)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask._coerce_input_array", exc)
+            utils.note_swallowed("utility.StreamAccumulatorTask._coerce_input_array", exc)
             return np.zeros(1, dtype=np.float64)
         if arr.size <= 0:
             return np.zeros(1, dtype=np.float64)
@@ -139,7 +120,7 @@ class StreamAccumulatorTask(ACEAudioTask):
             try:
                 return bool(np.isfinite(float(raw_value)) and abs(float(raw_value)) > 1e-9)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask._coerce_reset_flag", exc)
+                utils.note_swallowed("utility.StreamAccumulatorTask._coerce_reset_flag", exc)
                 return False
         if isinstance(raw_value, str):
             token = raw_value.strip().lower()
@@ -183,7 +164,7 @@ class StreamAccumulatorTask(ACEAudioTask):
         try:
             frame_idx = utils.as_int(getattr(self, "_current_frame_request", None), -1)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask.process", exc)
+            utils.note_swallowed("utility.StreamAccumulatorTask.process", exc)
             frame_idx = -1
         manual_reset = self._manual_reset_requested(inputs)
         should_reset = self._should_reset_for_frame(frame_idx, manual_reset)
@@ -204,15 +185,7 @@ class StreamAccumulatorTask(ACEAudioTask):
 
 
 class AudioMathTask(ACEAudioTask):
-    """Element-wise arithmetic over multiple audio streams.
-
-    Combines 1–8 mono/stereo ``AudioChunk`` inputs using a single configurable
-    operation (``add``, ``subtract``, ``multiply``).  Streams are resampled
-    to the length of the first (reference) input before the operation is
-    applied so mismatched block sizes are handled gracefully.
-
-    Acts as a transparent pass-through when only one input is present.
-    """
+    """Element-wise arithmetic over multiple audio streams."""
     @staticmethod
     def _signal_for_math(
         mono_sig: np.ndarray,
@@ -308,7 +281,7 @@ class AudioMathTask(ACEAudioTask):
                 low = float(bounds[0])
                 high = float(bounds[1])
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.AudioMathTask._merge_band_hz_bounds", exc)
+                utils.note_swallowed("utility.AudioMathTask._merge_band_hz_bounds", exc)
                 return None
             if high <= low:
                 return None

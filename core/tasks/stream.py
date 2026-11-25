@@ -12,12 +12,7 @@ from .spectral import _analysis_signals_normalized, _autocorr_pitch_estimate, _g
 
 
 class RMSTask(ACEAudioTask):
-    """Compute Root-Mean-Square energy of the audio chunk.
-
-    Output range: [0.0, 1.0] (float).
-    Uses a fast Parseval-theorem frequency-domain approach when a cached
-    spectrum is available; falls back to a time-domain RMS on silence blocks.
-    """
+    """Compute Root-Mean-Square energy of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -56,19 +51,7 @@ class RMSTask(ACEAudioTask):
 
 
 class LUFSTask(ACEAudioTask):
-    """Estimate integrated short-window loudness using K-weighting (LUFS).
-
-    Applies the ITU-R BS.1770-style K-weighting filter chain:
-      1. +4 dB high-shelf pre-filter at 1500 Hz (Q = 1/sqrt(2))
-      2. RLB high-pass at 38 Hz (Q = 0.5)
-
-    The loudness output is recomputed every block from the mean-square of the
-    last ``Window (s)`` seconds of weighted signal:
-      ``LUFS = -0.691 + 10 * log10(mean_square)``
-
-    Output (normalized):
-      - socket 0: loudness in [0, 1], where 0 = silence (-inf LUFS), 1 = 0 LUFS
-    """
+    """Estimate integrated short-window loudness using K-weighting (LUFS)."""
 
     _DEFAULT_WINDOW_S = 0.4
     _MIN_WINDOW_S = 0.05
@@ -108,12 +91,12 @@ class LUFSTask(ACEAudioTask):
             try:
                 return float(value[0])
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.LUFSTask._coerce_scalar", exc)
+                utils.note_swallowed("stream.LUFSTask._coerce_scalar", exc)
                 return float(fallback)
         try:
             return float(value)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.LUFSTask._coerce_scalar#2", exc)
+            utils.note_swallowed("stream.LUFSTask._coerce_scalar#2", exc)
             return float(fallback)
 
     def _resolve_seconds(
@@ -209,7 +192,7 @@ class LUFSTask(ACEAudioTask):
             return out.astype(np.float32, copy=False)
 
         if SCIPY_AVAILABLE and callable(scipy_lfilter):
-            with utils.logged_errors("audio_tasks_registry.LUFSTask._apply_biquad"):
+            with utils.logged_errors("stream.LUFSTask._apply_biquad"):
                 out_64, zf = scipy_lfilter(
                     np.array([b0, b1, b2], dtype=np.float64),
                     np.array([1.0, a1, a2], dtype=np.float64),
@@ -245,11 +228,10 @@ class LUFSTask(ACEAudioTask):
 
     @staticmethod
     def _db_to_unit(db_value: float) -> float:
-        """Map a dB-like value to [0, 1] with 0 dB -> 1 and -inf dB -> 0."""
         try:
             db = float(db_value)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.LUFSTask._db_to_unit", exc)
+            utils.note_swallowed("stream.LUFSTask._db_to_unit", exc)
             return 0.0
         if not np.isfinite(db):
             return 0.0
@@ -313,11 +295,7 @@ class LUFSTask(ACEAudioTask):
 
 
 class PeakTask(LUFSTask):
-    """Estimate K-weighted peak level.
-
-    Output (normalized):
-      - socket 0: weighted peak in [0, 1], where 0 = -inf dB, 1 = 0 dB
-    """
+    """Estimate K-weighted peak level."""
 
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -359,13 +337,7 @@ class PeakTask(LUFSTask):
 
 
 class PitchTask(ACEAudioTask):
-    """Estimate the fundamental frequency (pitch) of the audio chunk.
-
-    Output: fundamental frequency in Hz (float).  Returns 0.0 when the signal
-    is silent or no reliable pitch is detectable.  Prefers the audioflux
-    pitch estimator when available; falls back to a time-domain autocorrelation
-    estimate.
-    """
+    """Estimate the fundamental frequency (pitch) of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -373,7 +345,7 @@ class PitchTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("pitch", lambda: chunk.provider.compute_feature("pitch", chunk))
         if val is not None:
-            with utils.logged_errors("audio_tasks_registry.PitchTask.process"):
+            with utils.logged_errors("stream.PitchTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
@@ -383,13 +355,7 @@ class PitchTask(ACEAudioTask):
 
 
 class SpectralCentroidTask(ACEAudioTask):
-    """Compute the spectral centroid (brightness) of the audio chunk.
-
-    Output: centroid frequency in Hz (float).  The centroid is the
-    amplitude-weighted mean frequency of the power spectrum — perceptually
-    related to perceived brightness.  Prefers the audioflux centroid estimate;
-    falls back to a direct FFT magnitude centroid calculation.
-    """
+    """Compute the spectral centroid (brightness) of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -397,7 +363,7 @@ class SpectralCentroidTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("centroid", lambda: chunk.provider.compute_feature("centroid", chunk))
         if val is not None:
-            with utils.logged_errors("audio_tasks_registry.SpectralCentroidTask.process"):
+            with utils.logged_errors("stream.SpectralCentroidTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
@@ -411,13 +377,7 @@ class SpectralCentroidTask(ACEAudioTask):
 
 
 class SpectralFluxTask(ACEAudioTask):
-    """Measure frame-to-frame change in the power spectrum (spectral flux).
-
-    Output range: [0.0, 10.0] (float, clipped).  A high value indicates rapid
-    timbral change — useful for transient detection, beat tracking, and gate
-    triggers.  Computed as the normalised half-wave-rectified spectral
-    difference relative to the previous frame's magnitude spectrum.
-    """
+    """Measure frame-to-frame change in the power spectrum (spectral flux)."""
 
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -457,7 +417,7 @@ class SpectralFluxTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("flux", lambda: chunk.provider.compute_feature("flux", chunk))
         if val is not None:
-            with utils.logged_errors("audio_tasks_registry.SpectralFluxTask.process"):
+            with utils.logged_errors("stream.SpectralFluxTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
@@ -466,14 +426,7 @@ class SpectralFluxTask(ACEAudioTask):
 
 
 class OnsetTask(ACEAudioTask):
-    """Detect audio onsets (transient events) in the audio chunk.
-
-    Output range: [0.0, 1.0] (float).  Values near 1.0 indicate a strong onset
-    (note attack, drum hit, etc.) within the current frame.  Uses an adaptive
-    spectral flux envelope detector: the raw flux is smoothed with an
-    attack/release envelope and thresholded so intermittent transients produce
-    clean pulses rather than sustained high values.
-    """
+    """Detect audio onsets (transient events) in the audio chunk."""
 
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -519,7 +472,7 @@ class OnsetTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("onset", lambda: chunk.provider.compute_feature("onset", chunk))
         if val is not None:
-            with utils.logged_errors("audio_tasks_registry.OnsetTask.process"):
+            with utils.logged_errors("stream.OnsetTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
@@ -528,13 +481,7 @@ class OnsetTask(ACEAudioTask):
 
 
 class ZeroCrossTask(ACEAudioTask):
-    """Measure the Zero-Crossing Rate (ZCR) of the audio chunk.
-
-    Output range: [0.0, 1.0] (float, normalised to Nyquist).  High ZCR values
-    indicate noisy or high-frequency content; low values correlate with tonal
-    or bass-heavy material.  Prefers the audioflux ZCR implementation; falls
-    back to a direct sample-sign-change count.
-    """
+    """Measure the Zero-Crossing Rate (ZCR) of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -542,7 +489,7 @@ class ZeroCrossTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("zcr", lambda: chunk.provider.compute_feature("zcr", chunk))
         if val is not None:
-            with utils.logged_errors("audio_tasks_registry.ZeroCrossTask.process"):
+            with utils.logged_errors("stream.ZeroCrossTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
@@ -551,14 +498,7 @@ class ZeroCrossTask(ACEAudioTask):
 
 
 class StereoWidthTask(ACEAudioTask):
-    """Measure the stereo width of the audio chunk.
-
-    Output range: [0.0, 1.0] (float).
-    0.0 = perfectly mono (side energy is zero).
-    1.0 = maximally wide (all energy in the side channel, no mid).
-    Computed as ``side_energy / (mid_energy + side_energy)`` to give a
-    naturally bounded result without the overrun of a raw side/mid ratio.
-    """
+    """Measure the stereo width of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -572,22 +512,14 @@ class StereoWidthTask(ACEAudioTask):
         mid_energy = float(np.mean(mid * mid))
         side_energy = float(np.mean(side * side))
         total_energy = mid_energy + side_energy
-        # Normalize to [0, 1]: 0 = perfectly mono, 1 = pure side (maximum stereo width).
-        # side / (mid + side) is always in [0, 1] by construction and matches the
-        # node description "0 = mono, 1 = very wide" without the [0, 10] overrun.
+        # side / (mid + side): 0 = mono, 1 = pure side.
         if total_energy < 1e-20:
             return 0.0
         return float(np.clip(side_energy / total_energy, 0.0, 1.0))
 
 
 class StereoBalanceTask(ACEAudioTask):
-    """Measure the left/right energy balance of the audio chunk.
-
-    Output range: [-1.0, 1.0] (float).
-    -1.0 = all energy on the left channel.
-    0.0 = equal energy on both channels (centre-panned).
-    +1.0 = all energy on the right channel.
-    """
+    """Measure the left/right energy balance of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -603,14 +535,7 @@ class StereoBalanceTask(ACEAudioTask):
 
 
 class StereoVectorTask(ACEAudioTask):
-    """Time-domain vector summary of stereo energy and balance.
-
-    Output: 3-component FLOAT_VECTOR ``(left_rms, right_rms, balance)``.
-    ``left_rms`` and ``right_rms`` are in [0.0, 1.0].
-    ``balance`` mirrors ``StereoBalanceTask``: -1.0 = full left, +1.0 = full right.
-    Falls back to a mono-derived vector (equal L/R, centre balance) when the
-    input has no stereo data.
-    """
+    """Time-domain vector summary of stereo energy and balance."""
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         analysis_mono, stereo = _analysis_signals_normalized(chunk)

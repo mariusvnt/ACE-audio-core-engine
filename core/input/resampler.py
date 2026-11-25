@@ -4,13 +4,7 @@ import numpy as np
 
 
 class _ACEStreamResampler:
-    """Streaming linear resampler used for one-time file proxy generation.
-
-    Processes audio in arbitrary-size chunks using linear interpolation and
-    accumulates a small tail buffer between calls so the resampled output
-    stream is continuous across chunk boundaries.  Call with final=True on the
-    last chunk to flush remaining samples.
-    """
+    """Streaming linear resampler used for one-time file proxy generation."""
 
     def __init__(self, source_sample_rate: int, target_sample_rate: int, channels: int):
         self.source_sample_rate = max(int(source_sample_rate), 1)
@@ -22,18 +16,7 @@ class _ACEStreamResampler:
         self.tail = np.zeros((0, self.channels), dtype=np.float32)
 
     def process(self, chunk: np.ndarray, final: bool = False) -> np.ndarray:
-        """Resample one chunk of interleaved audio frames.
-
-        Args:
-            chunk: Input audio as a (frames, channels) float32 array, or a
-                1-D array that will be reshaped to (-1, channels).
-            final: When True, flush the tail and emit any remaining output
-                samples rather than holding them for the next call.
-
-        Returns:
-            Resampled audio as a (out_frames, channels) float32 array.  May be
-            empty if the buffered input is not yet sufficient to produce output.
-        """
+        """Resample one chunk of interleaved audio frames."""
         arr = np.asarray(chunk, dtype=np.float32)
         if arr.ndim == 1:
             arr = arr.reshape(-1, self.channels)

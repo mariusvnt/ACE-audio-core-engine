@@ -124,9 +124,7 @@ def _chunk_has_mask_constraints(chunk: AudioChunk) -> bool:
     return getattr(chunk, "band_indices", None) is not None
 
 
-# [LAYER-2-ONLY: DO NOT CALL FROM PREVIEW PATH]
-# This function performs iFFT reconstruction and must never be reached from
-# PreviewSinkTask.process() or any Layer 3 (time-domain preview) code path.
+# Layer 2 only: inverse-FFT reconstruction, never reached from the preview path.
 def _masked_mono_signal(chunk: AudioChunk, fft_size: Optional[int] = None) -> np.ndarray:
     # Runtime guard: _LAYER3_THREAD_LOCAL.in_preview is True when called from
     # PreviewSinkTask.process(). Reaching here from Layer 3 is a guardrail violation.
@@ -288,26 +286,20 @@ def _resolve_chunk_fft_size(chunk: AudioChunk, fallback_size: int) -> int:
     analyzer = getattr(provider, "analysis", None) if provider is not None else None
     fft_len = getattr(analyzer, "fft_length", None)
     if fft_len:
-        with utils.logged_errors("audio_tasks_registry._resolve_chunk_fft_size"):
+        with utils.logged_errors("spectral._resolve_chunk_fft_size"):
             return max(int(fft_len), 1)
     return max(int(fallback_size), 1)
 
 
 def _resolve_effective_bin_indices(chunk: AudioChunk, fft_size: int) -> Optional[np.ndarray]:
-    """
-    Resolve the effective FFT-bin mask represented by a chunk:
-    intersection of explicit `band_indices` and `band_hz_bounds` when both exist.
-    Returns:
-    - None: no mask constraints
-    - ndarray (possibly empty): explicit constrained bin set
-    """
+    """Resolve the effective FFT-bin mask represented by a chunk: intersection of explicit `band_indices` and `band_hz_bounds` when both exist."""
     idx = None
     raw_idx = getattr(chunk, "band_indices", None)
     if raw_idx is not None:
         try:
             arr = np.asarray(raw_idx, dtype=np.int64).ravel()
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry._resolve_effective_bin_indices", exc)
+            utils.note_swallowed("spectral._resolve_effective_bin_indices", exc)
             arr = np.zeros(0, dtype=np.int64)
         src_fft_size = getattr(chunk, "band_index_fft_size", None)
         if src_fft_size is None:
@@ -315,7 +307,7 @@ def _resolve_effective_bin_indices(chunk: AudioChunk, fft_size: int) -> Optional
         try:
             src_fft_size = max(int(src_fft_size), 1)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry._resolve_effective_bin_indices#2", exc)
+            utils.note_swallowed("spectral._resolve_effective_bin_indices#2", exc)
             src_fft_size = max(int(fft_size), 1)
         idx = _remap_indices_fft_domain(
             arr,
@@ -330,7 +322,7 @@ def _resolve_effective_bin_indices(chunk: AudioChunk, fft_size: int) -> Optional
             low_hz = float(bounds[0])
             high_hz = float(bounds[1])
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry._resolve_effective_bin_indices#3", exc)
+            utils.note_swallowed("spectral._resolve_effective_bin_indices#3", exc)
             low_hz = 0.0
             high_hz = 0.0
         if high_hz > low_hz:

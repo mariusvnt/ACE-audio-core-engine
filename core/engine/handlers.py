@@ -12,19 +12,12 @@ from .preview.router import PreviewRouter
 
 @persistent
 def _load_post_reset_engine(_dummy):
-    """bpy.app.handlers.load_post: reset all engine instances after a file load."""
     ACEAudioEngine.shutdown_all_instances()
     _refresh_loaded_node_groups()
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
 
 
 def _refresh_loaded_node_groups():
-    """Bring the ACE node groups of a newly loaded file up to the current definitions.
-
-    The factories skip their scan while the node registry hash is unchanged,
-    but that hash only describes the groups of the data that was loaded when
-    it was taken.
-    """
     from ...nodes.geometry.factory import ACEDummyNodeFactory
     from ...nodes.shader.factory import ACEShaderNodeFactory
 
@@ -38,25 +31,14 @@ def _refresh_loaded_node_groups():
 
 @persistent
 def _undo_redo_invalidate_engine_caches(_dummy):
-    """bpy.app.handlers.undo_post / redo_post: clear caches and request recompile.
-
-    Drops in-flight parallel futures so SHM handles cannot write into attributes
-    that may have been removed or remapped by the undo/redo operation.
-    """
     for engine in ACEAudioEngine.iter_instances():
-        with utils.logged_errors("audio_engine._undo_redo_invalidate_engine_caches"):
+        with utils.logged_errors("handlers._undo_redo_invalidate_engine_caches"):
             engine.begin_undo_recovery(getattr(getattr(bpy, "context", None), "scene", None))
 
 
 @persistent
 def frame_change_handler(scene):
-    """bpy.app.handlers.frame_change_pre: run one DSP frame for the current scene.
-
-    Bootstraps a compile on the first call if no graphs are loaded yet (with
-    exponential back-off on repeated failures).  Skips evaluation when a render
-    job is running without ``Lock Interface`` to avoid unsafe concurrent bpy
-    attribute writes.
-    """
+    """bpy.app.handlers.frame_change_pre: run one DSP frame for the current scene."""
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -98,12 +80,7 @@ def frame_change_handler(scene):
 
 @persistent
 def frame_change_post_handler(scene):
-    """bpy.app.handlers.frame_change_post: secondary frame evaluation during rendering.
-
-    Only fires ``frame_change_handler`` when an active render job is in progress,
-    ensuring that every rendered frame receives up-to-date DSP values even when
-    ``frame_change_pre`` alone is insufficient (e.g. Cycles tile rendering).
-    """
+    """bpy.app.handlers.frame_change_post: secondary frame evaluation during rendering."""
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -119,12 +96,7 @@ def frame_change_post_handler(scene):
 
 @persistent
 def render_pre_handler(scene):
-    """bpy.app.handlers.render_pre: compile and warm the DSP graph before rendering.
-
-    Compiles the ACE tree when no graphs are loaded, forces one evaluation on
-    frame 1 to pre-fill caches, then marks the engine as being in a render job
-    via ``_mark_render_start()``.
-    """
+    """bpy.app.handlers.render_pre: compile and warm the DSP graph before rendering."""
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -156,28 +128,18 @@ def render_pre_handler(scene):
 
 @persistent
 def render_post_handler(scene):
-    """bpy.app.handlers.render_post: finalise engine state after a successful render.
-
-    Clears the render-in-progress flag via ``_mark_render_complete()`` and
-    silences the preview monitor so audio does not start playing back after the
-    render completes.
-    """
+    """bpy.app.handlers.render_post: finalise engine state after a successful render."""
     engine = ACEAudioEngine.get_instance(scene)
     if engine is None:
         return
     engine.diagnostics._mark_render_complete(scene, cancelled=False)
-    with utils.logged_errors("audio_engine.render_post_handler"):
+    with utils.logged_errors("handlers.render_post_handler"):
         PreviewRouter._preview_monitor.clear()
 
 
 @persistent
 def render_cancel_handler(scene):
-    """bpy.app.handlers.render_cancel: clean up engine state after a cancelled render.
-
-    Marks the render job as cancelled (``_mark_render_complete(cancelled=True)``)
-    then delegates to ``render_post_handler`` to clear the preview monitor and
-    do common post-render teardown.
-    """
+    """bpy.app.handlers.render_cancel: clean up engine state after a cancelled render."""
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None:
         engine.diagnostics._mark_render_complete(scene, cancelled=True)
@@ -185,36 +147,18 @@ def render_cancel_handler(scene):
 
 
 def _original_id(update):
-    """Return the original datablock of a depsgraph update.
-
-    ``update.id`` is the evaluated copy, whose pointer differs from the one
-    dirty tracking and frontend discovery use.
-    """
     update_id = getattr(update, "id", None)
     return getattr(update_id, "original", None) or update_id
 
 
 def _id_type_name(id_block) -> str:
-    """Return the RNA type name ("Object", "Material", "GeometryNodeTree", ...).
-
-    ID types such as Object and Material have no ``bl_idname``; only
-    registrable types (node trees, nodes, operators) do.
-    """
     identifier = getattr(getattr(id_block, "bl_rna", None), "identifier", "")
     return str(identifier or getattr(id_block, "bl_idname", "") or "")
 
 
 @persistent
 def depsgraph_update_handler(scene, depsgraph):
-    """bpy.app.handlers.depsgraph_update_post: react to node-tree edits in real time.
-
-    Consumes any pending geometry-eval updates (proxy attribute schema changes).
-    Pre-warms file metadata for FILE sources whose sample-rate or duration are
-    not yet known, eliminating the cold-start sample-rate race on the first compile.
-    When ``auto_compile`` is enabled, detects edits to ACE geometry node trees and
-    calls ``request_recompile()`` so changes are picked up within the next timer
-    interval.
-    """
+    """bpy.app.handlers.depsgraph_update_post: react to node-tree edits in real time."""
     engine = ACEAudioEngine.get_instance(scene)
     ace = getattr(scene, "audiocore", None)
     engine_settings = getattr(ace, "engine_settings", None)
@@ -244,16 +188,14 @@ def depsgraph_update_handler(scene, depsgraph):
         if auto_compile_enabled:
             for update in getattr(depsgraph, "updates", []) or []:
                 if _update_touches_ace_tree(_original_id(update)):
-                    with utils.logged_errors("audio_engine.depsgraph_update_handler"):
+                    with utils.logged_errors("handlers.depsgraph_update_handler"):
                         engine.frontends.request_recompile(None)
                     break
         return
 
     if engine is not None:
         engine.diagnostics._consume_geometry_eval_updates(scene, depsgraph)
-        # Early-probe: pre-warm file metadata for any FILE source missing sr/duration so
-        # that _flush_probe_updates() can populate native_sample_rate before the next
-        # compile cycle reads it — eliminating the cold-start sample-rate race.
+        # Probe file metadata early so the next compile has the native sample rate.
         _ace_data = ace
         for _src in getattr(_ace_data, "audio_sources", []):
             if getattr(_src, "source_type", "") == "FILE":
@@ -279,7 +221,7 @@ def depsgraph_update_handler(scene, depsgraph):
         try:
             key = int(tree_obj.as_pointer())
         except Exception as exc:
-            utils.note_swallowed("audio_engine.depsgraph_update_handler._queue_recompile_target", exc)
+            utils.note_swallowed("handlers.depsgraph_update_handler._queue_recompile_target", exc)
             key = id(tree_obj)
         if key in seen_targets:
             return
@@ -351,16 +293,8 @@ def depsgraph_update_handler(scene, depsgraph):
 
 
 def auto_compile_timer():
-    """bpy.app.timers callback (0.25 s): compile dirty trees when auto_compile is on.
-
-    Runs ``_maybe_compile_dirty()`` and, if a recompile was triggered, forces
-    one execution of ``execute_next_frame()`` so attribute values are refreshed
-    immediately rather than waiting for the next frame-change event.
-
-    Returns:
-        0.25 — reschedule interval in seconds (always).
-    """
-    with utils.logged_errors("audio_engine.auto_compile_timer"):
+    """bpy.app.timers callback (0.25 s): compile dirty trees when auto_compile is on."""
+    with utils.logged_errors("handlers.auto_compile_timer"):
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         if scene is None:
             return 0.25
@@ -379,21 +313,7 @@ def auto_compile_timer():
 
 
 def _shm_drain_timer():
-    """
-    Periodic SHM drain called by bpy.app.timers every 2 seconds.
-
-    poll() is normally called inside execute_next_frame(), but
-    when the scene is paused indefinitely (no frame change events), completed
-    futures hold their SHM handles until the next frame event.  On platforms
-    with a small /dev/shm limit (Linux default 64 MB) this can exhaust shared
-    memory for multi-source sessions.
-
-    During active playback the per-frame execute_next_frame() already drains
-    futures every frame; firing the drain here too causes redundant IPC pipe
-    reads (future_obj.result(timeout=0.0) on a ProcessPoolExecutor) which add
-    measurable latency on Windows and can produce periodic stutters that match
-    the 2 s timer interval.  Skip the drain while the animation is playing.
-    """
+    """Periodic SHM drain called by bpy.app.timers every 2 seconds."""
     try:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         engine = ACEAudioEngine.get_instance(scene) if scene is not None else None
@@ -405,7 +325,7 @@ def _shm_drain_timer():
             if not engine._is_animation_playing():
                 engine.parallel.poll(scene, current_frame=int(getattr(engine, "current_frame", 0)))
     except Exception as _exc:
-        with utils.logged_errors("audio_engine._shm_drain_timer"):
+        with utils.logged_errors("handlers._shm_drain_timer"):
             utils.log(
                 f"[ACE-SHM] Drain timer error — completed futures may not be released "
                 f"and shared memory may leak: {_exc!r}",
@@ -415,14 +335,6 @@ def _shm_drain_timer():
 
 
 def _ace_handler_registered(handler_list, func) -> bool:
-    """
-    Check if a handler with the same __qualname__ is already in handler_list.
-
-    Blender's `in` operator uses object identity, which fails under
-    'Reload Scripts' because the module is re-imported and each function
-    gets a new memory address.  Checking by __qualname__ (a stable string
-    tied to the function's definition site) survives reloads correctly.
-    """
     target_name = getattr(func, "__qualname__", None)
     if target_name is None:
         return func in handler_list
@@ -430,35 +342,22 @@ def _ace_handler_registered(handler_list, func) -> bool:
 
 
 def _ace_handler_remove_all(handler_list, func):
-    """
-    Remove all entries in handler_list whose __qualname__ matches func.
-
-    On 'Reload Scripts' the old function object is still registered (different
-    identity, same qualname), so a plain `remove(func)` silently fails and
-    leaves a ghost handler.  This helper removes every matching entry.
-    """
     target_name = getattr(func, "__qualname__", None)
     if target_name is None:
         to_remove = [h for h in handler_list if h is func]
     else:
         to_remove = [h for h in handler_list if getattr(h, "__qualname__", None) == target_name]
     for h in to_remove:
-        with utils.logged_errors("audio_engine._ace_handler_remove_all"):
+        with utils.logged_errors("handlers._ace_handler_remove_all"):
             handler_list.remove(h)
 
 
 def register_handlers():
-    """Register all ACE ``bpy.app.handlers`` and ``bpy.app.timers``.
-
-    Called from ``__init__.register()``.  Uses ``_ace_handler_registered()``
-    guards so that repeated Reload-Scripts calls do not accumulate duplicate
-    handler entries.  Also triggers Numba JIT warm-up and creates the initial
-    engine instance for the current scene.
-    """
+    """Register all ACE ``bpy.app.handlers`` and ``bpy.app.timers``."""
     # Trigger Numba JIT compilation at addon load time so the first preview frame
     # does not pay the cold-start compilation penalty (~50–200 ms).
     if _NUMBA_AVAILABLE:
-        with utils.logged_errors("audio_engine.register_handlers"):
+        with utils.logged_errors("handlers.register_handlers"):
             _dummy = np.zeros((4, 2), dtype=np.float32)
             _preview_limiter_block_numba(_dummy, 0.891, 0.0001, 1.0)
 
@@ -488,13 +387,7 @@ def register_handlers():
 
 
 def unregister_handlers():
-    """Unregister all ACE ``bpy.app.handlers`` and ``bpy.app.timers``.
-
-    Called from ``__init__.unregister()``.  Uses ``_ace_handler_remove_all()``
-    so that ghost entries left over from a previous Reload-Scripts cycle are also
-    removed.  Shuts down all engine instances to release parallel workers and
-    shared memory before the addon is unloaded.
-    """
+    """Unregister all ACE ``bpy.app.handlers`` and ``bpy.app.timers``."""
     _ace_handler_remove_all(bpy.app.handlers.load_post, _load_post_reset_engine)
     _ace_handler_remove_all(bpy.app.handlers.undo_post, _undo_redo_invalidate_engine_caches)
     _ace_handler_remove_all(bpy.app.handlers.redo_post, _undo_redo_invalidate_engine_caches)

@@ -1,6 +1,4 @@
-"""
-prefs_library_manager.py contains the install/un-install operators for external libraries that are called in the add-on preferences panel.
-"""
+"""prefs_library_manager.py contains the install/un-install operators for external libraries that are called in the add-on preferences panel."""
 
 import bpy # type: ignore
 import subprocess
@@ -91,7 +89,6 @@ def _remove_library_from_target(lib_name: str, target_dir: str) -> bool:
     return removed
 
 
-# --- Operators ---
 class ACE_OT_install_library(bpy.types.Operator):
     """Install a required Python library via Blender's pip."""
 
@@ -236,7 +233,6 @@ class ACE_OT_uninstall_library(bpy.types.Operator):
             self.report({'ERROR'}, f"Uninstall failed for {lib_name}")
             return {'CANCELLED'}
 
-# --- Registration ---
 classes = (
     ACE_OT_install_library,
     ACE_OT_install_missing_libraries,

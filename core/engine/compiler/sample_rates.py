@@ -17,16 +17,16 @@ class SampleRates:
                 try:
                     sr = int(getattr(source, "native_sample_rate", 0) or 0)
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine._collect_sample_rate_floor", exc)
+                    utils.note_swallowed("sample_rates.SampleRates._collect_sample_rate_floor", exc)
                     sr = 0
             else:
                 sr = int(getattr(source, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
             cache_key = ""
             mtime = None
-            with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#2"):
+            with utils.logged_errors("sample_rates.SampleRates._collect_sample_rate_floor#2"):
                 if source_type == "LIVE":
                     live_flow_id = build_live_flow_identifier(source)
-                    with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#3"):
+                    with utils.logged_errors("sample_rates.SampleRates._collect_sample_rate_floor#3"):
                         source.flow_identifier = live_flow_id
                     # Compile path must not touch live devices/sockets.
                     live_transport = str(getattr(source, "live_transport", "") or "").upper()
@@ -35,7 +35,7 @@ class SampleRates:
                         sr = udp_sr
                     elif sr <= 0:
                         sr = SAMPLE_RATE
-                    with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#4"):
+                    with utils.logged_errors("sample_rates.SampleRates._collect_sample_rate_floor#4"):
                         source.sample_rate = int(sr)
                     if min_sr is None or sr < min_sr:
                         min_sr = sr
@@ -58,19 +58,17 @@ class SampleRates:
                     ts_ok = cached and (getattr(__import__("time"), "time")() - cached.get("ts", 0.0) <= self.engine.probes._meta_cache_ttl)
                     if cached and cached.get("mtime") == mtime and ts_ok:
                         sr = int(cached.get("native_sample_rate", cached.get("sample_rate", sr)) or sr)
-                        with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#5"):
+                        with utils.logged_errors("sample_rates.SampleRates._collect_sample_rate_floor#5"):
                             source.native_sample_rate = int(sr)
                         if getattr(source, "duration", 0.0) == 0.0:
-                            with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#6"):
+                            with utils.logged_errors("sample_rates.SampleRates._collect_sample_rate_floor#6"):
                                 source.duration = float(cached.get("duration", 0.0))
                         working_sr = self._cap_source_sample_rate(source_type, sr, engine_settings)
                         if min_sr is None or working_sr < min_sr:
                             min_sr = working_sr
                         continue
                 if source_type == "FILE":
-                    # Dispatch a background probe instead of blocking the main thread.
-                    # Results will be applied by _flush_probe_updates() on the next frame,
-                    # which triggers a recompile so the correct sample-rate is picked up.
+                    # Probe in the background; the result triggers a recompile.
                     self.engine.probes._dispatch_async_probe(getattr(source, "filepath", ""))
                 # Use current sr as fallback; updated on recompile after probe completes.
             working_sr = self._cap_source_sample_rate(source_type, sr, engine_settings)
@@ -83,10 +81,6 @@ class SampleRates:
 
     @classmethod
     def _resolve_source_sample_rate(cls, source, fallback_sr: int, scene_or_engine_settings=None) -> int:
-        """
-        Choose the best-known sample rate for a source, preferring its metadata and
-        falling back to the scene-wide minimum if unavailable.
-        """
         sr = cls._source_original_sample_rate(source)
         if sr <= 0:
             sr = int(fallback_sr)
@@ -102,14 +96,14 @@ class SampleRates:
                 getattr(settings, "ace_file_working_sample_rate", str(default_cap)) or str(default_cap)
             ).strip().lower()
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._file_working_sample_rate_cap", exc)
+            utils.note_swallowed("sample_rates.SampleRates._file_working_sample_rate_cap", exc)
             raw = str(default_cap)
         if raw in {"native", "off", "0"}:
             return 0
         try:
             return max(int(raw), 0)
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._file_working_sample_rate_cap#2", exc)
+            utils.note_swallowed("sample_rates.SampleRates._file_working_sample_rate_cap#2", exc)
             return default_cap
 
     @classmethod
@@ -133,14 +127,14 @@ class SampleRates:
             try:
                 sr = int(getattr(source, "native_sample_rate", 0) or 0)
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._source_original_sample_rate", exc)
+                utils.note_swallowed("sample_rates.SampleRates._source_original_sample_rate", exc)
                 sr = 0
             if sr > 0:
                 return sr
         try:
             return int(getattr(source, "sample_rate", 0) or 0)
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._source_original_sample_rate#2", exc)
+            utils.note_swallowed("sample_rates.SampleRates._source_original_sample_rate#2", exc)
             return 0
 
     def _source_task_target_sample_rate(self, task: Optional[SourceTask]) -> Optional[int]:

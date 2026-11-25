@@ -15,7 +15,7 @@ def _tree_pointer(tree) -> int:
     try:
         return int(tree.as_pointer())
     except Exception as exc:
-        utils.note_swallowed("dummy_tree._tree_pointer", exc)
+        utils.note_swallowed("frontend._tree_pointer", exc)
         return id(tree)
 
 
@@ -28,7 +28,7 @@ def ensure_frontend_uid(tree, frontend_kind: str, existing_uids) -> str:
     try:
         current_uid = str(tree.get("ace_frontend_uid", "") or "")
     except Exception as exc:
-        utils.note_swallowed("dummy_tree.ensure_frontend_uid", exc)
+        utils.note_swallowed("frontend.ensure_frontend_uid", exc)
         current_uid = ""
     if current_uid and current_uid not in existing:
         return current_uid
@@ -45,7 +45,7 @@ def ensure_frontend_uid(tree, frontend_kind: str, existing_uids) -> str:
         candidate = f"ACE_FRONTEND_{kind_token}_{suffix}"
         if candidate in existing:
             continue
-        with utils.logged_errors("dummy_tree.ensure_frontend_uid#2"):
+        with utils.logged_errors("frontend.ensure_frontend_uid#2"):
             tree["ace_frontend_uid"] = candidate
         return candidate
     return current_uid

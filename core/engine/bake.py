@@ -38,13 +38,13 @@ class BakeManager:
             return
         npz_obj = entry.pop("_npz_cache", None)
         if npz_obj is not None:
-            with utils.logged_errors("audio_engine.ACEAudioEngine._cleanup_bake_entry"):
+            with utils.logged_errors("bake.BakeManager._cleanup_bake_entry"):
                 close_fn = getattr(npz_obj, "close", None)
                 if callable(close_fn):
                     close_fn()
         npz_path = str(entry.get("npz_path", "") or "")
         if npz_path:
-            with utils.logged_errors("audio_engine.ACEAudioEngine._cleanup_bake_entry#2"):
+            with utils.logged_errors("bake.BakeManager._cleanup_bake_entry#2"):
                 if os.path.isfile(npz_path):
                     os.remove(npz_path)
 
@@ -102,7 +102,7 @@ class BakeManager:
                 npz_cache = np.load(npz_path, allow_pickle=False)
                 entry["_npz_cache"] = npz_cache
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._get_baked_frame_results", exc)
+                utils.note_swallowed("bake.BakeManager._get_baked_frame_results", exc)
                 return None
         results: Dict[str, Any] = {}
         for attr_key in graph.output_attr_keys:
@@ -205,7 +205,7 @@ class BakeManager:
             "mtime": self._safe_file_mtime(filepath),
         }
 
-        with utils.logged_errors("audio_engine.ACEAudioEngine._finalise_bake_arrays"):
+        with utils.logged_errors("bake.BakeManager._finalise_bake_arrays"):
             source["ace_bake_status"] = "done"
             source["ace_bake_error"] = ""
             source["ace_bake_progress"] = 1.0
@@ -242,13 +242,13 @@ class BakeManager:
 
                 if kind == "progress":
                     if source is not None:
-                        with utils.logged_errors("audio_engine.ACEAudioEngine.flush_bake_results#2"):
+                        with utils.logged_errors("bake.BakeManager.flush_bake_results"):
                             source["ace_bake_progress"] = float(max(0.0, min(float(payload), 1.0)))
                     continue
 
                 if kind == "error":
                     if source is not None:
-                        with utils.logged_errors("audio_engine.ACEAudioEngine.flush_bake_results#3"):
+                        with utils.logged_errors("bake.BakeManager.flush_bake_results#2"):
                             source["ace_bake_status"] = "error"
                             source["ace_bake_error"] = str(payload or "Bake failed.")
                     self._bake_jobs.pop(src_uid, None)
@@ -259,7 +259,7 @@ class BakeManager:
         except queue.Empty:
             pass
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine.flush_bake_results", exc)
+            utils.note_swallowed("bake.BakeManager.flush_bake_results#3", exc)
 
     def bake_source_to_cache(self, source, tree=None, scene=None):
         """Precompute stream/spec outputs for a file source and cache them in memory."""
@@ -271,7 +271,7 @@ class BakeManager:
             return False
         filepath = getattr(source, "filepath", "") or ""
         if not filepath or not os.path.isfile(filepath):
-            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache"):
+            with utils.logged_errors("bake.BakeManager.bake_source_to_cache"):
                 source["ace_bake_status"] = "error"
                 source["ace_bake_error"] = "Missing source file."
             return False
@@ -295,12 +295,12 @@ class BakeManager:
         if not self.engine.writer:
             return False
         if graph is None:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache#2"):
+            with utils.logged_errors("bake.BakeManager.bake_source_to_cache#2"):
                 source["ace_bake_status"] = "error"
                 source["ace_bake_error"] = "Source graph unavailable."
             return False
         if not graph.output_attr_keys:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache#3"):
+            with utils.logged_errors("bake.BakeManager.bake_source_to_cache#3"):
                 source["ace_bake_status"] = "error"
                 source["ace_bake_error"] = "No stream/spec outputs to bake."
             return False
@@ -312,7 +312,7 @@ class BakeManager:
         total_frames = max(frame_end - frame_start + 1, 1)
         output_attr_keys = list(graph.output_attr_keys)
 
-        with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache#4"):
+        with utils.logged_errors("bake.BakeManager.bake_source_to_cache#4"):
             source["ace_bake_status"] = "baking"
             source["ace_bake_error"] = ""
             source["ace_bake_progress"] = 0.0
@@ -342,17 +342,17 @@ class BakeManager:
                         baked_values[attr_key].append(
                             frame_results.get(attr_key, engine_ref.engine.frame._zero_value_for_attr(attr_key))
                         )
-                    with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#2"):
+                    with utils.logged_errors("bake.BakeManager.bake_source_to_cache._bake_worker"):
                         engine_ref._bake_result_queue.put_nowait(
                             ("progress", str(src_uid), float(i + 1) / float(total_frames))
                         )
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker", exc)
-                with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#3"):
+                utils.note_swallowed("bake.BakeManager.bake_source_to_cache._bake_worker#2", exc)
+                with utils.logged_errors("bake.BakeManager.bake_source_to_cache._bake_worker#3"):
                     engine_ref._bake_result_queue.put_nowait(("error", str(src_uid), str(exc)))
                 return
 
-            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#4"):
+            with utils.logged_errors("bake.BakeManager.bake_source_to_cache._bake_worker#4"):
                 engine_ref._bake_result_queue.put_nowait(("done", str(src_uid), baked_values))
 
         t = threading.Thread(target=_bake_worker, name=f"ACE_BakeWorker_{src_uid}", daemon=True)

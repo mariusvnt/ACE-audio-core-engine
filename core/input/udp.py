@@ -7,9 +7,7 @@ import numpy as np
 
 
 class UdpInput:
-    # ------------------------------------------------------------------
     # Internal helpers (live IO)
-    # ------------------------------------------------------------------
     @staticmethod
     def _parse_udp_flow_identifier(flow_id: str):
         raw = (flow_id or "").strip()
@@ -140,18 +138,7 @@ class UdpInput:
         return "instrument_sounddevice", {"device": device_token or None, "channels": channels}
 
     def _open_live_udp(self, cfg: dict, kind: str = "udp_stream") -> bool:
-        """Bind a non-blocking UDP socket for float32 audio streaming.
-
-        Args:
-            cfg: Configuration dict with keys: host (str), port (int),
-                channels (int), sample_rate (int).
-            kind: String label stored in self.kind (e.g. "udp_stream",
-                "daw_udp", "instrument_udp").
-
-        Returns:
-            True on success.  False on socket bind failure, with
-            self.last_error set to a description.
-        """
+        """Bind a non-blocking UDP socket for float32 audio streaming."""
         try:
             host = str(cfg.get("host", "0.0.0.0") or "0.0.0.0")
             port = int(cfg.get("port", 0) or 0)
@@ -179,25 +166,14 @@ class UdpInput:
             self._live_last_capture_block_samples = 0
             return True
         except Exception as e:
-            utils.note_swallowed("audio_influx.AudioReception._open_live_udp", e)
+            utils.note_swallowed("udp.UdpInput._open_live_udp", e)
             self._live_udp_socket = None
             self.kind = "live_stub"
             self.last_error = f"UDP live stream failed to open: {e}"
             return False
 
     def _read_live_udp_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
-        """Drain the non-blocking UDP socket and return the freshest packet.
-
-        Reads all available UDP datagrams in a non-blocking loop and keeps
-        only the last one (freshest-first policy).  Returns the last valid
-        block on a transient receive-empty condition.
-
-        Args:
-            block_size: Required number of samples in the returned block.
-
-        Returns:
-            (mono, stereo, sample_rate) or None if no packet has arrived yet.
-        """
+        """Drain the non-blocking UDP socket and return the freshest packet."""
         sock = self._live_udp_socket
         if sock is None:
             return None
@@ -225,7 +201,7 @@ class UdpInput:
             except BlockingIOError:
                 break
             except Exception as exc:
-                utils.note_swallowed("audio_influx.AudioReception._read_live_udp_block", exc)
+                utils.note_swallowed("udp.UdpInput._read_live_udp_block", exc)
                 self.last_error = "UDP live stream read failed"
                 break
 

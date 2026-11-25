@@ -10,17 +10,7 @@ from .filters import _iir1_filter_block, _signed_smooth_block
 
 
 class SourceFrontendProcessor:
-    """Stateful source-side preprocessing for analysis-domain audio.
-
-    Shared by the main-thread source reader and the worker-side source bridge.
-    Applies, in order:
-      1. Optional 1st-order Butterworth high-pass filter (``freq_min``).
-      2. Optional 1st-order Butterworth low-pass filter (``freq_max``).
-      3. Optional signed attack/release envelope smoother.
-
-    Filter coefficients are recomputed only when the configuration signature
-    (sample_rate, frontend_config, channel_count) changes.
-    """
+    """Stateful source-side preprocessing for analysis-domain audio."""
 
     def __init__(self):
         self._iir_states: Dict[tuple[str, str], Dict[str, float]] = {}
@@ -47,16 +37,7 @@ class SourceFrontendProcessor:
 
     @staticmethod
     def _butterworth_coeffs(cutoff_hz: float, sample_rate: float, mode: str):
-        """Compute 1st-order Butterworth IIR coefficients (b0, b1, a1).
-
-        Returns None when the cutoff would be outside the valid frequency range
-        (DC or Nyquist boundary), in which case the caller skips filtering.
-
-        Args:
-            cutoff_hz: Filter corner frequency in Hz.
-            sample_rate: Signal sample rate in Hz.
-            mode: ``"low"`` for low-pass, any other string for high-pass.
-        """
+        """Compute 1st-order Butterworth IIR coefficients (b0, b1, a1)."""
         if cutoff_hz <= 0.0 or sample_rate <= 0.0 or cutoff_hz >= (sample_rate * 0.49):
             return None
         omega = math.tan(math.pi * cutoff_hz / sample_rate)
@@ -77,13 +58,7 @@ class SourceFrontendProcessor:
         frontend_config: Optional[Tuple[float, float, float, float]],
         channel_count: int,
     ):
-        """Recompute filter coefficients when the configuration has changed.
-
-        Args:
-            sample_rate: Signal sample rate in Hz.
-            frontend_config: (freq_min, freq_max, attack_ms, release_ms) or None.
-            channel_count: Number of audio channels (used in the config signature).
-        """
+        """Recompute filter coefficients when the configuration has changed."""
         sig = (
             int(max(sample_rate, 1)),
             tuple(frontend_config) if frontend_config is not None else None,
@@ -107,7 +82,7 @@ class SourceFrontendProcessor:
                 attack_ms = float(frontend_config[2] or 0.0)
                 release_ms = float(frontend_config[3] or 0.0)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.SourceFrontendProcessor._ensure_config", exc)
+                utils.note_swallowed("frontend.SourceFrontendProcessor._ensure_config", exc)
                 freq_min = 0.0
                 freq_max = 0.0
                 attack_ms = 0.0
@@ -133,7 +108,7 @@ class SourceFrontendProcessor:
         y_prev = float(state.get("y1", 0.0))
 
         if NUMBA_AVAILABLE:
-            with utils.logged_errors("audio_tasks_registry.SourceFrontendProcessor._run_iir"):
+            with utils.logged_errors("frontend.SourceFrontendProcessor._run_iir"):
                 out, x_last, y_last = _iir1_filter_block(
                     src,
                     float(b0),
@@ -168,7 +143,7 @@ class SourceFrontendProcessor:
 
         env_state = float(self._env_states.get(state_key, 0.0) or 0.0)
         if NUMBA_AVAILABLE:
-            with utils.logged_errors("audio_tasks_registry.SourceFrontendProcessor._run_envelope"):
+            with utils.logged_errors("frontend.SourceFrontendProcessor._run_envelope"):
                 env_out, env_last = _signed_smooth_block(src, float(attack_c), float(release_c), float(env_state))
                 self._env_states[state_key] = float(env_last)
                 return env_out.astype(np.float32, copy=False)
@@ -202,22 +177,7 @@ class SourceFrontendProcessor:
         sample_rate: int,
         frontend_config: Optional[Tuple[float, float, float, float]],
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        """Apply the full frontend processing chain and return (analysis_mono, analysis_stereo).
-
-        When ``frontend_config`` is None the input is returned unchanged.  When
-        stereo is present each channel is processed independently and
-        ``analysis_mono`` is computed as the channel mean.
-
-        Args:
-            mono: Raw mono signal (1-D float32).
-            stereo: Optional stereo signal (2-D float32, shape (channels, samples)).
-            sample_rate: Signal sample rate in Hz.
-            frontend_config: (freq_min_hz, freq_max_hz, attack_ms, release_ms) tuple,
-                             or None to bypass all processing.
-
-        Returns:
-            Tuple of (analysis_mono, analysis_stereo) arrays.
-        """
+        """Apply the full frontend processing chain and return (analysis_mono, analysis_stereo)."""
         mono_arr = np.asarray(mono, dtype=np.float32).reshape(-1).astype(np.float32, copy=False)
         stereo_arr: Optional[np.ndarray] = None
         if isinstance(stereo, np.ndarray):

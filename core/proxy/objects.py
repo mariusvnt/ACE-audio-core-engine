@@ -14,7 +14,7 @@ class ObjectPropertySinks:
             try:
                 return float(value)
             except Exception as exc:
-                utils.note_swallowed("proxy_management.cls._normalize_object_prop_value", exc)
+                utils.note_swallowed("objects.ObjectPropertySinks._normalize_object_prop_value", exc)
                 return 0.0
         if hasattr(value, "tolist"):
             value = value.tolist()
@@ -33,13 +33,7 @@ class ObjectPropertySinks:
 
     @classmethod
     def prune_object_ace_properties(cls, obj, active_prop_names: set[str]) -> bool:
-        """Remove stale ACE_* custom properties from *obj* not in *active_prop_names*.
-
-        Called once per compile after all active bindings are known, preventing
-        accumulation of properties from nodes that were disconnected or deleted.
-
-        Returns True if any properties were removed.
-        """
+        """Remove stale ACE_* custom properties from *obj* not in *active_prop_names*."""
         stale = [
             k for k in list(obj.keys() if hasattr(obj, "keys") else [])
             if str(k).startswith(ACEIdManager.PREFIX) and str(k) not in active_prop_names
@@ -47,13 +41,13 @@ class ObjectPropertySinks:
         if not stale:
             return False
         for k in stale:
-            with utils.logged_errors("proxy_management.cls.prune_object_ace_properties"):
+            with utils.logged_errors("objects.ObjectPropertySinks.prune_object_ace_properties"):
                 del obj[k]
         try:
             obj.update_tag(refresh={"OBJECT"})
         except Exception as exc:
-            utils.note_swallowed("proxy_management.cls.prune_object_ace_properties#2", exc)
-            with utils.logged_errors("proxy_management.cls.prune_object_ace_properties#3"):
+            utils.note_swallowed("objects.ObjectPropertySinks.prune_object_ace_properties#2", exc)
+            with utils.logged_errors("objects.ObjectPropertySinks.prune_object_ace_properties#3"):
                 obj.update_tag()
         return True
 
@@ -79,11 +73,11 @@ class ObjectPropertySinks:
             zero_value = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
             already_exists = prop_name in obj.keys()
             if not already_exists:
-                with utils.logged_errors("proxy_management.self.ensure_object_property_sinks"):
+                with utils.logged_errors("objects.ObjectPropertySinks.ensure_object_property_sinks"):
                     obj[prop_name] = zero_value
                     layout_changed = True
             if mesh_data is not None:
-                with utils.logged_errors("proxy_management.self.ensure_object_property_sinks#2"):
+                with utils.logged_errors("objects.ObjectPropertySinks.ensure_object_property_sinks#2"):
                     if prop_name not in mesh_data.keys():
                         mesh_data[prop_name] = zero_value
                         layout_changed = True
@@ -97,8 +91,8 @@ class ObjectPropertySinks:
                 else:
                     obj.update_tag(refresh={"OBJECT"})
             except Exception as exc:
-                utils.note_swallowed("proxy_management.self.ensure_object_property_sinks#3", exc)
-                with utils.logged_errors("proxy_management.self.ensure_object_property_sinks#4"):
+                utils.note_swallowed("objects.ObjectPropertySinks.ensure_object_property_sinks#3", exc)
+                with utils.logged_errors("objects.ObjectPropertySinks.ensure_object_property_sinks#4"):
                     obj.update_tag()
         return True
 
@@ -137,8 +131,8 @@ class ObjectPropertySinks:
                 obj[prop_name] = norm_value
                 wrote = True
             except Exception as exc:
-                utils.note_swallowed("proxy_management.self.update_object_property_sinks", exc)
-                with utils.logged_errors("proxy_management.self.update_object_property_sinks#2"):
+                utils.note_swallowed("objects.ObjectPropertySinks.update_object_property_sinks", exc)
+                with utils.logged_errors("objects.ObjectPropertySinks.update_object_property_sinks#2"):
                     zero_value = self._zero_value_for_type(attr_type)
                     obj[prop_name] = zero_value
                     norm_value = zero_value
@@ -151,11 +145,11 @@ class ObjectPropertySinks:
                 try:
                     current_val = mesh_data.get(prop_name, None)
                 except Exception as exc:
-                    utils.note_swallowed("proxy_management.self.update_object_property_sinks#3", exc)
+                    utils.note_swallowed("objects.ObjectPropertySinks.update_object_property_sinks#3", exc)
                     current_val = None
                 if self._values_equal(current_val, norm_value):
                     continue
-                with utils.logged_errors("proxy_management.self.update_object_property_sinks#4"):
+                with utils.logged_errors("objects.ObjectPropertySinks.update_object_property_sinks#4"):
                     mesh_data[prop_name] = norm_value
 
         if changed_values:
@@ -166,22 +160,13 @@ class ObjectPropertySinks:
                 else:
                     obj.update_tag(refresh={"OBJECT"})
             except Exception as exc:
-                utils.note_swallowed("proxy_management.self.update_object_property_sinks#5", exc)
-                with utils.logged_errors("proxy_management.self.update_object_property_sinks#6"):
+                utils.note_swallowed("objects.ObjectPropertySinks.update_object_property_sinks#5", exc)
+                with utils.logged_errors("objects.ObjectPropertySinks.update_object_property_sinks#6"):
                     obj.update_tag()
         return True
 
     def prune_consumer_objects(self, active_props_by_object: Dict[str, Set[str]]) -> bool:
-        """Remove stale ACE_* properties from all consumer objects in the scene.
-
-        *active_props_by_object* maps object name → set of currently-active ACE
-        property names for that object.  Objects that had ACE properties in a
-        previous compile but no longer appear in *active_props_by_object* get
-        all their ACE_* properties removed.  Objects that appear but have fewer
-        active properties get the extras removed (handled by prune_object_ace_properties).
-
-        Called once per engine compile cycle after all sink layouts are resolved.
-        """
+        """Remove stale ACE_* properties from all consumer objects in the scene."""
         utils.assert_main_thread("prune_consumer_objects")
         changed = False
         try:
@@ -193,7 +178,7 @@ class ObjectPropertySinks:
             try:
                 ace_props = [k for k in list(obj.keys()) if str(k).startswith(ACEIdManager.PREFIX)]
             except Exception as exc:
-                utils.note_swallowed("proxy_management.self.prune_consumer_objects", exc)
+                utils.note_swallowed("objects.ObjectPropertySinks.prune_consumer_objects", exc)
                 ace_props = []
             if not ace_props:
                 continue

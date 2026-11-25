@@ -17,7 +17,6 @@ class ShaderGroupInterface:
 
     @staticmethod
     def _shader_interface_supports(socket_type: str) -> bool:
-        """Shader node tree interfaces reject string and object sockets."""
         return not any(token in str(socket_type or "") for token in ("String", "Object"))
 
     @classmethod
@@ -38,7 +37,7 @@ class ShaderGroupInterface:
                 return ng.interface.new_socket(sock_name, in_out=in_out, socket_type=candidate)
             except TypeError as exc:  # this tree type rejects the socket type; try the next
                 last_error = exc
-        utils.note_swallowed("shader_tree.cls._new_socket", last_error or TypeError(sock_name))
+        utils.note_swallowed("interface.ShaderGroupInterface._new_socket", last_error or TypeError(sock_name))
         return None
 
     @staticmethod
@@ -164,7 +163,7 @@ class ShaderGroupInterface:
             try:
                 raw = getattr(item, attr_name, "")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._interface_socket_type", exc)
+                utils.note_swallowed("interface.ShaderGroupInterface._interface_socket_type", exc)
                 raw = ""
             token = str(raw or "")
             if token:
@@ -209,7 +208,7 @@ class ShaderGroupInterface:
                 if getattr(item, "in_out", None) == "OUTPUT"
             }
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._node_group_needs_refresh", exc)
+            utils.note_swallowed("interface.ShaderGroupInterface._node_group_needs_refresh", exc)
             return True
         if not expected_inputs.issubset(set(inputs.keys())) or not expected_outputs.issubset(set(outputs.keys())):
             return True
@@ -240,9 +239,7 @@ class ShaderGroupInterface:
                     return True
                 if (not allow_math_nodes) and node_type_name in {"MATH", "VECTOR_MATH"}:
                     return True
-            # Detect wrong wiring: a bundle-type socket feeding a non-bundle output.
-            # This happens when GroupInput.outputs indices were computed incorrectly
-            # (e.g. assuming bundle sockets always appear in GroupInput.outputs).
+            # A bundle socket wired to a non-bundle output means a bad build.
             for node in ng.nodes:
                 if str(getattr(node, "type", "") or "") != "GROUP_OUTPUT":
                     continue
@@ -258,11 +255,7 @@ class ShaderGroupInterface:
                         if from_type in ("BUNDLE", "CUSTOM"):
                             return True
 
-            # Detect missing wiring: non-bundle GROUP_OUTPUT inputs with no links.
-            # For stream / utility property-output nodes every non-bundle output
-            # must be driven by a helper (ACE Property) GroupInput socket.
-            # A missing link means the old build failed silently and the node
-            # will output zero even when a source is connected.
+            # Every non-bundle output of a property node must be driven by its helper input.
             is_property_node = cls._is_property_output_node(category, node_type)
             if is_property_node:
                 for node in ng.nodes:
@@ -275,6 +268,6 @@ class ShaderGroupInterface:
                         if not list(getattr(inp, "links", []) or []):
                             return True
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._node_group_needs_refresh#2", exc)
+            utils.note_swallowed("interface.ShaderGroupInterface._node_group_needs_refresh#2", exc)
             return True
         return False

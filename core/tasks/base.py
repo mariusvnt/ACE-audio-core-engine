@@ -7,9 +7,7 @@ from ... import utils
 from .chunk import AudioChunk
 
 
-# Thread-local flag set by PreviewSinkTask.process() to mark the Layer-3 preview
-# call path. _masked_mono_signal() checks this and logs an ERROR on violation since
-# calling iFFT reconstruction from Layer 3 would contaminate the time-domain output.
+# Set on the preview path; Layer-2 spectral reconstruction must never run under it.
 _LAYER3_THREAD_LOCAL: threading.local = threading.local()
 
 
@@ -19,16 +17,7 @@ class TaskConnection(NamedTuple):
 
 
 class ACEAudioTask:
-    """Base class for all DSP processing nodes in the ACE pipeline.
-
-    Subclasses implement ``process(inputs)`` to transform one or more
-    ``AudioChunk`` inputs into output values.  Each task owns its internal
-    filter state, silence buffer, and block-size configuration so that
-    state is preserved across frames without external management.
-
-    Subclasses should NOT import or call bpy — tasks are evaluated on
-    Stage-B worker processes that are intentionally bpy-free.
-    """
+    """Base class for all DSP processing nodes in the ACE pipeline."""
     def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
         self.node_id = node_id
         self.parameters = parameters
@@ -54,10 +43,7 @@ class ACEAudioTask:
         self.inputs[input_idx] = TaskConnection(target_task, target_output_idx)
 
     def _evaluate_frame_iterative(self, frame_index: int):
-        """
-        Evaluate upstream dependencies for this task without Python recursion.
-        Keeps per-task frame caching semantics unchanged.
-        """
+        """Evaluate upstream dependencies for this task without Python recursion."""
         frame_idx = int(frame_index)
         if int(getattr(self, "last_frame_processed", -1)) == frame_idx:
             return
@@ -85,18 +71,18 @@ class ACEAudioTask:
                         try:
                             input_data[in_sock_idx] = upstream.get_output(frame_idx, socket_idx)
                         except Exception as exc:
-                            utils.note_swallowed("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative", exc)
+                            utils.note_swallowed("base.ACEAudioTask._evaluate_frame_iterative", exc)
                             input_data[in_sock_idx] = None
                         continue
                     extract_fn = getattr(upstream, "_extract_result", None)
                     if callable(extract_fn):
-                        with utils.logged_errors("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative#2"):
+                        with utils.logged_errors("base.ACEAudioTask._evaluate_frame_iterative#2"):
                             input_data[in_sock_idx] = extract_fn(socket_idx)
                             continue
                     try:
                         input_data[in_sock_idx] = upstream.get_output(frame_idx, socket_idx)
                     except Exception as exc:
-                        utils.note_swallowed("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative#3", exc)
+                        utils.note_swallowed("base.ACEAudioTask._evaluate_frame_iterative#3", exc)
                         input_data[in_sock_idx] = None
 
                 try:
@@ -104,7 +90,7 @@ class ACEAudioTask:
                     task._tag_output_frame(task.cached_output, frame_idx)
                     task.last_frame_processed = frame_idx
                 except Exception as exc:
-                    utils.note_swallowed("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative#4", exc)
+                    utils.note_swallowed("base.ACEAudioTask._evaluate_frame_iterative#4", exc)
                     continue
                 continue
 
@@ -130,8 +116,7 @@ class ACEAudioTask:
 
         self._evaluate_frame_iterative(frame_idx)
 
-        # Fallback: preserve legacy recursive behavior for edge cases where
-        # iterative scheduling could not complete this task.
+        # Recursive evaluation when the iterative schedule did not reach this task.
         if self.last_frame_processed != frame_idx:
             self._current_frame_request = frame_idx
             input_data = {}

@@ -46,12 +46,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         self._preview_next_eval_ts: float = 0.0
 
     def execute_next_frame(self, scene, force: bool = False):
-        """Evaluate all graphs for the current scene frame and write results to their sinks.
-
-        Called every frame from ``frame_change_handler`` (and during render).
-        ``force`` skips the same-frame guard (render handlers need a write
-        even when the frame number has not changed).
-        """
+        """Evaluate all graphs for the current scene frame and write results to their sinks."""
         utils.assert_main_thread("execute_next_frame")
         clock = self._start_frame(scene, force)
         if clock is None:
@@ -119,7 +114,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         try:
             delta_frames = float(int(scene_frame) - int(prev_scene_frame)) if prev_scene_frame >= 0 else 1.0
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame", exc)
+            utils.note_swallowed("runner.FrameRunner._start_frame", exc)
             delta_frames = 1.0
         if abs(delta_frames) <= 1e-9:
             delta_frames = 1.0
@@ -135,27 +130,20 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             if fps_base > 0.0:
                 fps = raw_fps / fps_base
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#2", exc)
+            utils.note_swallowed("runner.FrameRunner._start_frame#2", exc)
             fps = 24.0
         self.engine._current_scene_fps = max(float(fps), 1.0)
         return float(fps), float(delta_frames)
 
     def _sync_runtime_inputs(self, scene) -> bool:
-        """Refresh BPM in worker IRs, flush probe results, run a pending compile.
-
-        Returns True when a compile ran this frame.
-        """
-        # Keep per-source BPM / beats-per-bar in each graph's parallel IR fresh
-        # so _WorkerSourceSpecsPassthroughTask always uses the current values.
-        # This is especially important for LIVE sources that have no auto-BPM
-        # detection: the user sets BPM manually and the worker must see the update
-        # on the very next frame rather than waiting for the next full recompile.
-        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#3"):
+        """Refresh BPM in worker IRs, flush probe results, run a pending compile."""
+        # Tempo and fps reach the workers without a recompile.
+        with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs"):
             self.engine.parallel.refresh_specs_params()
 
         # Flush background probe results before the compile so native_sample_rate
         # is populated for any sources whose probe thread has just completed.
-        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#4"):
+        with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs#2"):
             ace = getattr(scene, "audiocore", None)
             sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
             if self.engine.probes._flush_probe_updates(
@@ -167,10 +155,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             self.engine.probes.flush_source_tempo_detection_updates(sources)
 
         if self.engine.frontends._maybe_compile_dirty(scene):
-            # Freshly compiled this frame — skip DSP writes so Blender's GN
-            # evaluator gets one clean cycle with the new graph before we start
-            # pushing attribute values into it.  Without this guard the first
-            # frame after a recompile can produce partial / stale geometry output.
+            # Skip writes on the compile frame so Geometry Nodes evaluates the new graph once first.
             return True
         return False
 
@@ -188,15 +173,11 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             self.engine.parallel.shutdown_pool()
 
         # Keep the preview feeder's drift-correction in sync with the scene fps.
-        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#5"):
+        with utils.logged_errors("runner.FrameRunner._frame_context"):
             self.engine.preview._preview_monitor.update_scene_fps(fps)
 
-        # Seek detection: flush stale audio from all monitor buffers when the
-        # user scrubs to a non-adjacent frame or scrubs backward. Without this,
-        # the ring buffer can hold future-relative audio that plays at the wrong
-        # timeline position.  Any backward frame (delta < 0) triggers a flush
-        # because even going back one frame means buffered audio is now "ahead".
-        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#6"):
+        # A jump or a step back invalidates buffered monitor audio.
+        with utils.logged_errors("runner.FrameRunner._frame_context#2"):
             if abs(delta_frames) > 2 or delta_frames < -0.5:
                 self.engine.preview._preview_monitor.clear()
 
@@ -213,7 +194,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             _gbs = int(getattr(graph, "block_size", 0) or 0)
             if _gbs >= 64:
                 _min_analysis_bs = _gbs if _min_analysis_bs == 0 else min(_min_analysis_bs, _gbs)
-        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#7"):
+        with utils.logged_errors("runner.FrameRunner._frame_context#3"):
             self.engine.preview._preview_monitor.hint_block_size(_min_analysis_bs)
         preview_interval_s = max(
             float(preview_block_size) / float(max(preview_sample_rate, 1)),
@@ -331,7 +312,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                 try:
                     source_task.get_output(self.engine.current_frame, 0)
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#8", exc)
+                    utils.note_swallowed("runner.FrameRunner._prepare_graph", exc)
                     continue
         return graph_key, source_tasks
 
@@ -505,7 +486,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                 try:
                     src_chunk = source_task.get_output(self.engine.current_frame, 0)
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#9", exc)
+                    utils.note_swallowed("runner.FrameRunner._compute_graph_results", exc)
                     src_chunk = None
                 if hasattr(src_chunk, "mono") and hasattr(src_chunk, "sample_rate"):
                     source_chunks_for_worker[str(src_node_id)] = src_chunk
@@ -544,10 +525,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                 int(self.engine.current_frame),
             )
             if not has_parallel_values or not parallel_submit_enabled:
-                # Hard fallback: if worker values are not yet usable OR jobs
-                # cannot be submitted this frame (disabled source, pool
-                # unavailable), compute offloaded keys locally so stream
-                # outputs never stall at zero.
+                # Without usable worker values, offloaded outputs are computed locally.
                 local_keys = list(
                     dict.fromkeys(
                         local_keys + list(getattr(graph, "parallel_offload_attr_keys", []) or [])
@@ -579,9 +557,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             auto_ids or (getattr(graph, "preview_task_ids", []) or [])
         )
         if (not manual_ids) and passthrough_specs:
-            # Direct passthrough: prefer the chunk already produced for
-            # this frame; only fall back to evaluation once the rest of
-            # the graph has had a chance to warm the source prefetcher.
+            # Prefer this frame's source chunk; evaluating late gives the prefetcher time to fill.
             for src_task_id, src_sock_idx in passthrough_specs:
                 src_task = graph.tasks.get(str(src_task_id))
                 if not isinstance(src_task, SourceTask):
@@ -593,16 +569,14 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                         raw_chunk = src_task.get_output(self.engine.current_frame, int(src_sock_idx))
                         self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
                     except Exception as exc:
-                        utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#10", exc)
+                        utils.note_swallowed("runner.FrameRunner._collect_graph_preview", exc)
                         raw_chunk = None
                 if raw_chunk is not None and self.engine.preview._chunk_is_unmasked_audio(raw_chunk):
                     preview_chunks.append(
                         self.engine.preview._fit_preview_chunk_block(raw_chunk, preview_block_size)
                     )
         else:
-            # PreviewSinkTask path: offload biquad DSP chains to the
-            # background thread and reuse already-evaluated upstream
-            # chunks whenever possible.
+            # Preview sink chains run on the preview thread.
             for task_id in preview_ids:
                 preview_task = graph.tasks.get(task_id)
                 if not isinstance(preview_task, PreviewSinkTask):
@@ -626,7 +600,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                         )
                         self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
                     except Exception as exc:
-                        utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#11", exc)
+                        utils.note_swallowed("runner.FrameRunner._collect_graph_preview#2", exc)
                         upstream_chunk = None
                 if upstream_chunk is not None:
                     if self.engine.preview._submit_preview_work(preview_task, upstream_chunk):
@@ -635,7 +609,6 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                         ctx.preview_pushed = True
 
     def _commit_graph_results(self, graph, graph_key, results, ctx):
-        """Stage C (main thread only): commit values into the resolved sinks."""
         geometry_proxy_names = ctx.geometry_proxy_names
         try:
             # Stage C (main thread only): commit numeric results into resolved sinks.
@@ -661,7 +634,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             else:
                 mixed_preview = self._preview_last_chunk
             if mixed_preview is not None:
-                with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#12"):
+                with utils.logged_errors("runner.FrameRunner._finish_preview"):
                     self.engine.preview._preview_monitor.push_chunk(mixed_preview)
                     ctx.preview_pushed = True
             self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
@@ -671,5 +644,5 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             self._preview_next_eval_ts = 0.0
 
         if (not preview_allowed) or (not ctx.preview_pushed):
-            with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#13"):
+            with utils.logged_errors("runner.FrameRunner._finish_preview#2"):
                 self.engine.preview._preview_monitor.clear()

@@ -1,6 +1,4 @@
-"""
-utils.py contains helper functions used across the add-on.
-"""
+"""utils.py contains helper functions used across the add-on."""
 import sys
 import os
 import threading
@@ -16,27 +14,14 @@ _DEBUG_STRICT = True  # Guardrail defaults to hard-fail to block unsafe off-main
 _module_presence_cache = {}
 
 
-# --- Log and environment helpers ---
 def set_debug_strict(enabled: bool) -> None:
-    """Enable strict guardrail mode.
-
-    When enabled, assert_main_thread() raises RuntimeError on violations instead
-    of logging an ERROR. Disable only for controlled test/debug scenarios.
-
-    Default: True.
-    """
+    """Enable strict guardrail mode."""
     global _DEBUG_STRICT
     _DEBUG_STRICT = bool(enabled)
 
 
 def assert_main_thread(context: str = "") -> None:
-    """Assert that the current call is on the Blender main thread.
-
-    In strict mode (_DEBUG_STRICT=True, default): raises RuntimeError so write
-    paths fail-safe instead of continuing with undefined Blender state.
-    In non-strict mode: logs an ERROR only.
-    Call this at the entry points of any function that writes bpy state.
-    """
+    """Assert that the current call is on the Blender main thread."""
     if threading.current_thread() is not threading.main_thread():
         caller = context or "unknown"
         msg = (
@@ -49,10 +34,7 @@ def assert_main_thread(context: str = "") -> None:
 
 
 def as_int(value: Any, default: int) -> int:
-    """Return *value* as an int, or *default* when it is None, empty or not a number.
-
-    Unlike ``int(value or default)``, a real 0 stays 0.
-    """
+    """Return *value* as an int, or *default* when it is None, empty or not a number."""
     if value is None or value == "":
         return int(default)
     try:
@@ -62,10 +44,7 @@ def as_int(value: Any, default: int) -> int:
 
 
 def as_float(value: Any, default: float) -> float:
-    """Return *value* as a float, or *default* when it is None, empty or not a number.
-
-    Unlike ``float(value or default)``, a real 0.0 stays 0.0.
-    """
+    """Return *value* as a float, or *default* when it is None, empty or not a number."""
     if value is None or value == "":
         return float(default)
     try:
@@ -75,29 +54,12 @@ def as_float(value: Any, default: float) -> float:
 
 
 def set_debug_logging(enabled: bool):
-    """Enable or disable add-on debug logging.
-
-    When disabled, only ERROR messages are printed.  When enabled, INFO,
-    WARNING, and DEBUG messages are also printed.
-
-    Args:
-        enabled: True to enable debug output, False to suppress it.
-    """
+    """Enable or disable add-on debug logging."""
     global _DEBUG_LOG_ENABLED
     _DEBUG_LOG_ENABLED = bool(enabled)
 
 def log(message, type='INFO', debug_active: bool | None = None):
-    """Print *message* to the console subject to the current debug mode.
-
-    ERROR messages are always printed regardless of debug state.  All other
-    types (INFO, WARNING, DEBUG) are printed only when debug logging is active.
-
-    Args:
-        message: The message string to print.
-        type: Severity level string — "INFO", "WARNING", "DEBUG", or "ERROR".
-        debug_active: Override the global _DEBUG_LOG_ENABLED flag for this call.
-            Pass None (default) to use the global flag.
-    """
+    """Print *message* to the console subject to the current debug mode."""
     # ERROR always prints
     if type == 'ERROR':
         print(f"[ACE {type}] {message}")
@@ -109,7 +71,6 @@ def log(message, type='INFO', debug_active: bool | None = None):
         print(f"[ACE {type}] {message}")
 
 
-# --- Throttled logging and recorded error suppression ---
 _THROTTLE_LAST: dict = {}
 _THROTTLE_MAX_KEYS = 512
 _SWALLOWED: dict = {}
@@ -117,11 +78,7 @@ _SWALLOWED_LOCK = threading.Lock()
 
 
 def log_throttled(key: str, message: str, level: str = "ERROR", min_interval: float = 2.0) -> bool:
-    """Log *message* at most once per *min_interval* seconds per *key*.
-
-    For hot paths (frame handlers, pollers) where one condition can recur every
-    frame. Returns True when the message was emitted.
-    """
+    """Log *message* at most once per *min_interval* seconds per *key*."""
     now = time.monotonic()
     last = _THROTTLE_LAST.get(key)
     if last is not None and (now - last) < float(min_interval):
@@ -134,11 +91,7 @@ def log_throttled(key: str, message: str, level: str = "ERROR", min_interval: fl
 
 
 def note_swallowed(key: str, exc: BaseException, level: str = "DEBUG") -> None:
-    """Record an exception a fallback path absorbs, and log it (throttled).
-
-    Every suppressed error goes through here or ``logged_errors`` so it is
-    counted in ``swallowed_errors()`` and visible with debug logging on.
-    """
+    """Record an exception a fallback path absorbs, and log it (throttled)."""
     summary = f"{type(exc).__name__}: {exc}"
     with _SWALLOWED_LOCK:
         entry = _SWALLOWED.get(key)
@@ -162,13 +115,7 @@ def reset_swallowed_errors() -> None:
 
 
 class logged_errors:
-    """Context manager that suppresses ``Exception`` and records it.
-
-    ``with utils.logged_errors("module.function"):`` replaces
-    ``try: ... except Exception: pass`` where carrying on is the right
-    outcome; the error still shows up in ``swallowed_errors()`` and in the
-    debug log.
-    """
+    """Context manager that suppresses ``Exception`` and records it."""
 
     __slots__ = ("key", "level")
 
@@ -186,23 +133,12 @@ class logged_errors:
         return True
 
 def get_python_executable():
-    """Return the path to the Python executable used by Blender.
-
-    Returns:
-        Absolute path string from sys.executable.
-    """
+    """Return the path to the Python executable used by Blender."""
     return sys.executable
 
 
 def dependency_vendor_path(create: bool = False) -> str:
-    """Return the path to the add-on's local _vendor directory.
-
-    Args:
-        create: When True, create the directory if it does not exist.
-
-    Returns:
-        Absolute path to the _vendor directory alongside this module.
-    """
+    """Return the path to the add-on's local _vendor directory."""
     path = os.path.join(os.path.dirname(__file__), "_vendor")
     if create:
         try:
@@ -213,18 +149,7 @@ def dependency_vendor_path(create: bool = False) -> str:
 
 
 def ensure_dependency_vendor_path(create: bool = False) -> str:
-    """Ensure the _vendor directory is on sys.path and return its path.
-
-    Inserts the directory at the front of sys.path so add-on-local packages
-    take precedence over system-wide or Blender-bundled packages with the same
-    name.
-
-    Args:
-        create: When True, create the directory if it does not exist.
-
-    Returns:
-        Absolute path to the _vendor directory.
-    """
+    """Ensure the _vendor directory is on sys.path and return its path."""
     path = dependency_vendor_path(create=create)
     if path and os.path.isdir(path) and path not in sys.path:
         # Keep add-on-local dependencies ahead of ambient interpreter paths.
@@ -232,15 +157,7 @@ def ensure_dependency_vendor_path(create: bool = False) -> str:
     return path
 
 def is_module_installed(module_name):
-    """
-    Check whether a module is importable in Blender's Python environment.
-
-    find_spec() alone is not sufficient — it only locates the module files but
-    does NOT verify that native extensions (e.g. sounddevice's _portaudio*.pyd)
-    can actually be loaded. We therefore do a real import test when find_spec
-    succeeds, catching all Exception subclasses (not just ImportError) to also
-    catch OSError / DLL-load failures on Windows.
-    """
+    """Check whether a module is importable in Blender's Python environment."""
     key = str(module_name or "").strip()
     if not key:
         return False
@@ -267,12 +184,7 @@ def is_module_installed(module_name):
         return False
 
 def is_module_in_vendor(module_name: str) -> bool:
-    """
-    Return True if the module can be found inside ACE's local _vendor directory.
-    Used by the uninstall operator to distinguish between modules installed via
-    AudioCore's installer and those installed by other means (system pip,
-    Blender Extensions, etc.).
-    """
+    """Return True if the module can be found inside ACE's local _vendor directory."""
     vendor_dir = dependency_vendor_path(create=False)
     if not vendor_dir or not os.path.isdir(vendor_dir):
         return False
@@ -290,29 +202,13 @@ def is_module_in_vendor(module_name: str) -> bool:
 
 
 def refresh_import_caches():
-    """
-    Invalidate importlib caches to reflect recent installs/uninstalls.
-    """
+    """Invalidate importlib caches to reflect recent installs/uninstalls."""
     importlib.invalidate_caches()
     _module_presence_cache.clear()
 
 
 def compose_live_flow_identifier(source_like: Any) -> str:
-    """Build the internal live routing token from structured source settings.
-
-    Constructs a canonical token string from the live_transport,
-    live_device_selector, and UDP parameter attributes on *source_like*.
-    Falls back to the legacy flow_identifier string for backward compatibility
-    with older .blend files that stored only the raw token.
-
-    Args:
-        source_like: An ACEAudioSource property-group instance, or any object
-            that exposes the relevant attributes.  None produces "sd:".
-
-    Returns:
-        A routing token string such as "sd:", "sd:<device>", or
-        "udp:<port>:<channels>:<sample_rate>".
-    """
+    """Build the internal live routing token from structured source settings."""
     if source_like is None:
         return "sd:"
 
@@ -342,16 +238,8 @@ def compose_live_flow_identifier(source_like: Any) -> str:
             payload = "sd:"
     return payload
 
-# --- Logo Helper ---
 def _ensure_logo_icon():
-    """Load the ACE logo image into a preview collection and return its icon ID.
-
-    Uses a module-level cache so the preview is loaded only once.  Returns
-    None if the logo file is missing or bpy.utils.previews is unavailable.
-
-    Returns:
-        Integer Blender icon ID, or None.
-    """
+    """Load the ACE logo image into a preview collection and return its icon ID."""
     import os
     from .vars import ACE_LOGO_FILENAME
 
@@ -385,19 +273,7 @@ def unregister():
     global _logo_icon_id
     _logo_icon_id = None
 
-# --- UI Helper ---
 def _get_active_source(context):
-    """Return the (ace_settings, active_source) pair for the current context.
-
-    Args:
-        context: The current Blender context.
-
-    Returns:
-        A (ACEProjectSettings, ACEAudioSource) tuple.  The source element is
-        None when there are no audio sources or the active index is out of
-        range.  The ace_settings element is None when the scene has no
-        audiocore property.
-    """
     ace = getattr(context.scene, "audiocore", None)
     if not ace or not ace.audio_sources: return ace, None
     idx = getattr(ace, "active_audio_source_index", 0)

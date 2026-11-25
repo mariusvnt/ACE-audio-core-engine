@@ -34,7 +34,7 @@ class PreviewRouter:
         try:
             return bool(cls._preview_monitor._resolve_backend())
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine.preview_monitor_available", exc)
+            utils.note_swallowed("router.PreviewRouter.preview_monitor_available", exc)
             return False
 
     @classmethod
@@ -43,7 +43,7 @@ class PreviewRouter:
         try:
             return int(cls._preview_monitor._preview_consecutive_errors)
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine.preview_monitor_consecutive_errors", exc)
+            utils.note_swallowed("router.PreviewRouter.preview_monitor_consecutive_errors", exc)
             return 0
 
     @classmethod
@@ -53,7 +53,7 @@ class PreviewRouter:
         try:
             raw = int(getattr(settings, "ace_preview_block_size", 256) or 256)
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._preview_block_size", exc)
+            utils.note_swallowed("router.PreviewRouter._preview_block_size", exc)
             raw = 256
         return int(resolve_preview_block_size(raw))
 
@@ -76,10 +76,7 @@ class PreviewRouter:
 
     @classmethod
     def _fit_preview_chunk_block(cls, chunk: AudioChunk, preview_block_size: int) -> AudioChunk:
-        """Resample a chunk's mono and stereo signals to *preview_block_size* samples.
-
-        Returns the original chunk unchanged if it already has the correct size.
-        """
+        """Resample a chunk's mono and stereo signals to *preview_block_size* samples."""
         target = int(max(preview_block_size, 1))
         mono = np.asarray(getattr(chunk, "mono", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
         if mono.shape[0] == target:
@@ -121,12 +118,7 @@ class PreviewRouter:
 
     @staticmethod
     def _mix_preview_chunks(chunks: list[AudioChunk]) -> Optional[AudioChunk]:
-        """Average-mix a list of stereo AudioChunks into one.
-
-        Returns None for an empty list, the single chunk unchanged for a list of
-        one, or a new AudioChunk with the equal-power average mix for multiple.
-        A final peak limiter is applied to the mixed result to prevent clipping.
-        """
+        """Average-mix a list of stereo AudioChunks into one."""
         if not chunks:
             return None
         if len(chunks) == 1:
@@ -185,12 +177,7 @@ class PreviewRouter:
 
     @staticmethod
     def _chunk_is_unmasked_audio(chunk: Any) -> bool:
-        """Return True if *chunk* is a plain, unprocessed audio block.
-
-        Returns False for frequency-masked, band-limited, or analysis-ops-tagged
-        chunks because these should not be played back directly through the
-        preview monitor.
-        """
+        """Return True if *chunk* is a plain, unprocessed audio block."""
         if not hasattr(chunk, "mono") or not hasattr(chunk, "sample_rate"):
             return False
         if getattr(chunk, "band_hz_bounds", None) is not None:
@@ -201,27 +188,22 @@ class PreviewRouter:
                 if np.asarray(idx).size > 0:
                     return False
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._chunk_is_unmasked_audio", exc)
+                utils.note_swallowed("router.PreviewRouter._chunk_is_unmasked_audio", exc)
                 return False
         try:
             if bool(getattr(chunk, "analysis_ops", ())):
                 return False
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._chunk_is_unmasked_audio#2", exc)
+            utils.note_swallowed("router.PreviewRouter._chunk_is_unmasked_audio#2", exc)
             return False
         return True
 
     @staticmethod
     def _task_current_chunk_for_frame(task: Any, frame_index: int):
-        """Return the task's cached current chunk if it was produced for *frame_index*.
-
-        Returns None if the task has no cached chunk or the chunk belongs to a
-        different frame.
-        """
         try:
             chunk_frame = utils.as_int(getattr(task, "_current_chunk_frame", None), -1)
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._task_current_chunk_for_frame", exc)
+            utils.note_swallowed("router.PreviewRouter._task_current_chunk_for_frame", exc)
             chunk_frame = -1
         if chunk_frame != int(frame_index):
             return None
@@ -231,13 +213,7 @@ class PreviewRouter:
         return None
 
     def _collect_preview_chunk(self, graph: ACEAudioGraph, frame_index: int, preview_block_size: int):
-        """Collect and resample preview audio for *graph* at *frame_index*.
-
-        Prefers direct SourceTask passthrough (zero DSP overhead) when no manual
-        Preview Sink nodes are present.  Falls back to evaluating PreviewSinkTask
-        outputs when biquad processing is needed.  Returns the mixed/resampled
-        chunk, or None if no preview audio is available.
-        """
+        """Collect and resample preview audio for *graph* at *frame_index*."""
         manual_ids = getattr(graph, "manual_preview_task_ids", []) or []
         auto_ids = getattr(graph, "auto_preview_task_ids", []) or []
         passthrough_specs = getattr(graph, "auto_preview_passthrough_specs", []) or []
@@ -254,7 +230,7 @@ class PreviewRouter:
                     direct_chunk = source_task.get_output(frame_index, int(source_sock_idx))
                     self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
                 except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine._collect_preview_chunk", exc)
+                    utils.note_swallowed("router.PreviewRouter._collect_preview_chunk", exc)
                     continue
                 if direct_chunk is not None and self._chunk_is_unmasked_audio(direct_chunk):
                     chunks.append(self._fit_preview_chunk_block(direct_chunk, preview_block_size))
@@ -279,7 +255,7 @@ class PreviewRouter:
                         direct_chunk = upstream.get_output(frame_index, int(getattr(conn, "socket_index", 0) or 0))
                         self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
                     except Exception as exc:
-                        utils.note_swallowed("audio_engine.ACEAudioEngine._collect_preview_chunk#2", exc)
+                        utils.note_swallowed("router.PreviewRouter._collect_preview_chunk#2", exc)
                         direct_chunk = None
                     if direct_chunk is not None and self._chunk_is_unmasked_audio(direct_chunk):
                         chunks.append(self._fit_preview_chunk_block(direct_chunk, preview_block_size))
@@ -289,14 +265,13 @@ class PreviewRouter:
                 chunk = task.get_output(frame_index, 0)
                 self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
             except Exception as exc:
-                utils.note_swallowed("audio_engine.ACEAudioEngine._collect_preview_chunk#3", exc)
+                utils.note_swallowed("router.PreviewRouter._collect_preview_chunk#3", exc)
                 continue
             if hasattr(chunk, "mono") and hasattr(chunk, "sample_rate"):
                 chunks.append(self._fit_preview_chunk_block(chunk, preview_block_size))
         return PreviewRouter._mix_preview_chunks(chunks)
 
     def _start_preview_worker(self):
-        """Start the preview DSP thread. Idempotent: no-op if already running."""
         if self._preview_worker_thread is not None and self._preview_worker_thread.is_alive():
             return
         with self._preview_worker_cond:
@@ -308,7 +283,6 @@ class PreviewRouter:
         t.start()
 
     def _stop_preview_worker(self):
-        """Signal the preview worker to stop and wait for it to exit."""
         with self._preview_worker_cond:
             self._preview_worker_stop = True
             self._preview_worker_queue.clear()
@@ -333,18 +307,12 @@ class PreviewRouter:
                 item = self._preview_worker_queue[-1]
                 self._preview_worker_queue.clear()
             task, upstream_chunk = item
-            with utils.logged_errors("audio_engine.ACEAudioEngine._preview_worker_loop"):
+            with utils.logged_errors("router.PreviewRouter._preview_worker_loop"):
                 result_chunk = task.process({0: upstream_chunk})
                 if result_chunk is not None and hasattr(result_chunk, "mono"):
                     monitor.push_chunk(result_chunk)
 
     def _submit_preview_work(self, task, upstream_chunk) -> bool:
-        """Enqueue a PreviewSinkTask for background DSP processing.
-
-        Returns True if the work was accepted, False if the worker is stopped.
-        Only the most-recent submission per frame is retained; older items are
-        dropped to prevent queue buildup during heavy load.
-        """
         with self._preview_worker_cond:
             if self._preview_worker_stop:
                 return False

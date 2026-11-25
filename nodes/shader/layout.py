@@ -17,7 +17,7 @@ class HelperNodeLayout:
     def _coerce_xy(cls, raw_value) -> tuple[float, float]:
         if raw_value is None:
             return 0.0, 0.0
-        with utils.logged_errors("shader_tree.cls._coerce_xy"):
+        with utils.logged_errors("layout.HelperNodeLayout._coerce_xy"):
             return (
                 float(getattr(raw_value, "x")),
                 float(getattr(raw_value, "y")),
@@ -25,7 +25,7 @@ class HelperNodeLayout:
         try:
             return float(raw_value[0]), float(raw_value[1])
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._coerce_xy#2", exc)
+            utils.note_swallowed("layout.HelperNodeLayout._coerce_xy#2", exc)
             return 0.0, 0.0
 
     @classmethod
@@ -79,7 +79,7 @@ class HelperNodeLayout:
             node.location = (target_x, target_y)
             return True
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._set_node_location", exc)
+            utils.note_swallowed("layout.HelperNodeLayout._set_node_location", exc)
             return False
 
     @staticmethod
@@ -97,12 +97,12 @@ class HelperNodeLayout:
             return False
         changed = False
         if hasattr(helper_node, "hide"):
-            with utils.logged_errors("shader_tree.cls._ensure_helper_node_compact_display"):
+            with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_node_compact_display"):
                 if not bool(getattr(helper_node, "hide", False)):
                     helper_node.hide = True
                     changed = True
         if hasattr(helper_node, "width_hidden"):
-            with utils.logged_errors("shader_tree.cls._ensure_helper_node_compact_display#2"):
+            with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_node_compact_display#2"):
                 current = float(getattr(helper_node, "width_hidden", 0.0) or 0.0)
                 target = float(cls._HELPER_HIDDEN_WIDTH)
                 if abs(current - target) > 0.5:
@@ -120,7 +120,7 @@ class HelperNodeLayout:
         try:
             node.parent = parent
         except Exception as exc:
-            utils.note_swallowed("shader_tree.cls._parent_node_preserve_absolute", exc)
+            utils.note_swallowed("layout.HelperNodeLayout._parent_node_preserve_absolute", exc)
             return False
         if parent is None:
             cls._set_node_location(node, (abs_x, abs_y))
@@ -138,7 +138,7 @@ class HelperNodeLayout:
             try:
                 owner = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._find_helper_frame_node", exc)
+                utils.note_swallowed("layout.HelperNodeLayout._find_helper_frame_node", exc)
                 owner = ""
             if owner == target_owner:
                 return helper_node
@@ -155,7 +155,7 @@ class HelperNodeLayout:
             try:
                 parent_owner = str(owner_parent.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._ensure_helper_frame", exc)
+                utils.note_swallowed("layout.HelperNodeLayout._ensure_helper_frame", exc)
                 parent_owner = ""
             if not parent_owner or parent_owner == str(ace_id or ""):
                 return owner_parent, False
@@ -166,31 +166,31 @@ class HelperNodeLayout:
             try:
                 frame_node = tree.nodes.new("NodeFrame")
             except Exception as exc:
-                utils.note_swallowed("shader_tree.cls._ensure_helper_frame#2", exc)
+                utils.note_swallowed("layout.HelperNodeLayout._ensure_helper_frame#2", exc)
                 return None, False
             created = True
             changed = True
             cls._set_node_location(frame_node, cls._node_absolute_location(owner_node))
 
-        with utils.logged_errors("shader_tree.cls._ensure_helper_frame#3"):
+        with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_frame#3"):
             if str(frame_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "") != str(ace_id or ""):
                 frame_node[cls._HELPER_FRAME_OWNER_KEY] = str(ace_id or "")
                 changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_frame#4"):
+        with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_frame#4"):
             if str(frame_node.get(cls._HELPER_FRAME_KIND_KEY, "") or "") != "ATTRIBUTE_CLUSTER":
                 frame_node[cls._HELPER_FRAME_KIND_KEY] = "ATTRIBUTE_CLUSTER"
                 changed = True
         frame_name = cls._helper_frame_name(ace_id)
-        with utils.logged_errors("shader_tree.cls._ensure_helper_frame#5"):
+        with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_frame#5"):
             if str(getattr(frame_node, "name", "") or "") != frame_name:
                 frame_node.name = frame_name
                 changed = True
-        with utils.logged_errors("shader_tree.cls._ensure_helper_frame#6"):
+        with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_frame#6"):
             if str(getattr(frame_node, "label", "") or "") != "":
                 frame_node.label = ""
                 changed = True
         if hasattr(frame_node, "shrink"):
-            with utils.logged_errors("shader_tree.cls._ensure_helper_frame#7"):
+            with utils.logged_errors("layout.HelperNodeLayout._ensure_helper_frame#7"):
                 if not bool(getattr(frame_node, "shrink", False)):
                     frame_node.shrink = True
                     changed = True

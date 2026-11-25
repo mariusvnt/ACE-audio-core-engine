@@ -22,7 +22,7 @@ class SourceClock:
         try:
             return int(getattr(self, "_current_frame_request", 0) or 0)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.SourceTask._requested_frame", exc)
+            utils.note_swallowed("source_clock.SourceClock._requested_frame", exc)
             return 0
 
     def _samples_per_frame(self, sample_rate: int) -> float:
@@ -127,7 +127,7 @@ class SourceClock:
         try:
             current_cursor = int(getattr(self.reception, "_cursor_sample", self.read_cursor) or self.read_cursor)
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.SourceTask._sync_reader_cursor", exc)
+            utils.note_swallowed("source_clock.SourceClock._sync_reader_cursor", exc)
             current_cursor = int(self.read_cursor)
         self.read_cursor = current_cursor
         delta = int(desired_sample) - int(current_cursor)
@@ -147,14 +147,7 @@ class SourceClock:
             utils.log(f"Source cursor sync failed: {e}", "ERROR")
 
     def _read_next_block(self) -> Optional["AudioChunk"]:
-        """
-        Main-thread entry point for reading the next audio block.
-
-        For FILE sources with an active prefetch thread: returns the pre-read
-        chunk immediately (zero I/O) and triggers the next speculative read.
-        Falls back to _read_next_block_sync on scrub/seek or first call.
-        For LIVE sources: delegates directly to _read_next_block_sync.
-        """
+        """Main-thread entry point for reading the next audio block."""
         source_type = str(
             getattr(getattr(self, "source_context", None), "source_type", "") or ""
         ).upper()
@@ -185,7 +178,7 @@ class SourceClock:
         return self._read_next_block_sync()
 
     def _read_next_block_sync(self, track_perf_stage: bool = True) -> Optional["AudioChunk"]:
-        """Synchronous block read.  May perform file I/O or queue dequeue."""
+        """Synchronous block read."""
         t0 = time.perf_counter()
         try:
             current_signature = self._config_signature()
@@ -209,7 +202,7 @@ class SourceClock:
             try:
                 delta_frames = float(getattr(getattr(self, "engine_ref", None), "_current_delta_frames", 1.0) or 1.0)
             except Exception as exc:
-                utils.note_swallowed("audio_tasks_registry.SourceTask._read_next_block_sync", exc)
+                utils.note_swallowed("source_clock.SourceClock._read_next_block_sync", exc)
                 delta_frames = 1.0
             timeslice_mode = self._timeslice_mode_hint()
             try:
@@ -286,11 +279,7 @@ class SourceClock:
                             self.sample_rate = int(sr)
                             self.read_cursor = int(live_target)
                             self.live_ready = True
-                        # If selected is None, retain current live_ready so the engine
-                        # keeps calling process() and the buffer can fill on the next frame.
-                    # If buffer is empty (stream just opened, first callback not yet fired),
-                    # retain live_ready = True so the engine does not deadlock by skipping
-                    # process() indefinitely before any audio arrives.
+                        # Stay live_ready while the buffer is empty so process() keeps running until audio arrives.
                 else:
                     desired_sample = self._file_sample_clock_target(frame_request)
                     file_force_seek = False
@@ -312,7 +301,7 @@ class SourceClock:
                                 or (desired_sample + int(mono.shape[-1]))
                             )
                         except Exception as exc:
-                            utils.note_swallowed("audio_tasks_registry.SourceTask._read_next_block_sync#2", exc)
+                            utils.note_swallowed("source_clock.SourceClock._read_next_block_sync#2", exc)
                             self.read_cursor = desired_sample + int(mono.shape[-1])
                     elif getattr(self.reception, "_eof", False):
                         return None
@@ -359,10 +348,10 @@ class SourceClock:
             if bool(track_perf_stage):
                 perf_add = getattr(getattr(engine, "diagnostics", None), "_perf_add", None)
                 if callable(perf_add):
-                    with utils.logged_errors("audio_tasks_registry.SourceTask._read_next_block_sync#3"):
+                    with utils.logged_errors("source_clock.SourceClock._read_next_block_sync#3"):
                         perf_add("source_read", elapsed)
             else:
                 prefetch_add = getattr(getattr(engine, "diagnostics", None), "_record_source_prefetch", None)
                 if callable(prefetch_add):
-                    with utils.logged_errors("audio_tasks_registry.SourceTask._read_next_block_sync#4"):
+                    with utils.logged_errors("source_clock.SourceClock._read_next_block_sync#4"):
                         prefetch_add(elapsed)

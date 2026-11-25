@@ -10,16 +10,7 @@ from ... import utils
 
 class AttributeSinks:
     def _cache_output_defs(self):
-        """Precompute attribute slugs and Blender data types for all writeable outputs.
-
-        Iterates over stream, source_specs, util_rolling_avg, and stream_accumulator
-        nodes in the abstract tree.
-        For each non-bundle output socket, builds a dict entry keyed by
-        ``"<node_id>:<socket_idx>"`` containing the derived attribute name slug,
-        Blender attribute type, and any user-supplied Attribute ID overrides.
-        Results are stored in self.output_defs and consumed by _select_attr_name()
-        and ensure_attributes_exist().
-        """
+        """Precompute attribute slugs and Blender data types for all writeable outputs."""
         if not self.abstract_tree:
             return
 
@@ -58,15 +49,6 @@ class AttributeSinks:
 
     @staticmethod
     def _resolve_attr_type(sock_type: str) -> str:
-        """Map a GN socket data type string to a Blender mesh attribute type.
-
-        Args:
-            sock_type: A socket type string such as ``'VECTOR'``, ``'RGBA'``, or
-                a NodeSocket class name like ``'NodeSocketVector'``.
-
-        Returns:
-            One of ``'FLOAT'``, ``'FLOAT_VECTOR'``, or ``'FLOAT_COLOR'``.
-        """
         attr_type = 'FLOAT'
         if sock_type in ('VECTOR', 'NodeSocketVector'):
             attr_type = 'FLOAT_VECTOR'
@@ -75,23 +57,7 @@ class AttributeSinks:
         return attr_type
 
     def _select_attr_name(self, proxy_name: str, info: Dict[str, Any]) -> str:
-        """Choose the mesh attribute name for a given output definition.
-
-        When the user has explicitly set a custom Attribute ID on the node socket,
-        that string is sanitised and returned (with the ACE prefix prepended if
-        absent).  Otherwise a compact auto-generated name is derived via
-        ACEIdManager.generate_compact_attr_name().
-
-        Args:
-            proxy_name: The proxy object name; used as the source hint in the
-                auto-generated name.
-            info: An output definition dict from self.output_defs containing
-                at minimum ``node_id``, ``socket_idx``, ``output_name``,
-                ``attr_id``, and ``attr_custom``.
-
-        Returns:
-            A Blender-compatible attribute name string (max 63 characters).
-        """
+        """Choose the mesh attribute name for a given output definition."""
         custom = info.get("attr_id")
         custom_is_explicit = bool(info.get("attr_custom", False))
         if custom_is_explicit and isinstance(custom, str) and custom.strip():
@@ -113,30 +79,7 @@ class AttributeSinks:
         active_keys: Set[str] | None = None,
         prune_existing: bool = False,
     ):
-        """Create or repair named point-domain attributes on the proxy mesh.
-
-        Iterates over the output definitions produced by _cache_output_defs() and
-        ensures that each required attribute exists with the correct Blender data
-        type.  Attributes with a mismatched type are removed and re-created.
-
-        When active_keys is an empty set and prune_existing is True all ACE
-        attributes on the mesh are removed (compile-time cleanup path).  When
-        active_keys is None a full sync is performed, which also prunes any ACE
-        attributes not in the current required set.
-
-        Flushes the per-mesh RNA handle cache and last-written value cache
-        whenever the attribute layout changes so stale handles are not used.
-
-        Args:
-            proxy: The proxy bpy.types.Object whose mesh attributes to manage.
-            abstract_tree: Optional replacement abstract tree; triggers a call to
-                set_abstract_tree() when different from the current one.
-            active_keys: Subset of output_defs keys to sync.  None means all keys
-                (full sync with pruning).  Empty set with prune_existing=True
-                removes all ACE attributes.
-            prune_existing: When True, also remove ACE attributes not in the
-                required set even for a scoped (non-None active_keys) sync.
-        """
+        """Create or repair named point-domain attributes on the proxy mesh."""
         utils.assert_main_thread("ensure_attributes_exist")
         mesh = getattr(proxy, "data", None)
         if not mesh:
@@ -191,21 +134,6 @@ class AttributeSinks:
             self._write_buffer_cache.pop(mesh.name, None)
 
     def _get_write_buffer(self, mesh_name: str, attr_name: str, length: int) -> np.ndarray:
-        """Return a reusable float32 NumPy buffer for bulk attribute writes.
-
-        Caches one buffer per (mesh_name, attr_name, length) combination.
-        A new array is allocated only when the cache entry is missing or the
-        stored array's length does not match, avoiding per-frame allocations on
-        steady-state writes.
-
-        Args:
-            mesh_name: Blender mesh data-block name used as the cache namespace.
-            attr_name: Attribute name used as the secondary cache key.
-            length: Required number of float32 elements in the buffer.
-
-        Returns:
-            A float32 NumPy array of shape (length,).
-        """
         mesh_buffers = self._write_buffer_cache.setdefault(mesh_name, {})
         key = f"{attr_name}:{int(length)}"
         arr = mesh_buffers.get(key)
@@ -234,32 +162,12 @@ class AttributeSinks:
             try:
                 return bool(np.allclose(np.asarray(prev, dtype=np.float32), np.asarray(curr, dtype=np.float32), atol=1e-6))
             except Exception as exc:
-                utils.note_swallowed("proxy_management.cls._values_equal", exc)
+                utils.note_swallowed("attributes.AttributeSinks._values_equal", exc)
                 return False
         return prev == curr
 
     def update_proxy_object(self, proxy: bpy.types.Object, results: Dict[str, Any], active_keys: Set[str] | None = None):
-        """Write DSP result values into the proxy mesh's named attributes.
-
-        Skips writes for float attributes whose value has not changed by more than
-        1e-6 since the last call (delta suppression) to reduce Blender depsgraph
-        dirtying overhead.  Transient pulse attributes (onset, flux) are exempt
-        from delta suppression because their peak value and a subsequent 0.0 reset
-        can arrive on consecutive frames with identical ``prev`` state.
-
-        Falls back to writing zero values when the primary write raises an
-        exception, to keep downstream GN graphs in a defined state.
-
-        Uses foreach_set() with a reusable write buffer for multi-element meshes,
-        and direct index assignment for the common single-vertex proxy case.
-
-        Args:
-            proxy: The proxy bpy.types.Object to write attribute values into.
-            results: Mapping of ``"<node_id>:<socket_idx>"`` keys to result values
-                (float, list, tuple, or ndarray depending on attribute type).
-            active_keys: Optional subset of keys to process.  None means all keys
-                present in results.
-        """
+        """Write DSP result values into the proxy mesh's named attributes."""
         utils.assert_main_thread("update_proxy_object")
         mesh = getattr(proxy, "data", None)
         if not mesh:
@@ -287,17 +195,14 @@ class AttributeSinks:
                 continue
             last_vals = self._last_values.setdefault(mesh.name, {})
             dtype = attr.data_type
-            # Transient pulse attributes (onset, flux) must never be delta-skipped:
-            # stale-reuse can hold the previous value (0.0) while the correct peak
-            # value arrives one frame later with the same prev=0.0, causing the write
-            # to be suppressed.  These attributes reset every frame by design.
+            # Pulse outputs reset every frame, so an unchanged value must still be written.
             _output_name = str(info.get("output_name", "") or "").lower()
             _is_transient = _output_name in ("onset", "spectral flux", "flux")
             if dtype == 'FLOAT':
                 try:
                     val = float(value)
                 except Exception as exc:
-                    utils.note_swallowed("proxy_management.self.update_proxy_object", exc)
+                    utils.note_swallowed("attributes.AttributeSinks.update_proxy_object", exc)
                     continue
                 prev = last_vals.get(attr_name)
                 if not _is_transient and isinstance(prev, float) and abs(prev - val) <= 1e-6:
@@ -352,9 +257,9 @@ class AttributeSinks:
                         np.copyto(buf.reshape(count, 4), col)
                         attr.data.foreach_set("color", buf)
             except Exception as exc:
-                utils.note_swallowed("proxy_management.self.update_proxy_object#2", exc)
+                utils.note_swallowed("attributes.AttributeSinks.update_proxy_object#2", exc)
                 # Fallback to zeroing on failure
-                with utils.logged_errors("proxy_management.self.update_proxy_object#3"):
+                with utils.logged_errors("attributes.AttributeSinks.update_proxy_object#3"):
                     if dtype == 'FLOAT':
                         if count == 1:
                             attr.data[0].value = 0.0

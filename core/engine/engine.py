@@ -1,24 +1,4 @@
-"""
-The ACE engine: one ``ACEAudioEngine`` per Blender scene.
-
-The engine owns the scene-scoped runtime (graphs, sink writer, frame clock,
-undo state) and builds one component per concern, each in its own module:
-
-  - ``engine.diagnostics`` (engine_diagnostics): perf counters and latency metrics.
-  - ``engine.probes`` (engine_probes): background source metadata and tempo detection.
-  - ``engine.preview`` (engine_preview): preview chunk routing and the monitor.
-  - ``engine.bake`` (engine_bake): offline bake cache.
-  - ``engine.parallel`` (engine_parallel): worker-process DSP offload (Stage B).
-  - ``engine.frontends`` (engine_frontends): frontend discovery and dirty tracking.
-  - ``engine.sinks`` (engine_sinks): sink bindings and auto attribute names.
-  - ``engine.compiler`` (engine_compiler): frontends to per-source graphs (Stage A).
-  - ``engine.frame`` (engine_frame): per-frame evaluation and sink commits (Stage C).
-
-Components reach the runtime and each other through ``self.engine``. Blender
-handlers and timers live in engine_handlers; shared imports and types in
-engine_common. The public methods the UI and handlers call stay on the
-engine as one-line delegates.
-"""
+"""The ACE engine: one ``ACEAudioEngine`` per Blender scene."""
 
 import bpy
 import queue
@@ -46,22 +26,11 @@ from .sinks import SinkResolver
 
 
 class ACEAudioEngine:
-    """Scene-scoped ACE runtime and the owner of its components (see the module docstring).
-
-    One instance exists per Blender scene, keyed by ``scene.as_pointer()``:
-    ``ensure_instance(scene)`` returns or creates it, ``shutdown_all_instances()``
-    shuts every instance down on unregister or file load.
-    """
+    """Scene-scoped ACE runtime and the owner of its components."""
 
     _instances: Dict[int, "ACEAudioEngine"] = {}
 
     def __init__(self, scene_key: int):
-        """Initialise a new engine instance for a Blender scene.
-
-        Args:
-            scene_key: Integer scene pointer (``scene.as_pointer()``).  Used
-                as the lookup key in ``ACEAudioEngine._instances``.
-        """
         self.scene_key = int(scene_key)
         self.scene_name: str = ""
         self.graphs: Dict[str, ACEAudioGraph] = {}
@@ -94,21 +63,19 @@ class ACEAudioEngine:
 
     @staticmethod
     def _scene_key(scene) -> int:
-        """Return ``scene.as_pointer()`` as an int, or 0 if unavailable."""
         if scene is not None and hasattr(scene, "as_pointer"):
-            with utils.logged_errors("audio_engine.ACEAudioEngine._scene_key"):
+            with utils.logged_errors("engine.ACEAudioEngine._scene_key"):
                 return int(scene.as_pointer())
         return 0
 
     @staticmethod
     def _scene_name(scene) -> str:
-        """Return the scene name string, preferring ``name_full`` over ``name``."""
         if scene is None:
             return ""
         try:
             return str(getattr(scene, "name_full", "") or getattr(scene, "name", "") or "")
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._scene_name", exc)
+            utils.note_swallowed("engine.ACEAudioEngine._scene_name", exc)
             return ""
 
     def _clear_blender_runtime_refs(self) -> None:
@@ -143,7 +110,7 @@ class ACEAudioEngine:
         try:
             return bool(engine._undo_recovery_active())
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._undo_recovery_active_for_scene", exc)
+            utils.note_swallowed("engine.ACEAudioEngine._undo_recovery_active_for_scene", exc)
             return False
 
     @classmethod
@@ -164,7 +131,6 @@ class ACEAudioEngine:
 
     @classmethod
     def _instance_for_scene_name(cls, scene_name: str):
-        """Find an existing instance whose ``scene_name`` matches the given string."""
         token = str(scene_name or "").strip()
         if not token:
             return None
@@ -175,7 +141,6 @@ class ACEAudioEngine:
 
     @staticmethod
     def _prune_timestamp_map(mapping: Dict[str, float], max_entries: int):
-        """Evict the oldest entries from a ``{key: timestamp}`` dict in-place."""
         if max_entries <= 0 or len(mapping) <= max_entries:
             return
         overflow = len(mapping) - max_entries
@@ -186,12 +151,7 @@ class ACEAudioEngine:
 
     @classmethod
     def get_instance(cls, scene=None):
-        """Return the existing engine for *scene*, or None if none exists.
-
-        Falls back to a name-based lookup, then to the active context scene,
-        then to the first registered instance.  Returns None only when no
-        instance has been created yet.
-        """
+        """Return the existing engine for *scene*, or None if none exists."""
         key = cls._scene_key(scene)
         inst = cls._instances.get(key)
         if inst:
@@ -232,23 +192,18 @@ class ACEAudioEngine:
 
     @classmethod
     def shutdown_all_instances(cls):
-        """Shut down every engine instance, the preview monitor, and background workers.
-
-        Called from ``unregister_handlers()`` and the ``load_post`` handler.
-        Also resets the one-time biquad-fallback warning so it fires again on
-        the next session if Numba and scipy are still absent.
-        """
+        """Shut down every engine instance, the preview monitor, and background workers."""
         for inst in list(cls._instances.values()):
-            with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances"):
+            with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances"):
                 inst._shutdown_graphs(stop_parallel_pool=True, clear_bake_cache=True)
         cls._instances.clear()
-        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#2"):
+        with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#2"):
             PreviewRouter._preview_monitor.close()
-        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#3"):
+        with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#3"):
             SourceSpecsTask.shutdown_background_worker()
-        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#4"):
+        with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#4"):
             _clear_file_open_locks()
-        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#5"):
+        with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#5"):
             reset_biquad_fallback_warned()
 
     @staticmethod
@@ -272,7 +227,7 @@ class ACEAudioEngine:
             for task in graph.tasks.values():
                 close_fn = getattr(task, "close", None)
                 if callable(close_fn):
-                    with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_graphs"):
+                    with utils.logged_errors("engine.ACEAudioEngine._shutdown_graphs"):
                         close_fn()
         self.graphs.clear()
         self.frame._block_size_state.clear()
@@ -296,21 +251,21 @@ class ACEAudioEngine:
         except queue.Empty:
             pass
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._shutdown_graphs#2", exc)
+            utils.note_swallowed("engine.ACEAudioEngine._shutdown_graphs#2", exc)
 
     def invalidate_runtime_caches(self):
         writer = self.writer
         if writer is None:
             return
-        with utils.logged_errors("audio_engine.ACEAudioEngine.invalidate_runtime_caches"):
+        with utils.logged_errors("engine.ACEAudioEngine.invalidate_runtime_caches"):
             writer.clear_runtime_caches()
 
     def begin_undo_recovery(self, scene=None, cooldown_s: float = 0.75) -> None:
         self.undo_generation = int(getattr(self, "undo_generation", 0) or 0) + 1
         self.undo_recovery_until = time.monotonic() + max(float(cooldown_s), 0.0)
-        with utils.logged_errors("audio_engine.ACEAudioEngine.begin_undo_recovery"):
+        with utils.logged_errors("engine.ACEAudioEngine.begin_undo_recovery"):
             self.invalidate_runtime_caches()
-        with utils.logged_errors("audio_engine.ACEAudioEngine.begin_undo_recovery#2"):
+        with utils.logged_errors("engine.ACEAudioEngine.begin_undo_recovery#2"):
             SourceSpecsTask.shutdown_background_worker()
         self._shutdown_graphs(clear_bake_cache=False)
         now = time.time()
@@ -324,37 +279,22 @@ class ACEAudioEngine:
 
     @staticmethod
     def _is_rendering_job() -> bool:
-        """Return True if Blender is currently executing a render job (F12 or batch).
-
-        Uses ``bpy.app.is_job_running("RENDER")``, which covers both interactive
-        F12 renders and headless ``--background`` renders.  When True,
-        ``_unsafe_for_handler_writes()`` suppresses attribute/proxy writes
-        unless ``scene.render.use_lock_interface`` is enabled — that flag
-        serialises the render thread against the main thread and makes RNA
-        mutations safe.
-
-        This check is evaluated every frame inside ``execute_next_frame()`` to
-        prevent geometry-node attribute mutations from racing against the render
-        pipeline.  It returns False on any exception so that a missing or
-        older Blender API never blocks normal playback.
-        """
         try:
             checker = getattr(bpy.app, "is_job_running", None)
             return bool(checker("RENDER")) if callable(checker) else False
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._is_rendering_job", exc)
+            utils.note_swallowed("engine.ACEAudioEngine._is_rendering_job", exc)
             return False
 
     @staticmethod
     def _unsafe_for_handler_writes(scene) -> bool:
-        """Avoid mesh/RNA writes from frame handlers while rendering without UI lock."""
         is_rendering = ACEAudioEngine._is_rendering_job()
         if not is_rendering:
             return False
         try:
             return not bool(getattr(getattr(scene, "render", None), "use_lock_interface", False))
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._unsafe_for_handler_writes", exc)
+            utils.note_swallowed("engine.ACEAudioEngine._unsafe_for_handler_writes", exc)
             return True
 
     @staticmethod
@@ -376,7 +316,7 @@ class ACEAudioEngine:
                         try:
                             space_iter = list(spaces or [])
                         except Exception as exc:
-                            utils.note_swallowed("audio_engine.ACEAudioEngine._is_shader_viewport_preview_active#2", exc)
+                            utils.note_swallowed("engine.ACEAudioEngine._is_shader_viewport_preview_active", exc)
                             space_iter = []
                     else:
                         space_iter = [active_space]
@@ -388,21 +328,19 @@ class ACEAudioEngine:
                         if shading_type in {"RENDERED", "MATERIAL"}:
                             return True
         except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._is_shader_viewport_preview_active", exc)
+            utils.note_swallowed("engine.ACEAudioEngine._is_shader_viewport_preview_active#2", exc)
             return False
         return False
 
     @classmethod
     def _unsafe_for_shader_tree_mutations(cls, scene) -> bool:
-        """Avoid structural ShaderNodeTree edits during renders and live preview."""
         if cls._unsafe_for_handler_writes(scene):
             return True
         return cls._is_shader_viewport_preview_active()
 
     @staticmethod
     def _is_animation_playing() -> bool:
-        """Return True if any Blender window is currently playing back animation."""
-        with utils.logged_errors("audio_engine.ACEAudioEngine._is_animation_playing"):
+        with utils.logged_errors("engine.ACEAudioEngine._is_animation_playing"):
             wm = getattr(getattr(bpy, "context", None), "window_manager", None)
             windows = getattr(wm, "windows", []) if wm else []
             for win in windows:

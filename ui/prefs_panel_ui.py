@@ -1,6 +1,4 @@
-"""
-prefs_panel_ui.py is responsible for all the UI related elements of the add-on preferences panel.
-"""
+"""prefs_panel_ui.py is responsible for all the UI related elements of the add-on preferences panel."""
 
 import bpy # type: ignore
 try:
@@ -12,12 +10,10 @@ from .. import utils
 
 
 def _addon_module_name() -> str:
-    """Return the root add-on module name Blender uses for preferences lookup."""
     package_name = __package__ or __name__
     return str(package_name).split(".")[0]
 
 
-# --- Data structures ---
 class ACE_DependencyItem(bpy.types.PropertyGroup):
     """Stores metadata about a required dependency."""
 
@@ -27,7 +23,6 @@ class ACE_DependencyItem(bpy.types.PropertyGroup):
     is_builtin: bpy.props.BoolProperty(name="Built-in", default=False)           # type: ignore
 
 
-# --- UI Lists ---
 class ACE_UL_dependencies(bpy.types.UIList):
     """Displays the list of AudioCore Engine dependencies."""
 
@@ -60,14 +55,12 @@ class ACE_UL_dependencies(bpy.types.UIList):
             op.library_name = item.library_id
 
 
-# --- Add-on preferences ---
 class ACE_preferences(bpy.types.AddonPreferences):
     """Preferences panel for AudioCore Engine."""
 
     bl_idname = _addon_module_name()
 
     def _update_debug_logging(self, context):
-        """Update callback for debug logging toggle."""
         utils.set_debug_logging(self.debug_logging)
 
     debug_logging: bpy.props.BoolProperty( # type: ignore
@@ -162,7 +155,6 @@ def _prefs_load_post(_dummy):
     sync_preferences_dependencies()
 
 
-# --- Registration ---
 classes = (
     ACE_DependencyItem,
     ACE_UL_dependencies,

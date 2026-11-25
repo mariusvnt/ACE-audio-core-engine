@@ -9,10 +9,6 @@ from .sync import _resolve_ui_list_selected_node
 
 
 def _resolve_capture_node(context):
-    """
-    Prefer the active graph list selection in the N-panel. Fallback to the GN
-    editor active ACE node when there is no valid list selection.
-    """
     node, parsed = _resolve_ui_list_selected_node(context)
     if node and parsed:
         return node, parsed
@@ -90,11 +86,11 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             try:
                 val = float(getattr(sock, "default_value", 0.0))
             except Exception as exc:
-                utils.note_swallowed("n_panel_ui._draw_selected_node_operator_settings", exc)
+                utils.note_swallowed("selection._draw_selected_node_operator_settings", exc)
                 continue
             split_sockets.append(sock)
             split_values.append(val)
-            with utils.logged_errors("n_panel_ui._draw_selected_node_operator_settings#2"):
+            with utils.logged_errors("selection._draw_selected_node_operator_settings#2"):
                 sock.min_value = 0.0
                 sock.max_value = 20000.0
                 sock.soft_min = 20.0
@@ -117,7 +113,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                 try:
                     hz = float(getattr(sock, "default_value", 0.0))
                 except Exception as exc:
-                    utils.note_swallowed("n_panel_ui._draw_selected_node_operator_settings#3", exc)
+                    utils.note_swallowed("selection._draw_selected_node_operator_settings#3", exc)
                     hz = 0.0
                 pos = _splitter_hz_to_norm(hz, low_hz=low_hz, high_hz=high_hz)
                 sub.label(text=f"Cut {idx} ({pos:.2f})")
@@ -211,7 +207,7 @@ def _draw_bake_controls(layout, context):
     try:
         status = str(active_source.get("ace_bake_status", "") or "")
     except Exception as exc:
-        utils.note_swallowed("n_panel_ui._draw_bake_controls", exc)
+        utils.note_swallowed("selection._draw_bake_controls", exc)
         status = ""
     if not status:
         layout.label(text="Bake stream outputs over the scene frame range.", icon="INFO")
@@ -221,7 +217,7 @@ def _draw_bake_controls(layout, context):
         try:
             err = str(active_source.get("ace_bake_error", "") or "")
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._draw_bake_controls#2", exc)
+            utils.note_swallowed("selection._draw_bake_controls#2", exc)
             err = ""
         warn = layout.row()
         warn.alert = True
@@ -235,7 +231,7 @@ def _draw_bake_controls(layout, context):
         try:
             progress = float(active_source.get("ace_bake_progress", 0.0) or 0.0)
         except Exception as exc:
-            utils.note_swallowed("n_panel_ui._draw_bake_controls#3", exc)
+            utils.note_swallowed("selection._draw_bake_controls#3", exc)
             progress = 0.0
         pct = int(max(0.0, min(progress, 1.0)) * 100.0)
         layout.label(text=f"Baking in progress... {pct}%", icon="TIME")

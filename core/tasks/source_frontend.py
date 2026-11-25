@@ -21,7 +21,7 @@ class SourceFrontendStage:
             attack_ms = float(max(getattr(ctx, "envelope_attack", 0.0) or 0.0, 0.0))
             release_ms = float(max(getattr(ctx, "envelope_release", 0.0) or 0.0, 0.0))
         except Exception as exc:
-            utils.note_swallowed("audio_tasks_registry.SourceTask._frontend_runtime_config", exc)
+            utils.note_swallowed("source_frontend.SourceFrontendStage._frontend_runtime_config", exc)
             return None
         return (freq_min, freq_max, attack_ms, release_ms)
 
@@ -29,7 +29,7 @@ class SourceFrontendStage:
         engine = getattr(self, "engine_ref", None)
         resolver = getattr(getattr(engine, "parallel", None), "source_task_requires_local_frontend", None)
         if callable(resolver):
-            with utils.logged_errors("audio_tasks_registry.SourceTask._should_materialize_local_frontend"):
+            with utils.logged_errors("source_frontend.SourceFrontendStage._should_materialize_local_frontend"):
                 return bool(resolver(self))
         return True
 
@@ -105,7 +105,6 @@ class SourceFrontendStage:
             self._workspace_for_size(n)
 
     def _ensure_frontend_workspace(self, length: int):
-        """Allocate/reuse working buffers for frontend filtering."""
         if length <= 0:
             return
         if self._frontend_buffer is None or self._frontend_buffer.shape[0] != int(length):
@@ -128,10 +127,7 @@ class SourceFrontendStage:
         return float(b0), float(b1), float(a1)
 
     def _run_iir(self, data: np.ndarray, coeffs: Tuple[float, float, float], state: Dict[str, float], out: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Vectorized single-pole IIR (biquad degenerated to 1st order) using a closed-form cumsum.
-        Keeps stateful x1/y1 between calls.
-        """
+        """Vectorized single-pole IIR (biquad degenerated to 1st order) using a closed-form cumsum."""
         b0, b1, a1 = coeffs
         n = data.shape[0]
         if out is None or out.shape != data.shape:
@@ -144,7 +140,7 @@ class SourceFrontendStage:
         x_prev = float(state.get("x1", 0.0))
         y_prev = float(state.get("y1", 0.0))
         if NUMBA_AVAILABLE:
-            with utils.logged_errors("audio_tasks_registry.SourceTask._run_iir"):
+            with utils.logged_errors("source_frontend.SourceFrontendStage._run_iir"):
                 src = data.astype(np.float32, copy=False)
                 filtered, x_last, y_last = _iir1_filter_block(
                     src,
@@ -196,6 +192,5 @@ class SourceFrontendStage:
         return out
 
     def _apply_frontend(self, block: np.ndarray) -> np.ndarray:
-        """Backward-compatible mono wrapper around the shared frontend processor."""
         analysis_mono, _, _ = self._analysis_frontend_tracks(block, None)
         return analysis_mono
