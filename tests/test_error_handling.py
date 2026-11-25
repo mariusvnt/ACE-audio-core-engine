@@ -1,5 +1,5 @@
 """
-Errors are never absorbed silently (ARCHITECTURE.md §13).
+Errors are never absorbed silently (ARCHITECTURE.md §9).
 
 A broad handler (bare ``except``, ``except Exception`` / ``BaseException``)
 must record or log what it catches, or re-raise, unless its ``except`` line is

@@ -1,7 +1,4 @@
-"""
-Architectural rules from README "Strict Development Guardrails", checked by
-behaviour rather than by reading source text.
-"""
+"""Architectural rules (ARCHITECTURE.md §1, §6, §7), checked by behaviour."""
 
 import os
 import subprocess
