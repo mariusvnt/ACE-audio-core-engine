@@ -236,7 +236,7 @@ class ACEAudioEngine:
         """
         for inst in list(cls._instances.values()):
             with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances"):
-                inst._shutdown_graphs(wait_parallel_pool=True, clear_bake_cache=True)
+                inst._shutdown_graphs(stop_parallel_pool=True, clear_bake_cache=True)
         cls._instances.clear()
         with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#2"):
             PreviewRouter._preview_monitor.close()
@@ -258,9 +258,12 @@ class ACEAudioEngine:
         scene = scene_or_engine_settings
         return getattr(getattr(scene, "audiocore", None), "engine_settings", None)
 
-    def _shutdown_graphs(self, wait_parallel_pool: bool = False, clear_bake_cache: bool = False):
+    def _shutdown_graphs(self, stop_parallel_pool: bool = False, clear_bake_cache: bool = False):
         self.preview._stop_preview_worker()
-        self.parallel._shutdown_parallel_pool(wait=wait_parallel_pool)
+        if stop_parallel_pool:
+            self.parallel._shutdown_parallel_pool(wait=True)
+        else:
+            self.parallel._parallel_reset_generation()
         for graph in self.graphs.values():
             for task in graph.tasks.values():
                 close_fn = getattr(task, "close", None)
@@ -305,7 +308,7 @@ class ACEAudioEngine:
             self.invalidate_runtime_caches()
         with utils.logged_errors("audio_engine.ACEAudioEngine.begin_undo_recovery#2"):
             SourceSpecsTask.shutdown_background_worker()
-        self._shutdown_graphs(wait_parallel_pool=False, clear_bake_cache=False)
+        self._shutdown_graphs(clear_bake_cache=False)
         now = time.time()
         self.frontends._pending_scene_rebuild = True
         self.frontends._last_dirty_time = now

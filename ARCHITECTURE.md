@@ -335,17 +335,31 @@ libraries installed (`tests/blender_perf.py`):
 
 | Nodes | p95 frame ms, threads | p95 frame ms, processes | Fresh worker values |
 | --- | --- | --- | --- |
-| 24 | 3.0 | 1.8 | 99.6% |
-| 36 | 3.7 | 2.1 | 99.6% |
-| 50 | 7.4 | 2.4 | 99.6% |
+| 24 | 3.6 | 1.8 | 99.6% |
+| 36 | 4.6 | 2.2 | 99.6% |
+| 50 | 4.8 | 2.8 | 99.6% |
 
 The rule set before measuring was: keep processes only if their p95 frame
 time is at most 0.8x threads and at least 95% of frames get worker values.
-Both modes stay far under the 41.7 ms frame budget. Costs of processes:
-a 3.3-3.6 s cold start after the pool is created (local DSP covers it), and
-with two job shards per frame (a frequency splitter feeding a stream node)
-about half the jobs still miss the 66 ms stale-job budget; that cause is
-not identified yet.
+Both modes stay far under the 41.7 ms frame budget. The cost of processes is
+a ~2 s cold start after the pool is created, covered by local DSP.
+
+### 14.2 Worker pool lifecycle
+A spawned worker imports the DSP stack (~4 s) before it can run a job. The
+pool therefore:
+- runs that import in a process initializer, so a cold process never takes a job;
+- sends no job until one warm-up job per needed worker (shards x in-flight
+  limit) has answered;
+- survives recompiles: a compile only starts a new job generation, and
+  workers drop the graphs of older generations;
+- resends a graph's IR until every worker process has acknowledged it.
+
+Without this, every compile restarted the pool, the pool grew to
+`cpu_count - 1` processes while the first ones were still importing, and
+every job submitted in those ~4 s missed the 66 ms stale budget (the
+"half the jobs are late" reading came from counting those warm-up drops).
+A job dropped while still running keeps its shared-memory payload slot
+until it finishes, so the next frame cannot overwrite input it is reading.
 
 ## 15. Testing Architecture
 Test coverage includes:

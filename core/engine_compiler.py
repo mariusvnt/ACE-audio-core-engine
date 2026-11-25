@@ -80,7 +80,6 @@ class GraphCompiler:
         self.engine.frontends._pending_scene_rebuild = False
         stream_accumulator_state = self._export_stream_accumulator_state()
         self.engine._shutdown_graphs()
-        self.engine.parallel._parallel_reset_generation()
         self.engine.graphs.clear()
         self.engine._last_attr_sync_frame.clear()
         self.engine._attr_schema_dirty.clear()

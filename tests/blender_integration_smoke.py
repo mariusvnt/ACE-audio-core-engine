@@ -194,6 +194,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         scene.frame_set(1)
     quiet = loud = None
     first_accept_s = None
+    parallel = engine.parallel
+    counts_before = (parallel._parallel_result_accepts, parallel._parallel_stale_job_drops, parallel._parallel_queue_pressure_drops)
     compiles = []
     original_compile = engine.compiler.compile_scene_frontends
     engine.compiler.compile_scene_frontends = lambda *a, **k: (compiles.append(1), original_compile(*a, **k))[1]
@@ -213,9 +215,15 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     engine.compiler.compile_scene_frontends = original_compile
     _assert(not compiles, f"Playback without edits recompiled the scene {len(compiles)} time(s)")
     if parallel_mode == "processes_dsp":
-        print(f"[ACE smoke] processes_dsp: cold start {cold_start_s} s; first worker result after {first_accept_s} s, "
-              f"accepted={engine.parallel._parallel_result_accepts}, stale_job_drops={engine.parallel._parallel_stale_job_drops}, "
-              f"queue_pressure_drops={engine.parallel._parallel_queue_pressure_drops}")
+        accepted, stale, pressure = (
+            now - before
+            for now, before in zip(
+                (parallel._parallel_result_accepts, parallel._parallel_stale_job_drops, parallel._parallel_queue_pressure_drops),
+                counts_before,
+            )
+        )
+        print(f"[ACE smoke] processes_dsp: cold start {cold_start_s} s; first worker result after {first_accept_s} s; "
+              f"during playback: accepted={accepted}, stale_job_drops={stale}, queue_pressure_drops={pressure}")
     if not loud:
         details = []
         for uid, graph in engine.graphs.items():

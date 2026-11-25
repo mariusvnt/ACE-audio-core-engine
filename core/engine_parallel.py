@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from .. import utils
 from .abstract_tree import ACEAbstractNode, ACEAbstractTree
 from .audio_tasks_registry import ACEAudioGraph, SAMPLE_RATE, SourceTask
-from .parallel_dsp import evaluate_parallel_job
+from .parallel_dsp import evaluate_parallel_job, warm_worker, worker_pid
 from .engine_common import BrokenProcessPool, _SHARED_MEMORY_AVAILABLE, _main_script_hidden_from_spawn, engine_settings, mp_shared_memory
 
 
@@ -81,6 +81,12 @@ class ParallelOffload:
         self._parallel_result_accepts: int = 0
         # Parallel submit tracking for pause-drain SHM reclaim.
         self._parallel_last_submit_frame: int = -10_000_000
+        # Untracked jobs still running in a worker, with the payload slots they read.
+        self._parallel_retired: Dict[Any, List[str]] = {}
+        # None: warm-up not started; empty: pool warm.
+        self._parallel_warmup_futures: Optional[list] = None
+        # Worker pids that hold the current graph IR, per graph.
+        self._parallel_ir_acks: Dict[str, set[int]] = {}
 
     @classmethod
     def _parallel_mode(cls, scene_or_engine_settings=None) -> str:
@@ -228,22 +234,34 @@ class ParallelOffload:
         # SHM slot exhaustion under high-core-count machines.
         return max(min(int(self._PARALLEL_MAX_INFLIGHT_PER_SOURCE), 2), 1)
 
-    def _parallel_clear_runtime_state(self, keep_last_valid: bool = True):
-        for meta in list(self._parallel_future_meta.values()):
-            self._parallel_cleanup_ipc_handles(meta)
+    def _parallel_forget_jobs(self):
+        """Stop tracking every job; jobs still running keep their payload slots until done."""
+        for future_obj in list(self._parallel_future_meta.keys()):
+            self._parallel_drop_future(future_obj)
         self._parallel_inflight.clear()
         self._parallel_future_meta.clear()
         self._parallel_results.clear()
         self._parallel_failures.clear()
         self._parallel_disabled_sources.clear()
         self._parallel_graph_ir_required.clear()
+        self._parallel_ir_acks.clear()
         self._parallel_frame_payload_slots.clear()
-        self._parallel_payload_slot_refs.clear()
-        self._parallel_payload_slot_counters.clear()
-        self._parallel_release_payload_slots()
-        if not keep_last_valid:
-            self._parallel_last_valid.clear()
-            self._parallel_last_valid_frame.clear()
+        self._parallel_last_valid.clear()
+        self._parallel_last_valid_frame.clear()
+
+    def _parallel_require_ir(self, graph_key: str):
+        self._parallel_graph_ir_required.add(graph_key)
+        self._parallel_ir_acks[graph_key] = set()
+
+    def _parallel_ack_ir(self, graph_key: str, pid: int):
+        acks = self._parallel_ir_acks.setdefault(graph_key, set())
+        if pid > 0:
+            acks.add(pid)
+        if len(acks) >= self._parallel_process_count():
+            self._parallel_graph_ir_required.discard(graph_key)
+
+    def _parallel_process_count(self) -> int:
+        return max(len(getattr(self._parallel_executor, "_processes", None) or {}), 1)
 
     def _mark_parallel_ir_required_for_all_graphs(self):
         self._parallel_graph_ir_required.clear()
@@ -252,7 +270,7 @@ class ParallelOffload:
             if not graph_key:
                 continue
             if bool(getattr(graph, "parallel_ir", {})) and bool(getattr(graph, "parallel_offload_attr_keys", [])):
-                self._parallel_graph_ir_required.add(graph_key)
+                self._parallel_require_ir(graph_key)
 
     def _shutdown_parallel_pool(self, wait: bool = False):
         executor = self._parallel_executor
@@ -274,43 +292,40 @@ class ParallelOffload:
         if executor is not None:
             with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_parallel_pool#4"):
                 executor.shutdown(wait=wait_effective, cancel_futures=True)
-        self._parallel_clear_runtime_state(keep_last_valid=False)
+        self._parallel_forget_jobs()
+        self._parallel_retired.clear()
+        self._parallel_warmup_futures = None
+        self._parallel_release_payload_slots()
+        self._parallel_payload_slot_refs.clear()
+        self._parallel_payload_slot_counters.clear()
 
     def _parallel_reset_generation(self):
+        """Start a new job generation on the running pool; workers drop older graphs themselves."""
         self._parallel_generation_id = int(self._parallel_generation_id) + 1
         self._parallel_job_seq = 0
-        # NOTE: _parallel_restart_count intentionally NOT reset here.
-        # Resetting it on every compile() would bypass _PARALLEL_RESTART_LIMIT
-        # under auto-compile mode (frequent recompiles = unlimited pool restarts).
-        # The count is only cleared in __init__ (engine session boundary).
         self._parallel_pool_failed = False
-        self._parallel_clear_runtime_state(keep_last_valid=False)
+        self._parallel_forget_jobs()
+        self._parallel_destroy_idle_payload_slots()
 
     def _ensure_parallel_pool(self, scene) -> bool:
-        """Ensure the ProcessPoolExecutor is running; create it if needed.
-
-        Returns True when the pool is ready for job submission.  Returns False
-        when parallel mode is disabled, the pool has permanently failed, or a
-        new spawn attempt raises an exception (in which case
-        ``_parallel_pool_failed`` is set to prevent repeated failures).
-        """
+        """True when the pool runs and its workers are warm."""
         if self._parallel_mode(scene) != "processes_dsp":
             self._shutdown_parallel_pool(wait=False)
             return False
         if self._parallel_pool_failed:
             return False
         if self._parallel_executor is not None:
-            return True
+            return self._parallel_pool_warm(scene)
         worker_count = self._parallel_worker_count(scene)
         try:
             spawn_ctx = multiprocessing.get_context("spawn")
             self._parallel_executor = concurrent.futures.ProcessPoolExecutor(
                 max_workers=max(int(worker_count), 1),
                 mp_context=spawn_ctx,
+                initializer=warm_worker,
             )
-            # New pools start with empty worker caches and need a first IR push.
             self._mark_parallel_ir_required_for_all_graphs()
-            return True
+            return self._parallel_pool_warm(scene)
         except Exception as e:
             self._parallel_executor = None
             self._parallel_pool_failed = True
@@ -321,6 +336,32 @@ class ParallelOffload:
                 min_interval=0.0,
             )
             return False
+
+    def _parallel_warm_demand(self) -> int:
+        shards = 0
+        for graph in self.engine.graphs.values():
+            if getattr(graph, "parallel_ir", {}) and getattr(graph, "parallel_offload_attr_keys", []):
+                shards += max(len(getattr(graph, "parallel_output_shards", []) or []), 1)
+        return shards * self._parallel_inflight_limit()
+
+    def _parallel_pool_warm(self, scene) -> bool:
+        """Start one warm-up job per needed worker, then report whether all have answered."""
+        if self._parallel_warmup_futures is None:
+            demand = self._parallel_warm_demand()
+            if demand <= 0:
+                return False
+            count = min(demand, self._parallel_worker_count(scene))
+            with _main_script_hidden_from_spawn():
+                self._parallel_warmup_futures = [self._parallel_executor.submit(worker_pid) for _ in range(count)]
+        pending = self._parallel_warmup_futures
+        if not all(f.done() for f in pending):
+            return False
+        failed = next((f.exception() for f in pending if f.exception() is not None), None)
+        self._parallel_warmup_futures = []
+        if failed is not None:
+            self._restart_parallel_pool(scene, f"warm-up failed: {failed}")
+            return False
+        return True
 
     def _restart_parallel_pool(self, scene, reason: str, source_key: str = "") -> bool:
         if self._parallel_restart_count >= self._PARALLEL_RESTART_LIMIT:
@@ -509,21 +550,18 @@ class ParallelOffload:
             key for key in list(getattr(graph, "output_attr_keys", []) or [])
             if key not in offload_set
         ]
-        try:
-            digest_payload = json.dumps(
-                graph.parallel_ir,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            graph.parallel_ir_digest = hashlib.blake2b(digest_payload, digest_size=8).hexdigest()
-        except Exception as exc:
-            utils.note_swallowed("audio_engine.ACEAudioEngine._prepare_parallel_graph_ir#2", exc)
-            graph.parallel_ir_digest = hashlib.blake2b(
-                str(graph.parallel_ir).encode("utf-8", "ignore"),
-                digest_size=8,
-            ).hexdigest()
+        graph.parallel_ir_digest = self._parallel_ir_digest(graph.parallel_ir)
         if graph.parallel_graph_uid:
-            self._parallel_graph_ir_required.add(str(graph.parallel_graph_uid))
+            self._parallel_require_ir(str(graph.parallel_graph_uid))
+
+    @staticmethod
+    def _parallel_ir_digest(parallel_ir: Dict[str, Any]) -> str:
+        try:
+            payload = json.dumps(parallel_ir, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            utils.note_swallowed("engine_parallel.ParallelOffload._parallel_ir_digest", exc)
+            payload = str(parallel_ir).encode("utf-8", "ignore")
+        return hashlib.blake2b(payload, digest_size=8).hexdigest()
 
     def _refresh_specs_ir_bpm(self) -> None:
         """Patch scene_bpm / scene_beats_per_bar / scene_fps in each graph's
@@ -564,9 +602,10 @@ class ParallelOffload:
                     params["scene_beats_per_bar"] = bpb
                     changed = True
             if changed:
+                graph.parallel_ir_digest = self._parallel_ir_digest(parallel_ir)
                 graph_key = str(getattr(graph, "parallel_graph_uid", "") or "")
                 if graph_key:
-                    self._parallel_graph_ir_required.add(graph_key)
+                    self._parallel_require_ir(graph_key)
 
     def _build_parallel_source_payload(self, chunk, block_size: int, sample_rate: int) -> Dict[str, Any]:
         """Serialise an AudioChunk into a picklable worker payload dict.
@@ -642,7 +681,6 @@ class ParallelOffload:
         meta = self._parallel_future_meta.pop(future_obj, None)
         if not meta:
             return
-        self._parallel_cleanup_ipc_handles(meta)
         queue_key = str(meta.get("queue_key", "") or meta.get("graph_key", "") or "")
         pending = self._parallel_inflight.get(queue_key)
         if pending:
@@ -652,8 +690,24 @@ class ParallelOffload:
                 pass
             if not pending:
                 self._parallel_inflight.pop(queue_key, None)
+        slot_keys = [str(v) for v in meta.get("payload_slot_keys", []) or []]
+        if future_obj.done() or future_obj.cancel():
+            self._parallel_release_slot_keys(slot_keys)
+        elif slot_keys:
+            self._parallel_retired[future_obj] = slot_keys
+
+    def _parallel_release_slot_keys(self, slot_keys: List[str]):
+        for slot_key in slot_keys:
+            self._parallel_release_payload_slot(slot_key)
+
+    def _parallel_reap_retired(self):
+        for future_obj, slot_keys in list(self._parallel_retired.items()):
+            if future_obj.done():
+                del self._parallel_retired[future_obj]
+                self._parallel_release_slot_keys(slot_keys)
 
     def _parallel_poll_futures(self, scene, current_frame: int):
+        self._parallel_reap_retired()
         if not self._parallel_future_meta:
             return
         now = time.time()
@@ -721,9 +775,11 @@ class ParallelOffload:
                 if generation_id != int(self._parallel_generation_id):
                     continue
                 res_key = str(payload.get("graph_uid", "") or graph_key)
+                worker = utils.as_int(payload.get("pid"), 0)
                 if bool(payload.get("needs_graph_ir", False)):
                     if res_key:
                         self._parallel_graph_ir_required.add(res_key)
+                        self._parallel_ir_acks.get(res_key, set()).discard(worker)
                     continue
                 worker_elapsed_s = float(payload.get("elapsed_s", 0.0) or 0.0)
                 if worker_elapsed_s > 0.0:
@@ -736,7 +792,7 @@ class ParallelOffload:
                 values = dict(payload.get("values", {}) or {})
                 if not res_key:
                     continue
-                self._parallel_graph_ir_required.discard(res_key)
+                self._parallel_ack_ir(res_key, worker)
                 if values:
                     self._parallel_result_accepts += 1
                     merged_last = dict(self._parallel_last_valid.get(res_key, {}) or {})
@@ -982,13 +1038,10 @@ class ParallelOffload:
         stale_window_frames = max(1, int(self._PARALLEL_STALE_REUSE_MS * fps_now / 1000.0 + 0.5))
         return (int(frame_index) - last_frame) <= stale_window_frames
 
-    def _parallel_cleanup_ipc_handles(self, meta: Dict[str, Any] | None):
-        if not isinstance(meta, dict):
-            return
-        slot_keys = list(meta.pop("payload_slot_keys", []) or [])
-        for slot_key in slot_keys:
-            self._parallel_release_payload_slot(str(slot_key))
-        meta.pop("ipc_handles", None)
+    def _parallel_destroy_idle_payload_slots(self):
+        for slot_key in list(self._parallel_payload_slots.keys()):
+            if int(self._parallel_payload_slot_refs.get(slot_key, 0) or 0) <= 0:
+                self._parallel_destroy_payload_slot(slot_key)
 
     @staticmethod
     def _parallel_close_unlink_shm(shm_obj):

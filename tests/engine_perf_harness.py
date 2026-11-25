@@ -881,7 +881,7 @@ def _run_engine_benchmark(
         if bpy_mod is not None and hasattr(bpy_mod, "context"):
             bpy_mod.context.scene = prev_context_scene
         try:
-            engine._shutdown_graphs(wait_parallel_pool=True, clear_bake_cache=True)
+            engine._shutdown_graphs(stop_parallel_pool=True, clear_bake_cache=True)
         except Exception:
             pass
 

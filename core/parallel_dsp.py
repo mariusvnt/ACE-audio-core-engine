@@ -8,6 +8,7 @@ This module is intentionally Blender-agnostic:
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from collections import OrderedDict as _OrderedDict
@@ -789,6 +790,7 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
                 "frame_id": frame_id,
                 "values": {},
                 "needs_graph_ir": True,
+                "pid": os.getpid(),
             }
         graph = _compile_worker_graph(graph_ir=graph_ir, sample_rate=sample_rate, block_size=block_size)
         _WORKER_GRAPH_CACHE[cache_key] = graph
@@ -831,4 +833,53 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "frame_id": frame_id,
         "values": values,
         "elapsed_s": float(max(time.perf_counter() - t0, 0.0)) if t0 is not None else 0.0,
+        "pid": os.getpid(),
     }
+
+
+_WARMUP_STREAM_TYPES = (
+    "rms", "lufs", "peak", "pitch", "spectral_centroid", "spectral_flux",
+    "onset", "zero_crossing_rate", "stereo_width", "stereo_balance", "stereo_vector",
+)
+
+
+def warm_worker():
+    """Pool initializer: load the DSP stack before the process takes jobs."""
+    try:
+        _warm_evaluation()
+    except Exception as exc:  # noqa: BLE001 boundary: a failed warm-up must not break the pool
+        utils.note_swallowed("parallel_dsp.warm_worker", exc)
+
+
+def _warm_evaluation():
+    sample_rate, block_size = 48000, 2000
+    nodes = {"src": {"category": "source_mngmt", "type": "src", "parameters": {}}}
+    nodes["split"] = {"category": "delta", "type": "frequency_splitter", "parameters": {}}
+    links = [("src", 0, "split", 0)]
+    output_specs = {}
+    wiring = [("src", t) for t in _WARMUP_STREAM_TYPES] + [("split", "rms")]
+    for parent, node_type in wiring:
+        node_id = f"{parent}_{node_type}"
+        nodes[node_id] = {"category": "stream", "type": node_type, "parameters": {}}
+        links.append((parent, 0, node_id, 0))
+        output_specs[node_id] = {"node_id": node_id, "socket_idx": 0, "attr_type": "FLOAT"}
+    graph = _compile_worker_graph(
+        {"nodes": nodes, "links": links, "source_node_ids": ["src"], "source_ir": {}, "output_specs": output_specs},
+        sample_rate=sample_rate,
+        block_size=block_size,
+    )
+    try:
+        t = np.arange(block_size, dtype=np.float32) / sample_rate
+        mono = (0.5 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32)
+        payload = {"mono": mono, "stereo": np.stack([mono, mono]), "sample_rate": sample_rate}
+        for frame_id in range(2):
+            graph.set_source_payloads({"src": payload}, frame_id=frame_id, block_size=block_size)
+            for spec in output_specs.values():
+                with utils.logged_errors("parallel_dsp._warm_evaluation"):
+                    graph.tasks[spec["node_id"]].get_output(frame_id, 0)
+    finally:
+        graph.close()
+
+
+def worker_pid() -> int:
+    return os.getpid()
