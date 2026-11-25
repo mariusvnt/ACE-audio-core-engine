@@ -232,24 +232,24 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.frontends._pending_tree_bl_idname = ""
         engine.frontends._pending_scene_rebuild = False
         engine.frontends._last_request_time = 0.0
-        engine._last_compile_time = 0.0
+        engine.compiler._last_compile_time = 0.0
         engine.frontends._dirty_trees = set()
         engine.frontends._dirty_tree_ptrs = set()
         engine.frontends._dirty_tree_bl_idnames = {}
         engine.frontends._dirty_frontend_uids = set()
-        engine._compiled_tree_ref = None
-        engine._compiled_tree_ptr = 0
-        engine._compiled_tree_frontend_uid = ""
-        engine._compiled_tree_bl_idname = ""
-        engine._compiled_frontend_refs = {}
-        engine._compiled_frontend_snapshots = {}
-        engine._compiled_frontend_ptrs = {}
-        engine._compiled_frontend_uids = ()
-        engine._last_frontend_membership_signature = ()
+        engine.compiler._compiled_tree_ref = None
+        engine.compiler._compiled_tree_ptr = 0
+        engine.compiler._compiled_tree_frontend_uid = ""
+        engine.compiler._compiled_tree_bl_idname = ""
+        engine.compiler._compiled_frontend_refs = {}
+        engine.compiler._compiled_frontend_snapshots = {}
+        engine.compiler._compiled_frontend_ptrs = {}
+        engine.compiler._compiled_frontend_uids = ()
+        engine.compiler._last_frontend_membership_signature = ()
         engine.frontends._is_compiling = False
         engine.probes._meta_cache = {}
         engine.probes._meta_cache_ttl = 30.0
-        engine._last_tree_signature = None
+        engine.compiler._last_tree_signature = None
         engine._last_attr_sync_frame = {}
         engine._block_size_state = {}
         engine._bootstrap_retry_at = 0.0
@@ -627,18 +627,18 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         discovery = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref)
         stable_sig = engine.frontends._frontend_membership_signature([discovery])
-        engine._last_frontend_membership_signature = stable_sig
+        engine.compiler._last_frontend_membership_signature = stable_sig
         engine.frontends._dirty_frontend_uids = set()
         engine.frontends._pending_scene_rebuild = True
         engine.frontends._last_dirty_time = 0.0
-        engine._last_compile_time = 0.0
+        engine.compiler._last_compile_time = 0.0
         engine.frontends._first_dirty_time = 0.0
         engine.frontends._is_compiling = False
-        engine._compiled_frontend_refs = {}
+        engine.compiler._compiled_frontend_refs = {}
         engine.frontends._pending_tree = None
         engine.frontends._dirty_trees = set()
         engine.frontends.discover_scene_frontends = lambda _scene: [discovery]
-        engine.compile_scene_frontends = lambda *_args, **_kwargs: self.fail("compile_scene_frontends should be skipped")
+        engine.compiler.compile_scene_frontends = lambda *_args, **_kwargs: self.fail("compile_scene_frontends should be skipped")
 
         compiled = engine.frontends._maybe_compile_dirty(_FakeScene())
 
@@ -658,19 +658,19 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         discovery = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref, consumer_object_names=("Cube",))
         stable_sig = engine.frontends._frontend_membership_signature([discovery])
-        engine._last_frontend_membership_signature = stable_sig
+        engine.compiler._last_frontend_membership_signature = stable_sig
         engine.frontends._dirty_frontend_uids = set()
         engine.frontends._pending_scene_rebuild = False
         engine.frontends._last_dirty_time = 0.0
-        engine._last_compile_time = 0.0
+        engine.compiler._last_compile_time = 0.0
         engine.frontends._first_dirty_time = 0.0
         engine.frontends._last_request_time = 0.0
         engine.frontends._is_compiling = False
-        engine._compiled_frontend_refs = {}
+        engine.compiler._compiled_frontend_refs = {}
         engine.frontends._pending_tree = None
         engine.frontends._dirty_trees = set()
         engine.frontends.discover_scene_frontends = lambda _scene: [discovery]
-        engine.compile_scene_frontends = lambda *_args, **_kwargs: self.fail("compile_scene_frontends should be skipped")
+        engine.compiler.compile_scene_frontends = lambda *_args, **_kwargs: self.fail("compile_scene_frontends should be skipped")
 
         engine.frontends.request_recompile(None)
         engine.frontends._last_dirty_time = 0.0
@@ -1120,13 +1120,13 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 consumer_object_names=(),
             )
         ]
-        engine._last_frontend_membership_signature = ()
+        engine.compiler._last_frontend_membership_signature = ()
         engine.frontends._dirty_frontend_uids = {"ACE_FRONTEND_SHADER"}
         engine.frontends._pending_scene_rebuild = False
         engine.frontends._dirty_trees = [shader_tree]
         engine.frontends._pending_tree = shader_tree
         engine.frontends._last_dirty_time = 0.0
-        engine._last_compile_time = 0.0
+        engine.compiler._last_compile_time = 0.0
         engine.frontends._is_compiling = False
         engine.frontends._first_dirty_time = 0.0
         engine.frontends._dirty_tree_ptrs = {shader_tree.as_pointer()}
@@ -1134,7 +1134,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.frontends._pending_tree_ptr = shader_tree.as_pointer()
         engine.frontends._pending_tree_bl_idname = "ShaderNodeTree"
         engine._structural_tree_writes_allowed = lambda *_args, **_kwargs: False
-        engine.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
+        engine.compiler.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
         orig_log = self.utils_mod.log_throttled
         self.utils_mod.log_throttled = lambda *args, **kwargs: log_calls.append((args, kwargs))
         try:
@@ -1151,13 +1151,13 @@ class TestMultiFrontendCompile(unittest.TestCase):
     def test_begin_undo_recovery_clears_cached_frontend_refs_and_sets_recovery_window(self):
         engine = self._engine_shell()
         engine.abstract_tree_ref = object()
-        engine._compiled_tree_ref = object()
-        engine._compiled_tree_ptr = 123
-        engine._compiled_tree_frontend_uid = "frontend_a"
-        engine._compiled_frontend_refs = {"frontend_a": object()}
-        engine._compiled_frontend_snapshots = {"frontend_a": object()}
-        engine._compiled_frontend_ptrs = {"frontend_a": 123}
-        engine._compiled_frontend_uids = ("frontend_a",)
+        engine.compiler._compiled_tree_ref = object()
+        engine.compiler._compiled_tree_ptr = 123
+        engine.compiler._compiled_tree_frontend_uid = "frontend_a"
+        engine.compiler._compiled_frontend_refs = {"frontend_a": object()}
+        engine.compiler._compiled_frontend_snapshots = {"frontend_a": object()}
+        engine.compiler._compiled_frontend_ptrs = {"frontend_a": 123}
+        engine.compiler._compiled_frontend_uids = ("frontend_a",)
         engine.frontends._pending_tree_ptr = 456
         engine.frontends._pending_tree_bl_idname = "ShaderNodeTree"
         engine.frontends._dirty_tree_ptrs = {456}
@@ -1184,11 +1184,11 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(engine.undo_generation, 1)
         self.assertEqual(engine.undo_recovery_until, 10.75)
         self.assertIsNone(engine.abstract_tree_ref)
-        self.assertIsNone(engine._compiled_tree_ref)
-        self.assertEqual(engine._compiled_tree_ptr, 0)
-        self.assertEqual(engine._compiled_tree_frontend_uid, "")
-        self.assertEqual(engine._compiled_frontend_snapshots, {})
-        self.assertEqual(engine._compiled_frontend_ptrs, {})
+        self.assertIsNone(engine.compiler._compiled_tree_ref)
+        self.assertEqual(engine.compiler._compiled_tree_ptr, 0)
+        self.assertEqual(engine.compiler._compiled_tree_frontend_uid, "")
+        self.assertEqual(engine.compiler._compiled_frontend_snapshots, {})
+        self.assertEqual(engine.compiler._compiled_frontend_ptrs, {})
         self.assertEqual(engine.frontends._pending_tree_ptr, 0)
         self.assertEqual(engine.frontends._dirty_tree_ptrs, set())
         self.assertEqual(engine.probes._probe_pending_updates, {})
@@ -1324,7 +1324,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         try:
             def _run():
                 try:
-                    engine.compile(abstract_tree, types.SimpleNamespace(audiocore=None))
+                    engine.compiler.compile(abstract_tree, types.SimpleNamespace(audiocore=None))
                 except Exception as exc:  # pragma: no cover - exercised in worker thread
                     errors.append(exc)
 

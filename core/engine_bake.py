@@ -71,7 +71,7 @@ class BakeManager:
         entry = self._bake_cache.get(source_uid)
         if not entry:
             return None
-        if entry.get("tree_signature") != self.engine._last_tree_signature:
+        if entry.get("tree_signature") != self.engine.compiler._last_tree_signature:
             return None
         if int(entry.get("block_size", -1)) != int(getattr(graph, "block_size", 0)):
             return None
@@ -171,7 +171,7 @@ class BakeManager:
                         "source_uid": str(src_uid or ""),
                         "frame_start": int(frame_start),
                         "frame_end": int(frame_end),
-                        "tree_signature": self.engine._last_tree_signature,
+                        "tree_signature": self.engine.compiler._last_tree_signature,
                     },
                     sort_keys=True,
                     default=str,
@@ -193,7 +193,7 @@ class BakeManager:
                 utils.log_throttled("bake_spill", f"Could not spill bake cache to disk: {e}", "WARNING", min_interval=0.0)
 
         self._bake_cache[str(src_uid)] = {
-            "tree_signature": self.engine._last_tree_signature,
+            "tree_signature": self.engine.compiler._last_tree_signature,
             "block_size": int(getattr(graph, "block_size", 0)),
             "frame_start": frame_start,
             "frame_end": frame_end,
@@ -216,7 +216,7 @@ class BakeManager:
         # Reset runtime tasks after offline bake so live playback state remains stable.
         try:
             if scene is not None:
-                self.engine.compile_scene_frontends(scene, preferred_tree=target_tree)
+                self.engine.compiler.compile_scene_frontends(scene, preferred_tree=target_tree)
         except Exception as e:
             utils.log_throttled("bake_recompile", f"Post-bake recompile failed: {e}", "ERROR", min_interval=0.0)
         finally:
@@ -278,7 +278,7 @@ class BakeManager:
 
         target_tree = tree if tree and self.engine.frontends._tree_has_ace_nodes(tree) else None
         try:
-            self.engine.compile_scene_frontends(scene, preferred_tree=target_tree)
+            self.engine.compiler.compile_scene_frontends(scene, preferred_tree=target_tree)
         except Exception as e:
             utils.log_throttled("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
             return False

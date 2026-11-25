@@ -35,7 +35,7 @@ class TestSourceSampleRateMetadata(unittest.TestCase):
             native_sample_rate=96000,
         )
 
-        resolved = self.ae.ACEAudioEngine._resolve_source_sample_rate(
+        resolved = self.ae.GraphCompiler._resolve_source_sample_rate(
             source,
             fallback_sr=44100,
             scene_or_engine_settings=self._settings("native"),
@@ -53,7 +53,7 @@ class TestSourceSampleRateMetadata(unittest.TestCase):
         )
         engine = self.ae.ACEAudioEngine(scene_key=1)
 
-        sample_rate_floor = engine._collect_sample_rate_floor(
+        sample_rate_floor = engine.compiler._collect_sample_rate_floor(
             [source],
             self._settings("native"),
             fps=24.0,

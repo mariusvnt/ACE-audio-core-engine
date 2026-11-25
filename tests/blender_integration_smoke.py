@@ -160,7 +160,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
 
     scene.frame_start, scene.frame_end = 1, 72
     scene.audiocore.engine_settings.auto_compile = True
-    engine.compile_scene_frontends(scene)
+    engine.compiler.compile_scene_frontends(scene)
     _assert(bool(engine.graphs), "No runtime graph compiled for the file source")
     import time
     engine_mod = importlib.import_module(f"{addon_key}.core.audio_engine")
@@ -168,8 +168,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     # Let the one legitimate recompile happen first: the file's sample-rate
     # probe finishes in the background and asks for it.
     settle_compiles = []
-    original_compile = engine.compile_scene_frontends
-    engine.compile_scene_frontends = lambda *a, **k: (settle_compiles.append(time.monotonic()), original_compile(*a, **k))[1]
+    original_compile = engine.compiler.compile_scene_frontends
+    engine.compiler.compile_scene_frontends = lambda *a, **k: (settle_compiles.append(time.monotonic()), original_compile(*a, **k))[1]
     t_settle = last_change = time.monotonic()
     while time.monotonic() - last_change < 0.5 and time.monotonic() - t_settle < 10.0:
         before = len(settle_compiles)
@@ -178,7 +178,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         if len(settle_compiles) != before:
             last_change = time.monotonic()
         time.sleep(1.0 / 24.0)
-    engine.compile_scene_frontends = original_compile
+    engine.compiler.compile_scene_frontends = original_compile
     _assert(len(settle_compiles) <= 1, f"Scene recompiled {len(settle_compiles)} times while settling")
     cold_start_s = None
     if parallel_mode == "processes_dsp":
@@ -195,8 +195,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     quiet = loud = None
     first_accept_s = None
     compiles = []
-    original_compile = engine.compile_scene_frontends
-    engine.compile_scene_frontends = lambda *a, **k: (compiles.append(1), original_compile(*a, **k))[1]
+    original_compile = engine.compiler.compile_scene_frontends
+    engine.compiler.compile_scene_frontends = lambda *a, **k: (compiles.append(1), original_compile(*a, **k))[1]
     t0 = time.monotonic()
     for frame in range(1, 73):
         # Real-time pace (24 fps): worker results arrive frames later.
@@ -210,7 +210,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
             quiet = _proxy_values(engine)
         if frame == 66:  # 2.75 s, in the loud half
             loud = _proxy_values(engine)
-    engine.compile_scene_frontends = original_compile
+    engine.compiler.compile_scene_frontends = original_compile
     _assert(not compiles, f"Playback without edits recompiled the scene {len(compiles)} time(s)")
     if parallel_mode == "processes_dsp":
         print(f"[ACE smoke] processes_dsp: cold start {cold_start_s} s; first worker result after {first_accept_s} s, "
@@ -360,13 +360,13 @@ def main():
         _assert("GEOMETRY_NODES" in kinds, "Scene frontend discovery missed Geometry Nodes frontend")
         _assert("SHADER_NODES" in kinds, "Scene frontend discovery missed Shader frontend")
 
-        engine.compile_scene_frontends(scene)
+        engine.compiler.compile_scene_frontends(scene)
         _assert(
-            "ACE_SMOKE_FRONTEND_GN" in getattr(engine, "_compiled_frontend_snapshots", {}),
+            "ACE_SMOKE_FRONTEND_GN" in getattr(getattr(engine, "compiler", None), "_compiled_frontend_snapshots", {}),
             "Scene compile missed the GN frontend",
         )
         _assert(
-            "ACE_SMOKE_FRONTEND_SHADER" in getattr(engine, "_compiled_frontend_snapshots", {}),
+            "ACE_SMOKE_FRONTEND_SHADER" in getattr(getattr(engine, "compiler", None), "_compiled_frontend_snapshots", {}),
             "Scene compile missed the shader frontend",
         )
     finally:

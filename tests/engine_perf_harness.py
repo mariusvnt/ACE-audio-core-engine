@@ -191,6 +191,7 @@ def _load_engine_stack():
         "core.engine_parallel",
         "core.engine_frontends",
         "core.engine_sinks",
+        "core.engine_compiler",
         "core.engine_handlers",
         "core.audio_tasks_registry",
         "core.parallel_dsp",

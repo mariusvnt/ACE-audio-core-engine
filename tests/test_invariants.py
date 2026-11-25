@@ -176,7 +176,8 @@ class TestAmbiguousCompilePruning(unittest.TestCase):
         _purge_testpkg_modules()
         fake_bpy.install()
         cls.abs_mod = load_module("abstract_tree")
-        cls.Engine = load_module("audio_engine").ACEAudioEngine
+        cls.ae = load_module("audio_engine")
+        cls.Engine = cls.ae.ACEAudioEngine
 
     def _tree(self):
         node = self.abs_mod.ACEAbstractNode
@@ -199,7 +200,7 @@ class TestAmbiguousCompilePruning(unittest.TestCase):
     def test_mixed_node_is_pruned_and_own_branch_kept(self):
         tree = self._tree()
         required = set(tree.nodes)
-        kept = self.Engine._prune_ambiguous_required_node_ids(
+        kept = self.ae.GraphCompiler._prune_ambiguous_required_node_ids(
             tree, required, source_uid="a", proxy_name="", single_source_mode=False
         )
         self.assertNotIn("mix", kept)
@@ -208,7 +209,7 @@ class TestAmbiguousCompilePruning(unittest.TestCase):
     def test_single_source_mode_keeps_everything(self):
         tree = self._tree()
         required = set(tree.nodes)
-        kept = self.Engine._prune_ambiguous_required_node_ids(
+        kept = self.ae.GraphCompiler._prune_ambiguous_required_node_ids(
             tree, required, source_uid="a", proxy_name="", single_source_mode=True
         )
         self.assertEqual(kept, required)

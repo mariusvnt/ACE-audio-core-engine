@@ -83,7 +83,7 @@ def frame_change_handler(scene):
         try:
             frontends = engine.frontends.discover_scene_frontends(scene)
             if frontends:
-                engine.compile_scene_frontends(scene)
+                engine.compiler.compile_scene_frontends(scene)
                 engine._bootstrap_fail_count = 0
                 engine._bootstrap_retry_at = now + 0.25
             else:
@@ -144,7 +144,7 @@ def render_pre_handler(scene):
     if not engine.graphs:
         try:
             if engine.frontends.discover_scene_frontends(scene):
-                engine.compile_scene_frontends(scene)
+                engine.compiler.compile_scene_frontends(scene)
         except Exception as e:
             utils.log_throttled("render_pre_compile", f"Render pre compile failed: {e}", "ERROR", min_interval=1.5)
     try:
@@ -286,7 +286,7 @@ def depsgraph_update_handler(scene, depsgraph):
         seen_targets.add(key)
         recompile_targets.append(tree_obj)
 
-    compiled_frontend_snapshots = dict(getattr(engine, "_compiled_frontend_snapshots", {}) or {})
+    compiled_frontend_snapshots = dict(getattr(getattr(engine, "compiler", None), "_compiled_frontend_snapshots", {}) or {})
     discovered_frontends_by_uid = None
 
     for update in getattr(depsgraph, "updates", []):

@@ -1787,7 +1787,7 @@ class SourceTask(ACEAudioTask):
         live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx else 10
         target_sample_rate = None
         engine = getattr(self, "engine_ref", None)
-        target_sr_resolver = getattr(engine, "_source_task_target_sample_rate", None)
+        target_sr_resolver = getattr(getattr(engine, "compiler", None), "_source_task_target_sample_rate", None)
         if callable(target_sr_resolver):
             try:
                 target_sample_rate = target_sr_resolver(self)

@@ -1373,13 +1373,13 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         if allow_dirty_rebuild:
             tree_dirty_hint = tree_dirty_hint or dirty_tree_match
         if not tree_dirty_hint:
-            compiled_ptr = int(getattr(engine, "_compiled_tree_ptr", 0) or 0)
+            compiled_ptr = int(getattr(getattr(engine, "compiler", None), "_compiled_tree_ptr", 0) or 0)
             # In Multiple-Trees-Support, _compiled_tree_ptr only tracks the
             # preferred (first) tree. Check all compiled frontend pointers so
             # any compiled tree gets engine_tree_ready = True and uses the
             # merged abstract tree directly instead of falling back to reader.build().
             compiled_frontend_ptrs = set(
-                (getattr(engine, "_compiled_frontend_ptrs", {}) or {}).values()
+                (getattr(getattr(engine, "compiler", None), "_compiled_frontend_ptrs", {}) or {}).values()
             )
             if compiled_ptr == int(tree_ptr) or int(tree_ptr) in compiled_frontend_ptrs:
                 engine_abstract = getattr(engine, "abstract_tree_ref", None)
@@ -1399,7 +1399,7 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             if engine_tree_ready and engine is not None:
                 # Avoid Python's process-randomized hash() so UI topology cache
                 # keys remain stable across sessions.
-                engine_sig_seed = str(getattr(engine, "_last_tree_signature", None)).encode("utf-8")
+                engine_sig_seed = str(getattr(getattr(engine, "compiler", None), "_last_tree_signature", None)).encode("utf-8")
                 engine_sig = hashlib.blake2b(engine_sig_seed, digest_size=8).hexdigest()
                 topology_sig = f"eng:{engine_sig}"
             else:

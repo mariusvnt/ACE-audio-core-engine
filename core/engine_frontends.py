@@ -407,7 +407,7 @@ class FrontendTracker:
             for rec in (discovered_frontends or [])
         }
         membership_sig = self._frontend_membership_signature(discovered_frontends)
-        membership_changed = membership_sig != getattr(self.engine, "_last_frontend_membership_signature", ())
+        membership_changed = membership_sig != getattr(self.engine.compiler, "_last_frontend_membership_signature", ())
         if not self._dirty_frontend_uids and not self._pending_scene_rebuild and not membership_changed:
             return False
         shader_frontend_uids = {
@@ -443,7 +443,7 @@ class FrontendTracker:
         bypass_quiet = first_dirty > 0.0 and (now - first_dirty) >= 2.0
         if not bypass_quiet and (now - self._last_dirty_time) < 0.35:
             return False
-        if (now - self.engine._last_compile_time) < 0.35:
+        if (now - self.engine.compiler._last_compile_time) < 0.35:
             return False
         if self._is_compiling:
             return False
@@ -472,7 +472,7 @@ class FrontendTracker:
         self._is_compiling = True
         compiled = False
         try:
-            self.engine.compile_scene_frontends(scene, preferred_tree=preferred_tree)
+            self.engine.compiler.compile_scene_frontends(scene, preferred_tree=preferred_tree)
             compiled = True
         finally:
             self._is_compiling = False
