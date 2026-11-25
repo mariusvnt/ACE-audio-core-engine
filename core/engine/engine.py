@@ -35,9 +35,9 @@ from ..tasks.specs import SourceSpecsTask
 from ..proxy.manager import ACEProxyManager
 from .common import FRONTEND_KIND_SHADER
 from .bake import BakeManager
-from .compiler import GraphCompiler
+from .compiler.compiler import GraphCompiler
 from .diagnostics import EngineDiagnostics
-from .frame import FrameRunner
+from .frame.runner import FrameRunner
 from .frontends import FrontendTracker
 from .parallel.offload import ParallelOffload
 from .preview.router import PreviewRouter
