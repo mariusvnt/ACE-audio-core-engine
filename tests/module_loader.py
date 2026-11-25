@@ -17,7 +17,6 @@ PKG_NAME = "ace_addon_testpkg"
 _MODULE_PATHS = {
     "abstract_tree": ("core", ROOT / "core" / "abstract_tree.py"),
     "id_management": ("core", ROOT / "core" / "id_management.py"),
-    "proxy_management": ("core", ROOT / "core" / "proxy_management.py"),
     "dummy_tree": ("nodes", ROOT / "nodes" / "dummy_tree.py"),
     "shader_tree": ("nodes", ROOT / "nodes" / "shader_tree.py"),
     "dynamic_audio_operators": ("nodes", ROOT / "nodes" / "dynamic_audio_operators.py"),

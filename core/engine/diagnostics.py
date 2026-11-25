@@ -6,7 +6,7 @@ import time
 from collections import deque
 from typing import Any, Dict
 from ... import utils
-from ..proxy_management import ACEProxyManager
+from ..proxy.manager import ACEProxyManager
 from .common import engine_settings
 
 

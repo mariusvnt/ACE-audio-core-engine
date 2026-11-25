@@ -32,7 +32,7 @@ from ..tasks.filters import reset_biquad_fallback_warned
 from ..tasks.graph import ACEAudioGraph
 from ..tasks.source import _clear_file_open_locks
 from ..tasks.specs import SourceSpecsTask
-from ..proxy_management import ACEProxyManager
+from ..proxy.manager import ACEProxyManager
 from .common import FRONTEND_KIND_SHADER
 from .bake import BakeManager
 from .compiler import GraphCompiler

@@ -7,7 +7,7 @@ from ..nodes.dummy_tree import (
 )
 from ..nodes.shader_tree import ACEShaderNodeFactory
 from ..core.id_management import ACEIdManager
-from ..core.proxy_management import ACEProxyManager
+from ..core.proxy.manager import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 from .. import utils
 

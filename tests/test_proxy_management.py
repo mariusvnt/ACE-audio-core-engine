@@ -54,7 +54,7 @@ class TestProxyManagement(unittest.TestCase):
         _install_fake_bpy()
         cls.abs_mod = load_module("abstract_tree")
         cls.tasks_mod = load_tasks()
-        cls.proxy_mod = load_module("proxy_management")
+        cls.proxy_mod = load_module("core.proxy.manager")
         cls.utils_mod = load_module("utils")
         cls.bpy = sys.modules["bpy"]
 

@@ -12,7 +12,7 @@ from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathMana
 from .. import utils
 from ..core.engine.engine import ACEAudioEngine
 from ..core.input.reception import AudioReception, build_live_flow_identifier
-from ..core.proxy_management import ACEProxyManager
+from ..core.proxy.manager import ACEProxyManager
 def _supported_audio_filter_glob() -> str:
     with utils.logged_errors("n_panel_operators._supported_audio_filter_glob"):
         glob = AudioReception.supported_file_filter_glob()

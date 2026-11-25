@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from ... import utils
 from ..abstract_tree import ACEAbstractTree, ACEFrontendRef
 from ..id_management import ACEIdManager
-from ..proxy_management import ACEProxyManager
+from ..proxy.manager import ACEProxyManager
 from .common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, _ACEFrontendDiscovery
 
 

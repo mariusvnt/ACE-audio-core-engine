@@ -139,7 +139,7 @@ def _install_engine_import_stubs():
     shader_tree_mod.ACEShaderTreeReader = ACEShaderTreeReader
     sys.modules[f"{PKG_NAME}.nodes.shader_tree"] = shader_tree_mod
 
-    proxy_mod = types.ModuleType(f"{PKG_NAME}.core.proxy_management")
+    proxy_mod = types.ModuleType(f"{PKG_NAME}.core.proxy.manager")
 
     class ACEProxyManager:  # pragma: no cover - runtime harness uses a dedicated writer stub
         COLLECTION_NAME = "ACE_Internals"
@@ -174,8 +174,7 @@ def _install_engine_import_stubs():
             return None
 
     proxy_mod.ACEProxyManager = ACEProxyManager
-    sys.modules[f"{PKG_NAME}.core.proxy_management"] = proxy_mod
-    sys.modules[f"{PKG_NAME}.proxy_management"] = proxy_mod
+    sys.modules[f"{PKG_NAME}.core.proxy.manager"] = proxy_mod
 
 
 def _load_engine_stack():

@@ -20,7 +20,7 @@ from ..tasks.specs import SourceSpecsTask
 from ..tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
 from ..tasks.utility import AudioMathTask, RollingAvgTask, StreamAccumulatorTask
 from ..id_management import ACEIdManager
-from ..proxy_management import ACEProxyManager
+from ..proxy.manager import ACEProxyManager
 from .common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, engine_settings
 
 

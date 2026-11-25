@@ -70,7 +70,11 @@ MODULE_NAMES = [
     "core.worker",
     "core.worker.graph",
     "core.worker.job",
-    "core.proxy_management",         # 10. Bridge to Blender mesh attributes
+    "core.proxy",
+    "core.proxy.attributes",
+    "core.proxy.objects",
+    "core.proxy.sonar",
+    "core.proxy.manager",
     "core.engine",
     "core.engine.common",
     "core.engine.preview",
