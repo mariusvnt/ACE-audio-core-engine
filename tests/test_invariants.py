@@ -133,7 +133,7 @@ class TestEngineInvariants(unittest.TestCase):
             self.assertEqual(getattr(self.bpy.app.handlers, name), [], msg=f"{name} left registered")
 
     def test_worker_count_follows_cpus_not_sources(self):
-        engine = self.Engine.__new__(self.Engine)
+        engine = self.Engine(0)
         engine.graphs = {f"src_{i}": object() for i in range(3)}
         with mock.patch.dict(os.environ, {"ACE_PARALLEL_WORKERS": ""}), mock.patch("os.cpu_count", return_value=16):
             self.assertEqual(engine._parallel_worker_count(None), 16 - self.Engine._PARALLEL_WORKER_HEADROOM_CORES)
@@ -144,7 +144,7 @@ class TestEngineInvariants(unittest.TestCase):
 
     def test_inflight_jobs_per_source_stay_within_two(self):
         self.assertLessEqual(self.Engine._PARALLEL_MAX_INFLIGHT_PER_SOURCE, 2)
-        engine = self.Engine.__new__(self.Engine)
+        engine = self.Engine(0)
         self.assertLessEqual(engine._parallel_inflight_limit(None), 2)
 
     def test_shards_split_by_source_group(self):

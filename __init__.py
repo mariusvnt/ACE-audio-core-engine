@@ -52,6 +52,7 @@ MODULE_NAMES = [
     "core.proxy_management",         # 10. Bridge to Blender mesh attributes
     "core.engine_common",
     "core.engine_preview",
+    "core.engine_diagnostics",
     "core.audio_engine",             # 11. Engine orchestration
     "core.engine_handlers",          # Blender handlers and timers
     # ── nodes/ sub-package ──────────────────────────────────────────────────

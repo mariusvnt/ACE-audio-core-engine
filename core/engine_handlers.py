@@ -137,7 +137,7 @@ def render_pre_handler(scene):
             "WARNING",
             min_interval=5.0,
         )
-        engine._mark_render_start(scene)
+        engine.diagnostics._mark_render_start(scene)
         return
     if not engine.graphs:
         try:
@@ -149,7 +149,7 @@ def render_pre_handler(scene):
         engine.execute_next_frame(scene, force=True)
     except Exception as e:
         utils.log_throttled("render_pre_execute", f"Render pre execute failed: {e}", "ERROR", min_interval=1.5)
-    engine._mark_render_start(scene)
+    engine.diagnostics._mark_render_start(scene)
 
 
 @persistent
@@ -163,7 +163,7 @@ def render_post_handler(scene):
     engine = ACEAudioEngine.get_instance(scene)
     if engine is None:
         return
-    engine._mark_render_complete(scene, cancelled=False)
+    engine.diagnostics._mark_render_complete(scene, cancelled=False)
     with utils.logged_errors("audio_engine.render_post_handler"):
         ACEAudioEngine._preview_monitor.clear()
 
@@ -178,7 +178,7 @@ def render_cancel_handler(scene):
     """
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None:
-        engine._mark_render_complete(scene, cancelled=True)
+        engine.diagnostics._mark_render_complete(scene, cancelled=True)
     render_post_handler(scene)
 
 
@@ -248,7 +248,7 @@ def depsgraph_update_handler(scene, depsgraph):
         return
 
     if engine is not None:
-        engine._consume_geometry_eval_updates(scene, depsgraph)
+        engine.diagnostics._consume_geometry_eval_updates(scene, depsgraph)
         # Early-probe: pre-warm file metadata for any FILE source missing sr/duration so
         # that _flush_probe_updates() can populate native_sample_rate before the next
         # compile cycle reads it — eliminating the cold-start sample-rate race.

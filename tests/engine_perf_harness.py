@@ -185,6 +185,7 @@ def _load_engine_stack():
         "core.audio_engine",
         "core.engine_common",
         "core.engine_preview",
+        "core.engine_diagnostics",
         "core.engine_handlers",
         "core.audio_tasks_registry",
         "core.parallel_dsp",
@@ -324,7 +325,7 @@ def _bench_source_task_cls(atr):
                 )
             finally:
                 engine = getattr(self, "engine_ref", None)
-                perf_add = getattr(engine, "_perf_add", None)
+                perf_add = getattr(getattr(engine, "diagnostics", None), "_perf_add", None)
                 if callable(perf_add):
                     perf_add("source_read", time.perf_counter() - t0)
 

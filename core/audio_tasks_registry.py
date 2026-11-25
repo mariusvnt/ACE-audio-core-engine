@@ -2335,12 +2335,12 @@ class SourceTask(ACEAudioTask):
             engine = getattr(self, "engine_ref", None)
             elapsed = time.perf_counter() - t0
             if bool(track_perf_stage):
-                perf_add = getattr(engine, "_perf_add", None)
+                perf_add = getattr(getattr(engine, "diagnostics", None), "_perf_add", None)
                 if callable(perf_add):
                     with utils.logged_errors("audio_tasks_registry.SourceTask._read_next_block_sync#3"):
                         perf_add("source_read", elapsed)
             else:
-                prefetch_add = getattr(engine, "_record_source_prefetch", None)
+                prefetch_add = getattr(getattr(engine, "diagnostics", None), "_record_source_prefetch", None)
                 if callable(prefetch_add):
                     with utils.logged_errors("audio_tasks_registry.SourceTask._read_next_block_sync#4"):
                         prefetch_add(elapsed)

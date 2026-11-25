@@ -1890,7 +1890,7 @@ def _ui_sync_timer():
             engine = ACEAudioEngine.get_instance(scene)
             if engine is not None:
                 with utils.logged_errors("n_panel_ui._ui_sync_timer#3"):
-                    engine._perf_add("ui_sync", time.perf_counter() - t0)
+                    engine.diagnostics._perf_add("ui_sync", time.perf_counter() - t0)
             _ui_timer_last_quick_key = quick_key
             _ui_timer_last_sync_ts = now
             if dirty_rebuild_due:

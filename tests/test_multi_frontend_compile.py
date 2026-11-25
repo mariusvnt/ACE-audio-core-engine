@@ -33,6 +33,17 @@ def _install_properties_stub():
     sys.modules[f"{PKG_NAME}.properties"] = properties_mod
 
 
+class _EngineStub(types.SimpleNamespace):
+    """Engine stand-in for handler tests: component names resolve to the stub itself."""
+
+    _COMPONENTS = frozenset({"diagnostics", "probes", "preview", "bake", "parallel", "frontends", "sinks", "compiler", "frame"})
+
+    def __getattr__(self, name):
+        if name in self._COMPONENTS:
+            return self
+        raise AttributeError(name)
+
+
 class _FakeTree(fake_bpy.TruthyDict):
     def __init__(self, name: str, bl_idname: str, ptr: int, ace_frontend_uid: str = ""):
         super().__init__()
@@ -210,7 +221,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         cls.utils_mod = load_module("utils")
 
     def _engine_shell(self):
-        engine = object.__new__(self.engine_mod.ACEAudioEngine)
+        engine = self.engine_mod.ACEAudioEngine(0)
         engine.writer = types.SimpleNamespace(output_defs={})
         engine.graphs = {}
         engine.current_frame = 0
@@ -249,7 +260,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._bake_result_queue = _queue.Queue()
         engine._source_specs_task_registry = {}
         engine._current_delta_frames = 1.0
-        engine._pending_geometry_events = []
+        engine.diagnostics._pending_geometry_events = []
         engine._parallel_future_meta = {}
         engine._parallel_inflight = {}
         engine._parallel_results = {}
@@ -974,7 +985,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertNotIn(helper_frame, tree.nodes)
 
     def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
-        engine = types.SimpleNamespace(
+        engine = _EngineStub(
             requested=[],
             _undo_recovery_active=lambda: False,
             _consume_geometry_eval_updates=lambda *_args, **_kwargs: None,
@@ -1045,7 +1056,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
     def test_frame_change_handler_skips_compile_and_sink_work_when_render_writes_are_unsafe(self):
         calls = []
-        engine = types.SimpleNamespace(
+        engine = _EngineStub(
             graphs={},
             _undo_recovery_active=lambda: False,
             _is_rendering_job=lambda: True,
@@ -1155,7 +1166,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._pending_scene_rebuild = False
         engine._probe_pending_updates = {"file.wav": {"undo_generation": 0}}
         engine._probe_in_flight = {"file.wav"}
-        engine._pending_geometry_events = [{"frame": 1}]
+        engine.diagnostics._pending_geometry_events = [{"frame": 1}]
         engine._preview_worker_thread = None
         engine._parallel_executor = None
         engine.invalidate_runtime_caches = lambda: None
@@ -1182,11 +1193,11 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(engine._dirty_tree_ptrs, set())
         self.assertEqual(engine._probe_pending_updates, {})
         self.assertEqual(engine._probe_in_flight, set())
-        self.assertEqual(engine._pending_geometry_events, [])
+        self.assertEqual(engine.diagnostics._pending_geometry_events, [])
         self.assertTrue(engine._pending_scene_rebuild)
 
     def test_depsgraph_handler_during_undo_recovery_marks_scene_rebuild_only(self):
-        engine = types.SimpleNamespace(
+        engine = _EngineStub(
             requested=[],
             _undo_recovery_active=lambda: True,
             request_recompile=lambda tree: engine.requested.append(tree),
@@ -1209,7 +1220,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
     def test_auto_compile_timer_skips_compile_during_undo_recovery(self):
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=types.SimpleNamespace(auto_compile=True)))
-        engine = types.SimpleNamespace(
+        engine = _EngineStub(
             _undo_recovery_active=lambda: True,
             _unsafe_for_handler_writes=lambda _scene: False,
             _maybe_compile_dirty=lambda _scene: self.fail("_maybe_compile_dirty should be skipped"),
@@ -1306,7 +1317,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
     def test_compile_requires_main_thread(self):
         errors = []
-        engine = object.__new__(self.engine_mod.ACEAudioEngine)
+        engine = self.engine_mod.ACEAudioEngine(0)
         abstract_tree = self.abs_mod.ACEAbstractTree()
 
         self.utils_mod.set_debug_strict(True)
