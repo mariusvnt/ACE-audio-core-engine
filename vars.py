@@ -129,59 +129,37 @@ ACE_NODES: dict[str, Category] = {
             "description": "Nodes performing audio to float/vector operations."
         },
         "nodes": {
-            "rms": {
-            "label": "RMS",
-            "icon": "DRIVER_DISTANCE",
-            "description": "Short-term average loudness measured on the mono-converted signal.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'RMS')],
-            },
-            "lufs": {
-            "label": "Loudness (LUFS)",
+            "loudness": {
+            "label": "Loudness",
             "icon": "DRIVER_DISTANCE",
             "description": (
-                "Normalized loudness output in 0..1 "
-                "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
-                "Window sets averaging time: larger values are smoother/slower, "
-                "smaller values react faster. Updates every frame."
+                "Loudness in 0..1: 1 at 0 dB, 0 at -70 dB (silence) and below, linear in dB "
+                "in between. Method: RMS (signal energy), LUFS (perceived loudness, "
+                "averaged over Window) or Peak (highest sample)."
             ),
-            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)')],
+            "inputs": [
+                ('NodeSocketBundle', 'Audio'),
+                ('NodeSocketFloat', 'Window (s)'),
+            ],
             "outputs": [('NodeSocketFloat', 'Loudness')],
+            "modes": [
+                ("rms", "RMS", "Root-mean-square energy of the frame, on the mono signal."),
+                ("lufs", "LUFS", "K-weighted perceived loudness averaged over Window (s)."),
+                ("peak", "Peak", "Highest K-weighted sample of the frame."),
+            ],
+            "default_mode": "lufs",
             },
-            "peak": {
-            "label": "Peak",
-            "icon": "DRIVER_DISTANCE",
-            "description": "Normalized K-weighted peak level in 0..1 (0 = silence, 1 = 0 dB full scale).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Peak')],
-            },
-            "spectral_centroid": {
-            "label": "Spectral Centroid",
-            "icon": "CURVE_NCIRCLE",
-            "description": "Short-term Weighted mean frequency, perceived atmosphere in Hz from dark to bright.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Centroid')],
-            },
-            "spectral_flux": {
-            "label": "Spectral Flux",
-            "icon": "SEQ_HISTOGRAM",
-            "description": "Spectral change rate between the precedent and current frame.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Flux')],
-            },
-            "stereo_width": {
-            "label": "Stereo Width",
+            "stereo": {
+            "label": "Stereo",
             "icon": "ORIENTATION_GIMBAL",
-            "description": "Side-to-mid energy ratio (0 = mono, 1 = very wide).",
+            "description": "Stereo image. Width: side-to-mid energy (0 = mono, 1 = very wide). Balance: -1 = left, 0 = center, 1 = right.",
             "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Stereo Width')],
-            },
-            "stereo_balance": {
-            "label": "Stereo Balance",
-            "icon": "VIEW_PAN",
-            "description": "Stereo balance (-1 = left, 0 = center, 1 = right).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Stereo Balance')],
+            "outputs": [('NodeSocketFloat', 'Stereo')],
+            "modes": [
+                ("width", "Width", "Side-to-mid energy ratio (0 = mono, 1 = very wide)."),
+                ("balance", "Balance", "Left/right energy balance (-1 = left, 0 = center, 1 = right)."),
+            ],
+            "default_mode": "width",
             },
             "stereo_vector": {
             "label": "Stereo Vector",
@@ -189,6 +167,19 @@ ACE_NODES: dict[str, Category] = {
             "description": "Time-domain stereo descriptor packed as vector (L RMS, R RMS, Balance).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketVector', 'Stereo Vector')],
+            },
+            "spectral": {
+            "label": "Spectral",
+            "icon": "SEQ_HISTOGRAM",
+            "description": "Timbre of the frame. Centroid: brightness in Hz. Flux: spectral change since the previous frame. Zero Crossing Rate: noisiness (0..1).",
+            "inputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [('NodeSocketFloat', 'Spectral')],
+            "modes": [
+                ("centroid", "Centroid", "Weighted mean frequency in Hz, from dark to bright."),
+                ("flux", "Flux", "Spectral change rate between the previous and current frame."),
+                ("zcr", "Zero Crossing", "Noisiness: 0 = no active frequency, 1 = every frequency is active."),
+            ],
+            "default_mode": "centroid",
             },
             "pitch": {
             "label": "Pitch",
@@ -203,13 +194,6 @@ ACE_NODES: dict[str, Category] = {
             "description": "Sharp transient witness (0 = smooth, 1 = sharp transient).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Onset')],
-            },
-            "zero_crossing_rate": {
-            "label": "Zero Crossing Rate",
-            "icon": "",
-            "description": "Measure of frequency activity (signal noisiness) (0 = no active frequency, 1 = every frequency is active).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'ZCR')],
             },
         },
     },
@@ -263,3 +247,76 @@ ACE_NODES: dict[str, Category] = {
         },
     },
 }
+
+
+# Stream node types folded into mode nodes: old type -> (node type, mode).
+# Files saved with the old types are migrated on load; the engine also accepts them.
+LEGACY_STREAM_TYPES: dict[str, tuple[str, str]] = {
+    "rms": ("loudness", "rms"),
+    "lufs": ("loudness", "lufs"),
+    "peak": ("loudness", "peak"),
+    "stereo_width": ("stereo", "width"),
+    "stereo_balance": ("stereo", "balance"),
+    "spectral_centroid": ("spectral", "centroid"),
+    "spectral_flux": ("spectral", "flux"),
+    "zero_crossing_rate": ("spectral", "zcr"),
+}
+
+# Silence floor of every Loudness method: 0 at this level and below. Not user-editable.
+LOUDNESS_FLOOR_DB = -70.0
+
+
+def node_modes(category: str, node_type: str) -> list[tuple[str, str, str]]:
+    """Return the (id, label, description) modes of a node type, or [] if it has none."""
+    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(str(node_type or ""), {})
+    return [tuple(m) for m in (node_def.get("modes") or [])]  # type: ignore[misc]
+
+
+def resolve_node_mode(category: str, node_type: str, raw_mode=None) -> str:
+    """Return a valid mode id for a node type: *raw_mode* if known, else the default, else ""."""
+    typ = str(node_type or "")
+    legacy = LEGACY_STREAM_TYPES.get(typ) if str(category or "") == "stream" else None
+    if legacy is not None:
+        return legacy[1]
+    modes = node_modes(category, typ)
+    if not modes:
+        return ""
+    ids = [m[0] for m in modes]
+    mode = str(raw_mode or "").strip().lower()
+    if mode in ids:
+        return mode
+    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(typ, {})
+    default = str(node_def.get("default_mode", "") or "")
+    return default if default in ids else ids[0]
+
+
+def node_mode_label(category: str, node_type: str, mode: str) -> str:
+    for mode_id, label, _desc in node_modes(category, node_type):
+        if mode_id == mode:
+            return label
+    return ""
+
+
+# Interface defaults and ranges for numeric controls: (default, min, max).
+SOCKET_RANGES: dict[tuple[str, str], dict[str, tuple[float, float, float]]] = {
+    ("stream", "loudness"): {
+        "Window (s)": (0.4, 0.05, 3.0),
+    },
+}
+
+
+def apply_socket_ranges(ng, category: str, node_type: str) -> None:
+    """Set defaults and ranges on a group interface from SOCKET_RANGES."""
+    ranges = SOCKET_RANGES.get((str(category or ""), str(node_type or "")))
+    if not ranges:
+        return
+    for item in getattr(getattr(ng, "interface", None), "items_tree", []):
+        if getattr(item, "in_out", None) != "INPUT":
+            continue
+        spec = ranges.get(str(getattr(item, "name", "") or ""))
+        if spec is None:
+            continue
+        default, lo, hi = spec
+        for attr, value in (("min_value", lo), ("max_value", hi), ("default_value", default)):
+            if hasattr(item, attr):
+                setattr(item, attr, value)

@@ -3,8 +3,9 @@
 import bpy  # type: ignore
 import hashlib
 import json
-from ...vars import ACE_NODES
+from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
+from ..frontend import remember_group_inputs
 
 
 class ACEDummyNodeFactory:
@@ -46,6 +47,7 @@ class ACEDummyNodeFactory:
 
                 if ng:
                     if ACEDummyNodeFactory._node_group_needs_refresh(ng, type_key):
+                        remember_group_inputs(ng)
                         ng.nodes.clear()
                         ng.interface.clear()
                         ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
@@ -80,6 +82,7 @@ class ACEDummyNodeFactory:
 
         ng = bpy.data.node_groups.get(group_name)
         if ng:
+            remember_group_inputs(ng)
             ng.nodes.clear()
             ng.interface.clear()
         else:
@@ -252,21 +255,9 @@ class ACEDummyNodeFactory:
         for sock_type_str, sock_name in outputs:
             ng.interface.new_socket(sock_name, in_out='OUTPUT', socket_type=sock_type_str)
 
-        if category == "stream" and node_type == "lufs":
-            for item in getattr(getattr(ng, "interface", None), "items_tree", []):
-                if getattr(item, "in_out", None) != "INPUT":
-                    continue
-                name = str(getattr(item, "name", "") or "")
-                if name == "Window (s)":
-                    with utils.logged_errors("factory.ACEDummyNodeFactory._build_group_content"):
-                        item.default_value = 0.4
-                    for attr_name, value in (
-                        ("min_value", 0.05),
-                        ("max_value", 3.0),
-                    ):
-                        with utils.logged_errors("factory.ACEDummyNodeFactory._build_group_content#2"):
-                            setattr(item, attr_name, value)
-        
+        with utils.logged_errors("factory.ACEDummyNodeFactory._build_group_content"):
+            apply_socket_ranges(ng, category, node_type)
+
         ACEDummyNodeFactory._create_dummy_internals(ng, inputs, outputs, category, node_type)
         ACEDummyNodeFactory._ensure_attr_interface_visible(ng, category, node_type)
 

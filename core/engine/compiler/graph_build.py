@@ -10,7 +10,7 @@ from ...tasks.graph import ACEAudioGraph
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
 from ...tasks.specs import SourceSpecsTask
-from ...tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
+from ...tasks.stream import create_stream_task
 from ...tasks.utility import AudioMathTask, RollingAvgTask, StreamAccumulatorTask
 
 
@@ -275,28 +275,9 @@ class GraphBuild:
             if typ == 'auto_component_splitter':
                 return AutoComponentSplitterTask(node.id, node.parameters, block_size)
         elif cat == 'stream':
-            if typ == 'rms':
-                return RMSTask(node.id, node.parameters, block_size)
-            if typ == 'lufs':
-                return LUFSTask(node.id, node.parameters, block_size)
-            if typ == 'peak':
-                return PeakTask(node.id, node.parameters, block_size)
-            if typ == 'pitch':
-                return PitchTask(node.id, node.parameters, block_size)
-            if typ == 'spectral_centroid':
-                return SpectralCentroidTask(node.id, node.parameters, block_size)
-            if typ == 'spectral_flux':
-                return SpectralFluxTask(node.id, node.parameters, block_size)
-            if typ == 'onset':
-                return OnsetTask(node.id, node.parameters, block_size)
-            if typ == 'zero_crossing_rate':
-                return ZeroCrossTask(node.id, node.parameters, block_size)
-            if typ == 'stereo_width':
-                return StereoWidthTask(node.id, node.parameters, block_size)
-            if typ == 'stereo_balance':
-                return StereoBalanceTask(node.id, node.parameters, block_size)
-            if typ == 'stereo_vector':
-                return StereoVectorTask(node.id, node.parameters, block_size)
+            task = create_stream_task(node.id, typ, node.parameters, block_size)
+            if task is not None:
+                return task
 
         return ACEAudioTask(node.id, node.parameters, block_size)
 

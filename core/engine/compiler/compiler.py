@@ -371,6 +371,8 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self._compiled_tree_bl_idname = str(getattr(resolved_preferred_tree, "bl_idname", "") or "")
         self.engine.frontends._pending_scene_rebuild = False
         self.engine.frontends._dirty_frontend_uids.clear()
+        # After this compile's own writes (attribute ids, proxy sockets), so they don't count as edits.
+        self.engine.frontends.record_compiled_content(frontends)
 
     def compile_from_blender_tree(
         self,

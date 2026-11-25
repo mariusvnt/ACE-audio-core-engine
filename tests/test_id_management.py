@@ -16,24 +16,24 @@ class TestIdManagement(unittest.TestCase):
             self.flow_identifier = ""
 
     def test_generate_and_parse_node_id(self):
-        node_id = idm.ACEIdManager.generate_node_id("stream", "rms")
+        node_id = idm.ACEIdManager.generate_node_id("stream", "loudness")
         parsed = idm.ACEIdManager.parse_node_id(node_id)
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["category"], "stream")
-        self.assertEqual(parsed["type"], "rms")
+        self.assertEqual(parsed["type"], "loudness")
         self.assertEqual(len(parsed["uuid"]), 6)
         int(parsed["uuid"], 16)
 
     def test_generate_node_id_is_deterministic_for_same_occupancy(self):
         existing = ["ACE_stream_rms_123abc", "ACE_stream_rms_def456"]
-        a = idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=existing)
-        b = idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=list(existing))
+        a = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=existing)
+        b = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=list(existing))
         self.assertEqual(a, b)
 
     def test_generate_node_id_advances_deterministically_on_collision(self):
-        first = idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[])
-        second = idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[first])
-        second_again = idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[first])
+        first = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[])
+        second = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[first])
+        second_again = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[first])
         self.assertNotEqual(first, second)
         self.assertEqual(second, second_again)
 

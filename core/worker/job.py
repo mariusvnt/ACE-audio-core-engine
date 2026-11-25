@@ -225,6 +225,7 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Old type names resolve to every mode of the current nodes, so each task class warms up.
 _WARMUP_STREAM_TYPES = (
     "rms", "lufs", "peak", "pitch", "spectral_centroid", "spectral_flux",
     "onset", "zero_crossing_rate", "stereo_width", "stereo_balance", "stereo_vector",

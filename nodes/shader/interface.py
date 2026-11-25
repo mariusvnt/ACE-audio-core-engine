@@ -41,6 +41,20 @@ class ShaderGroupInterface:
         return None
 
     @staticmethod
+    def _numeric_control_names(category: str, node_type: str) -> tuple[str, ...]:
+        """Numeric control inputs of a stream node (e.g. Window), in declaration order."""
+        if str(category or "") != "stream":
+            return ()
+        node_def = ACE_NODES.get("stream", {}).get("nodes", {}).get(str(node_type or ""), {})
+        names = []
+        for idx, (sock_type, sock_name) in enumerate(list(node_def.get("inputs", []) or [])):
+            st = str(sock_type or "")
+            if idx == 0 or any(token in st for token in ("Bundle", "String", "Object")):
+                continue
+            names.append(str(sock_name))
+        return tuple(names)
+
+    @staticmethod
     def _extra_inputs(category: str, node_type: str) -> tuple[tuple[str, str, str], ...]:
         if category == "stream":
             stream_nodes = (
@@ -226,7 +240,7 @@ class ShaderGroupInterface:
             has_output = any(getattr(node, "type", "") == "GROUP_OUTPUT" for node in ng.nodes)
             if not has_input or not has_output:
                 return True
-            allow_math_nodes = bool(str(category or "") == "stream" and str(node_type or "") == "lufs")
+            allow_math_nodes = bool(cls._numeric_control_names(category, node_type))
             for node in ng.nodes:
                 bl_idname = str(getattr(node, "bl_idname", "") or "")
                 node_type_name = str(getattr(node, "type", "") or "")

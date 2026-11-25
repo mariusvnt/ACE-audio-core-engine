@@ -1,5 +1,6 @@
 import bpy # type: ignore
-from ..vars import ACE_NODES
+from ..vars import ACE_NODES, node_modes
+from ..nodes.modes import apply_node_mode
 from ..nodes.frontend import FRONTEND_KIND_SHADER, ensure_frontend_uid
 from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
@@ -398,6 +399,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             node.label = f"{node.label} ({int(node['ace_input_count'])} Inputs)"
         if self.node_type_key == 'preview_sink':
             node["ace_preview_enabled"] = bool(node.get("ace_preview_enabled", True))
+        if node_modes(self.category_key, self.node_type_key):
+            apply_node_mode(node, self.category_key, self.node_type_key, None)
         if self.category_key == "source_mngmt" and self.node_type_key == "src":
             if tree_type == "ShaderNodeTree":
                 self._ensure_shader_frontend_uid(tree, context)

@@ -1,12 +1,13 @@
 """n_panel_operators.py includes all the bpy.types.Operator classes called in the N-Panel."""
 
 import bpy                                                                                                                              # type: ignore
-import math
 import os
 from bpy_extras.io_utils import ImportHelper                                                                                            # type: ignore
 
 from ..core.id_management import ACEIdManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from ..nodes.modes import apply_node_mode
+from ..vars import node_modes
 from .. import utils
 from ..core.engine.engine import ACEAudioEngine
 from ..core.input.reception import AudioReception, build_live_flow_identifier
@@ -52,11 +53,7 @@ def _resolve_panel_selected_node(context):
     if not active_source:
         return None, None
 
-    idx = int(getattr(active_source, "active_ui_node_index", -1))
-    if idx < 0 or idx >= len(getattr(active_source, "ui_nodes", [])):
-        return None, None
-    ui_node = active_source.ui_nodes[idx]
-    node_id = str(getattr(ui_node, "node_id", "") or "")
+    node_id = str(getattr(active_source, "active_ui_node_id", "") or "")
     if not node_id:
         return None, None
 
@@ -434,114 +431,6 @@ class ACE_OT_even_splitter_freqs(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class ACE_OT_sync_splitter_ramp(bpy.types.Operator):
-    """Synchronize the N-panel splitter ramp editor from the selected splitter node."""
-    bl_idname = "ace.sync_splitter_ramp"
-    bl_label = "Sync Splitter Ramp"
-    bl_options = {'INTERNAL', 'UNDO'}
-
-    def execute(self, context):
-        node, parsed = _resolve_panel_selected_node(context)
-        if not parsed or parsed.get("category") != "delta" or parsed.get("type") != "frequency_splitter":
-            return {'CANCELLED'}
-
-        try:
-            from .panel.splitter import _sync_splitter_ramp_texture_from_node
-            tex = _sync_splitter_ramp_texture_from_node(node, context.scene, force=True)
-            if tex is None:
-                self.report({'ERROR'}, "Could not create ramp editor texture.")
-                return {'CANCELLED'}
-        except Exception as e:
-            self.report({'ERROR'}, f"Ramp sync failed: {e}")
-            return {'CANCELLED'}
-        return {'FINISHED'}
-
-
-class ACE_OT_apply_splitter_ramp(bpy.types.Operator):
-    """Apply current N-panel splitter ramp handle positions to node split frequencies."""
-    bl_idname = "ace.apply_splitter_ramp"
-    bl_label = "Apply Splitter Ramp"
-    bl_options = {'INTERNAL', 'UNDO'}
-
-    @staticmethod
-    def _resample_positions(positions, target_count: int) -> list[float]:
-        if target_count <= 0:
-            return []
-        src = sorted(float(p) for p in positions if p is not None)
-        if not src:
-            return [float(i + 1) / float(target_count + 1) for i in range(target_count)]
-        if len(src) == target_count:
-            return src
-        if len(src) == 1:
-            return [src[0] for _ in range(target_count)]
-
-        out: list[float] = []
-        span = float(len(src) - 1)
-        for i in range(target_count):
-            t = float(i + 1) / float(target_count + 1)
-            src_pos = t * span
-            lo = int(math.floor(src_pos))
-            hi = min(lo + 1, len(src) - 1)
-            a = src_pos - float(lo)
-            out.append((1.0 - a) * src[lo] + a * src[hi])
-        return out
-
-    def execute(self, context):
-        node, parsed = _resolve_panel_selected_node(context)
-        if not parsed or parsed.get("category") != "delta" or parsed.get("type") != "frequency_splitter":
-            return {'CANCELLED'}
-
-        cut_sockets = []
-        for idx, sock in enumerate(getattr(node, "inputs", [])):
-            if idx == 0 or getattr(sock, "is_linked", False):
-                continue
-            try:
-                _ = float(getattr(sock, "default_value", 0.0))
-            except Exception as exc:
-                utils.note_swallowed("n_panel_operators.ACE_OT_apply_splitter_ramp.execute", exc)
-                continue
-            cut_sockets.append(sock)
-        if not cut_sockets:
-            return {'CANCELLED'}
-
-        try:
-            from .panel.splitter import _ensure_splitter_ramp_texture, _splitter_display_bounds, _splitter_norm_to_hz, _sync_splitter_ramp_texture_from_node
-            tex = _ensure_splitter_ramp_texture()
-            if tex is None:
-                self.report({'ERROR'}, "Ramp editor is unavailable.")
-                return {'CANCELLED'}
-            ramp = tex.color_ramp
-            inner_positions = [float(el.position) for el in ramp.elements[1:-1]]
-            normalized = self._resample_positions(inner_positions, len(cut_sockets))
-            low_hz, high_hz = _splitter_display_bounds(context.scene)
-            hz_values = sorted(_splitter_norm_to_hz(p, low_hz=low_hz, high_hz=high_hz) for p in normalized)
-        except Exception as e:
-            self.report({'ERROR'}, f"Could not read ramp editor: {e}")
-            return {'CANCELLED'}
-
-        for sock, hz in zip(cut_sockets, hz_values):
-            with utils.logged_errors("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#2"):
-                sock.default_value = float(hz)
-        _refresh_node_instance(node)
-
-        try:
-            from .panel.helpers import _find_active_node_tree
-            from .panel.sync import _sync_ui_dummy_tree
-            tree = _find_active_node_tree(context)
-        except Exception as exc:
-            utils.note_swallowed("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#3", exc)
-            tree = None
-            _sync_ui_dummy_tree = None  # type: ignore
-        _queue_engine_recompile(context, tree=tree)
-        if _sync_ui_dummy_tree:
-            with utils.logged_errors("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#4"):
-                _sync_ui_dummy_tree(context, force=False)
-
-        with utils.logged_errors("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#5"):
-            _sync_splitter_ramp_texture_from_node(node, context.scene, force=True)
-        return {'FINISHED'}
-
-
 class ACE_OT_update_audio_math_inputs(bpy.types.Operator):
     bl_idname = "ace.update_audio_math_inputs"
     bl_label = "Change Audio Math Inputs"
@@ -576,6 +465,84 @@ class ACE_OT_set_audio_math_op(bpy.types.Operator):
             op = "add"
         node["ace_op"] = op
         _refresh_node_instance(node)
+        return {'FINISHED'}
+
+
+class ACE_OT_set_node_mode(bpy.types.Operator):
+    """Switch the method of the selected Loudness, Stereo or Spectral operator."""
+    bl_idname = "ace.set_node_mode"
+    bl_label = "Set Operator Method"
+    bl_options = {'INTERNAL', 'UNDO'}
+    mode: bpy.props.StringProperty()                                                                                                            # type: ignore
+
+    @classmethod
+    def description(cls, context, properties):
+        node, parsed = _resolve_panel_selected_node(context)
+        if not node or not parsed:
+            return cls.__doc__
+        for mode_id, _label, desc in node_modes(parsed.get("category", ""), parsed.get("type", "")):
+            if mode_id == properties.mode:
+                return desc
+        return cls.__doc__
+
+    def execute(self, context):
+        node, parsed = _resolve_panel_selected_node(context)
+        if not node or not parsed or not node_modes(parsed.get("category", ""), parsed.get("type", "")):
+            return {'CANCELLED'}
+        apply_node_mode(node, parsed["category"], parsed["type"], self.mode)
+        _refresh_node_instance(node)
+        return {'FINISHED'}
+
+
+class ACE_OT_select_operator(bpy.types.Operator):
+    """Select this operator and show it in the Node Editor. Double-click or Ctrl+click to rename it"""
+    bl_idname = "ace.select_operator"
+    bl_label = "Select Operator"
+    bl_options = {'INTERNAL', 'UNDO'}
+    node_id: bpy.props.StringProperty(options={'HIDDEN', 'SKIP_SAVE'})                                                          # type: ignore
+
+    # (node_id, time) of the last click, to tell a double-click on the same name.
+    _last_click: tuple[str, float] = ("", 0.0)
+
+    def invoke(self, context, event):
+        import time
+        from .panel.selection import focus_operator, start_rename
+
+        now = time.monotonic()
+        double_s = float(context.preferences.inputs.mouse_double_click_time) / 1000.0
+        last_id, last_ts = ACE_OT_select_operator._last_click
+        is_double = last_id == self.node_id and (now - last_ts) <= double_s
+        ACE_OT_select_operator._last_click = ("", 0.0) if is_double else (self.node_id, now)
+        rename = bool(event.ctrl or is_double)
+        if not focus_operator(context, self.node_id, frame=not rename):
+            return {'CANCELLED'}
+        if rename:
+            start_rename(self.node_id)
+            bpy.ops.wm.call_panel(name="ACE_PT_rename_operator", keep_open=False)
+        return {'FINISHED'}
+
+    def execute(self, context):
+        from .panel.selection import focus_operator
+        return {'FINISHED'} if focus_operator(context, self.node_id) else {'CANCELLED'}
+
+
+class ACE_OT_toggle_operator_branch(bpy.types.Operator):
+    """Fold or unfold the operators below this one"""
+    bl_idname = "ace.toggle_operator_branch"
+    bl_label = "Fold Operators"
+    bl_options = {'INTERNAL'}
+    branch_key: bpy.props.StringProperty(options={'HIDDEN', 'SKIP_SAVE'})                                                       # type: ignore
+    list_id: bpy.props.StringProperty(default="operators", options={'HIDDEN', 'SKIP_SAVE'})                                      # type: ignore
+
+    def execute(self, context):
+        from .panel.sync import toggle_branch, toggle_instance_branch
+        if self.list_id == "instances":
+            toggle_instance_branch(self.branch_key)
+        else:
+            toggle_branch(self.branch_key)
+        area = getattr(context, "area", None)
+        if area is not None:
+            area.tag_redraw()
         return {'FINISHED'}
 
 
@@ -618,27 +585,6 @@ class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
             return {'CANCELLED'}
 
         self.report({'INFO'}, message or "Tempo detection queued.")
-        return {'FINISHED'}
-
-
-class ACE_OT_refresh_stream_list(bpy.types.Operator):
-    """Refresh the UI dummy tree list for the active source."""
-    bl_idname = "audiocore.refresh_stream_list"
-    bl_label = "Refresh Streams"
-    bl_options = {'INTERNAL'}
-
-    def execute(self, context):
-        try:
-            from .panel.helpers import _find_active_node_tree
-            from .panel.sync import _sync_ui_dummy_tree
-            tree = _find_active_node_tree(context)
-            _queue_engine_recompile(context, tree=tree)
-            _sync_ui_dummy_tree(context, force=False)
-            utils.log("UI stream list refreshed.", "DEBUG")
-        except Exception as e:
-            utils.log(f"Failed to refresh stream list: {e}", "ERROR")
-            self.report({'ERROR'}, "Could not refresh streams.")
-            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -850,12 +796,12 @@ classes = (
     ACE_OT_update_splitter_bands,
     ACE_OT_sort_splitter_freqs,
     ACE_OT_even_splitter_freqs,
-    ACE_OT_sync_splitter_ramp,
-    ACE_OT_apply_splitter_ramp,
     ACE_OT_update_audio_math_inputs,
     ACE_OT_set_audio_math_op,
+    ACE_OT_set_node_mode,
+    ACE_OT_select_operator,
+    ACE_OT_toggle_operator_branch,
     ACE_OT_detect_source_tempo_meter,
-    ACE_OT_refresh_stream_list,
     ACE_OT_set_target_object,
     ACE_OT_toggle_preview_sink,
     ACE_OT_bake_active_source,

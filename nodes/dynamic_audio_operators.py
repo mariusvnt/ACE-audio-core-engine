@@ -5,6 +5,18 @@ from .. import utils
 from .geometry.factory import ACEDummyNodeFactory
 
 
+def _is_automatic_count_label(label: str, bases: tuple[str, ...], unit: str) -> bool:
+    """True for an empty label or one like "Splitter (3 Bands)" that the add-on wrote."""
+    label = str(label or "")
+    if not label or label in bases:
+        return True
+    for base in bases:
+        prefix, suffix = f"{base} (", f" {unit})"
+        if label.startswith(prefix) and label.endswith(suffix) and label[len(prefix):-len(suffix)].isdigit():
+            return True
+    return False
+
+
 def _tree_bl_idname(tree_or_type) -> str:
     if isinstance(tree_or_type, str):
         tree_type = tree_or_type
@@ -99,8 +111,9 @@ class ACESplitterManager:
         if node.node_tree != variant_group:
             node.node_tree = variant_group
         
-        # Update Label for clarity
-        node.label = f"Splitter ({band_count} Bands)"
+        # Automatic labels follow the band count; a name the user gave is kept.
+        if _is_automatic_count_label(node.label, ("Splitter", "Frequency Splitter"), "Bands"):
+            node.label = f"Splitter ({band_count} Bands)"
         
         # Store state in custom property so UI knows what to show
         node['ace_band_count'] = band_count
@@ -351,7 +364,8 @@ class ACEAudioMathManager:
         if node.node_tree != variant_group:
             node.node_tree = variant_group
 
-        node.label = f"Audio Math ({count} Inputs)"
+        if _is_automatic_count_label(node.label, ("Audio Math",), "Inputs"):
+            node.label = f"Audio Math ({count} Inputs)"
         node['ace_input_count'] = count
         node.update()
 

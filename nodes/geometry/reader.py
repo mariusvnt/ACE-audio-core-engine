@@ -2,7 +2,7 @@
 
 from collections import deque
 from typing import Optional, Any
-from ...vars import ACE_NODES
+from ...vars import ACE_NODES, resolve_node_mode
 from ...core.abstract_tree import (
     ACEAbstractTree,
     ACEAbstractNode,
@@ -448,6 +448,9 @@ class ACEDummyTreeReader(NodeIdentity):
         op_value = bl_node.get("ace_op")
         if isinstance(op_value, str):
             params["op"] = op_value
+        mode = resolve_node_mode(cat, typ, bl_node.get("ace_mode"))
+        if mode:
+            params["mode"] = mode
         preview_enabled = bl_node.get("ace_preview_enabled", True)
         params["preview_enabled"] = bool(preview_enabled)
         params["frontend_node_index"] = int(

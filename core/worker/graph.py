@@ -11,7 +11,7 @@ from ..tasks.base import ACEAudioTask
 from ..tasks.chunk import AudioChunk, SAMPLE_RATE
 from ..tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
 from ..tasks.frontend import SourceFrontendProcessor
-from ..tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
+from ..tasks.stream import create_stream_task
 from ..tasks.utility import AudioMathTask, StreamAccumulatorTask
 
 
@@ -316,28 +316,9 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
             return AutoComponentSplitterTask(node_id, params, bs)
 
     if cat == "stream":
-        if typ == "rms":
-            return RMSTask(node_id, params, bs)
-        if typ == "lufs":
-            return LUFSTask(node_id, params, bs)
-        if typ == "peak":
-            return PeakTask(node_id, params, bs)
-        if typ == "pitch":
-            return PitchTask(node_id, params, bs)
-        if typ == "spectral_centroid":
-            return SpectralCentroidTask(node_id, params, bs)
-        if typ == "spectral_flux":
-            return SpectralFluxTask(node_id, params, bs)
-        if typ == "onset":
-            return OnsetTask(node_id, params, bs)
-        if typ == "zero_crossing_rate":
-            return ZeroCrossTask(node_id, params, bs)
-        if typ == "stereo_width":
-            return StereoWidthTask(node_id, params, bs)
-        if typ == "stereo_balance":
-            return StereoBalanceTask(node_id, params, bs)
-        if typ == "stereo_vector":
-            return StereoVectorTask(node_id, params, bs)
+        task = create_stream_task(node_id, typ, params, bs)
+        if task is not None:
+            return task
 
     return ACEAudioTask(node_id, params, bs)
 

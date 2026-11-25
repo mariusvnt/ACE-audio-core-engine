@@ -206,8 +206,8 @@ class TestParallelDSP(unittest.TestCase):
 
     def test_cross_source_audio_math_uses_distinct_source_chunks(self):
         n = 256
-        a = np.full(n, 1.0, dtype=np.float32)
-        b = np.full(n, 2.0, dtype=np.float32)
+        a = np.full(n, 0.1, dtype=np.float32)
+        b = np.full(n, 0.2, dtype=np.float32)
         job = {
             "generation_id": 1001,
             "graph_uid": "cross_source_graph",
@@ -226,7 +226,9 @@ class TestParallelDSP(unittest.TestCase):
         out = self.pds.evaluate_parallel_job(job)
         values = dict(out.get("values", {}) or {})
         self.assertIn("rms:0", values)
-        self.assertAlmostEqual(float(values["rms:0"]), 3.0, places=4)
+        # RMS reads on the Loudness scale: 0.1 + 0.2 = 0.3, i.e. -10.46 dB over the -70 dB floor.
+        expected = (20.0 * np.log10(0.3) + 70.0) / 70.0
+        self.assertAlmostEqual(float(values["rms:0"]), expected, places=4)
         self.assertEqual(str(out.get("job_key", "")), "cross_source_graph:f7:j1")
 
     def test_payload_schema_accepts_keyed_source_chunks_contract(self):

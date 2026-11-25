@@ -3,8 +3,9 @@
 import hashlib
 import json
 import bpy  # type: ignore
-from ...vars import ACE_NODES
+from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
+from ..frontend import remember_group_inputs
 from ...core.id_management import ACEIdManager
 from .helpers import HelperAttributeNodes
 from .interface import ShaderGroupInterface
@@ -232,20 +233,9 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         for sock_type_str, sock_name in base_outputs:
             cls._new_socket(ng, str(sock_name), "OUTPUT", str(sock_type_str))
 
-        if str(category or "") == "stream" and str(node_type or "") == "lufs":
-            for item in getattr(getattr(ng, "interface", None), "items_tree", []):
-                if getattr(item, "in_out", None) != "INPUT":
-                    continue
-                name = str(getattr(item, "name", "") or "")
-                if name == "Window (s)":
-                    with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content"):
-                        item.default_value = 0.4
-                    for attr_name, value in (
-                        ("min_value", 0.05),
-                        ("max_value", 3.0),
-                    ):
-                        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#2"):
-                            setattr(item, attr_name, value)
+        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content"):
+            apply_socket_ranges(ng, category, node_type)
+        control_names = cls._numeric_control_names(category, node_type)
 
         for sock_type_str, sock_name, default_value in extra_inputs:
             cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
@@ -318,7 +308,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         for output_idx, (socket_type, _socket_name) in enumerate(base_outputs):
             if "Bundle" in str(socket_type or ""):
                 continue
-            if str(category or "") == "stream" and str(node_type or "") == "lufs":
+            if control_names:
                 continue
             if output_idx >= len(getattr(output_node, "inputs", [])):
                 continue
@@ -328,16 +318,26 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#4"):
                 ng.links.new(source_out, output_node.inputs[int(output_idx)])
 
-        # Window * 0 + 1 keeps the control consumed without changing the output.
-        if str(category or "") == "stream" and str(node_type or "") == "lufs" and helper_source_by_idx:
+        # (controls) * 0 + 1 keeps numeric controls consumed without changing the output.
+        if control_names and helper_source_by_idx:
             # Use name-based lookup — bundle sockets may shift numeric indices.
-            window_sock = input_sock_by_name.get("Window (s)")
-            if window_sock is not None:
+            control_socks = [input_sock_by_name.get(name) for name in control_names]
+            control_socks = [sock for sock in control_socks if sock is not None]
+            if control_socks:
+                control_sum = control_socks[0]
+                for extra_idx, extra_sock in enumerate(control_socks[1:], start=1):
+                    add_ctrl = ng.nodes.new("ShaderNodeMath")
+                    add_ctrl.operation = "ADD"
+                    add_ctrl.location = (20, -320 - (extra_idx * 60))
+                    ng.links.new(control_sum, add_ctrl.inputs[0])
+                    ng.links.new(extra_sock, add_ctrl.inputs[1])
+                    control_sum = add_ctrl.outputs[0]
+
                 mul_zero = ng.nodes.new("ShaderNodeMath")
                 mul_zero.operation = "MULTIPLY"
                 mul_zero.inputs[1].default_value = 0.0
                 mul_zero.location = (220, -320)
-                ng.links.new(window_sock, mul_zero.inputs[0])
+                ng.links.new(control_sum, mul_zero.inputs[0])
 
                 add_one = ng.nodes.new("ShaderNodeMath")
                 add_one.operation = "ADD"
@@ -466,6 +466,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         if ng is None:
             ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
         else:
+            remember_group_inputs(ng)
             ng.nodes.clear()
             ng.interface.clear()
         cls._build_group_content(ng, node_def, cat_key, type_key)
@@ -517,6 +518,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                 if ng is None:
                     ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
                 elif cls._node_group_needs_refresh(ng, node_def, cat_key, type_key):
+                    remember_group_inputs(ng)
                     ng.nodes.clear()
                     ng.interface.clear()
                 else:

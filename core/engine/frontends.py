@@ -1,6 +1,7 @@
 """Scene frontend discovery and dirty tracking for recompiles."""
 
 import bpy
+import hashlib
 import time
 from typing import Any, Dict, Optional
 from ... import utils
@@ -27,6 +28,10 @@ class FrontendTracker:
         self._is_compiling: bool = False
         self._pending_tree_ptr: int = 0
         self._pending_tree_bl_idname: str = ""
+        # Set by any recompile request that is not a depsgraph report: those always compile.
+        self._forced_recompile: bool = False
+        # Content signature of each compiled frontend tree, by tree pointer.
+        self._compiled_content_sigs: Dict[int, str] = {}
 
     @staticmethod
     def _node_tree_pointer(tree) -> int:
@@ -385,6 +390,96 @@ class FrontendTracker:
         )
         return (tuple(node_sig), links, output_links, frontend_sig, consumer_sig)
 
+    @classmethod
+    def _tree_content_signature(cls, tree) -> str:
+        """Hash of what a compile reads from *tree*: ACE nodes, their settings and inputs, links, interface.
+
+        Node positions, names, labels and selection are left out: changing them needs no recompile.
+        """
+        tokens: list = []
+        for item in getattr(getattr(tree, "interface", None), "items_tree", []) or []:
+            tokens.append(("if", str(getattr(item, "in_out", "")), str(getattr(item, "name", "")),
+                           str(getattr(item, "socket_type", ""))))
+        for node in getattr(tree, "nodes", []) or []:
+            ace_props: tuple = ()
+            values: tuple = ()
+            get_keys = getattr(node, "keys", None)
+            keys = list(get_keys()) if callable(get_keys) else []
+            if "ace_id" in keys or "ace_source_id" in keys:
+                ace_props = tuple(sorted((k, repr(node[k])) for k in keys if str(k).startswith("ace_")))
+                vals = []
+                for sock in getattr(node, "inputs", []) or []:
+                    value = getattr(sock, "default_value", None)
+                    if hasattr(value, "name"):
+                        value = value.name
+                    elif hasattr(value, "__len__") and not isinstance(value, str):
+                        value = tuple(value)
+                    vals.append((str(getattr(sock, "identifier", "")), bool(getattr(sock, "is_linked", False)), repr(value)))
+                values = tuple(vals)
+            tokens.append((
+                "n", cls._node_tree_pointer(node), str(getattr(node, "bl_idname", "")),
+                str(getattr(getattr(node, "node_tree", None), "name", "") or ""),
+                bool(getattr(node, "mute", False)), ace_props, values,
+                len(getattr(node, "outputs", []) or []),
+            ))
+        for link in getattr(tree, "links", []) or []:
+            tokens.append((
+                "l", cls._node_tree_pointer(link.from_node), str(link.from_socket.identifier),
+                cls._node_tree_pointer(link.to_node), str(link.to_socket.identifier),
+                bool(getattr(link, "is_muted", False)), bool(getattr(link, "is_valid", True)),
+            ))
+        payload = repr(tokens).encode("utf-8", "ignore")
+        return hashlib.blake2b(payload, digest_size=16).hexdigest()
+
+    def record_compiled_content(self, frontends: list[_ACEFrontendDiscovery]) -> None:
+        """Remember the content each frontend tree had when it was compiled."""
+        self._compiled_content_sigs = {
+            int(self._node_tree_pointer(rec.tree)): self._tree_content_signature(rec.tree)
+            for rec in (frontends or [])
+            if rec.tree is not None
+        }
+
+    def _dirty_trees_unchanged(self, discovered_by_uid: Dict[str, _ACEFrontendDiscovery], membership_changed: bool) -> bool:
+        """True when the only dirty marks are depsgraph reports and no marked tree's content changed.
+
+        A compile writes proxy data; every tree reading a proxy is then re-evaluated and reported
+        by the depsgraph like a user edit. Without this check that report recompiles again,
+        forever, every ~0.4 s.
+        """
+        if self._forced_recompile or self._pending_scene_rebuild or membership_changed or not self.engine.graphs:
+            return False
+        trees_by_ptr = {
+            int(self._node_tree_pointer(rec.tree)): rec.tree
+            for rec in discovered_by_uid.values()
+            if rec.tree is not None
+        }
+        dirty_ptrs = {int(p) for p in self._dirty_tree_ptrs}
+        for uid in self._dirty_frontend_uids:
+            rec = discovered_by_uid.get(str(uid))
+            if rec is None or rec.tree is None:
+                return False
+            dirty_ptrs.add(int(self._node_tree_pointer(rec.tree)))
+        if not dirty_ptrs:
+            return False
+        for ptr in dirty_ptrs:
+            tree = trees_by_ptr.get(ptr)
+            recorded = self._compiled_content_sigs.get(ptr)
+            if tree is None or recorded is None or recorded != self._tree_content_signature(tree):
+                return False
+        return True
+
+    def _clear_dirty_state(self) -> None:
+        self._pending_tree = None
+        self._pending_tree_ptr = 0
+        self._pending_tree_bl_idname = ""
+        self._dirty_trees.clear()
+        self._dirty_tree_ptrs.clear()
+        self._dirty_tree_bl_idnames.clear()
+        self._dirty_frontend_uids.clear()
+        self._pending_scene_rebuild = False
+        self._forced_recompile = False
+        self._first_dirty_time = 0.0
+
     def _maybe_compile_dirty(self, scene) -> bool:
         """Recompile the dirty scene frontends if the quiet window is met."""
         if self.engine._undo_recovery_active():
@@ -438,6 +533,9 @@ class FrontendTracker:
             self._pending_scene_rebuild = False
             self._first_dirty_time = 0.0
             return False
+        if self._dirty_trees_unchanged(discovered_by_uid, membership_changed):
+            self._clear_dirty_state()
+            return False
         preferred_tree = None
         if self._dirty_frontend_uids:
             dirty_uid = next(iter(self._dirty_frontend_uids))
@@ -448,14 +546,7 @@ class FrontendTracker:
                 tree_ptr=int(getattr(self, "_pending_tree_ptr", 0) or 0),
                 tree_bl_idname=str(getattr(self, "_pending_tree_bl_idname", "") or ""),
             )
-        self._pending_tree = None
-        self._pending_tree_ptr = 0
-        self._pending_tree_bl_idname = ""
-        self._dirty_trees.clear()
-        self._dirty_tree_ptrs.clear()
-        self._dirty_tree_bl_idnames.clear()
-        self._dirty_frontend_uids.clear()
-        self._pending_scene_rebuild = False
+        self._clear_dirty_state()
         self._is_compiling = True
         compiled = False
         try:
@@ -466,9 +557,15 @@ class FrontendTracker:
             self._first_dirty_time = 0.0  # reset after compile
         return compiled
 
-    def request_recompile(self, bl_tree: bpy.types.NodeTree | None):
-        """Mark scene frontends as needing recompilation on the next compile poll."""
+    def request_recompile(self, bl_tree: bpy.types.NodeTree | None, verify_content: bool = False):
+        """Mark scene frontends as needing recompilation on the next compile poll.
+
+        *verify_content* is for depsgraph reports: the compile is skipped when no marked tree's
+        content changed. Every other request compiles.
+        """
         now = time.time()
+        if not verify_content:
+            self._forced_recompile = True
         if self.engine._undo_recovery_active():
             self._pending_scene_rebuild = True
             self._pending_tree = None

@@ -5,10 +5,21 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 from .filters import NUMBA_AVAILABLE, SCIPY_AVAILABLE, scipy_lfilter
 from ... import utils
+from ...vars import LEGACY_STREAM_TYPES, LOUDNESS_FLOOR_DB, resolve_node_mode
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk
 from .filters import _biquad_filter_block
 from .spectral import _analysis_signals_normalized, _autocorr_pitch_estimate, _get_rfft, _masked_mono_signal, _masked_spectrum, _resolve_effective_bin_indices, _safe_rms, _zero_crossing_rate
+
+
+def _loudness_db_to_unit(db_value: float) -> float:
+    """Map a level in dB to 0..1, linear in dB: 0 at LOUDNESS_FLOOR_DB and below, 1 at 0 dB and above."""
+    db = utils.as_float(db_value, float("-inf"))
+    if not np.isfinite(db) or db <= LOUDNESS_FLOOR_DB:
+        return 0.0
+    if db >= 0.0:
+        return 1.0
+    return float((db - LOUDNESS_FLOOR_DB) / (0.0 - LOUDNESS_FLOOR_DB))
 
 
 class RMSTask(ACEAudioTask):
@@ -48,6 +59,16 @@ class RMSTask(ACEAudioTask):
             weights[idx == (n // 2)] = 1.0
         mean_square = float(np.sum(power * weights) / (n * n))
         return float(np.sqrt(max(mean_square, 0.0)))
+
+
+
+class RMSLoudnessTask(RMSTask):
+    """RMS level on the Loudness scale: dB of the frame RMS, mapped between -70 dB and 0 dB."""
+
+    def process(self, inputs):
+        rms = utils.as_float(super().process(inputs), 0.0)
+        db = 20.0 * math.log10(rms) if rms > 1e-12 else float("-inf")
+        return _loudness_db_to_unit(db)
 
 
 class LUFSTask(ACEAudioTask):
@@ -228,18 +249,7 @@ class LUFSTask(ACEAudioTask):
 
     @staticmethod
     def _db_to_unit(db_value: float) -> float:
-        try:
-            db = float(db_value)
-        except Exception as exc:
-            utils.note_swallowed("stream.LUFSTask._db_to_unit", exc)
-            return 0.0
-        if not np.isfinite(db):
-            return 0.0
-        if db <= -120.0:
-            return 0.0
-        if db >= 0.0:
-            return 1.0
-        return float(np.clip(10.0 ** (db / 20.0), 0.0, 1.0))
+        return _loudness_db_to_unit(db_value)
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -551,3 +561,27 @@ class StereoVectorTask(ACEAudioTask):
         denom = l_rms + r_rms + 1e-9
         balance = float(np.clip((r_rms - l_rms) / denom, -1.0, 1.0))
         return (l_rms, r_rms, balance)
+
+
+
+# Stream node type -> {mode: task class}. Nodes without modes use the "" key.
+_STREAM_TASKS: Dict[str, Dict[str, type]] = {
+    "loudness": {"rms": RMSLoudnessTask, "lufs": LUFSTask, "peak": PeakTask},
+    "stereo": {"width": StereoWidthTask, "balance": StereoBalanceTask},
+    "spectral": {"centroid": SpectralCentroidTask, "flux": SpectralFluxTask, "zcr": ZeroCrossTask},
+    "stereo_vector": {"": StereoVectorTask},
+    "pitch": {"": PitchTask},
+    "onset": {"": OnsetTask},
+}
+
+
+def create_stream_task(node_id: str, node_type: str, params: Dict[str, Any], block_size: int) -> Optional[ACEAudioTask]:
+    """Task for a stream node, chosen by its type and mode; old types resolve to their mode."""
+    typ = str(node_type or "")
+    shell_type = LEGACY_STREAM_TYPES.get(typ, (typ, ""))[0]
+    by_mode = _STREAM_TASKS.get(shell_type)
+    if not by_mode:
+        return None
+    mode = resolve_node_mode("stream", typ, (params or {}).get("mode"))
+    task_cls = by_mode.get(mode) or by_mode.get("") or next(iter(by_mode.values()))
+    return task_cls(node_id, params, block_size)

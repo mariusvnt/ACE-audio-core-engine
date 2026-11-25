@@ -44,9 +44,11 @@ Nodes
 - **Delta** nodes split the audio before analysis: frequency bands, mid/side,
   attack/release, the 12 notes of the chromagram, and percussive/harmonic
   components.
-- **Stream** nodes measure the audio each frame: RMS, LUFS, peak, spectral
-  centroid, spectral flux, onset, pitch, zero-crossing rate, stereo width,
-  balance and a stereo vector.
+- **Stream** nodes measure the audio each frame: Loudness (RMS, LUFS or Peak,
+  0..1 between -70 dB and 0 dB), Stereo (width or balance), Spectral
+  (centroid, flux or zero-crossing rate), a stereo vector, onset and pitch. The
+  method of a node is switched in the sidebar's *Active Operators* panel; files
+  made with the former one-method nodes are converted when opened.
 - **Utilities**: source specs (frames per beat, beat phase), audio math, a
   rolling average, an accumulator and a preview sink for listening to a branch.
 

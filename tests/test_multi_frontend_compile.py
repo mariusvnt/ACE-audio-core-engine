@@ -927,7 +927,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(shader_node.inputs[0].default_value, "ACE_manual_attr")
 
     def test_shader_helper_layout_groups_helper_under_owner_in_frame(self):
-        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[])
+        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[])
         tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1501)
         owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
         owner.location = (140.0, 320.0)
@@ -954,7 +954,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(helper.width_hidden, 150.0)
 
     def test_cleanup_tree_helper_nodes_removes_empty_managed_helper_frame(self):
-        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "rms", existing_ids=[])
+        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[])
         tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1502)
         owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
         tree.nodes.append(owner)
@@ -972,7 +972,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             requested=[],
             _undo_recovery_active=lambda: False,
             _consume_geometry_eval_updates=lambda *_args, **_kwargs: None,
-            request_recompile=lambda tree: engine.requested.append(tree),
+            request_recompile=lambda tree, **_kw: engine.requested.append(tree),
         )
         settings = types.SimpleNamespace(auto_compile=True)
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
@@ -1183,7 +1183,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine = _EngineStub(
             requested=[],
             _undo_recovery_active=lambda: True,
-            request_recompile=lambda tree: engine.requested.append(tree),
+            request_recompile=lambda tree, **_kw: engine.requested.append(tree),
         )
         settings = types.SimpleNamespace(auto_compile=True)
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))

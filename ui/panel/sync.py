@@ -13,7 +13,8 @@ from ...core.engine.engine import ACEAudioEngine
 from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...nodes.shader.reader import ACEShaderTreeReader
 from ... import utils
-from .helpers import _build_ui_node_lookup_ids, _describe_node, _find_active_node_tree, _find_tree_node_by_ace_id, _node_type_display, _tree_has_ace_nodes, _tree_pointer, _ui_is_blocked, _ui_node_lookup_id
+from . import operator_tree
+from .helpers import _build_ui_node_lookup_ids, _find_active_node_tree, _find_tree_node_by_ace_id, _tree_has_ace_nodes, _tree_pointer, _ui_is_blocked
 
 
 _UI_SYNC_MIN_INTERVAL = 0.25
@@ -22,10 +23,8 @@ _UI_SYNC_MIN_INTERVAL = 0.25
 _UI_SYNC_TIMER_INTERVAL_ACTIVE = 0.25
 
 
-_UI_SYNC_TIMER_INTERVAL_IDLE = 1.0
+_UI_SYNC_TIMER_INTERVAL_IDLE = 0.5
 
-
-_UI_DIRTY_REBUILD_MIN_INTERVAL = 0.6
 
 
 _UI_METADATA_PROBE_INTERVAL = 5.0
@@ -46,8 +45,6 @@ _ui_timer_last_quick_key = ""
 _ui_timer_last_sync_ts = 0.0
 
 
-_ui_timer_last_dirty_rebuild_ts = 0.0
-
 
 _ui_source_probe_last: dict[str, float] = {}
 
@@ -60,13 +57,13 @@ _ui_latency_cache = {
 }
 
 
-_ui_tree_cache = {
+_ui_tree_cache: dict = {
     "tree_ptr": 0,
     "topology_sig": "",
     "sig_ts": 0.0,
     "source_uid": "",
     "source_proxy": "",
-    "nodes": (),
+    "rows": [],
     "lookup_ids": {},
 }
 
@@ -97,43 +94,19 @@ def _refresh_ace_nodes_in_trees_flag(scene) -> None:
 
 
 def _resolve_ui_list_selected_node(context):
-    """Resolve the node selected in the active graph list shown in the N-panel."""
+    """Resolve the operator selected in the Active Operators list (by ace_id)."""
     from ...utils import _get_active_source
 
     _, active_source = _get_active_source(context)
     if not active_source:
         return None, None
-    idx = int(getattr(active_source, "active_ui_node_index", -1))
-    if idx < 0 or idx >= len(getattr(active_source, "ui_nodes", [])):
-        return None, None
-
-    ui_item = active_source.ui_nodes[idx]
-    node_id = str(getattr(ui_item, "node_id", "") or "")
+    node_id = str(getattr(active_source, "active_ui_node_id", "") or "")
     if not node_id:
         return None, None
-
     tree = _find_active_node_tree(context, editor_context_only=True)
     node, parsed = _find_tree_node_by_ace_id(tree, node_id)
     if node and parsed:
         return node, parsed
-
-    lookup_ids = {}
-    tree_ptr = _tree_pointer(tree)
-    if tree and int(_ui_tree_cache.get("tree_ptr", 0) or 0) == int(tree_ptr):
-        lookup_ids = dict(_ui_tree_cache.get("lookup_ids", {}) or {})
-    if not lookup_ids and tree:
-        lookup_ids = _build_ui_node_lookup_ids(tree)
-    mapped_id = str(lookup_ids.get(node_id, "") or "")
-    if mapped_id:
-        node, parsed = _find_tree_node_by_ace_id(tree, mapped_id)
-        if node and parsed:
-            return node, parsed
-
-    # A node still active in another editor counts as the selection.
-    active_node = getattr(context, "active_node", None)
-    active_id = str(active_node.get("ace_id", "") or "") if active_node and hasattr(active_node, "get") else ""
-    if active_node and active_id == node_id:
-        return active_node, parsed or ACEIdManager.parse_node_id(node_id)
     return None, parsed
 
 
@@ -151,7 +124,7 @@ def _ui_tree_topology_signature(tree) -> str:
     for node in getattr(tree, "nodes", []):
         ptr = _tree_pointer(node)
         node_type = str(getattr(node, "type", "") or "")
-        node_name = str(getattr(node, "name", "") or "")
+        node_name = f"{getattr(node, 'name', '') or ''}|{getattr(node, 'label', '') or ''}"
         node_tree_name = str(getattr(getattr(node, "node_tree", None), "name", "") or "")
 
         ace_id = ""
@@ -170,7 +143,7 @@ def _ui_tree_topology_signature(tree) -> str:
                 utils.note_swallowed("sync._ui_tree_topology_signature#2", exc)
                 source_id = ""
             try:
-                op_value = str(node.get("ace_op", "") or "")
+                op_value = f"{node.get('ace_op', '') or ''}|{node.get('ace_mode', '') or ''}"
             except Exception as exc:
                 utils.note_swallowed("sync._ui_tree_topology_signature#3", exc)
                 op_value = ""
@@ -258,21 +231,12 @@ def _ui_tree_topology_signature(tree) -> str:
     return hashlib.blake2b(payload, digest_size=16).hexdigest()
 
 
-def _ui_nodes_match(active_source, node_ids: list[str]) -> bool:
-    try:
-        ui_nodes = getattr(active_source, "ui_nodes", None)
-        if ui_nodes is None or len(ui_nodes) != len(node_ids):
-            return False
-        for idx, node_id in enumerate(node_ids):
-            if str(getattr(ui_nodes[idx], "node_id", "") or "") != str(node_id or ""):
-                return False
-        return True
-    except Exception as exc:
-        utils.note_swallowed("sync._ui_nodes_match", exc)
-        return False
+def _sync_ui_dummy_tree(context, force: bool = False):
+    """Rebuild the active-source operator list when the active tree's topology changes.
 
-
-def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool = True):
+    The list follows the tree itself, not the engine: it updates on node, link and
+    setting edits even while auto-compile is off or a compile is still pending.
+    """
     global _ui_sync_last_ts, _ui_sync_last_key, _ui_tree_cache
 
     ace = getattr(context.scene, "audiocore", None)
@@ -302,226 +266,286 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         and str(_ui_tree_cache.get("source_proxy", "") or "") == source_proxy
     )
 
-    tree_dirty_hint = bool(force)
-    engine = ACEAudioEngine.get_instance(context.scene)
-    engine_abstract = None
-    engine_tree_ready = False
-    if tree and engine:
-        tree_ptr = 0
-        try:
-            tree_ptr = int(tree.as_pointer())
-        except Exception as exc:
-            utils.note_swallowed("sync._sync_ui_dummy_tree#2", exc)
-            tree_ptr = 0
-        pending_tree_ptr = int(getattr(getattr(engine, "frontends", None), "_pending_tree_ptr", 0) or 0)
-        dirty_tree_ptrs = getattr(getattr(engine, "frontends", None), "_dirty_tree_ptrs", set()) or set()
-        dirty_tree_match = bool((tree_ptr and pending_tree_ptr == tree_ptr) or (tree_ptr and tree_ptr in dirty_tree_ptrs))
-        if allow_dirty_rebuild:
-            tree_dirty_hint = tree_dirty_hint or dirty_tree_match
-        if not tree_dirty_hint:
-            compiled_ptr = int(getattr(getattr(engine, "compiler", None), "_compiled_tree_ptr", 0) or 0)
-            # Any compiled frontend tree uses the merged abstract tree.
-            compiled_frontend_ptrs = set(
-                (getattr(getattr(engine, "compiler", None), "_compiled_frontend_ptrs", {}) or {}).values()
-            )
-            if compiled_ptr == int(tree_ptr) or int(tree_ptr) in compiled_frontend_ptrs:
-                engine_abstract = getattr(engine, "abstract_tree_ref", None)
-                engine_tree_ready = bool(engine_abstract)
-
+    # The tree's own signature is the change detector: cheap (about 10 us per node)
+    # and independent of auto-compile and of the engine's dirty tracking.
+    topology_sig = _ui_tree_topology_signature(tree) if tree else ""
     rebuild_topology = bool(
         tree
         and (
             force
             or (not cache_scope_match)
-            or tree_dirty_hint
+            or topology_sig != str(_ui_tree_cache.get("topology_sig", "") or "")
         )
     )
-    topology_sig = ""
-    if tree:
-        if rebuild_topology:
-            if engine_tree_ready and engine is not None:
-                # Avoid Python's process-randomized hash() so UI topology cache
-                # keys remain stable across sessions.
-                engine_sig_seed = str(getattr(getattr(engine, "compiler", None), "_last_tree_signature", None)).encode("utf-8")
-                engine_sig = hashlib.blake2b(engine_sig_seed, digest_size=8).hexdigest()
-                topology_sig = f"eng:{engine_sig}"
-            else:
-                topology_sig = _ui_tree_topology_signature(tree)
-        else:
-            topology_sig = str(_ui_tree_cache.get("topology_sig", "") or "")
-    else:
+    if not tree:
         rebuild_topology = True
-        topology_sig = ""
     sync_key = (
         f"{source_uid}|{source_proxy}|"
         f"{getattr(tree, 'name', '') if tree else ''}|{tree_ptr}"
     )
-    if not force and sync_key == _ui_sync_last_key and (now - _ui_sync_last_ts) < _UI_SYNC_MIN_INTERVAL:
+    if (
+        not force
+        and not rebuild_topology
+        and sync_key == _ui_sync_last_key
+        and (now - _ui_sync_last_ts) < _UI_SYNC_MIN_INTERVAL
+    ):
         return
 
-    nodes = []
-    node_lookup_ids = {}
-    if (not rebuild_topology) and cache_scope_match:
-        nodes = list(_ui_tree_cache.get("nodes", ()) or ())
-        node_lookup_ids = dict(_ui_tree_cache.get("lookup_ids", {}) or {})
-    elif tree:
-        if engine_tree_ready and engine_abstract is not None:
-            abstract = engine_abstract
-            node_lookup_ids = _build_ui_node_lookup_ids(tree)
+    if not tree:
+        utils.log("UI sync: no active ACE node tree found.", "DEBUG")
+        _ui_tree_cache = _empty_tree_cache(now)
+    elif rebuild_topology or not cache_scope_match:
+        if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
+            reader = ACEShaderTreeReader(tree)
         else:
-            if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
-                reader = ACEShaderTreeReader(tree)
-            else:
-                reader = ACEDummyTreeReader(tree)
-            abstract = reader.build()
-            node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
-        nodes = list(abstract.nodes.values())
-        if nodes:
-            bl_order: dict[str, int] = {}
-            if tree:
-                for _idx, _bl_node in enumerate(getattr(tree, "nodes", [])):
-                    try:
-                        _ace_id = str(_bl_node.get("ace_id", "") or "")
-                    except Exception as exc:
-                        utils.note_swallowed("sync._sync_ui_dummy_tree#3", exc)
-                        _ace_id = ""
-                    if _ace_id:
-                        bl_order[_ace_id] = _idx
-
-            def _creation_sort_key(n, _bl_order=bl_order, _lu=node_lookup_ids):
-                resolved = str(_lu.get(n.id, "") or n.id or "")
-                return _bl_order.get(resolved, _bl_order.get(n.id, 999999))
-
-            nodes.sort(key=_creation_sort_key)
-            nodes = [
-                node
-                for node in nodes
-                if str(getattr(node, "category", "") or "") != "source_mngmt"
-            ]
+            reader = ACEDummyTreeReader(tree)
+        abstract = reader.build()
+        node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
+        # Reading can assign missing ace_ids; sign the tree as it is now.
+        topology_sig = _ui_tree_topology_signature(tree)
         _ui_tree_cache = {
             "tree_ptr": int(tree_ptr),
             "topology_sig": topology_sig,
             "sig_ts": float(now),
             "source_uid": source_uid,
             "source_proxy": source_proxy,
-            "nodes": tuple(nodes),
+            "rows": _operator_rows(tree, abstract, node_lookup_ids, source_uid),
             "lookup_ids": dict(node_lookup_ids),
         }
-    else:
-        _ui_tree_cache = {
-            "tree_ptr": 0,
-            "topology_sig": "",
-            "sig_ts": float(now),
-            "source_uid": "",
-            "source_proxy": "",
-            "nodes": (),
-            "lookup_ids": {},
-        }
 
-    nodes = [
-        node
-        for node in nodes
-        if str(getattr(node, "category", "") or "") != "source_mngmt"
-    ]
-    if not nodes:
-        if not tree:
-            utils.log("UI sync skipped: no active ACE node tree found.", "DEBUG")
-            try:
-                active_source.ui_nodes.clear()
-            except Exception as e:
-                utils.log(f"UI sync could not clear ui_nodes: {e}", "DEBUG")
-            _ui_sync_last_key = sync_key
-            _ui_sync_last_ts = now
-            return
-
-    utils.log(f"UI sync found {len(nodes)} nodes for active source.", "DEBUG")
-
-    proxy = bpy.data.objects.get(getattr(active_source, "proxy_object_name", "")) if hasattr(active_source, "proxy_object_name") else None
-
-    def _resolve_attr_name(node_obj):
-        attr_id = None
-        attr_custom = False
-        if isinstance(getattr(node_obj, "parameters", None), dict):
-            attr_id = node_obj.parameters.get("attr_id_out_0")
-            attr_custom = bool(node_obj.parameters.get("attr_id_custom_out_0", False))
-        if attr_custom and isinstance(attr_id, str) and attr_id.strip():
-            name = attr_id.strip()
-            if not name.startswith(ACEIdManager.PREFIX):
-                name = ACEIdManager.PREFIX + ACEIdManager._clean_string(name)
-            return name[:63]
-
-        if not proxy:
-            return None
-        if not getattr(node_obj, "outputs", None):
-            return None
-        out = node_obj.outputs[0]
-        return ACEIdManager.generate_compact_attr_name(
-            proxy.name,
-            node_obj.id or node_obj.type,
-            out.name or out.id or "out0",
-            0,
-        )[:63]
-
-    def _read_attr_value(mesh, name):
-        import math
-        attr = mesh.attributes.get(name) if mesh else None
-        if not attr or not attr.data:
-            return None
-        try:
-            if attr.data_type == 'FLOAT':
-                return float(attr.data[0].value)
-            if attr.data_type == 'FLOAT_VECTOR':
-                vec = attr.data[0].vector
-                return float(math.sqrt(vec[0]**2 + vec[1]**2 + vec[2]**2))
-            if attr.data_type == 'FLOAT_COLOR':
-                col = attr.data[0].color
-                return float(sum(col) / len(col))
-        except Exception as exc:
-            utils.note_swallowed("sync._sync_ui_dummy_tree._read_attr_value", exc)
-            return None
-        return None
-
-    def _write_ui_item(item, node):
-        item.name = node.name or node.id
-        item.node_id = _ui_node_lookup_id(node, node_lookup_ids)
-        item.node_type = _node_type_display(node.category, node.type)
-        value = None
-        if proxy and getattr(proxy, "data", None):
-            attr_name = _resolve_attr_name(node)
-            if attr_name:
-                value = _read_attr_value(proxy.data, attr_name)
-        item.current_value = float(value) if value is not None else 0.0
-        item.description = _describe_node(node.category, node.type)
-
-    node_ids = [_ui_node_lookup_id(node, node_lookup_ids) for node in nodes]
-    reuse_ui_rows = _ui_nodes_match(active_source, node_ids)
-    if reuse_ui_rows:
-        for idx, node in enumerate(nodes):
-            try:
-                item = active_source.ui_nodes[idx]
-            except Exception as exc:
-                utils.note_swallowed("sync._sync_ui_dummy_tree#4", exc)
-                continue
-            _write_ui_item(item, node)
-    else:
-        try:
-            active_source.ui_nodes.clear()
-        except Exception as e:
-            utils.log(f"UI sync could not clear ui_nodes before repopulating: {e}", "DEBUG")
-            return
-        for node in nodes:
-            try:
-                item = active_source.ui_nodes.add()
-            except Exception:
-                utils.log("UI sync could not add a ui_nodes item (write restricted).", "DEBUG")
-                break
-            _write_ui_item(item, node)
-
-    with utils.logged_errors("sync._sync_ui_dummy_tree#5"):
-        if active_source.active_ui_node_index >= len(active_source.ui_nodes):
-            active_source.active_ui_node_index = max(0, len(active_source.ui_nodes) - 1)
+    rows = list(_ui_tree_cache.get("rows", []) or [])
+    if not _ui_rows_match(active_source, rows):
+        _write_ui_rows(active_source, rows)
+    if active_source.active_ui_node_index >= len(active_source.ui_nodes):
+        set_active_row(active_source, max(0, len(active_source.ui_nodes) - 1))
     _ui_sync_last_key = sync_key
     _ui_sync_last_ts = now
+
+
+def _empty_tree_cache(now: float = 0.0) -> dict:
+    return {
+        "tree_ptr": 0,
+        "topology_sig": "",
+        "sig_ts": float(now),
+        "source_uid": "",
+        "source_proxy": "",
+        "rows": [],
+        "lookup_ids": {},
+    }
+
+
+def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: str) -> list[operator_tree.Row]:
+    """Folded rows of the operators under the active source's placeholder(s) in *tree*."""
+    bl_by_id = {}
+    for bl_node in getattr(tree, "nodes", []) or []:
+        ace_id = str(bl_node.get("ace_id", "") or "")
+        if ace_id:
+            bl_by_id[ace_id] = bl_node
+
+    def _resolved(abstract_id: str) -> str:
+        return str(node_lookup_ids.get(abstract_id, "") or abstract_id)
+
+    graph_nodes = []
+    bound_roots: list[tuple[int, str]] = []
+    all_roots: list[tuple[int, str]] = []
+    for node in abstract.nodes.values():
+        node_id = _resolved(node.id)
+        bl_node = bl_by_id.get(node_id)
+        label = str((bl_node.label or bl_node.name) if bl_node is not None else (node.name or node_id))
+        outputs = list(getattr(node, "outputs", []) or [])
+        band_names = tuple(str(o.name) for o in outputs) if node.category == "delta" and len(outputs) > 1 else ()
+        order = utils.as_int(node.parameters.get("frontend_node_index"), 0)
+        graph_nodes.append(operator_tree.GraphNode(node_id, label, order, band_names))
+        if node.category == "source_mngmt" and node.type == "src":
+            all_roots.append((order, node_id))
+            if source_uid and str(getattr(node, "source_binding_id", "") or "") == source_uid:
+                bound_roots.append((order, node_id))
+    links = [
+        operator_tree.GraphLink(_resolved(l.source_node_id), int(l.source_socket_idx), _resolved(l.target_node_id))
+        for l in abstract.links
+    ]
+    roots = [node_id for _order, node_id in sorted(bound_roots or all_roots)]
+    return operator_tree.build_rows(graph_nodes, links, roots)
+
+
+def _row_name(row: operator_tree.Row) -> str:
+    return " \u203a ".join(seg.label for seg in row.segments)
+
+
+def _ui_rows_match(active_source, rows: list[operator_tree.Row]) -> bool:
+    items = active_source.ui_nodes
+    if len(items) != len(rows):
+        return False
+    for item, row in zip(items, rows):
+        if (
+            item.name != _row_name(row)
+            or item.depth != row.depth
+            or item.parent_row != row.parent
+            or item.branch_key != row.branch_key
+            or item.has_children != row.has_children
+            or len(item.segments) != len(row.segments)
+        ):
+            return False
+        for seg_item, seg in zip(item.segments, row.segments):
+            if (seg_item.node_id, seg_item.kind) != (seg.node_id, seg.kind):
+                return False
+    return True
+
+
+def _write_ui_rows(active_source, rows: list[operator_tree.Row]) -> None:
+    items = active_source.ui_nodes
+    items.clear()
+    for row in rows:
+        item = items.add()
+        item.name = _row_name(row)
+        item.node_id = row.segments[-1].node_id
+        item.depth = row.depth
+        item.has_children = row.has_children
+        item.branch_key = row.branch_key
+        item.parent_row = row.parent
+        for seg in row.segments:
+            seg_item = item.segments.add()
+            seg_item.node_id = seg.node_id
+            seg_item.label = seg.label
+            seg_item.kind = seg.kind
+
+
+# Collapsed branch keys by tree pointer. Not stored on the nodes: writing node
+# properties tags the tree for the depsgraph.
+_collapsed_by_tree: dict[int, set[str]] = {}
+
+# Set while the add-on itself moves the list's active row, so the row callback
+# does not replace the selected operator with the row's last one.
+_setting_active_row = False
+
+# (tree pointer, ace_id) of the Node Editor's active node at the last check.
+_last_editor_active: tuple[int, str] = (0, "")
+
+
+def current_rows() -> list[operator_tree.Row]:
+    return list(_ui_tree_cache.get("rows", []) or [])
+
+
+def collapsed_keys() -> set[str]:
+    return _collapsed_by_tree.setdefault(int(_ui_tree_cache.get("tree_ptr", 0) or 0), set())
+
+
+def toggle_branch(branch_key: str) -> None:
+    keys = collapsed_keys()
+    if branch_key in keys:
+        keys.discard(branch_key)
+    else:
+        keys.add(branch_key)
+
+
+def set_active_row(active_source, idx: int) -> None:
+    global _setting_active_row
+    if active_source.active_ui_node_index == idx:
+        return
+    _setting_active_row = True
+    try:
+        active_source.active_ui_node_index = idx
+    finally:
+        _setting_active_row = False
+
+
+def is_setting_active_row() -> bool:
+    return _setting_active_row
+
+
+def reveal_operator(active_source, node_id: str) -> int:
+    """Expand the branches above *node_id* and make its row the list's active row; returns the row."""
+    rows = current_rows()
+    idx = operator_tree.row_of_node(rows, node_id)
+    if idx < 0:
+        return idx
+    collapsed_keys().difference_update(operator_tree.ancestor_keys(rows, idx))
+    set_active_row(active_source, idx)
+    return idx
+
+
+def note_editor_active(tree, node_id: str) -> None:
+    """Record a selection the add-on made in the Node Editor, so it is not read back as a new one."""
+    global _last_editor_active
+    _last_editor_active = (_tree_pointer(tree), str(node_id or ""))
+
+
+def _sync_editor_active(tree, active_source) -> None:
+    """Selecting an operator node in the Node Editor selects it in the list."""
+    global _last_editor_active
+    nodes = getattr(tree, "nodes", None)
+    active = getattr(nodes, "active", None) if nodes is not None else None
+    node_id = str(active.get("ace_id", "") or "") if active is not None else ""
+    key = (_tree_pointer(tree), node_id)
+    if key == _last_editor_active:
+        return
+    _last_editor_active = key
+    if not node_id or node_id == active_source.active_ui_node_id:
+        return
+    if operator_tree.row_of_node(current_rows(), node_id) < 0:
+        return
+    active_source.active_ui_node_id = node_id
+    reveal_operator(active_source, node_id)
+
+_collapsed_instances: set[str] = set()
+
+
+def instance_collapsed_keys() -> set[str]:
+    return _collapsed_instances
+
+
+def toggle_instance_branch(branch_key: str) -> None:
+    if branch_key in _collapsed_instances:
+        _collapsed_instances.discard(branch_key)
+    else:
+        _collapsed_instances.add(branch_key)
+
+
+def _instance_rows(scene) -> list[tuple]:
+    """(kind, target, name, detail, icon, detail_icon, depth, has_children, branch_key, parent) rows."""
+    from .helpers import _compiled_source_instance_rows, _frontend_instance_type, _frontend_kind_icon, _frontend_object_name, _source_list_icon
+
+    rows: list[tuple] = []
+    for entry in _compiled_source_instance_rows(scene) or []:
+        source_prop = entry.get("source_prop")
+        token = str(entry.get("source_token", "") or "")
+        refs = list(entry.get("frontend_refs", []) or [])
+        parent = len(rows)
+        rows.append((
+            "source", str(getattr(source_prop, "stable_id", "") or token),
+            str(entry.get("display_name", "") or "Unnamed Source"), "",
+            _source_list_icon(source_prop), "NONE", 0, True, f"src:{token}", -1,
+        ))
+        if not refs:
+            rows.append(("empty", "", "No connected instances", "", "BLANK1", "NONE", 1, False, "", parent))
+        for ref in refs:
+            kind = str(getattr(ref, "kind", "") or "")
+            rows.append((
+                "instance", _frontend_object_name(ref), _frontend_object_name(ref), _frontend_instance_type(kind),
+                "OBJECT_DATA", _frontend_kind_icon(kind), 1, False, "", parent,
+            ))
+    return rows
+
+
+def _row_tuple(item) -> tuple:
+    return (
+        item.kind, item.target, item.name, item.detail, item.icon, item.detail_icon,
+        item.depth, item.has_children, item.branch_key, item.parent_row,
+    )
+
+
+def _sync_instance_rows(scene) -> None:
+    ace = getattr(scene, "audiocore", None)
+    if ace is None:
+        return
+    rows = _instance_rows(scene)
+    if [_row_tuple(item) for item in ace.instance_rows] == rows:
+        return
+    ace.instance_rows.clear()
+    for row in rows:
+        item = ace.instance_rows.add()
+        (item.kind, item.target, item.name, item.detail, item.icon, item.detail_icon,
+         item.depth, item.has_children, item.branch_key, item.parent_row) = row
 
 
 def _refresh_active_source_metadata(scene, now: float | None = None):
@@ -743,7 +767,7 @@ def _engine_latency_metrics(context) -> dict[str, float | bool]:
 
 def _ui_sync_timer():
     """Blender persistent timer callback: drive background UI sync."""
-    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts
+    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts
     with utils.logged_errors("sync._ui_sync_timer"):
         context = getattr(bpy, "context", None)
         scene = getattr(context, "scene", None) if context else None
@@ -764,12 +788,6 @@ def _ui_sync_timer():
             else _UI_SYNC_TIMER_INTERVAL_IDLE
         )
         key_changed = quick_key != _ui_timer_last_quick_key
-        dirty_rebuild_due = bool(
-            engine_dirty
-            and ((now - _ui_timer_last_dirty_rebuild_ts) >= _UI_DIRTY_REBUILD_MIN_INTERVAL)
-        )
-        force_sync = bool(key_changed or dirty_rebuild_due)
-        allow_dirty_rebuild = bool(force_sync)
 
         _refresh_active_source_metadata(scene, now=now)
         with utils.logged_errors("sync._ui_sync_timer#2"):
@@ -778,21 +796,23 @@ def _ui_sync_timer():
             sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
             engine.flush_source_tempo_detection_updates(sources)
 
-        if key_changed or engine_dirty or ((now - _ui_timer_last_sync_ts) >= target_interval):
-            t0 = time.perf_counter()
-            _sync_ui_dummy_tree(
-                context,
-                force=force_sync,
-                allow_dirty_rebuild=allow_dirty_rebuild,
-            )
-            engine = ACEAudioEngine.get_instance(scene)
-            if engine is not None:
-                with utils.logged_errors("sync._ui_sync_timer#3"):
-                    engine.diagnostics._perf_add("ui_sync", time.perf_counter() - t0)
-            _ui_timer_last_quick_key = quick_key
-            _ui_timer_last_sync_ts = now
-            if dirty_rebuild_due:
-                _ui_timer_last_dirty_rebuild_ts = now
+        # Every tick: the sync itself only rebuilds when the tree signature changed.
+        t0 = time.perf_counter()
+        _sync_ui_dummy_tree(context, force=key_changed)
+        _, active_source = utils._get_active_source(context)
+        if tree is not None and active_source is not None:
+            _sync_editor_active(tree, active_source)
+            with utils.logged_errors("sync._ui_sync_timer#ramp"):
+                from .splitter import remove_legacy_ramp_group
+                remove_legacy_ramp_group()
+        with utils.logged_errors("sync._ui_sync_timer#instances"):
+            _sync_instance_rows(scene)
+        engine = ACEAudioEngine.get_instance(scene)
+        if engine is not None:
+            with utils.logged_errors("sync._ui_sync_timer#3"):
+                engine.diagnostics._perf_add("ui_sync", time.perf_counter() - t0)
+        _ui_timer_last_quick_key = quick_key
+        _ui_timer_last_sync_ts = now
         return target_interval
     return _UI_SYNC_TIMER_INTERVAL_IDLE
 
@@ -800,12 +820,11 @@ def _ui_sync_timer():
 @persistent
 def _ui_load_post(_dummy):
     """Blender load_post handler: reset all UI state caches after a file load."""
-    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees
+    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees, _last_editor_active
     _ui_sync_last_ts = 0.0
     _ui_sync_last_key = ""
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
-    _ui_timer_last_dirty_rebuild_ts = 0.0
     _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
@@ -814,22 +833,15 @@ def _ui_load_post(_dummy):
         "ts": 0.0,
         "metrics": None,
     }
-    _ui_tree_cache = {
-        "tree_ptr": 0,
-        "topology_sig": "",
-        "sig_ts": 0.0,
-        "source_uid": "",
-        "source_proxy": "",
-        "nodes": (),
-        "lookup_ids": {},
-    }
+    _ui_tree_cache = _empty_tree_cache()
+    _collapsed_by_tree.clear()
+    _last_editor_active = (0, "")
 
 
 def reset_state():
-    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees
+    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees, _last_editor_active
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
-    _ui_timer_last_dirty_rebuild_ts = 0.0
     _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
@@ -838,11 +850,6 @@ def reset_state():
         "ts": 0.0,
         "metrics": None,
     }
-    _ui_tree_cache = {
-        "tree_ptr": 0,
-        "topology_sig": "",
-        "sig_ts": 0.0,
-        "source_uid": "",
-        "source_proxy": "",
-        "nodes": (),
-    }
+    _ui_tree_cache = _empty_tree_cache()
+    _collapsed_by_tree.clear()
+    _last_editor_active = (0, "")

@@ -182,7 +182,8 @@ Blender session (`--extra-path` adds the optional libraries), and
 
 ## 11. Adding a node type
 
-1. Declare it in `ACE_NODES` (`vars.py`).
+1. Declare it in `ACE_NODES` (`vars.py`). A new method of an existing measure
+   is a mode of that node (`modes` in its definition), not a new node type.
 2. Give it a group interface in `nodes/geometry/factory.py` and, for shader
    use, `nodes/shader/`.
 3. Implement the task in `core/tasks/` and map it in

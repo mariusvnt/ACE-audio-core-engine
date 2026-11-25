@@ -2,15 +2,11 @@
 
 import numpy as np
 import threading
-import time
 from typing import Any, Optional
 from .... import utils
 from ...abstract_tree import ACEAbstractNode, ACEAbstractTree
 from ...tasks.block_size import resolve_preview_block_size
 from ...tasks.chunk import AudioChunk, SAMPLE_RATE
-from ...tasks.graph import ACEAudioGraph
-from ...tasks.preview import PreviewSinkTask
-from ...tasks.source import SourceTask
 from ..common import engine_settings
 from .monitor import _ACEPreviewAudioMonitor
 
@@ -56,65 +52,6 @@ class PreviewRouter:
             utils.note_swallowed("router.PreviewRouter._preview_block_size", exc)
             raw = 256
         return int(resolve_preview_block_size(raw))
-
-    @staticmethod
-    def _resample_signal_1d(signal: np.ndarray, target_len: int) -> np.ndarray:
-        """Linear-interpolation resample of a 1-D float32 signal to *target_len* samples."""
-        src = np.asarray(signal, dtype=np.float32).reshape(-1)
-        n = int(src.shape[0] or 0)
-        t_len = int(max(target_len, 1))
-        if n == t_len:
-            return src.astype(np.float32, copy=False)
-        if n <= 0:
-            return np.zeros(t_len, dtype=np.float32)
-        if n == 1:
-            return np.full(t_len, float(src[0]), dtype=np.float32)
-        x_old = np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float64)
-        x_new = np.linspace(0.0, 1.0, t_len, endpoint=False, dtype=np.float64)
-        out = np.interp(x_new, x_old, src.astype(np.float64, copy=False))
-        return out.astype(np.float32, copy=False)
-
-    @classmethod
-    def _fit_preview_chunk_block(cls, chunk: AudioChunk, preview_block_size: int) -> AudioChunk:
-        """Resample a chunk's mono and stereo signals to *preview_block_size* samples."""
-        target = int(max(preview_block_size, 1))
-        mono = np.asarray(getattr(chunk, "mono", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
-        if mono.shape[0] == target:
-            return chunk
-        mono_resized = cls._resample_signal_1d(mono, target)
-
-        stereo_raw = getattr(chunk, "stereo", None)
-        stereo_resized = None
-        if isinstance(stereo_raw, np.ndarray):
-            stereo_arr = np.asarray(stereo_raw, dtype=np.float32)
-            if stereo_arr.ndim == 2:
-                if stereo_arr.shape[1] == mono.shape[0]:
-                    stereo_resized = np.stack(
-                        [cls._resample_signal_1d(stereo_arr[ch], target) for ch in range(int(stereo_arr.shape[0]))],
-                        axis=0,
-                    ).astype(np.float32, copy=False)
-                elif stereo_arr.shape[0] == mono.shape[0]:
-                    transposed = stereo_arr.T.astype(np.float32, copy=False)
-                    resized_t = np.stack(
-                        [cls._resample_signal_1d(transposed[ch], target) for ch in range(int(transposed.shape[0]))],
-                        axis=0,
-                    ).astype(np.float32, copy=False)
-                    stereo_resized = resized_t
-
-        return AudioChunk(
-            mono_resized,
-            stereo_resized,
-            int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE),
-            provider=getattr(chunk, "provider", None),
-            frame_index=utils.as_int(getattr(chunk, "frame_index", None), -1),
-            band_indices=getattr(chunk, "band_indices", None),
-            band_index_fft_size=getattr(chunk, "band_index_fft_size", None),
-            band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-            lineage=tuple(getattr(chunk, "lineage", ()) or ()),
-            spectrum_token=getattr(chunk, "spectrum_token", None),
-            analysis_ops=tuple(getattr(chunk, "analysis_ops", ()) or ()),
-            latency_ms=float(getattr(chunk, "latency_ms", 0.0) or 0.0),
-        )
 
     @staticmethod
     def _mix_preview_chunks(chunks: list[AudioChunk]) -> Optional[AudioChunk]:
@@ -211,65 +148,6 @@ class PreviewRouter:
         if hasattr(chunk, "mono") and hasattr(chunk, "sample_rate"):
             return chunk
         return None
-
-    def _collect_preview_chunk(self, graph: ACEAudioGraph, frame_index: int, preview_block_size: int):
-        """Collect and resample preview audio for *graph* at *frame_index*."""
-        manual_ids = getattr(graph, "manual_preview_task_ids", []) or []
-        auto_ids = getattr(graph, "auto_preview_task_ids", []) or []
-        passthrough_specs = getattr(graph, "auto_preview_passthrough_specs", []) or []
-        candidate_ids = manual_ids if manual_ids else (auto_ids or (getattr(graph, "preview_task_ids", []) or []))
-
-        chunks: list[AudioChunk] = []
-        if (not manual_ids) and passthrough_specs:
-            for source_task_id, source_sock_idx in passthrough_specs:
-                source_task = graph.tasks.get(str(source_task_id))
-                if not isinstance(source_task, SourceTask):
-                    continue
-                try:
-                    t0 = time.perf_counter()
-                    direct_chunk = source_task.get_output(frame_index, int(source_sock_idx))
-                    self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
-                except Exception as exc:
-                    utils.note_swallowed("router.PreviewRouter._collect_preview_chunk", exc)
-                    continue
-                if direct_chunk is not None and self._chunk_is_unmasked_audio(direct_chunk):
-                    chunks.append(self._fit_preview_chunk_block(direct_chunk, preview_block_size))
-
-        for node_id in candidate_ids:
-            task = graph.tasks.get(node_id)
-            if not task:
-                continue
-            if 0 not in getattr(task, "inputs", {}):
-                continue
-            is_enabled_fn = getattr(task, "is_enabled", None)
-            if callable(is_enabled_fn) and not is_enabled_fn():
-                continue
-            # Fast path: when auto-preview taps a direct source output branch with no
-            # masking/analysis metadata, bypass PreviewSink reconstruction entirely.
-            if isinstance(task, PreviewSinkTask):
-                conn = getattr(task, "inputs", {}).get(0)
-                upstream = getattr(conn, "task", None) if conn is not None else None
-                if isinstance(upstream, SourceTask):
-                    try:
-                        t0 = time.perf_counter()
-                        direct_chunk = upstream.get_output(frame_index, int(getattr(conn, "socket_index", 0) or 0))
-                        self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
-                    except Exception as exc:
-                        utils.note_swallowed("router.PreviewRouter._collect_preview_chunk#2", exc)
-                        direct_chunk = None
-                    if direct_chunk is not None and self._chunk_is_unmasked_audio(direct_chunk):
-                        chunks.append(self._fit_preview_chunk_block(direct_chunk, preview_block_size))
-                        continue
-            try:
-                t0 = time.perf_counter()
-                chunk = task.get_output(frame_index, 0)
-                self.engine.diagnostics._perf_add("preview", time.perf_counter() - t0)
-            except Exception as exc:
-                utils.note_swallowed("router.PreviewRouter._collect_preview_chunk#3", exc)
-                continue
-            if hasattr(chunk, "mono") and hasattr(chunk, "sample_rate"):
-                chunks.append(self._fit_preview_chunk_block(chunk, preview_block_size))
-        return PreviewRouter._mix_preview_chunks(chunks)
 
     def _start_preview_worker(self):
         if self._preview_worker_thread is not None and self._preview_worker_thread.is_alive():

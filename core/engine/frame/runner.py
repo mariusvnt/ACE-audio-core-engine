@@ -545,7 +545,6 @@ class FrameRunner(BlockSizing, GraphEvaluation):
 
     def _collect_graph_preview(self, graph, ctx):
         """Gather this graph's preview audio (passthrough chunks or preview sinks)."""
-        preview_block_size = ctx.preview_block_size
         preview_chunks = ctx.preview_chunks
         # Collect preview after the main graph/source evaluation so
         # FILE-source prefetch has the full frame interval to fill.
@@ -572,9 +571,8 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                         utils.note_swallowed("runner.FrameRunner._collect_graph_preview", exc)
                         raw_chunk = None
                 if raw_chunk is not None and self.engine.preview._chunk_is_unmasked_audio(raw_chunk):
-                    preview_chunks.append(
-                        self.engine.preview._fit_preview_chunk_block(raw_chunk, preview_block_size)
-                    )
+                    # The whole frame of audio is pushed; the monitor's feeder paces it.
+                    preview_chunks.append(raw_chunk)
         else:
             # Preview sink chains run on the preview thread.
             for task_id in preview_ids:

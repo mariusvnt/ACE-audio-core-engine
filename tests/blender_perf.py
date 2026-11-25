@@ -30,7 +30,10 @@ from array import array
 import bpy  # type: ignore
 
 ADDON = "AudioCoreEngine"
-NODE_TYPES = ("rms", "peak", "lufs", "spectral_centroid", "spectral_flux", "zero_crossing_rate", "onset", "pitch")
+NODE_TYPES = (
+    ("loudness", "rms"), ("loudness", "peak"), ("loudness", "lufs"), ("spectral", "centroid"),
+    ("spectral", "flux"), ("spectral", "zcr"), ("onset", None), ("pitch", None),
+)
 
 
 def _args():
@@ -87,8 +90,8 @@ def _build_scene(n_nodes, wav_path):
     obj.modifiers.new("ACE Perf", "NODES").node_group = tree
     source = smoke._add_ace_node(ADDON, tree, "source_mngmt", "src", "Source")
     for i in range(n_nodes):
-        node_type = NODE_TYPES[i % len(NODE_TYPES)]
-        node = smoke._add_ace_node(ADDON, tree, "stream", node_type, f"{node_type} {i}")
+        node_type, mode = NODE_TYPES[i % len(NODE_TYPES)]
+        node = smoke._add_ace_node(ADDON, tree, "stream", node_type, f"{mode or node_type} {i}", mode=mode)
         tree.links.new(source.outputs["Audio"], node.inputs["Audio"])
     return scene, src
 

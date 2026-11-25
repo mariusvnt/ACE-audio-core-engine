@@ -4,8 +4,9 @@ import bpy  # type: ignore
 import textwrap
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
-from .helpers import _compiled_source_instance_rows, _deal_breakers, _find_active_node_tree, _frontend_instance_type, _frontend_kind_icon, _frontend_object_name, _source_display_sample_rate, _source_list_icon, _ui_is_blocked
-from .selection import _draw_bake_controls, _draw_selected_node_description, _draw_selected_node_operator_settings, _selected_node_description, _selected_node_has_operator_settings
+from .helpers import _deal_breakers, _find_active_node_tree, _source_display_sample_rate, _source_list_icon, _ui_is_blocked
+from .selection import _draw_bake_controls, _draw_selected_node_description, _draw_selected_operator, _selected_node_description
+from . import operator_tree
 from . import sync
 from .sync import _engine_latency_metrics, _ui_has_pending_engine_changes, _ui_load_post, _ui_sync_timer
 
@@ -24,25 +25,136 @@ class ACE_UL_source_list(bpy.types.UIList):
 
 
 class ACE_UL_dummy_tree(bpy.types.UIList):
-    """UIList row renderer for the active-source graph node list.
+    """Active Operators drawn as a folded tree.
 
-    Displays the node name in the left column and the category label in the
-    right column.  Values are read directly from the ui_nodes collection
-    property populated by _sync_ui_dummy_tree().
+    Each row is a chain of operators without branching; every name is a button that
+    selects its node, and the selected one is drawn pressed. Double-click or Ctrl+click
+    a name to rename it (ACE_PT_rename_operator). Rows are indented by depth and the rows below a branch fold away.
     """
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        # Keep drawing lean; only touch attributes that commonly exist on the ui_nodes items
-        name = getattr(item, "name", f"Node {index}")
-        node_type = getattr(item, "node_type", "")
-
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            split = layout.split(factor=0.55, align=True)
-            split.label(text=name)
-            split.label(text=node_type or "")
-        elif self.layout_type == 'GRID':
+        if self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text="", icon='NODE')
+            return
+        active_id = str(getattr(data, "active_ui_node_id", "") or "")
+        row = layout.row(align=True)
+        row.alignment = 'LEFT'
+        for _ in range(int(item.depth)):
+            row.label(text="", icon='BLANK1')
+        if item.has_children:
+            folded = item.branch_key in sync.collapsed_keys()
+            op = row.operator(
+                "ace.toggle_operator_branch",
+                text="",
+                icon='DISCLOSURE_TRI_RIGHT' if folded else 'DISCLOSURE_TRI_DOWN',
+                emboss=False,
+            )
+            op.branch_key = item.branch_key
+        else:
+            row.label(text="", icon='BLANK1')
+        for seg_idx, seg in enumerate(item.segments):
+            if seg_idx:
+                row.label(text="\u203a")
+            selected = seg.kind == "node" and seg.node_id == active_id
+            op = row.operator(
+                "ace.select_operator",
+                text=seg.label,
+                icon='LINKED' if seg.kind == "ref" else 'NONE',
+                emboss=selected,
+                depress=selected,
+            )
+            op.node_id = seg.node_id
+
+    def draw_filter(self, context, layout):
+        row = layout.row(align=True)
+        row.prop(self, "filter_name", text="", icon='VIEWZOOM')
+
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        rows = [
+            operator_tree.Row(
+                depth=int(it.depth),
+                segments=[operator_tree.Segment(seg.node_id, seg.label, seg.kind) for seg in it.segments],
+                has_children=bool(it.has_children),
+                branch_key=str(it.branch_key),
+                parent=int(it.parent_row),
+            )
+            for it in items
+        ]
+        shown = operator_tree.visible_rows(rows, sync.collapsed_keys(), self.filter_name)
+        return [self.bitflag_filter_item if visible else 0 for visible in shown], []
+
+
+class ACE_UL_instances(bpy.types.UIList):
+    """Active ACE Instances drawn as a tree: sources, and the objects each one drives.
+
+    Clicking a source makes it the active source; clicking an object selects it.
+    """
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        for _ in range(int(item.depth)):
+            row.label(text="", icon='BLANK1')
+        if item.has_children:
+            folded = item.branch_key in sync.instance_collapsed_keys()
+            op = row.operator(
+                "ace.toggle_operator_branch",
+                text="",
+                icon='DISCLOSURE_TRI_RIGHT' if folded else 'DISCLOSURE_TRI_DOWN',
+                emboss=False,
+            )
+            op.branch_key = item.branch_key
+            op.list_id = "instances"
+        elif item.depth:
+            row.label(text="", icon='BLANK1')
+        if item.kind == "empty":
+            sub = row.row()
+            sub.enabled = False
+            sub.label(text=item.name)
+            return
+        if not item.detail:
+            row.label(text=item.name, icon=item.icon or 'NONE')
+            return
+        split = row.split(factor=0.62, align=True)
+        split.label(text=item.name, icon=item.icon or 'NONE')
+        right = split.row(align=True)
+        right.alignment = 'RIGHT'
+        right.label(text=item.detail, icon=item.detail_icon or 'NONE')
+
+    def draw_filter(self, context, layout):
+        layout.row(align=True).prop(self, "filter_name", text="", icon='VIEWZOOM')
+
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        rows = [
+            operator_tree.Row(
+                depth=int(it.depth),
+                segments=[operator_tree.Segment(it.target, it.name)],
+                has_children=bool(it.has_children),
+                branch_key=str(it.branch_key),
+                parent=int(it.parent_row),
+            )
+            for it in items
+        ]
+        shown = operator_tree.visible_rows(rows, sync.instance_collapsed_keys(), self.filter_name)
+        return [self.bitflag_filter_item if visible else 0 for visible in shown], []
+
+
+class ACE_PT_rename_operator(bpy.types.Panel):
+    """Rename box opened at the cursor by a double-click in the Active Operators list (like F2)."""
+    bl_space_type = 'TOPBAR'  # dummy: only shown through wm.call_panel
+    bl_region_type = 'HEADER'
+    bl_label = "Rename Operator"
+    bl_ui_units_x = 14
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Operator Name")
+        row = layout.row()
+        row.activate_init = True
+        row.label(icon='NODE')
+        row.prop(context.window_manager, "ace_rename_name", text="")
 
 
 class ACE_PT_presentation_panel(bpy.types.Panel):
@@ -421,17 +533,14 @@ class ACE_PT_information_streams(bpy.types.Panel):
         if not active_source:
             return
 
-        refresh_row = layout.row(align=True)
-        refresh_row.operator("audiocore.refresh_stream_list", icon="FILE_REFRESH", text="Refresh Active Node List")
-
         list_col = layout.column()
         list_col.template_list(
             "ACE_UL_dummy_tree", "",
             active_source, "ui_nodes",
-            active_source, "active_ui_node_index"
+            active_source, "active_ui_node_index",
+            rows=6,
         )
-        if _selected_node_has_operator_settings(context):
-            _draw_selected_node_operator_settings(layout, context)
+        _draw_selected_operator(layout, context)
 
 
 class ACE_PT_information_streams_description(bpy.types.Panel):
@@ -495,41 +604,23 @@ class ACE_PT_stream_confluence(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        ledger_rows = _compiled_source_instance_rows(getattr(context, "scene", None))
-        if ledger_rows is None or not ledger_rows:
+        ace = context.scene.audiocore
+        if not len(ace.instance_rows):
             layout.label(text="Engine offline or no sources found.")
             return
-        for entry in ledger_rows:
-            source_box = layout.box()
-            header = source_box.row(align=True)
-            source_icon = _source_list_icon(entry.get("source_prop"))
-            header.label(text=str(entry.get("display_name", "") or "Unnamed Source"), icon=source_icon)
-
-            frontend_refs = list(entry.get("frontend_refs", []) or [])
-            if not frontend_refs:
-                empty_row = source_box.row(align=True)
-                empty_row.separator(factor=2.0)
-                empty_row.label(text="No connected instances")
-                continue
-
-            for frontend_ref in frontend_refs:
-                frontend_row = source_box.row(align=True)
-                frontend_row.separator(factor=2.0)
-                frontend_kind = str(getattr(frontend_ref, "kind", "") or "")
-                split = frontend_row.split(factor=0.62, align=True)
-                object_col = split.row(align=True)
-                object_col.label(text=_frontend_object_name(frontend_ref), icon='OBJECT_DATA')
-                type_col = split.row(align=True)
-                type_col.alignment = 'RIGHT'
-                type_col.label(
-                    text=_frontend_instance_type(frontend_kind),
-                    icon=_frontend_kind_icon(frontend_kind),
-                )
+        layout.template_list(
+            "ACE_UL_instances", "",
+            ace, "instance_rows",
+            ace, "active_instance_row",
+            rows=4,
+        )
 
 
 classes = (
     ACE_UL_source_list,
     ACE_UL_dummy_tree,
+    ACE_UL_instances,
+    ACE_PT_rename_operator,
     ACE_PT_presentation_panel,
     ACE_PT_unsatisfactory_config,
     ACE_PT_project_settings,

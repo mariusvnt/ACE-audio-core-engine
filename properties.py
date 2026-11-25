@@ -218,13 +218,30 @@ def _live_device_items(self, context):  # noqa: ARG001
     return _LIVE_DEVICE_CACHE
 
 
+class ACEUISegment(bpy.types.PropertyGroup):
+    """One clickable name in a row of the Active Operators tree."""
+    node_id: bpy.props.StringProperty(name="Node ID", default="")                                                                    # type: ignore
+    label: bpy.props.StringProperty(name="Label", default="")                                                                        # type: ignore
+    kind: bpy.props.StringProperty(name="Kind", default="node")                                                                      # type: ignore
+
+
 class ACEUINode(bpy.types.PropertyGroup):
-    """Lightweight UI representation of a node linked to an audio source."""
+    """One row of the Active Operators tree: a chain of operators without branching."""
     name: bpy.props.StringProperty(name="Name", default="Node")                                                                      # type: ignore
     node_id: bpy.props.StringProperty(name="Node ID", default="")                                                                    # type: ignore
     node_type: bpy.props.StringProperty(name="Type", default="")                                                                     # type: ignore
     current_value: bpy.props.FloatProperty(name="Value", default=0.0)                                                                # type: ignore
     description: bpy.props.StringProperty(name="Description", default="")                                                            # type: ignore
+    segments: bpy.props.CollectionProperty(type=ACEUISegment)                                                                        # type: ignore
+    depth: bpy.props.IntProperty(default=0)                                                                                          # type: ignore
+    has_children: bpy.props.BoolProperty(default=False)                                                                              # type: ignore
+    branch_key: bpy.props.StringProperty(default="")                                                                                 # type: ignore
+    parent_row: bpy.props.IntProperty(default=-1)                                                                                    # type: ignore
+
+
+def _on_active_operator_row(self, context):
+    from .ui.panel.selection import select_row_operator
+    select_row_operator(self, context)
 
 
 class ACEAudioSource(bpy.types.PropertyGroup):
@@ -397,7 +414,9 @@ class ACEAudioSource(bpy.types.PropertyGroup):
     )
 
     ui_nodes: bpy.props.CollectionProperty(type=ACEUINode)                                                                          # type: ignore
-    active_ui_node_index: bpy.props.IntProperty(default=0)                                                                          # type: ignore
+    active_ui_node_index: bpy.props.IntProperty(default=0, update=_on_active_operator_row)                                         # type: ignore
+    # The selected operator (ace_id): rows hold several operators, so the selection is a node, not a row.
+    active_ui_node_id: bpy.props.StringProperty(default="")                                                                         # type: ignore
 
 
 class ACEEngineSettings(bpy.types.PropertyGroup):
@@ -491,6 +510,27 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
     )
 
 
+class ACEUIInstanceRow(bpy.types.PropertyGroup):
+    """One row of the Active ACE Instances tree: a source, or an object it drives."""
+    name: bpy.props.StringProperty(default="")                                                                                       # type: ignore
+    # "source", "instance", or "empty" (a source without connected instances).
+    kind: bpy.props.StringProperty(default="instance")                                                                               # type: ignore
+    # Source stable_id for a source row, object name for an instance row.
+    target: bpy.props.StringProperty(default="")                                                                                     # type: ignore
+    detail: bpy.props.StringProperty(default="")                                                                                     # type: ignore
+    icon: bpy.props.StringProperty(default="NONE")                                                                                   # type: ignore
+    detail_icon: bpy.props.StringProperty(default="NONE")                                                                            # type: ignore
+    depth: bpy.props.IntProperty(default=0)                                                                                          # type: ignore
+    has_children: bpy.props.BoolProperty(default=False)                                                                              # type: ignore
+    branch_key: bpy.props.StringProperty(default="")                                                                                 # type: ignore
+    parent_row: bpy.props.IntProperty(default=-1)                                                                                    # type: ignore
+
+
+def _on_active_instance_row(self, context):
+    from .ui.panel.selection import select_instance_row
+    select_instance_row(self, context)
+
+
 class ACEProjectSettings(bpy.types.PropertyGroup):
     """Root Settings container for the Add-on."""
     
@@ -501,6 +541,10 @@ class ACEProjectSettings(bpy.types.PropertyGroup):
         update=_on_active_source_index_change,
     )
     
+    # Active ACE Instances tree (rebuilt by the UI timer from the compiled graph).
+    instance_rows: bpy.props.CollectionProperty(type=ACEUIInstanceRow)                                                              # type: ignore
+    active_instance_row: bpy.props.IntProperty(default=0, update=_on_active_instance_row)                                          # type: ignore
+
     # Sub-Properties
     engine_settings: bpy.props.PointerProperty(type=ACEEngineSettings)                                                              # type: ignore
     gn_target_object: bpy.props.PointerProperty(type=bpy.types.Object, name="GN Target Object")                                     # type: ignore
@@ -517,22 +561,59 @@ class ACEProjectSettings(bpy.types.PropertyGroup):
 
 
 classes = (
+    ACEUISegment,
     ACEUINode,
     ACEAudioSource,
     ACEEngineSettings,
+    ACEUIInstanceRow,
     ACEProjectSettings,
 )
+
+def _get_rename_name(self):
+    from .ui.panel.selection import rename_box_name
+    return rename_box_name(self)
+
+
+def _set_rename_name(self, value):
+    from .ui.panel.selection import set_rename_box_name
+    set_rename_box_name(self, value)
+
+
+# UI-only window-manager properties: the rename box and the band strip's two colours.
+_WM_PROPS = {
+    "ace_rename_name": bpy.props.StringProperty(
+        name="Name",
+        description="Name of the operator, shown in the Active Operators list and as its node's title. Empty restores the automatic name",
+        get=_get_rename_name,
+        set=_set_rename_name,
+    ),
+    "ace_band_dark": bpy.props.FloatVectorProperty(
+        name="Band", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
+        get=lambda _self: (0.0, 0.0, 0.0), set=lambda _self, _value: None,
+    ),
+    "ace_band_light": bpy.props.FloatVectorProperty(
+        name="Band", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
+        get=lambda _self: (1.0, 1.0, 1.0), set=lambda _self, _value: None,
+    ),
+}
+
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    
+
     # Attach to Scene
     bpy.types.Scene.audiocore = bpy.props.PointerProperty(type=ACEProjectSettings)
+    for name, prop in _WM_PROPS.items():
+        setattr(bpy.types.WindowManager, name, prop)
+
 
 def unregister():
+    for name in _WM_PROPS:
+        if hasattr(bpy.types.WindowManager, name):
+            delattr(bpy.types.WindowManager, name)
     if hasattr(bpy.types.Scene, "audiocore"):
         del bpy.types.Scene.audiocore
-        
+
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

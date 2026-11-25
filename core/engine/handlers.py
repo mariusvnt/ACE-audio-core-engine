@@ -14,6 +14,7 @@ from .preview.router import PreviewRouter
 def _load_post_reset_engine(_dummy):
     ACEAudioEngine.shutdown_all_instances()
     _refresh_loaded_node_groups()
+    _migrate_legacy_nodes()
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
 
 
@@ -27,6 +28,22 @@ def _refresh_loaded_node_groups():
             factory.ensure_node_groups_exist()
         except Exception as exc:  # noqa: BLE001 boundary: a load must not fail on group refresh
             utils.log(f"ACE node group refresh after load failed ({factory.__name__}): {exc}", "ERROR")
+
+
+def _migrate_legacy_nodes():
+    """Turn the old per-method stream nodes of the open file into mode nodes."""
+    from ...nodes.modes import migrate_legacy_stream_nodes
+
+    try:
+        migrate_legacy_stream_nodes()
+    except Exception as exc:  # noqa: BLE001 boundary: a load must not fail on node migration
+        utils.log(f"ACE stream node migration failed: {exc}", "ERROR")
+
+
+def _migrate_after_register():
+    """One-shot timer: bpy.data is restricted while the add-on registers."""
+    _migrate_legacy_nodes()
+    return None
 
 
 @persistent
@@ -289,7 +306,7 @@ def depsgraph_update_handler(scene, depsgraph):
                     _queue_recompile_target(tree)
 
     for target in recompile_targets:
-        engine.frontends.request_recompile(target)
+        engine.frontends.request_recompile(target, verify_content=True)
 
 
 def auto_compile_timer():
@@ -383,6 +400,8 @@ def register_handlers():
         bpy.app.timers.register(auto_compile_timer, first_interval=0.25, persistent=True)
     if not bpy.app.timers.is_registered(_shm_drain_timer):
         bpy.app.timers.register(_shm_drain_timer, first_interval=2.0, persistent=True)
+    if not bpy.app.timers.is_registered(_migrate_after_register):
+        bpy.app.timers.register(_migrate_after_register, first_interval=0.1, persistent=True)
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
 
 
