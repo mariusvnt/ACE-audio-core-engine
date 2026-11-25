@@ -6,6 +6,7 @@ import time
 from .. import utils
 from .engine_common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, persistent
 from .audio_engine import ACEAudioEngine
+from .engine_preview import PreviewRouter
 
 
 @persistent
@@ -165,7 +166,7 @@ def render_post_handler(scene):
         return
     engine.diagnostics._mark_render_complete(scene, cancelled=False)
     with utils.logged_errors("audio_engine.render_post_handler"):
-        ACEAudioEngine._preview_monitor.clear()
+        PreviewRouter._preview_monitor.clear()
 
 
 @persistent

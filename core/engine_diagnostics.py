@@ -240,7 +240,7 @@ class EngineDiagnostics:
         return report
 
     def get_runtime_diagnostics(self, reset: bool = False) -> Dict[str, float]:
-        preview_diag = dict(self.engine._preview_monitor.diagnostics_snapshot(reset=reset))
+        preview_diag = dict(self.engine.preview._preview_monitor.diagnostics_snapshot(reset=reset))
         worker_target = self.engine._parallel_worker_count(None)
         executor = self.engine._parallel_executor
         active_workers = int(getattr(executor, "_max_workers", 0) or 0) if executor is not None else 0
@@ -308,7 +308,7 @@ class EngineDiagnostics:
 
     def get_runtime_diagnostics_current(self) -> Dict[str, float]:
         now_ts = time.perf_counter()
-        preview_diag = dict(self.engine._preview_monitor.current_snapshot())
+        preview_diag = dict(self.engine.preview._preview_monitor.current_snapshot())
         with self._source_prefetch_lock:
             source_prefetch_ms = float(self._source_prefetch_history[-1] * 1000.0) if self._source_prefetch_history else 0.0
         geometry_ms = 0.0

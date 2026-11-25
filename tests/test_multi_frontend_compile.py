@@ -282,10 +282,10 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._preview_last_chunk = None
         engine._preview_last_eval_frame = -1
         engine._preview_next_eval_ts = 0.0
-        engine._preview_worker_stop = False
-        engine._preview_worker_cond = threading.Condition()
-        engine._preview_worker_queue = []
-        engine._preview_worker_thread = None
+        engine.preview._preview_worker_stop = False
+        engine.preview._preview_worker_cond = threading.Condition()
+        engine.preview._preview_worker_queue = []
+        engine.preview._preview_worker_thread = None
         engine.probes._probe_pending_updates = {}
         engine.probes._probe_in_flight = set()
         engine.probes._probe_thread_lock = threading.Lock()
@@ -611,7 +611,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             },
         )
 
-        winner, ordered = engine._resolve_global_manual_preview_winner(abstract_tree)
+        winner, ordered = engine.preview._resolve_global_manual_preview_winner(abstract_tree)
 
         self.assertEqual(winner, "preview_new")
         self.assertEqual(ordered, ["preview_old", "preview_new"])
@@ -1167,7 +1167,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.probes._probe_pending_updates = {"file.wav": {"undo_generation": 0}}
         engine.probes._probe_in_flight = {"file.wav"}
         engine.diagnostics._pending_geometry_events = [{"frame": 1}]
-        engine._preview_worker_thread = None
+        engine.preview._preview_worker_thread = None
         engine._parallel_executor = None
         engine.invalidate_runtime_caches = lambda: None
         scene = types.SimpleNamespace(name="Scene")
