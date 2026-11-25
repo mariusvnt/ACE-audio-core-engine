@@ -39,7 +39,7 @@ def _ensure_package(name: str, path: Path):
 
 TASK_MODULES = (
     "chunk", "filters", "frontend", "block_size", "base", "spectral", "analyzer",
-    "source", "specs", "delta", "stream", "preview", "utility", "graph",
+    "source_frontend", "source_clock", "source", "tempo", "specs_analysis", "specs", "delta", "stream", "preview", "utility", "graph",
 )
 
 
