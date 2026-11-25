@@ -261,24 +261,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.frame._source_specs_task_registry = {}
         engine._current_delta_frames = 1.0
         engine.diagnostics._pending_geometry_events = []
-        engine.parallel._parallel_future_meta = {}
-        engine.parallel._parallel_inflight = {}
-        engine.parallel._parallel_results = {}
-        engine.parallel._parallel_last_valid = {}
-        engine.parallel._parallel_last_valid_frame = {}
-        engine.parallel._parallel_failures = {}
-        engine.parallel._parallel_disabled_sources = set()
-        engine.parallel._parallel_graph_ir_required = set()
-        engine.parallel._parallel_payload_slots = {}
-        engine.parallel._parallel_payload_slot_refs = {}
-        engine.parallel._parallel_payload_slot_counters = {}
-        engine.parallel._parallel_payload_free_slots = {}
-        engine.parallel._parallel_frame_payload_slots = {}
-        engine.parallel._parallel_generation_id = 0
-        engine.parallel._parallel_job_seq = 0
-        engine.parallel._parallel_executor = None
-        engine.parallel._parallel_pool_failed = False
-        engine.parallel._parallel_last_submit_frame = -1
+        engine.parallel.last_submit_frame = -1
         engine.frame._preview_last_chunk = None
         engine.frame._preview_last_eval_frame = -1
         engine.frame._preview_next_eval_ts = 0.0
@@ -1168,7 +1151,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.probes._probe_in_flight = {"file.wav"}
         engine.diagnostics._pending_geometry_events = [{"frame": 1}]
         engine.preview._preview_worker_thread = None
-        engine.parallel._parallel_executor = None
+        engine.parallel.pool.executor = None
         engine.invalidate_runtime_caches = lambda: None
         scene = types.SimpleNamespace(name="Scene")
         original_monotonic = self.engine_mod.time.monotonic
@@ -1289,31 +1272,31 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
     def test_parallel_usable_values_accepts_current_frame_payload(self):
         engine = self._engine_shell()
-        engine.parallel._parallel_results = {"graph_a": {24: {"node:0": 0.0}}}
-        engine.parallel._parallel_last_valid = {}
-        engine.parallel._parallel_last_valid_frame = {}
+        engine.parallel.results = {"graph_a": {24: {"node:0": 0.0}}}
+        engine.parallel.last_valid = {}
+        engine.parallel.last_valid_frame = {}
         engine._current_scene_fps = 30.0
 
-        self.assertTrue(engine.parallel._parallel_has_usable_values_for_graph_frame("graph_a", 24))
+        self.assertTrue(engine.parallel.has_usable_values("graph_a", 24))
 
     def test_parallel_usable_values_accepts_recent_last_valid_cache(self):
         engine = self._engine_shell()
-        engine.parallel._parallel_results = {"graph_a": {}}
-        engine.parallel._parallel_last_valid = {"graph_a": {"node:0": 0.42}}
-        engine.parallel._parallel_last_valid_frame = {"graph_a": 100}
+        engine.parallel.results = {"graph_a": {}}
+        engine.parallel.last_valid = {"graph_a": {"node:0": 0.42}}
+        engine.parallel.last_valid_frame = {"graph_a": 100}
         engine._current_scene_fps = 30.0
 
-        self.assertTrue(engine.parallel._parallel_has_usable_values_for_graph_frame("graph_a", 102))
+        self.assertTrue(engine.parallel.has_usable_values("graph_a", 102))
 
     def test_parallel_usable_values_rejects_stale_or_empty_cache(self):
         engine = self._engine_shell()
-        engine.parallel._parallel_results = {"graph_a": {}}
-        engine.parallel._parallel_last_valid = {"graph_a": {"node:0": 0.42}}
-        engine.parallel._parallel_last_valid_frame = {"graph_a": 100}
+        engine.parallel.results = {"graph_a": {}}
+        engine.parallel.last_valid = {"graph_a": {"node:0": 0.42}}
+        engine.parallel.last_valid_frame = {"graph_a": 100}
         engine._current_scene_fps = 30.0
 
-        self.assertFalse(engine.parallel._parallel_has_usable_values_for_graph_frame("graph_a", 104))
-        self.assertFalse(engine.parallel._parallel_has_usable_values_for_graph_frame("graph_missing", 104))
+        self.assertFalse(engine.parallel.has_usable_values("graph_a", 104))
+        self.assertFalse(engine.parallel.has_usable_values("graph_missing", 104))
 
     def test_compile_requires_main_thread(self):
         errors = []

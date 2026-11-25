@@ -382,7 +382,7 @@ def _shm_drain_timer():
     """
     Periodic SHM drain called by bpy.app.timers every 2 seconds.
 
-    _parallel_poll_futures() is normally called inside execute_next_frame(), but
+    poll() is normally called inside execute_next_frame(), but
     when the scene is paused indefinitely (no frame change events), completed
     futures hold their SHM handles until the next frame event.  On platforms
     with a small /dev/shm limit (Linux default 64 MB) this can exhaust shared
@@ -397,13 +397,13 @@ def _shm_drain_timer():
     try:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         engine = ACEAudioEngine.get_instance(scene) if scene is not None else None
-        if engine is not None and engine.parallel._parallel_future_meta:
+        if engine is not None and engine.parallel.future_meta:
             if engine._undo_recovery_active():
                 return 2.0
             # Only drain when the scene is NOT actively playing — during playback
             # execute_next_frame() handles all future draining every frame.
             if not engine._is_animation_playing():
-                engine.parallel._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
+                engine.parallel.poll(scene, current_frame=int(getattr(engine, "current_frame", 0)))
     except Exception as _exc:
         with utils.logged_errors("audio_engine._shm_drain_timer"):
             utils.log(

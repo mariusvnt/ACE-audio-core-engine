@@ -399,10 +399,10 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     engine.graphs = {source.stable_id: graph}
     engine._last_attr_sync_frame[source.stable_id] = -10_000_000
     engine.frame._rebuild_graph_execution_order(graph)
-    engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
+    engine.parallel.prepare_graph_ir(graph, abstract_tree)
     proxy_obj = object()
     graph.get_proxy_object = lambda: proxy_obj  # type: ignore[method-assign]
-    engine.parallel._parallel_mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine.parallel)
+    engine.parallel.mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine.parallel)
 
     use_real_processes = str(os.environ.get("ACE_ENGINE_PERF_USE_REAL_PROCESSES", "")).strip().lower() in {
         "1",
@@ -412,21 +412,18 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     }
     if parallel_mode == "processes_dsp" and (not use_real_processes):
         def _ensure_parallel_pool_threaded(self, scene_obj):  # noqa: ANN001
-            if self._parallel_mode(scene_obj) != "processes_dsp":
-                self._shutdown_parallel_pool(wait=False)
+            if self.mode(scene_obj) != "processes_dsp":
+                self.shutdown_pool(wait=False)
                 return False
-            if self._parallel_pool_failed:
+            if self.pool.failed:
                 return False
-            if self._parallel_executor is not None:
-                return True
-            # The worker-side graph cache is process-isolated by design; when the
-            # harness emulates process mode with threads, keep it single-worker to
-            # avoid cross-thread reuse of mutable analysis state.
-            self._parallel_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            self._mark_parallel_ir_required_for_all_graphs()
+            if self.pool.executor is None:
+                # One thread: the worker graph cache is process-wide and not thread-safe.
+                self.pool.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                self.mark_ir_required_for_all_graphs()
             return True
 
-        engine.parallel._ensure_parallel_pool = types.MethodType(_ensure_parallel_pool_threaded, engine.parallel)
+        engine.parallel.ensure_pool = types.MethodType(_ensure_parallel_pool_threaded, engine.parallel)
 
     return engine, scene
 
@@ -610,10 +607,10 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     engine.graphs = {graph.source_uid: graph}
     engine._last_attr_sync_frame[graph.source_uid] = -10_000_000
     engine.frame._rebuild_graph_execution_order(graph)
-    engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
+    engine.parallel.prepare_graph_ir(graph, abstract_tree)
     proxy_obj = object()
     graph.get_proxy_object = lambda: proxy_obj  # type: ignore[method-assign]
-    engine.parallel._parallel_mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine.parallel)
+    engine.parallel.mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine.parallel)
 
     use_real_processes = str(os.environ.get("ACE_ENGINE_PERF_USE_REAL_PROCESSES", "")).strip().lower() in {
         "1",
@@ -623,21 +620,18 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     }
     if parallel_mode == "processes_dsp" and (not use_real_processes):
         def _ensure_parallel_pool_threaded(self, scene_obj):  # noqa: ANN001
-            if self._parallel_mode(scene_obj) != "processes_dsp":
-                self._shutdown_parallel_pool(wait=False)
+            if self.mode(scene_obj) != "processes_dsp":
+                self.shutdown_pool(wait=False)
                 return False
-            if self._parallel_pool_failed:
+            if self.pool.failed:
                 return False
-            if self._parallel_executor is not None:
-                return True
-            # The worker-side graph cache is process-isolated by design; when the
-            # harness emulates process mode with threads, keep it single-worker to
-            # avoid cross-thread reuse of mutable analysis state.
-            self._parallel_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            self._mark_parallel_ir_required_for_all_graphs()
+            if self.pool.executor is None:
+                # One thread: the worker graph cache is process-wide and not thread-safe.
+                self.pool.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                self.mark_ir_required_for_all_graphs()
             return True
 
-        engine.parallel._ensure_parallel_pool = types.MethodType(_ensure_parallel_pool_threaded, engine.parallel)
+        engine.parallel.ensure_pool = types.MethodType(_ensure_parallel_pool_threaded, engine.parallel)
 
     return engine, scene
 
@@ -682,9 +676,9 @@ def _run_engine_benchmark(
     completion_counters = {"done": 0}
     completion_elapsed_samples: List[float] = []
     seen_completed_futures: set[int] = set()
-    original_submit = engine.parallel._parallel_submit_graph_job
-    original_values_for_frame = engine.parallel._parallel_values_for_graph_frame
-    original_poll_futures = engine.parallel._parallel_poll_futures
+    original_submit = engine.parallel.submit_graph_job
+    original_values_for_frame = engine.parallel.values_for_frame
+    original_poll_futures = engine.parallel.poll
 
     def _submit_instrumented(*args, **kwargs):
         submit_counters["attempts"] += 1
@@ -695,7 +689,7 @@ def _run_engine_benchmark(
 
     def _values_for_frame_instrumented(graph, graph_key, frame_index):
         result_counters["requests"] += 1
-        frame_map = engine.parallel._parallel_results.get(str(graph_key), {}) or {}
+        frame_map = engine.parallel.results.get(str(graph_key), {}) or {}
         if int(frame_index) in frame_map:
             result_counters["fresh"] += 1
         t0 = time.perf_counter()
@@ -704,7 +698,7 @@ def _run_engine_benchmark(
         return out
 
     def _poll_futures_instrumented(scene_obj, current_frame):  # noqa: ANN001
-        for fut in list(getattr(getattr(engine, "parallel", None), "_parallel_future_meta", {}).keys()):
+        for fut in list(getattr(getattr(engine, "parallel", None), "future_meta", {}).keys()):
             fut_key = id(fut)
             if fut_key in seen_completed_futures or (not fut.done()):
                 continue
@@ -722,9 +716,9 @@ def _run_engine_benchmark(
         return original_poll_futures(scene_obj, current_frame)
 
     if mode == "processes_dsp":
-        engine.parallel._parallel_submit_graph_job = _submit_instrumented  # type: ignore[assignment]
-        engine.parallel._parallel_values_for_graph_frame = _values_for_frame_instrumented  # type: ignore[assignment]
-        engine.parallel._parallel_poll_futures = _poll_futures_instrumented  # type: ignore[assignment]
+        engine.parallel.submit_graph_job = _submit_instrumented  # type: ignore[assignment]
+        engine.parallel.values_for_frame = _values_for_frame_instrumented  # type: ignore[assignment]
+        engine.parallel.poll = _poll_futures_instrumented  # type: ignore[assignment]
 
     def _maybe_pace(next_due_ts: float) -> float:
         if frame_interval_s <= 0.0:
@@ -748,14 +742,14 @@ def _run_engine_benchmark(
         if mode != "processes_dsp":
             return
         deadline = time.perf_counter() + max(float(drain_timeout_s), 0.1)
-        while bool(getattr(getattr(engine, "parallel", None), "_parallel_future_meta", {})) and time.perf_counter() < deadline:
+        while bool(getattr(getattr(engine, "parallel", None), "future_meta", {})) and time.perf_counter() < deadline:
             try:
-                engine.parallel._parallel_poll_futures(scene, current_frame=int(scene.frame_current))
+                engine.parallel.poll(scene, current_frame=int(scene.frame_current))
             except Exception:
                 break
             time.sleep(0.001)
         try:
-            engine.parallel._parallel_poll_futures(scene, current_frame=int(scene.frame_current))
+            engine.parallel.poll(scene, current_frame=int(scene.frame_current))
         except Exception:
             pass
 
@@ -852,9 +846,9 @@ def _run_engine_benchmark(
     finally:
         ae.ACEAudioEngine._is_animation_playing = original_is_animation_playing
         if mode == "processes_dsp":
-            engine.parallel._parallel_submit_graph_job = original_submit  # type: ignore[assignment]
-            engine.parallel._parallel_values_for_graph_frame = original_values_for_frame  # type: ignore[assignment]
-            engine.parallel._parallel_poll_futures = original_poll_futures  # type: ignore[assignment]
+            engine.parallel.submit_graph_job = original_submit  # type: ignore[assignment]
+            engine.parallel.values_for_frame = original_values_for_frame  # type: ignore[assignment]
+            engine.parallel.poll = original_poll_futures  # type: ignore[assignment]
         if bpy_mod is not None and hasattr(bpy_mod, "context"):
             bpy_mod.context.scene = prev_context_scene
         try:

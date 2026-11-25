@@ -39,7 +39,7 @@ from .compiler import GraphCompiler
 from .diagnostics import EngineDiagnostics
 from .frame import FrameRunner
 from .frontends import FrontendTracker
-from .parallel import ParallelOffload
+from .parallel.offload import ParallelOffload
 from .preview.router import PreviewRouter
 from .probes import SourceProbes
 from .sinks import SinkResolver
@@ -265,9 +265,9 @@ class ACEAudioEngine:
     def _shutdown_graphs(self, stop_parallel_pool: bool = False, clear_bake_cache: bool = False):
         self.preview._stop_preview_worker()
         if stop_parallel_pool:
-            self.parallel._shutdown_parallel_pool(wait=True)
+            self.parallel.shutdown_pool(wait=True)
         else:
-            self.parallel._parallel_reset_generation()
+            self.parallel.reset_generation()
         for graph in self.graphs.values():
             for task in graph.tasks.values():
                 close_fn = getattr(task, "close", None)

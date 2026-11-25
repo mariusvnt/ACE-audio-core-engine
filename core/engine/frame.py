@@ -157,7 +157,7 @@ class FrameRunner:
         # detection: the user sets BPM manually and the worker must see the update
         # on the very next frame rather than waiting for the next full recompile.
         with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#3"):
-            self.engine.parallel._refresh_specs_ir_bpm()
+            self.engine.parallel.refresh_specs_params()
 
         # Flush background probe results before the compile so native_sample_rate
         # is populated for any sources whose probe thread has just completed.
@@ -186,12 +186,12 @@ class FrameRunner:
             return
         scheduler_mode = self._scheduler_mode(scene)
         timeslice_mode = self._timeslice_mode(scene)
-        parallel_mode = self.engine.parallel._parallel_mode(scene)
+        parallel_mode = self.engine.parallel.mode(scene)
         parallel_pool_ready = False
         if parallel_mode == "processes_dsp":
-            parallel_pool_ready = self.engine.parallel._ensure_parallel_pool(scene)
-        elif self.engine.parallel._parallel_executor is not None:
-            self.engine.parallel._shutdown_parallel_pool()
+            parallel_pool_ready = self.engine.parallel.ensure_pool(scene)
+        elif self.engine.parallel.pool.executor is not None:
+            self.engine.parallel.shutdown_pool()
 
         # Keep the preview feeder's drift-correction in sync with the scene fps.
         with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#5"):
@@ -206,7 +206,7 @@ class FrameRunner:
             if abs(delta_frames) > 2 or delta_frames < -0.5:
                 self.engine.preview._preview_monitor.clear()
 
-        self.engine.parallel._parallel_poll_futures(scene, current_frame=int(self.engine.current_frame))
+        self.engine.parallel.poll(scene, current_frame=int(self.engine.current_frame))
         preview_allowed = self.engine._is_animation_playing()
         preview_block_size = int(self.engine.preview._preview_block_size(scene))
         preview_sample_rate = int(max(self.engine.effective_sample_rate, SAMPLE_RATE, 1))
@@ -276,7 +276,7 @@ class FrameRunner:
         timeslice_mode = ctx.timeslice_mode
         parallel_mode = ctx.parallel_mode
         if parallel_mode == "processes_dsp":
-            self.engine.parallel._parallel_poll_futures(scene, current_frame=int(self.engine.current_frame))
+            self.engine.parallel.poll(scene, current_frame=int(self.engine.current_frame))
         graph.scheduler_mode = scheduler_mode
         graph.timeslice_mode = timeslice_mode
         graph_key = (
@@ -383,7 +383,7 @@ class FrameRunner:
                 )
                 self.engine.compiler._rebuild_graph_output_slot_specs(graph)
                 if self.engine.abstract_tree_ref is not None:
-                    self.engine.parallel._prepare_parallel_graph_ir(graph, self.engine.abstract_tree_ref)
+                    self.engine.parallel.prepare_graph_ir(graph, self.engine.abstract_tree_ref)
                 try:
                     t0 = time.perf_counter()
                     touched = self.engine.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
@@ -495,7 +495,7 @@ class FrameRunner:
         parallel_submit_enabled = (
             parallel_offload_graph
             and parallel_pool_ready
-            and parallel_graph_key not in self.engine.parallel._parallel_disabled_sources
+            and parallel_graph_key not in self.engine.parallel.disabled_sources
         )
 
         if parallel_submit_enabled and source_tasks:
@@ -518,7 +518,7 @@ class FrameRunner:
             if source_chunks_for_worker:
                 shard_specs = list(getattr(graph, "parallel_output_shards", []) or [])
                 if not shard_specs:
-                    shard_specs = self.engine.parallel._parallel_shard_attr_keys(
+                    shard_specs = self.engine.parallel.shard_attr_keys(
                         list(getattr(graph, "parallel_offload_attr_keys", []) or [])
                     )
                     graph.parallel_output_shards = list(shard_specs)
@@ -528,7 +528,7 @@ class FrameRunner:
                     for shard_idx, shard_keys in enumerate(shard_specs):
                         if not shard_keys:
                             continue
-                        self.engine.parallel._parallel_submit_graph_job(
+                        self.engine.parallel.submit_graph_job(
                             scene=scene,
                             graph=graph,
                             graph_key=parallel_graph_key,
@@ -537,7 +537,7 @@ class FrameRunner:
                             frame_index=int(self.engine.current_frame),
                             source_chunks=source_chunks_for_worker,
                             output_keys=list(shard_keys),
-                            include_graph_ir=bool(parallel_graph_key in self.engine.parallel._parallel_graph_ir_required),
+                            include_graph_ir=bool(parallel_graph_key in self.engine.parallel.ir_required),
                         )
             else:
                 parallel_submit_enabled = False
@@ -545,7 +545,7 @@ class FrameRunner:
         if parallel_offload_graph:
             # Stage B: asynchronous numeric DSP worker path (fresh -> stale -> zero).
             local_keys = list(getattr(graph, "parallel_local_attr_keys", []) or [])
-            has_parallel_values = self.engine.parallel._parallel_has_usable_values_for_graph_frame(
+            has_parallel_values = self.engine.parallel.has_usable_values(
                 parallel_graph_key,
                 int(self.engine.current_frame),
             )
@@ -561,7 +561,7 @@ class FrameRunner:
                 )
             results = self._collect_graph_results_for_frame(graph, self.engine.current_frame, attr_keys=local_keys)
             if has_parallel_values and parallel_submit_enabled:
-                parallel_values = self.engine.parallel._parallel_values_for_graph_frame(
+                parallel_values = self.engine.parallel.values_for_frame(
                     graph=graph,
                     graph_key=parallel_graph_key,
                     frame_index=int(self.engine.current_frame),

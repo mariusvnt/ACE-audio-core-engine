@@ -262,7 +262,7 @@ class SourceTask(ACEAudioTask):
 
     def _should_materialize_local_frontend(self) -> bool:
         engine = getattr(self, "engine_ref", None)
-        resolver = getattr(getattr(engine, "parallel", None), "_source_task_requires_local_frontend", None)
+        resolver = getattr(getattr(engine, "parallel", None), "source_task_requires_local_frontend", None)
         if callable(resolver):
             with utils.logged_errors("audio_tasks_registry.SourceTask._should_materialize_local_frontend"):
                 return bool(resolver(self))

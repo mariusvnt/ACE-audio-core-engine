@@ -120,7 +120,7 @@ def _run(n_nodes, mode, frames, wav_path, profile=False):
     if mode == "processes_dsp":
         t0 = time.monotonic()
         f = 1
-        while engine.parallel._parallel_result_accepts == 0 and time.monotonic() - t0 < 60:
+        while engine.parallel.result_accepts == 0 and time.monotonic() - t0 < 60:
             scene.frame_set(1 + f % 2)
             f += 1
             time.sleep(1 / 24)
@@ -129,7 +129,7 @@ def _run(n_nodes, mode, frames, wav_path, profile=False):
     ace_ms, frame_ms = [], []
     usable = {"yes": 0, "no": 0}
     original_execute = engine.frame.execute_next_frame
-    original_usable = engine.parallel._parallel_has_usable_values_for_graph_frame
+    original_usable = engine.parallel.has_usable_values
 
     def timed_execute(*a, **k):
         t = time.perf_counter()
@@ -144,9 +144,9 @@ def _run(n_nodes, mode, frames, wav_path, profile=False):
         return ok
 
     engine.frame.execute_next_frame = timed_execute
-    engine.parallel._parallel_has_usable_values_for_graph_frame = counted_usable
-    stale_before = engine.parallel._parallel_stale_job_drops
-    accepts_before = engine.parallel._parallel_result_accepts
+    engine.parallel.has_usable_values = counted_usable
+    stale_before = engine.parallel.stale_job_drops
+    accepts_before = engine.parallel.result_accepts
     profiler = cProfile.Profile() if profile else None
     start_frame = 100
     t0 = time.monotonic()
@@ -163,7 +163,7 @@ def _run(n_nodes, mode, frames, wav_path, profile=False):
         if profiler:
             profiler.disable()
         engine.frame.execute_next_frame = original_execute
-        engine.parallel._parallel_has_usable_values_for_graph_frame = original_usable
+        engine.parallel.has_usable_values = original_usable
     late_frames = sum(1 for v in frame_ms if v > 1000.0 / 24.0)
     total_usable = usable["yes"] + usable["no"]
     result = {
@@ -177,8 +177,8 @@ def _run(n_nodes, mode, frames, wav_path, profile=False):
     }
     if mode == "processes_dsp":
         result["fresh_rate"] = round(usable["yes"] / total_usable, 3) if total_usable else 0.0
-        result["accepted"] = engine.parallel._parallel_result_accepts - accepts_before
-        result["stale_job_drops"] = engine.parallel._parallel_stale_job_drops - stale_before
+        result["accepted"] = engine.parallel.result_accepts - accepts_before
+        result["stale_job_drops"] = engine.parallel.stale_job_drops - stale_before
     if profiler:
         buf = io.StringIO()
         pstats.Stats(profiler, stream=buf).sort_stats("cumulative").print_stats(30)
@@ -186,7 +186,7 @@ def _run(n_nodes, mode, frames, wav_path, profile=False):
         buf = io.StringIO()
         pstats.Stats(profiler, stream=buf).sort_stats("tottime").print_stats(30)
         result["profile_tottime"] = buf.getvalue()
-    engine.parallel._shutdown_parallel_pool(wait=True)
+    engine.parallel.shutdown_pool(wait=True)
     return result
 
 

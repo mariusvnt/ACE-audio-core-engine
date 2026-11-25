@@ -46,8 +46,8 @@ class TestParallelJobLifecycle(unittest.TestCase):
         return self.ae.ParallelOffload(engine)
 
     def _track(self, par, future, frame=1):
-        slot_key, _ = par._parallel_reserve_payload_slot("g", frame, "src")
-        par._parallel_future_meta[future] = {"queue_key": "g", "payload_slot_keys": [slot_key]}
+        slot_key, _ = par.slots.reserve("g", frame, "src")
+        par.future_meta[future] = {"queue_key": "g", "payload_slot_keys": [slot_key]}
         return slot_key
 
     def test_dropped_running_job_keeps_its_payload_slot_until_done(self):
@@ -56,63 +56,71 @@ class TestParallelJobLifecycle(unittest.TestCase):
         future.set_running_or_notify_cancel()
         slot_key = self._track(par, future)
 
-        par._parallel_drop_future(future)
-        par._parallel_reap_retired()
-        self.assertEqual(par._parallel_payload_slot_refs[slot_key], 1)
+        par.drop_future(future)
+        par.reap_retired()
+        self.assertEqual(par.slots.refs[slot_key], 1)
 
         future.set_result({})
-        par._parallel_reap_retired()
-        self.assertEqual(par._parallel_payload_slot_refs[slot_key], 0)
-        self.assertEqual(par._parallel_retired, {})
+        par.reap_retired()
+        self.assertEqual(par.slots.refs[slot_key], 0)
+        self.assertEqual(par.retired, {})
 
     def test_dropped_pending_job_is_cancelled_and_frees_its_slot(self):
         par = self._offload()
         future = concurrent.futures.Future()
         slot_key = self._track(par, future)
 
-        par._parallel_drop_future(future)
+        par.drop_future(future)
         self.assertTrue(future.cancelled())
-        self.assertEqual(par._parallel_payload_slot_refs[slot_key], 0)
+        self.assertEqual(par.slots.refs[slot_key], 0)
 
     def test_graph_ir_is_sent_until_every_worker_has_it(self):
         par = self._offload()
-        par._parallel_executor = _FakeExecutor(pids=(11, 12))
-        par._parallel_require_ir("g")
-        par._parallel_ack_ir("g", 11)
-        self.assertIn("g", par._parallel_graph_ir_required)
-        par._parallel_ack_ir("g", 12)
-        self.assertNotIn("g", par._parallel_graph_ir_required)
+        par.pool.executor = _FakeExecutor(pids=(11, 12))
+        par.require_ir("g")
+        par.ack_ir("g", 11)
+        self.assertIn("g", par.ir_required)
+        par.ack_ir("g", 12)
+        self.assertNotIn("g", par.ir_required)
 
     def test_new_generation_keeps_the_pool_and_retires_running_jobs(self):
         par = self._offload()
         executor = _FakeExecutor(pids=(11,))
-        par._parallel_executor = executor
+        par.pool.executor = executor
         future = concurrent.futures.Future()
         future.set_running_or_notify_cancel()
         slot_key = self._track(par, future)
 
-        par._parallel_reset_generation()
-        self.assertIs(par._parallel_executor, executor)
-        self.assertEqual(par._parallel_future_meta, {})
-        self.assertIn(slot_key, par._parallel_payload_slots)
+        par.reset_generation()
+        self.assertIs(par.pool.executor, executor)
+        self.assertEqual(par.future_meta, {})
+        self.assertIn(slot_key, par.slots.slots)
         future.set_result({})
-        par._parallel_reap_retired()
-        self.assertEqual(par._parallel_payload_slot_refs[slot_key], 0)
+        par.reap_retired()
+        self.assertEqual(par.slots.refs[slot_key], 0)
 
     def test_jobs_wait_for_the_warm_up(self):
         par = self._offload(graphs={"g": _offload_graph()})
         executor = _FakeExecutor()
-        par._parallel_executor = executor
-        scene = None
+        par.pool.executor = executor
+        demand = par._warm_demand()
 
-        self.assertFalse(par._parallel_pool_warm(scene))
-        expected = min(par._parallel_inflight_limit(), par._parallel_worker_count(scene))
+        self.assertFalse(par.pool.warm(demand))
+        expected = min(par.inflight_limit(), par.pool.worker_count())
         self.assertEqual(len(executor.submitted), expected)
-        self.assertFalse(par._parallel_pool_warm(scene))
+        self.assertFalse(par.pool.warm(demand))
         for _fn, future in executor.submitted:
             future.set_result(0)
-        self.assertTrue(par._parallel_pool_warm(scene))
+        self.assertTrue(par.pool.warm(demand))
         self.assertEqual(len(executor.submitted), expected)
+
+    def test_a_restart_that_is_still_warming_does_not_disable_the_source(self):
+        par = self._offload(graphs={"g": _offload_graph()})
+        par.pool.start = lambda: (setattr(par.pool, "executor", _FakeExecutor()), True)[1]
+        par.mode = lambda _scene=None: "processes_dsp"
+
+        self.assertFalse(par.restart_pool(None, "test", source_key="g"))
+        self.assertNotIn("g", par.disabled_sources)
 
 
 if __name__ == "__main__":

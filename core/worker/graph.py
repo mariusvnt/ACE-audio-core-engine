@@ -55,7 +55,7 @@ class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
     Worker-safe replacement for SourceSpecsTask.
 
     Reads scene_bpm, scene_fps, and scene_beats_per_bar from self.parameters,
-    which are injected by ACEAudioEngine._prepare_parallel_graph_ir() at
+    which are injected by ACEAudioEngine.prepare_graph_ir() at
     graph-IR compilation time.  Falls back to neutral defaults (120 BPM,
     4/4 time, 24 FPS) only when the graph IR has not been updated yet so
     that the worker never crashes on a missing key.
@@ -439,7 +439,7 @@ def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size
 
     Args:
         graph_ir: Serialised graph IR as produced by
-            ACEAudioEngine._prepare_parallel_graph_ir().
+            ACEAudioEngine.prepare_graph_ir().
         sample_rate: Default sample rate to assign to source providers.
         block_size: Initial analysis block size in samples.
 

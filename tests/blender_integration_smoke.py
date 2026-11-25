@@ -185,7 +185,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         # Workers spawn on first use and take seconds to import; play until one answers.
         t_warm = time.monotonic()
         frame = 1
-        while int(engine.parallel._parallel_result_accepts) == 0 and time.monotonic() - t_warm < 60.0:
+        while int(engine.parallel.result_accepts) == 0 and time.monotonic() - t_warm < 60.0:
             scene.frame_set(1 + frame % 2)
             frame += 1
             time.sleep(1.0 / 24.0)
@@ -195,7 +195,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     quiet = loud = None
     first_accept_s = None
     parallel = engine.parallel
-    counts_before = (parallel._parallel_result_accepts, parallel._parallel_stale_job_drops, parallel._parallel_queue_pressure_drops)
+    counts_before = (parallel.result_accepts, parallel.stale_job_drops, parallel.queue_pressure_drops)
     compiles = []
     original_compile = engine.compiler.compile_scene_frontends
     engine.compiler.compile_scene_frontends = lambda *a, **k: (compiles.append(1), original_compile(*a, **k))[1]
@@ -206,7 +206,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         time.sleep(max(0.0, target - time.monotonic()))
         scene.frame_set(frame)
         handlers_mod.auto_compile_timer()  # timers do not run in background mode
-        if first_accept_s is None and int(getattr(getattr(engine, "parallel", None), "_parallel_result_accepts", 0) or 0) > 0:
+        if first_accept_s is None and int(getattr(getattr(engine, "parallel", None), "result_accepts", 0) or 0) > 0:
             first_accept_s = time.monotonic() - t0
         if frame == 30:
             quiet = _proxy_values(engine)
@@ -218,7 +218,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         accepted, stale, pressure = (
             now - before
             for now, before in zip(
-                (parallel._parallel_result_accepts, parallel._parallel_stale_job_drops, parallel._parallel_queue_pressure_drops),
+                (parallel.result_accepts, parallel.stale_job_drops, parallel.queue_pressure_drops),
                 counts_before,
             )
         )
@@ -239,17 +239,17 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     _assert(rose, f"No output followed the level change: quiet={quiet} loud={loud}")
     if parallel_mode == "processes_dsp":
         # Values can also come from the main-thread fallback; require real worker results.
+        parallel = engine.parallel
         state = {
-            name: getattr(engine, name, None)
+            name: getattr(parallel, name)
             for name in (
-                "_parallel_result_accepts", "_parallel_job_exceptions", "_parallel_pool_failed",
-                "_parallel_disabled_sources", "_parallel_failures", "_parallel_stale_result_drops",
-                "_parallel_stale_job_drops", "_parallel_queue_pressure_drops", "_parallel_restart_count",
-                "_parallel_executor",
+                "result_accepts", "job_exceptions", "disabled_sources", "failures",
+                "stale_result_drops", "stale_job_drops", "queue_pressure_drops",
             )
         }
+        state.update(pool_failed=parallel.pool.failed, restarts=parallel.pool.restart_count, executor=parallel.pool.executor)
         state["offload_keys"] = {uid: list(getattr(g, "parallel_offload_attr_keys", []) or []) for uid, g in engine.graphs.items()}
-        _assert(int(engine.parallel._parallel_result_accepts) > 0, f"No worker-process DSP result was accepted: {state}")
+        _assert(int(engine.parallel.result_accepts) > 0, f"No worker-process DSP result was accepted: {state}")
 
     _assert(engine.bake.bake_source_to_cache(src, tree=tree, scene=scene), "Bake did not start")
     import time

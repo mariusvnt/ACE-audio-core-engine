@@ -456,10 +456,10 @@ class GraphCompiler:
         sink_writes_allowed = ctx.sink_writes_allowed
         source = runtime["source"]
         src_uid = runtime["src_uid"]
-        # _prepare_parallel_graph_ir() reads BPM/beats-per-bar from this source
+        # prepare_graph_ir() reads BPM/beats-per-bar from this source
         # context, so it must be set before the IR is built.
         graph.source_context = source
-        self.engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
+        self.engine.parallel.prepare_graph_ir(graph, abstract_tree)
         self.engine.graphs[src_uid] = graph
         self.engine._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
 
