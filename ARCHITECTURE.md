@@ -179,6 +179,9 @@ Tests outside Blender load the add-on against one shared fake `bpy`
 also passes when run on its own. `tests/run_in_blender.py` runs a headless
 Blender session (`--extra-path` adds the optional libraries), and
 `tests/blender_perf.py` compares threads and worker processes at real-time pace.
+The perf gates (`test_perf_gate`, `test_engine_perf_gate`) are slow and
+machine-dependent, so they run only with `ACE_PERF=1`; CI runs them in a
+separate job.
 
 ## 11. Adding a node type
 

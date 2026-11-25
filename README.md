@@ -65,4 +65,5 @@ Development
 
 `ARCHITECTURE.md` describes how the add-on is built. Tests run with
 `python -m unittest discover -s tests`; `tests/run_in_blender.py` runs the
-Blender-side checks headless.
+Blender-side checks headless. The perf gates are skipped unless `ACE_PERF=1`
+is set.

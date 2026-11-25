@@ -13,10 +13,7 @@ jobs:
         # minimal: the fallbacks users get before installing dependencies.
         # full: what the add-on's dependency installer provides.
         deps: [minimal, full]
-    env:
-      # Strict perf thresholds run in the perf job below, not here.
-      ACE_PERF_GATE_STRICT: "0"
-      ACE_ENGINE_PERF_GATE_STRICT: "0"
+    # Perf gates are skipped here (no ACE_PERF); they run in the perf job below.
     steps:
       - uses: actions/checkout@v7
 
@@ -61,6 +58,7 @@ jobs:
   perf:
     runs-on: ubuntu-latest
     env:
+      ACE_PERF: "1"
       ACE_PERF_GATE_STRICT: "1"
       ACE_ENGINE_PERF_GATE_STRICT: "1"
     steps:

@@ -32,11 +32,14 @@ def _strict_mode_enabled() -> bool:
 
 
 # A baseline is only comparable on the machine that produced it, so it lives
-# in the gitignored artifacts folder (written by run_quality_gate.py or
-# perf_harness.py) and the comparison is skipped when it is missing.
+# in the gitignored artifacts folder (written by perf_harness.py) and the
+# comparison is skipped when it is missing.
 BASELINE_PATH = Path(__file__).parent / "artifacts" / "perf_baseline_report.json"
 
 
+# Perf runs are opt-in (ACE_PERF=1): they are slow and measure the machine as
+# much as the code, so the default unit run leaves them out.
+@unittest.skipUnless(os.environ.get("ACE_PERF") == "1", "perf gates run with ACE_PERF=1")
 class TestPerfGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

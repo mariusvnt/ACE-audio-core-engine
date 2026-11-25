@@ -29,6 +29,9 @@ def _strict_mode_enabled() -> bool:
     return ci_raw in {"1", "true", "yes", "on"}
 
 
+# Perf runs are opt-in (ACE_PERF=1): they are slow and measure the machine as
+# much as the code, so the default unit run leaves them out.
+@unittest.skipUnless(os.environ.get("ACE_PERF") == "1", "perf gates run with ACE_PERF=1")
 @unittest.skipIf(np is None, "numpy unavailable in this environment")
 class TestEnginePerfGate(unittest.TestCase):
     @classmethod
