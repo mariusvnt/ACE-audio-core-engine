@@ -28,7 +28,6 @@ _MODULE_PATHS = {
     "engine_frame": ("core", ROOT / "core" / "engine_frame.py"),
     "engine_handlers": ("core", ROOT / "core" / "engine_handlers.py"),
     "audio_influx": ("core", ROOT / "core" / "audio_influx.py"),
-    "audio_tasks_registry": ("core", ROOT / "core" / "audio_tasks_registry.py"),
     "abstract_tree": ("core", ROOT / "core" / "abstract_tree.py"),
     "id_management": ("core", ROOT / "core" / "id_management.py"),
     "parallel_dsp": ("core", ROOT / "core" / "parallel_dsp.py"),
@@ -56,15 +55,43 @@ def _ensure_package(name: str, path: Path):
     return pkg
 
 
+TASK_MODULES = (
+    "chunk", "filters", "frontend", "block_size", "base", "spectral", "analyzer",
+    "source", "specs", "delta", "stream", "preview", "utility", "graph",
+)
+
+
+def forget_modules(*names: str):
+    """Drop loaded add-on modules (and their submodules) so the next load imports them again."""
+    for name in names:
+        full = f"{PKG_NAME}.{name}"
+        for key in [k for k in sys.modules if k == full or k.startswith(full + ".")]:
+            sys.modules.pop(key, None)
+
+
+def load_tasks():
+    """All task modules' top-level names in one namespace."""
+    merged = types.SimpleNamespace()
+    for name in TASK_MODULES:
+        module = load_module(f"core.tasks.{name}")
+        for attr, value in vars(module).items():
+            if not attr.startswith("__") and not hasattr(merged, attr):
+                setattr(merged, attr, value)
+    return merged
+
+
 def load_module(module_name: str):
     """
     Load add-on modules from this folder under a synthetic package namespace so
     relative imports (e.g. from .audio_influx import ...) keep working.
+    A dotted name ("core.tasks.chunk") is imported as a submodule of that namespace.
     """
     _ensure_package(PKG_NAME, ROOT)
     _ensure_package(f"{PKG_NAME}.core", ROOT / "core")
     _ensure_package(f"{PKG_NAME}.nodes", ROOT / "nodes")
     _ensure_package(f"{PKG_NAME}.ui", ROOT / "ui")
+    if "." in module_name:
+        return importlib.import_module(f"{PKG_NAME}.{module_name}")
 
     subpkg, module_path = _MODULE_PATHS.get(module_name, ("", ROOT / f"{module_name}.py"))
     package_name = f"{PKG_NAME}.{subpkg}" if subpkg else PKG_NAME

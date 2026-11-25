@@ -5,7 +5,7 @@ import json
 from typing import Any, Dict, List, Optional
 from .. import utils
 from .abstract_tree import ACEAbstractNode, ACEAbstractTree
-from .audio_tasks_registry import ACEAudioGraph, ACESinkBinding
+from .tasks.graph import ACEAudioGraph, ACESinkBinding
 from .id_management import ACEIdManager
 from .engine_common import FRONTEND_KIND_SHADER
 

@@ -5,7 +5,8 @@ from typing import Any, Dict, Optional
 from .. import utils
 from ..properties import ACEAudioSource
 from .audio_influx import AudioReception
-from .audio_tasks_registry import SAMPLE_RATE, SourceSpecsTask
+from .tasks.chunk import SAMPLE_RATE
+from .tasks.specs import SourceSpecsTask
 
 
 class SourceProbes:

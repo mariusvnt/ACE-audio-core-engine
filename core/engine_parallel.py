@@ -12,7 +12,9 @@ from collections import deque
 from typing import Any, Dict, List, Optional
 from .. import utils
 from .abstract_tree import ACEAbstractNode, ACEAbstractTree
-from .audio_tasks_registry import ACEAudioGraph, SAMPLE_RATE, SourceTask
+from .tasks.chunk import SAMPLE_RATE
+from .tasks.graph import ACEAudioGraph
+from .tasks.source import SourceTask
 from .parallel_dsp import evaluate_parallel_job, warm_worker, worker_pid
 from .engine_common import BrokenProcessPool, _SHARED_MEMORY_AVAILABLE, _main_script_hidden_from_spawn, engine_settings, mp_shared_memory
 

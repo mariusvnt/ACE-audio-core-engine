@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Dict, Any
@@ -10,7 +9,7 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
-from module_loader import load_module
+from module_loader import forget_modules, load_tasks
 
 
 PERF_CONTRACT_VERSION = "ace-perf-v1"
@@ -193,9 +192,8 @@ def generate_baseline_report(frames: int = 180, output_path: Path | None = None)
         raise RuntimeError("NumPy is required for perf harness")
     # Some smoke tests intentionally import modules with a fake NumPy object.
     # Drop cached registry modules so this harness always benchmarks the real stack.
-    sys.modules.pop("ace_addon_testpkg.audio_tasks_registry", None)
-    sys.modules.pop("ace_addon_testpkg.audio_influx", None)
-    atr = load_module("audio_tasks_registry")
+    forget_modules("core.tasks", "core.audio_influx", "audio_influx")
+    atr = load_tasks()
     scenarios = PERF_REQUIRED_SCENARIOS
     report = {
         "contract": perf_contract(),

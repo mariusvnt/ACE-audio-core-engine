@@ -13,7 +13,7 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
-from module_loader import PKG_NAME, ROOT, _ensure_package, load_module
+from module_loader import PKG_NAME, ROOT, _ensure_package, load_module, load_tasks
 
 import fake_bpy
 
@@ -194,19 +194,18 @@ def _load_engine_stack():
         "core.engine_compiler",
         "core.engine_frame",
         "core.engine_handlers",
-        "core.audio_tasks_registry",
+        "core.tasks",
         "core.parallel_dsp",
         "core.audio_influx",
         "core.abstract_tree",
         "audio_engine",
-        "audio_tasks_registry",
         "parallel_dsp",
         "audio_influx",
         "abstract_tree",
     ):
         sys.modules.pop(f"{PKG_NAME}.{name}", None)
     ae = load_module("audio_engine")
-    atr = load_module("audio_tasks_registry")
+    atr = load_tasks()
     abs_mod = load_module("abstract_tree")
     return ae, atr, abs_mod
 

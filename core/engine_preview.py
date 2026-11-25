@@ -8,7 +8,11 @@ from collections import deque
 from typing import Any, Dict, Optional
 from .. import utils
 from .abstract_tree import ACEAbstractNode, ACEAbstractTree
-from .audio_tasks_registry import ACEAudioGraph, AudioChunk, PreviewSinkTask, SAMPLE_RATE, SourceTask, resolve_preview_block_size
+from .tasks.block_size import resolve_preview_block_size
+from .tasks.chunk import AudioChunk, SAMPLE_RATE
+from .tasks.graph import ACEAudioGraph
+from .tasks.preview import PreviewSinkTask
+from .tasks.source import SourceTask
 from .engine_common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, engine_settings
 
 

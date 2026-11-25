@@ -10,7 +10,15 @@ from ..nodes.dummy_tree import ACEDummyTreeReader
 from ..properties import ACEAudioSource
 from .abstract_tree import ACEAbstractNode, ACEAbstractTree
 from .audio_influx import build_live_flow_identifier
-from .audio_tasks_registry import ACEAudioGraph, ACEAudioTask, AttackReleaseSplitterTask, AudioMathTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, LUFSTask, MidsideSplitterTask, OnsetTask, PeakTask, PitchTask, PreviewSinkTask, RMSTask, RollingAvgTask, SAMPLE_RATE, SourceSpecsTask, SourceTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, StreamAccumulatorTask, ZeroCrossTask
+from .tasks.base import ACEAudioTask
+from .tasks.chunk import SAMPLE_RATE
+from .tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
+from .tasks.graph import ACEAudioGraph
+from .tasks.preview import PreviewSinkTask
+from .tasks.source import SourceTask
+from .tasks.specs import SourceSpecsTask
+from .tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
+from .tasks.utility import AudioMathTask, RollingAvgTask, StreamAccumulatorTask
 from .id_management import ACEIdManager
 from .proxy_management import ACEProxyManager
 from .engine_common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, engine_settings

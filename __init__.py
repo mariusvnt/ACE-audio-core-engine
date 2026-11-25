@@ -47,7 +47,21 @@ MODULE_NAMES = [
     "core.abstract_tree",            # 5.  Abstract IR data structures
     "core.id_management",            # 6.  ID / hash utilities
     "core.audio_influx",             # 7.  Audio I/O (file + live)
-    "core.audio_tasks_registry",     # 8.  DSP task class registry
+    "core.tasks",
+    "core.tasks.chunk",
+    "core.tasks.filters",
+    "core.tasks.frontend",
+    "core.tasks.block_size",
+    "core.tasks.base",
+    "core.tasks.spectral",
+    "core.tasks.analyzer",
+    "core.tasks.source",
+    "core.tasks.specs",
+    "core.tasks.delta",
+    "core.tasks.stream",
+    "core.tasks.preview",
+    "core.tasks.utility",
+    "core.tasks.graph",
     "core.parallel_dsp",             # 9.  Process-worker DSP helpers
     "core.proxy_management",         # 10. Bridge to Blender mesh attributes
     "core.engine_common",

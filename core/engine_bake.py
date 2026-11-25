@@ -10,7 +10,7 @@ import tempfile
 import threading
 from typing import Any, Dict, List, Optional
 from .. import utils
-from .audio_tasks_registry import ACEAudioGraph
+from .tasks.graph import ACEAudioGraph
 from .id_management import ACEIdManager
 
 

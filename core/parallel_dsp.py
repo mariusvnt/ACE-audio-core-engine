@@ -25,31 +25,13 @@ except ImportError:  # pragma: no cover - runtime/platform dependent
 
 from .. import utils
 from ..vars import ACE_NODES
-from .audio_tasks_registry import (
-    SAMPLE_RATE,
-    AudioChunk,
-    AudioFluxAnalyzer,
-    ACEAudioTask,
-    SourceFrontendProcessor,
-    FrequencySplitterTask,
-    MidsideSplitterTask,
-    AttackReleaseSplitterTask,
-    ChromagramTask,
-    AutoComponentSplitterTask,
-    RMSTask,
-    LUFSTask,
-    PeakTask,
-    PitchTask,
-    SpectralCentroidTask,
-    SpectralFluxTask,
-    OnsetTask,
-    ZeroCrossTask,
-    StereoWidthTask,
-    StereoBalanceTask,
-    StereoVectorTask,
-    StreamAccumulatorTask,
-    AudioMathTask,
-)
+from .tasks.analyzer import AudioFluxAnalyzer
+from .tasks.base import ACEAudioTask
+from .tasks.chunk import AudioChunk, SAMPLE_RATE
+from .tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
+from .tasks.frontend import SourceFrontendProcessor
+from .tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
+from .tasks.utility import AudioMathTask, StreamAccumulatorTask
 
 
 _WORKER_CACHE_MAX = 64

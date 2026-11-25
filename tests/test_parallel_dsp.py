@@ -5,7 +5,7 @@ try:
 except Exception:
     np = None
 
-from module_loader import load_module
+from module_loader import forget_modules, load_module
 
 
 def _clear_worker_state(mod):
@@ -38,10 +38,7 @@ class TestParallelDSP(unittest.TestCase):
             raise unittest.SkipTest("numpy unavailable in this environment")
         # Smoke tests may import registry modules with a fake NumPy module.
         # Force a clean import here so worker tests always use real NumPy.
-        import sys
-        sys.modules.pop("ace_addon_testpkg.parallel_dsp", None)
-        sys.modules.pop("ace_addon_testpkg.audio_tasks_registry", None)
-        sys.modules.pop("ace_addon_testpkg.audio_influx", None)
+        forget_modules("parallel_dsp", "core.parallel_dsp", "core.tasks", "core.audio_influx", "audio_influx")
         cls.pds = load_module("parallel_dsp")
 
     def setUp(self):

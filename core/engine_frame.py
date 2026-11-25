@@ -6,7 +6,13 @@ import time
 from collections import deque
 from typing import Any, Dict, List, Optional
 from .. import utils
-from .audio_tasks_registry import ACEAudioGraph, ACEAudioTask, AudioChunk, PreviewSinkTask, SAMPLE_RATE, SourceSpecsTask, SourceTask, resolve_context_block_size
+from .tasks.base import ACEAudioTask
+from .tasks.block_size import resolve_context_block_size
+from .tasks.chunk import AudioChunk, SAMPLE_RATE
+from .tasks.graph import ACEAudioGraph
+from .tasks.preview import PreviewSinkTask
+from .tasks.source import SourceTask
+from .tasks.specs import SourceSpecsTask
 from .engine_common import engine_settings
 
 

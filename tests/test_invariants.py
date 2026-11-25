@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import fake_bpy
-from module_loader import PKG_NAME, load_module
+from module_loader import PKG_NAME, load_module, load_tasks
 
 try:
     import numpy as np
@@ -58,7 +58,7 @@ class TestPreviewIsTimeDomain(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.atr = load_module("audio_tasks_registry")
+        cls.atr = load_tasks()
 
     def _forbid_inverse_transforms(self):
         def _boom(*_args, **_kwargs):

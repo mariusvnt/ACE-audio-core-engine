@@ -3,7 +3,7 @@ import threading
 import types
 import unittest
 
-from module_loader import PKG_NAME, load_module
+from module_loader import PKG_NAME, load_module, load_tasks
 
 import fake_bpy
 
@@ -53,7 +53,7 @@ class TestProxyManagement(unittest.TestCase):
         _purge_testpkg_modules()
         _install_fake_bpy()
         cls.abs_mod = load_module("abstract_tree")
-        cls.tasks_mod = load_module("audio_tasks_registry")
+        cls.tasks_mod = load_tasks()
         cls.proxy_mod = load_module("proxy_management")
         cls.utils_mod = load_module("utils")
         cls.bpy = sys.modules["bpy"]

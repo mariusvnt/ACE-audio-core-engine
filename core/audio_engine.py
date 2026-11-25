@@ -27,7 +27,11 @@ from typing import Dict, Optional
 from .. import utils
 from ..properties import ACEAudioSource
 from .abstract_tree import ACEAbstractTree
-from .audio_tasks_registry import ACEAudioGraph, SAMPLE_RATE, SourceSpecsTask, _clear_file_open_locks, reset_biquad_fallback_warned
+from .tasks.chunk import SAMPLE_RATE
+from .tasks.filters import reset_biquad_fallback_warned
+from .tasks.graph import ACEAudioGraph
+from .tasks.source import _clear_file_open_locks
+from .tasks.specs import SourceSpecsTask
 from .proxy_management import ACEProxyManager
 from .engine_common import FRONTEND_KIND_SHADER
 from .engine_bake import BakeManager

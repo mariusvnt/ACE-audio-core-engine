@@ -1,7 +1,7 @@
 import unittest
 import warnings
 
-from module_loader import load_module
+from module_loader import load_module, load_tasks
 
 try:
     import numpy as np
@@ -9,7 +9,9 @@ except Exception:
     np = None
 
 try:
-    atr = load_module("audio_tasks_registry") if np is not None else None
+    atr = load_tasks() if np is not None else None
+    tasks_source = load_module("core.tasks.source") if np is not None else None
+    tasks_spectral = load_module("core.tasks.spectral") if np is not None else None
 except Exception:
     atr = None
 
@@ -348,8 +350,8 @@ class TestAudioTasksRegistry(unittest.TestCase):
             def close(self):
                 return None
 
-        original_reception = atr.AudioReception
-        atr.AudioReception = DummyReception
+        original_reception = tasks_source.AudioReception
+        tasks_source.AudioReception = DummyReception
         try:
             class DummySource:
                 source_type = "LIVE"
@@ -364,7 +366,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
             task._load_source()
             task.close()
         finally:
-            atr.AudioReception = original_reception
+            tasks_source.AudioReception = original_reception
 
         self.assertEqual(captured["source_type"], "LIVE")
         self.assertEqual(captured["flow_id"], "3")
@@ -880,8 +882,8 @@ class TestAudioTasksRegistry(unittest.TestCase):
             def __setitem__(self, key, value):  # noqa: ARG002
                 return None
 
-        original_reception = atr.AudioReception
-        atr.AudioReception = DummyReception
+        original_reception = tasks_source.AudioReception
+        tasks_source.AudioReception = DummyReception
         task = None
         try:
             task = atr.SourceTask("src_node", {}, block_size=1024)
@@ -901,7 +903,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
                 task.close()
             except Exception:
                 pass
-            atr.AudioReception = original_reception
+            tasks_source.AudioReception = original_reception
 
     def test_resolve_context_block_size_adaptive_handles_frame_jumps(self):
         sr = 48000
@@ -953,14 +955,14 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertIs(out, chunk)
 
     def test_audio_math_caches_analysis_extraction_per_input(self):
-        original_extract = atr._analysis_signal_for_chunk
+        original_extract = tasks_spectral._analysis_signal_for_chunk
         calls = {"count": 0}
 
         def _counting_extract(chunk):
             calls["count"] += 1
             return original_extract(chunk)
 
-        atr._analysis_signal_for_chunk = _counting_extract
+        tasks_spectral._analysis_signal_for_chunk = _counting_extract
         try:
             n = 128
             task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
@@ -971,7 +973,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
             self.assertEqual(out.mono.shape[0], n)
             self.assertEqual(calls["count"], 3)
         finally:
-            atr._analysis_signal_for_chunk = original_extract
+            tasks_spectral._analysis_signal_for_chunk = original_extract
 
 
 if __name__ == "__main__":

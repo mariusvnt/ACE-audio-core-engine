@@ -3,7 +3,7 @@ import threading
 import types
 import unittest
 
-from module_loader import PKG_NAME, load_module
+from module_loader import PKG_NAME, load_module, load_tasks
 
 import fake_bpy
 
@@ -213,7 +213,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         _install_properties_stub()
         cls.abs_mod = load_module("abstract_tree")
         cls.idm = load_module("id_management")
-        cls.tasks_mod = load_module("audio_tasks_registry")
+        cls.tasks_mod = load_tasks()
         cls.dummy_tree = load_module("dummy_tree")
         cls.shader_tree_mod = load_module("shader_tree")
         cls.engine_mod = load_module("audio_engine")
