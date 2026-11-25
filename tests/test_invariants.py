@@ -247,7 +247,7 @@ class TestNodeIdentity(unittest.TestCase):
     def setUpClass(cls):
         _purge_testpkg_modules()
         fake_bpy.install()
-        cls.dummy_tree = load_module("dummy_tree")
+        cls.dummy_tree = load_module("nodes.geometry.reader")
 
     def test_deterministic_seed_ignores_node_name(self):
         group = types.SimpleNamespace(name=".ACE_stream_rms")

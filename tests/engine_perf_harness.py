@@ -115,7 +115,8 @@ def _install_engine_import_stubs():
     properties_mod.ACEAudioSource = ACEAudioSource
     sys.modules[f"{PKG_NAME}.properties"] = properties_mod
 
-    dummy_tree_mod = types.ModuleType(f"{PKG_NAME}.nodes.dummy_tree")
+    reader_mod = types.ModuleType(f"{PKG_NAME}.nodes.geometry.reader")
+    frontend_mod = types.ModuleType(f"{PKG_NAME}.nodes.frontend")
 
     class ACEDummyTreeReader:  # pragma: no cover - compile path not used here
         def __init__(self, *_args, **_kwargs):
@@ -124,20 +125,20 @@ def _install_engine_import_stubs():
         def build(self):
             return None
 
-    dummy_tree_mod.ACEDummyTreeReader = ACEDummyTreeReader
-    dummy_tree_mod.ensure_frontend_uid = lambda tree, _kind, _existing: getattr(tree, "ace_frontend_uid", "")
-    dummy_tree_mod.FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
-    dummy_tree_mod.FRONTEND_KIND_SHADER = "SHADER_NODES"
-    sys.modules[f"{PKG_NAME}.nodes.dummy_tree"] = dummy_tree_mod
-    sys.modules[f"{PKG_NAME}.dummy_tree"] = dummy_tree_mod
+    reader_mod.ACEDummyTreeReader = ACEDummyTreeReader
+    frontend_mod.ensure_frontend_uid = lambda tree, _kind, _existing: getattr(tree, "ace_frontend_uid", "")
+    frontend_mod.FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
+    frontend_mod.FRONTEND_KIND_SHADER = "SHADER_NODES"
+    sys.modules[f"{PKG_NAME}.nodes.geometry.reader"] = reader_mod
+    sys.modules[f"{PKG_NAME}.nodes.frontend"] = frontend_mod
 
-    shader_tree_mod = types.ModuleType(f"{PKG_NAME}.nodes.shader_tree")
+    shader_reader_mod = types.ModuleType(f"{PKG_NAME}.nodes.shader.reader")
 
     class ACEShaderTreeReader(ACEDummyTreeReader):
         pass
 
-    shader_tree_mod.ACEShaderTreeReader = ACEShaderTreeReader
-    sys.modules[f"{PKG_NAME}.nodes.shader_tree"] = shader_tree_mod
+    shader_reader_mod.ACEShaderTreeReader = ACEShaderTreeReader
+    sys.modules[f"{PKG_NAME}.nodes.shader.reader"] = shader_reader_mod
 
     proxy_mod = types.ModuleType(f"{PKG_NAME}.core.proxy.manager")
 

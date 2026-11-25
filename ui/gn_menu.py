@@ -1,11 +1,8 @@
 import bpy # type: ignore
 from ..vars import ACE_NODES
-from ..nodes.dummy_tree import (
-    ACEDummyNodeFactory,
-    ensure_frontend_uid,
-    FRONTEND_KIND_SHADER,
-)
-from ..nodes.shader_tree import ACEShaderNodeFactory
+from ..nodes.frontend import FRONTEND_KIND_SHADER, ensure_frontend_uid
+from ..nodes.geometry.factory import ACEDummyNodeFactory
+from ..nodes.shader.factory import ACEShaderNodeFactory
 from ..core.id_management import ACEIdManager
 from ..core.proxy.manager import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager

@@ -5,7 +5,7 @@ import numpy as np
 from typing import Dict, Set, Any
 from ..id_management import ACEIdManager
 from ..abstract_tree import ACEAbstractTree
-from ...nodes.dummy_tree import ensure_frontend_uid, FRONTEND_KIND_SHADER
+from ...nodes.frontend import FRONTEND_KIND_SHADER, ensure_frontend_uid
 from ... import utils
 from .attributes import AttributeSinks
 from .objects import ObjectPropertySinks

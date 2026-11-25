@@ -6,7 +6,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set
 from ... import utils
-from ...nodes.dummy_tree import ACEDummyTreeReader
+from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...properties import ACEAudioSource
 from ..abstract_tree import ACEAbstractNode, ACEAbstractTree
 from ..input.reception import build_live_flow_identifier
@@ -565,7 +565,7 @@ class GraphCompiler:
 
             if frontend_kind == FRONTEND_KIND_GEOMETRY:
                 with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends#2"):
-                    from ...nodes.dummy_tree import ACEDummyNodeFactory
+                    from ...nodes.geometry.factory import ACEDummyNodeFactory
                     removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
                     if removed:
                         utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
@@ -574,7 +574,7 @@ class GraphCompiler:
                 ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
 
             if frontend_kind == FRONTEND_KIND_SHADER:
-                from ...nodes.shader_tree import ACEShaderTreeReader
+                from ...nodes.shader.reader import ACEShaderTreeReader
                 reader = ACEShaderTreeReader(
                     tree,
                     frontend_uid=frontend_uid,

@@ -41,8 +41,8 @@ def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifie
 
 
 def _stale_ace_groups(addon_key):
-    dummy_tree = importlib.import_module(f"{addon_key}.nodes.dummy_tree")
-    shader_tree = importlib.import_module(f"{addon_key}.nodes.shader_tree")
+    dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
+    shader_tree = importlib.import_module(f"{addon_key}.nodes.shader.factory")
     ace_nodes = importlib.import_module(f"{addon_key}.vars").ACE_NODES
     gn, sh = dummy_tree.ACEDummyNodeFactory, shader_tree.ACEShaderNodeFactory
     stale = []
@@ -61,7 +61,7 @@ def _check_loaded_files_get_current_node_groups(addon_key):
     """Fresh groups are never stale, and a file's outdated groups are rebuilt on load."""
     stale = _stale_ace_groups(addon_key)
     _assert(not stale, f"Freshly built ACE groups count as stale (rebuilt on every load): {stale}")
-    dummy_tree = importlib.import_module(f"{addon_key}.nodes.dummy_tree")
+    dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
     lufs_name = dummy_tree.ACEDummyNodeFactory.get_group_name("stream", "lufs")
     bpy.data.node_groups[lufs_name].interface.new_socket("Leftover", in_out="INPUT", socket_type="NodeSocketFloat")
     path = os.path.join(tempfile.mkdtemp(prefix="ace_smoke_"), "outdated_groups.blend")
@@ -97,7 +97,7 @@ def _write_test_wav(path, seconds=4.0, sample_rate=48000):
 def _add_ace_node(addon_key, tree, category, node_type, label):
     """Add an ACE group node the way the Add menu does (that operator needs a node editor)."""
     gn_menu = importlib.import_module(f"{addon_key}.ui.gn_menu")
-    dummy_tree = importlib.import_module(f"{addon_key}.nodes.dummy_tree")
+    dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
     dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
     id_management = importlib.import_module(f"{addon_key}.core.id_management")
     if (category, node_type) == ("delta", "frequency_splitter"):

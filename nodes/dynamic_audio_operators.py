@@ -2,7 +2,7 @@ import math
 
 import bpy # type: ignore
 from .. import utils
-from .dummy_tree import ACEDummyNodeFactory
+from .geometry.factory import ACEDummyNodeFactory
 
 
 def _tree_bl_idname(tree_or_type) -> str:
@@ -16,7 +16,7 @@ def _tree_bl_idname(tree_or_type) -> str:
 
 def _factory_for_tree(tree_or_type):
     if _tree_bl_idname(tree_or_type) == "ShaderNodeTree":
-        from .shader_tree import ACEShaderNodeFactory
+        from .shader.factory import ACEShaderNodeFactory
         return ACEShaderNodeFactory
     return ACEDummyNodeFactory
 

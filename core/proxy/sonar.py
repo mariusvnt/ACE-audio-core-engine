@@ -3,7 +3,8 @@
 import bpy # type: ignore
 from typing import Dict, Any
 from ..id_management import ACEIdManager
-from ...nodes.dummy_tree import ACEDummyNodeFactory, ensure_frontend_uid, FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER
+from ...nodes.frontend import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, ensure_frontend_uid
+from ...nodes.geometry.factory import ACEDummyNodeFactory
 from ... import utils
 
 
@@ -179,7 +180,7 @@ class Sonar:
     def _source_group_factory_for_tree(cls, tree):
         frontend_kind = cls._frontend_kind_for_tree(tree)
         if frontend_kind == FRONTEND_KIND_SHADER:
-            from ...nodes.shader_tree import ACEShaderNodeFactory
+            from ...nodes.shader.factory import ACEShaderNodeFactory
             return ACEShaderNodeFactory
         return ACEDummyNodeFactory
 

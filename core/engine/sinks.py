@@ -408,7 +408,7 @@ class SinkResolver:
         )
         shader_factory = None
         try:
-            from ...nodes.shader_tree import ACEShaderNodeFactory as _ACEShaderNodeFactory
+            from ...nodes.shader.factory import ACEShaderNodeFactory as _ACEShaderNodeFactory
             shader_factory = _ACEShaderNodeFactory
         except Exception as exc:
             utils.note_swallowed("audio_engine.ACEAudioEngine._sync_shader_output_ids", exc)

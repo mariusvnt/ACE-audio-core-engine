@@ -94,7 +94,7 @@ class TestShaderHelperOutputZero(unittest.TestCase):
     def setUpClass(cls):
         _purge_testpkg_modules()
         fake_bpy.install()
-        cls.factory = load_module("shader_tree").ACEShaderNodeFactory
+        cls.factory = load_module("nodes.shader.factory").ACEShaderNodeFactory
 
     def test_helper_for_output_zero_is_found_and_not_rewritten(self):
         tree = types.SimpleNamespace(nodes=_Nodes(), links=[])

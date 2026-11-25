@@ -97,8 +97,17 @@ MODULE_NAMES = [
     "core.engine.handlers",
     # ── nodes/ sub-package ──────────────────────────────────────────────────
     "nodes",                         # 12. Package marker (nodes/__init__.py)
-    "nodes.dummy_tree",              # 13. GN node factory & tree reader
-    "nodes.shader_tree",             # 14. Shader node factory & tree reader
+    "nodes.frontend",
+    "nodes.geometry",
+    "nodes.geometry.factory",
+    "nodes.geometry.identity",
+    "nodes.geometry.reader",
+    "nodes.shader",
+    "nodes.shader.interface",
+    "nodes.shader.layout",
+    "nodes.shader.helpers",
+    "nodes.shader.factory",
+    "nodes.shader.reader",
     "nodes.dynamic_audio_operators", # 15. Dynamic splitter/math variants
     # ── ui/ sub-package ─────────────────────────────────────────────────────
     "ui",                            # 16. Package marker (ui/__init__.py)

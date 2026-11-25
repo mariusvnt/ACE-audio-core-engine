@@ -145,8 +145,8 @@ class FrontendTracker:
 
     def discover_scene_frontends(self, scene) -> list[_ACEFrontendDiscovery]:
         """Discover managed ACE frontends used by the scene."""
-        from ...nodes.dummy_tree import ensure_frontend_uid as _ensure_frontend_uid
-        from ...nodes.shader_tree import ACEShaderTreeReader
+        from ...nodes.frontend import ensure_frontend_uid as _ensure_frontend_uid
+        from ...nodes.shader.reader import ACEShaderTreeReader
 
         utils.assert_main_thread("discover_scene_frontends")
 

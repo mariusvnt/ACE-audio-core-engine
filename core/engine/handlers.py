@@ -25,8 +25,8 @@ def _refresh_loaded_node_groups():
     but that hash only describes the groups of the data that was loaded when
     it was taken.
     """
-    from ...nodes.dummy_tree import ACEDummyNodeFactory
-    from ...nodes.shader_tree import ACEShaderNodeFactory
+    from ...nodes.geometry.factory import ACEDummyNodeFactory
+    from ...nodes.shader.factory import ACEShaderNodeFactory
 
     for factory in (ACEDummyNodeFactory, ACEShaderNodeFactory):
         factory._NODES_CONTENT_HASH = ""
