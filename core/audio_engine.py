@@ -1063,7 +1063,6 @@ class ACEAudioEngine:
     # The fallback interval applies only when the dirty set is missing (defensive).
     _ATTR_RESYNC_INTERVAL_FRAMES = 120
     _META_CACHE_MAX_ENTRIES = 256
-    _RUNTIME_LOG_MAX_ENTRIES = 512
     _BLOCK_SIZE_HYSTERESIS_FRAMES = 2
     _BLOCK_SIZE_IMMEDIATE_DELTA = 1024
     _PERF_STAGES = ("source_read", "dsp", "preview", "proxy_write", "ui_sync")
@@ -1151,7 +1150,6 @@ class ACEAudioEngine:
         self._block_size_state: Dict[str, Dict[str, int]] = {}
         self._bootstrap_retry_at: float = 0.0
         self._bootstrap_fail_count: int = 0
-        self._runtime_log_last: Dict[str, float] = {}
         self._bake_cache: Dict[str, Dict[str, Any]] = {}
         self._bake_jobs: Dict[str, Dict[str, Any]] = {}
         self._bake_result_queue: "queue.Queue[tuple]" = queue.Queue()
@@ -2111,7 +2109,7 @@ class ACEAudioEngine:
         except Exception as e:
             self._parallel_executor = None
             self._parallel_pool_failed = True
-            self._log_runtime(
+            utils.log_throttled(
                 "parallel_init",
                 f"Processes-DSP unavailable, reusing last-valid offload values: {e}",
                 "WARNING",
@@ -2134,7 +2132,7 @@ class ACEAudioEngine:
         backoff_idx = min(self._parallel_restart_count - 1, len(self._PARALLEL_RESTART_BACKOFF_S) - 1)
         delay_s = float(self._PARALLEL_RESTART_BACKOFF_S[backoff_idx])
         self._parallel_restart_backoff_until = now + delay_s
-        self._log_runtime(
+        utils.log_throttled(
             "parallel_restart",
             f"Restarting Processes-DSP pool ({reason}), "
             f"attempt {self._parallel_restart_count}/{self._PARALLEL_RESTART_LIMIT}, "
@@ -2503,7 +2501,7 @@ class ACEAudioEngine:
                         break
                     if fail_key:
                         self._parallel_disabled_sources.add(fail_key)
-                    self._log_runtime(
+                    utils.log_throttled(
                         f"parallel_job_error:{fail_key}",
                         f"Parallel job failed for '{fail_key}', reusing last-valid offload values: {e}",
                         "WARNING",
@@ -2698,7 +2696,7 @@ class ACEAudioEngine:
                 self._restart_parallel_pool(scene, f"submit failure: {e}", source_key=owner_graph_key)
             else:
                 self._parallel_disabled_sources.add(owner_graph_key)
-            self._log_runtime(
+            utils.log_throttled(
                 f"parallel_submit:{owner_graph_key}",
                 f"Parallel submit failed for '{owner_graph_key}', reusing last-valid offload values: {e}",
                 "WARNING",
@@ -2916,7 +2914,7 @@ class ACEAudioEngine:
         )
         has_manual_preview = bool(manual_preview_winner_id)
         if len(manual_preview_candidates) > 1 and manual_preview_winner_id:
-            self._log_runtime(
+            utils.log_throttled(
                 "preview_conflict_resolution",
                 (
                     "Multiple Audio Preview nodes are present. "
@@ -3114,7 +3112,7 @@ class ACEAudioEngine:
                     self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
                     self._last_attr_sync_frame[src_uid] = int(self.current_frame)
             elif self.writer is not None and self._is_rendering_job():
-                self._log_runtime(
+                utils.log_throttled(
                     "render_lock_interface_compile_stage_c",
                     "Skipping ACE sink layout writes during render. Enable Render > Lock Interface for safe handler updates.",
                     "WARNING",
@@ -3141,21 +3139,6 @@ class ACEAudioEngine:
         with utils.logged_errors("audio_engine.ACEAudioEngine.compile#7"):
             ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
         self._last_compile_time = time.time()
-
-    def _log_runtime(self, key: str, message: str, level: str = "ERROR", min_interval: float = 2.0):
-        """Emit a log message at most once per *min_interval* seconds per *key*.
-
-        Prevents log spam from hot paths (frame handlers, parallel pollers) where
-        the same error condition can recur every frame.
-        """
-        now = time.time()
-        last = self._runtime_log_last.get(key, 0.0)
-        if (now - last) < min_interval:
-            return
-        self._runtime_log_last[key] = now
-        if len(self._runtime_log_last) > self._RUNTIME_LOG_MAX_ENTRIES:
-            self._prune_timestamp_map(self._runtime_log_last, self._RUNTIME_LOG_MAX_ENTRIES)
-        utils.log(message, level)
 
     def _probe_source_metadata(self, source: ACEAudioSource, allow_io: bool = True):
         """Populate ``source.sample_rate``, ``native_sample_rate``, and ``duration``.
@@ -5169,7 +5152,7 @@ class ACEAudioEngine:
         except Exception as e:
             for slot_key in slot_keys:
                 self._parallel_release_payload_slot(slot_key)
-            self._log_runtime(
+            utils.log_throttled(
                 "parallel_shm_ipc",
                 f"Shared-memory IPC setup failed, falling back to pickle transport: {e}",
                 "WARNING",
@@ -5347,7 +5330,7 @@ class ACEAudioEngine:
                     None,
                 )
             self.request_recompile(target_tree)
-            self._log_runtime(
+            utils.log_throttled(
                 "shader_tree_preview_deferred",
                 "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
                 "WARNING",
@@ -6023,7 +6006,7 @@ class ACEAudioEngine:
             frontend_kind=FRONTEND_KIND_SHADER,
             tree_bl_idname="ShaderNodeTree",
         ):
-            self._log_runtime(
+            utils.log_throttled(
                 "shader_tree_preview_deferred",
                 "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
                 "WARNING",
@@ -6158,7 +6141,7 @@ class ACEAudioEngine:
         if self._undo_recovery_active():
             return
         if self._unsafe_for_handler_writes(scene):
-            self._log_runtime(
+            utils.log_throttled(
                 "render_lock_interface_execute",
                 "Skipping ACE frame writes during render. Enable Render > Lock Interface for safe handler updates.",
                 "WARNING",
@@ -6172,7 +6155,7 @@ class ACEAudioEngine:
         if self._bake_jobs:
             # Bake worker evaluates the live graph/task set; suspend frame-runtime
             # evaluation while a bake is active to avoid cross-thread task mutation.
-            self._log_runtime(
+            utils.log_throttled(
                 "bake_runtime_pause",
                 "ACE runtime graph evaluation paused while offline bake is active.",
                 "INFO",
@@ -6415,8 +6398,8 @@ class ACEAudioEngine:
                             if isinstance(touched, set):
                                 geometry_proxy_names.update({str(v) for v in touched if str(v)})
                         except Exception as e:
-                            self._log_runtime(f"attr_ensure_recover:{graph_key}", f"Attribute ensure after recovery failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
-                        self._log_runtime(
+                            utils.log_throttled(f"attr_ensure_recover:{graph_key}", f"Attribute ensure after recovery failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
+                        utils.log_throttled(
                             f"recover_keys:{graph_key}",
                             f"Recovered {len(graph.output_attr_keys)} output keys for source '{getattr(graph, 'source_uid', '')}'.",
                             "WARNING",
@@ -6425,7 +6408,7 @@ class ACEAudioEngine:
                     else:
                         if graph.preview_task_ids:
                             continue
-                        self._log_runtime(
+                        utils.log_throttled(
                             f"missing_keys:{graph_key}",
                             f"No output keys for source '{getattr(graph, 'source_uid', '')}'. Skipping write this frame.",
                             "WARNING",
@@ -6447,7 +6430,7 @@ class ACEAudioEngine:
                         if isinstance(touched, set):
                             geometry_proxy_names.update({str(v) for v in touched if str(v)})
                     except Exception as e:
-                        self._log_runtime(f"attr_ensure:{graph_key}", f"Attribute ensure failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
+                        utils.log_throttled(f"attr_ensure:{graph_key}", f"Attribute ensure failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
                     self._attr_schema_dirty.discard(graph_key)
                     self._last_attr_sync_frame[graph_key] = int(self.current_frame)
 
@@ -6460,7 +6443,7 @@ class ACEAudioEngine:
                         if isinstance(touched, set):
                             geometry_proxy_names.update({str(v) for v in touched if str(v)})
                     except Exception as e:
-                        self._log_runtime(f"attr_write_baked:{graph_key}", f"Baked attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
+                        utils.log_throttled(f"attr_write_baked:{graph_key}", f"Baked attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
                     continue
 
                 live_source_task_ids = list(getattr(graph, "live_source_task_ids", []) or [])
@@ -6492,7 +6475,7 @@ class ACEAudioEngine:
                 ]
                 if any(not getattr(t, "source_ready", True) for t in file_tasks):
                     msg = next((getattr(t, "last_error", "") for t in file_tasks if getattr(t, "last_error", "")), "File source unavailable")
-                    self._log_runtime(f"source_unready:{graph_key}", f"Skipping source '{graph_key}': {msg}", "ERROR", min_interval=2.0)
+                    utils.log_throttled(f"source_unready:{graph_key}", f"Skipping source '{graph_key}': {msg}", "ERROR", min_interval=2.0)
                     continue
 
                 parallel_graph_key = str(getattr(graph, "parallel_graph_uid", "") or graph_key)
@@ -6653,7 +6636,7 @@ class ACEAudioEngine:
                     if isinstance(touched, set):
                         geometry_proxy_names.update({str(v) for v in touched if str(v)})
                 except Exception as e:
-                    self._log_runtime(f"attr_write:{graph_key}", f"Attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
+                    utils.log_throttled(f"attr_write:{graph_key}", f"Attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
 
             if preview_allowed:
                 t0 = time.perf_counter()
@@ -6739,7 +6722,7 @@ class ACEAudioEngine:
                 npz_path = ""
                 npz_keys = {}
                 values_store = dict(baked_arrays)
-                self._log_runtime("bake_spill", f"Could not spill bake cache to disk: {e}", "WARNING", min_interval=0.0)
+                utils.log_throttled("bake_spill", f"Could not spill bake cache to disk: {e}", "WARNING", min_interval=0.0)
 
         self._bake_cache[str(src_uid)] = {
             "tree_signature": self._last_tree_signature,
@@ -6767,7 +6750,7 @@ class ACEAudioEngine:
             if scene is not None:
                 self.compile_scene_frontends(scene, preferred_tree=target_tree)
         except Exception as e:
-            self._log_runtime("bake_recompile", f"Post-bake recompile failed: {e}", "ERROR", min_interval=0.0)
+            utils.log_throttled("bake_recompile", f"Post-bake recompile failed: {e}", "ERROR", min_interval=0.0)
         finally:
             self._bake_jobs.pop(str(src_uid), None)
 
@@ -6829,7 +6812,7 @@ class ACEAudioEngine:
         try:
             self.compile_scene_frontends(scene, preferred_tree=target_tree)
         except Exception as e:
-            self._log_runtime("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
+            utils.log_throttled("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
             return False
 
         ace = getattr(scene, "audiocore", None)
@@ -6971,7 +6954,7 @@ def frame_change_handler(scene):
         return
     is_rendering = engine._is_rendering_job()
     if engine._unsafe_for_handler_writes(scene):
-        engine._log_runtime(
+        utils.log_throttled(
             "render_lock_interface",
             "Skipping ACE frame writes during render. Enable Render > Lock Interface for safe handler updates.",
             "WARNING",
@@ -6995,7 +6978,7 @@ def frame_change_handler(scene):
             fail_count = int(getattr(engine, "_bootstrap_fail_count", 0)) + 1
             engine._bootstrap_fail_count = fail_count
             engine._bootstrap_retry_at = now + min(2.0, 0.2 * (2 ** min(fail_count, 4)))
-            engine._log_runtime("bootstrap_compile", f"Frame bootstrap compile failed: {e}", "ERROR", min_interval=2.0)
+            utils.log_throttled("bootstrap_compile", f"Frame bootstrap compile failed: {e}", "ERROR", min_interval=2.0)
     engine.execute_next_frame(scene, force=is_rendering)
 
 
@@ -7036,7 +7019,7 @@ def render_pre_handler(scene):
     if engine is None:
         return
     if engine._unsafe_for_handler_writes(scene):
-        engine._log_runtime(
+        utils.log_throttled(
             "render_lock_interface_pre",
             "Skipping ACE render bootstrap. Enable Render > Lock Interface for safe handler updates.",
             "WARNING",
@@ -7049,11 +7032,11 @@ def render_pre_handler(scene):
             if engine.discover_scene_frontends(scene):
                 engine.compile_scene_frontends(scene)
         except Exception as e:
-            engine._log_runtime("render_pre_compile", f"Render pre compile failed: {e}", "ERROR", min_interval=1.5)
+            utils.log_throttled("render_pre_compile", f"Render pre compile failed: {e}", "ERROR", min_interval=1.5)
     try:
         engine.execute_next_frame(scene, force=True)
     except Exception as e:
-        engine._log_runtime("render_pre_execute", f"Render pre execute failed: {e}", "ERROR", min_interval=1.5)
+        utils.log_throttled("render_pre_execute", f"Render pre execute failed: {e}", "ERROR", min_interval=1.5)
     engine._mark_render_start(scene)
 
 

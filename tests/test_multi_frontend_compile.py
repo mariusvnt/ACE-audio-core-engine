@@ -242,7 +242,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._block_size_state = {}
         engine._bootstrap_retry_at = 0.0
         engine._bootstrap_fail_count = 0
-        engine._runtime_log_last = {}
         engine._bake_cache = {}
         engine._bake_jobs = {}
         import queue as _queue
@@ -1050,7 +1049,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
             _undo_recovery_active=lambda: False,
             _is_rendering_job=lambda: True,
             _unsafe_for_handler_writes=lambda _scene: True,
-            _log_runtime=lambda *args, **kwargs: calls.append(("log", args, kwargs)),
             execute_next_frame=lambda *_args, **_kwargs: calls.append(("execute",)),
             discover_scene_frontends=lambda *_args, **_kwargs: calls.append(("discover",)) or [],
             compile_scene_frontends=lambda *_args, **_kwargs: calls.append(("compile",)),
@@ -1058,11 +1056,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
         scene = types.SimpleNamespace()
 
         orig_ensure = self.engine_mod.ACEAudioEngine.ensure_instance
+        orig_log = self.utils_mod.log_throttled
         try:
             self.engine_mod.ACEAudioEngine.ensure_instance = classmethod(lambda cls, _scene=None: engine)
+            self.utils_mod.log_throttled = lambda *args, **kwargs: calls.append(("log", args, kwargs))
             self.engine_mod.frame_change_handler(scene)
         finally:
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
+            self.utils_mod.log_throttled = orig_log
 
         self.assertTrue(any(call[0] == "log" for call in calls))
         self.assertFalse(any(call[0] == "execute" for call in calls))
@@ -1121,10 +1122,13 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._pending_tree_ptr = shader_tree.as_pointer()
         engine._pending_tree_bl_idname = "ShaderNodeTree"
         engine._structural_tree_writes_allowed = lambda *_args, **_kwargs: False
-        engine._log_runtime = lambda *args, **kwargs: log_calls.append((args, kwargs))
         engine.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
-
-        compiled = engine._maybe_compile_dirty(types.SimpleNamespace())
+        orig_log = self.utils_mod.log_throttled
+        self.utils_mod.log_throttled = lambda *args, **kwargs: log_calls.append((args, kwargs))
+        try:
+            compiled = engine._maybe_compile_dirty(types.SimpleNamespace())
+        finally:
+            self.utils_mod.log_throttled = orig_log
 
         self.assertFalse(compiled)
         self.assertFalse(compile_calls)
