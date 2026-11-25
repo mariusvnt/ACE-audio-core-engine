@@ -183,6 +183,9 @@ def _load_engine_stack():
     _install_engine_import_stubs()
     for name in (
         "core.audio_engine",
+        "core.engine_common",
+        "core.engine_preview",
+        "core.engine_handlers",
         "core.audio_tasks_registry",
         "core.parallel_dsp",
         "core.audio_influx",

@@ -161,6 +161,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     _assert(bool(engine.graphs), "No runtime graph compiled for the file source")
     import time
     engine_mod = importlib.import_module(f"{addon_key}.core.audio_engine")
+    handlers_mod = importlib.import_module(f"{addon_key}.core.engine_handlers")
     # Let the one legitimate recompile happen first: the file's sample-rate
     # probe finishes in the background and asks for it.
     settle_compiles = []
@@ -170,7 +171,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     while time.monotonic() - last_change < 0.5 and time.monotonic() - t_settle < 10.0:
         before = len(settle_compiles)
         scene.frame_set(1 + int((time.monotonic() - t_settle) * 24) % 24)
-        engine_mod.auto_compile_timer()
+        handlers_mod.auto_compile_timer()
         if len(settle_compiles) != before:
             last_change = time.monotonic()
         time.sleep(1.0 / 24.0)
@@ -199,7 +200,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         target = t0 + (frame - 1) / 24.0
         time.sleep(max(0.0, target - time.monotonic()))
         scene.frame_set(frame)
-        engine_mod.auto_compile_timer()  # timers do not run in background mode
+        handlers_mod.auto_compile_timer()  # timers do not run in background mode
         if first_accept_s is None and int(getattr(engine, "_parallel_result_accepts", 0) or 0) > 0:
             first_accept_s = time.monotonic() - t0
         if frame == 30:
@@ -261,16 +262,17 @@ def main():
     _assert(bool(addon_keys), "AudioCore add-on is not enabled in current Blender session")
     addon_key = addon_keys[0]
     engine_mod = importlib.import_module(f"{addon_key}.core.audio_engine")
+    handlers_mod = importlib.import_module(f"{addon_key}.core.engine_handlers")
     _assert(
-        engine_mod.frame_change_handler in bpy.app.handlers.frame_change_pre,
+        handlers_mod.frame_change_handler in bpy.app.handlers.frame_change_pre,
         "frame_change_handler is not registered",
     )
     _assert(
-        engine_mod.depsgraph_update_handler in bpy.app.handlers.depsgraph_update_post,
+        handlers_mod.depsgraph_update_handler in bpy.app.handlers.depsgraph_update_post,
         "depsgraph_update_handler is not registered",
     )
     _assert(
-        engine_mod._load_post_reset_engine in bpy.app.handlers.load_post,
+        handlers_mod._load_post_reset_engine in bpy.app.handlers.load_post,
         "load_post reset handler is not registered",
     )
     scene = bpy.context.scene

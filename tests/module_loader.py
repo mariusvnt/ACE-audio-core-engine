@@ -9,6 +9,9 @@ PKG_NAME = "ace_addon_testpkg"
 
 _MODULE_PATHS = {
     "audio_engine": ("core", ROOT / "core" / "audio_engine.py"),
+    "engine_common": ("core", ROOT / "core" / "engine_common.py"),
+    "engine_preview": ("core", ROOT / "core" / "engine_preview.py"),
+    "engine_handlers": ("core", ROOT / "core" / "engine_handlers.py"),
     "audio_influx": ("core", ROOT / "core" / "audio_influx.py"),
     "audio_tasks_registry": ("core", ROOT / "core" / "audio_tasks_registry.py"),
     "abstract_tree": ("core", ROOT / "core" / "abstract_tree.py"),

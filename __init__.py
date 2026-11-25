@@ -50,7 +50,10 @@ MODULE_NAMES = [
     "core.audio_tasks_registry",     # 8.  DSP task class registry
     "core.parallel_dsp",             # 9.  Process-worker DSP helpers
     "core.proxy_management",         # 10. Bridge to Blender mesh attributes
+    "core.engine_common",
+    "core.engine_preview",
     "core.audio_engine",             # 11. Engine orchestration
+    "core.engine_handlers",          # Blender handlers and timers
     # ── nodes/ sub-package ──────────────────────────────────────────────────
     "nodes",                         # 12. Package marker (nodes/__init__.py)
     "nodes.dummy_tree",              # 13. GN node factory & tree reader
@@ -77,7 +80,7 @@ def _import_or_reload_submodule(module_name: str):
 def _remove_handlers_and_timers(log):
     """Remove ACE handlers and timers; safe to call when they were never added."""
     try:
-        from .core.audio_engine import unregister_handlers
+        from .core.engine_handlers import unregister_handlers
         unregister_handlers()
     except Exception as exc:  # noqa: BLE001 boundary: teardown must reach the timer below
         log(f"Removing ACE handlers failed: {exc}", 'ERROR')
@@ -114,7 +117,7 @@ def register():
 
         # A failure here is a registration failure: without handlers the
         # engine never runs, so it goes to the rollback below.
-        from .core.audio_engine import register_handlers
+        from .core.engine_handlers import register_handlers
         register_handlers()
         import bpy  # type: ignore
         from .properties import _live_device_cache_timer

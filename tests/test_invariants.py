@@ -106,6 +106,7 @@ class TestEngineInvariants(unittest.TestCase):
         cls.bpy = fake_bpy.install()
         fake_bpy.reset(cls.bpy)
         cls.ae = load_module("audio_engine")
+        cls.handlers_mod = load_module("engine_handlers")
         cls.Engine = cls.ae.ACEAudioEngine
 
     def setUp(self):
@@ -114,7 +115,7 @@ class TestEngineInvariants(unittest.TestCase):
     def test_registered_handlers_are_persistent(self):
         # Without @persistent Blender drops a handler on every file load.
         with mock.patch.object(self.Engine, "ensure_instance", classmethod(lambda cls, _scene=None: None)):
-            self.ae.register_handlers()
+            self.handlers_mod.register_handlers()
         try:
             registered = [
                 fn
@@ -127,7 +128,7 @@ class TestEngineInvariants(unittest.TestCase):
             for timer in self.bpy.app.timers.registered:
                 self.assertTrue(self.bpy.app.timers.registered[timer][1], msg=f"{timer.__name__} timer not persistent")
         finally:
-            self.ae.unregister_handlers()
+            self.handlers_mod.unregister_handlers()
         for name in fake_bpy.HANDLER_NAMES:
             self.assertEqual(getattr(self.bpy.app.handlers, name), [], msg=f"{name} left registered")
 

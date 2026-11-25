@@ -206,6 +206,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         cls.dummy_tree = load_module("dummy_tree")
         cls.shader_tree_mod = load_module("shader_tree")
         cls.engine_mod = load_module("audio_engine")
+        cls.handlers_mod = load_module("engine_handlers")
         cls.utils_mod = load_module("utils")
 
     def _engine_shell(self):
@@ -1008,23 +1009,23 @@ class TestMultiFrontendCompile(unittest.TestCase):
             self.engine_mod.ACEAudioEngine.ensure_instance = classmethod(lambda cls, _scene=None: engine)
             self.engine_mod.ACEAudioEngine.get_instance = classmethod(lambda cls, _scene=None: engine)
 
-            self.engine_mod.depsgraph_update_handler(
+            self.handlers_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=geometry_tree)]),
             )
-            self.engine_mod.depsgraph_update_handler(
+            self.handlers_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=shader_tree)]),
             )
-            self.engine_mod.depsgraph_update_handler(
+            self.handlers_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=obj)]),
             )
-            self.engine_mod.depsgraph_update_handler(
+            self.handlers_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=material)]),
             )
-            self.engine_mod.depsgraph_update_handler(
+            self.handlers_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=evaluated_obj)]),
             )
@@ -1060,7 +1061,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         try:
             self.engine_mod.ACEAudioEngine.ensure_instance = classmethod(lambda cls, _scene=None: engine)
             self.utils_mod.log_throttled = lambda *args, **kwargs: calls.append(("log", args, kwargs))
-            self.engine_mod.frame_change_handler(scene)
+            self.handlers_mod.frame_change_handler(scene)
         finally:
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
             self.utils_mod.log_throttled = orig_log
@@ -1197,7 +1198,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         orig_get = self.engine_mod.ACEAudioEngine.get_instance
         try:
             self.engine_mod.ACEAudioEngine.get_instance = classmethod(lambda cls, _scene=None: engine)
-            self.engine_mod.depsgraph_update_handler(
+            self.handlers_mod.depsgraph_update_handler(
                 scene,
                 types.SimpleNamespace(updates=[types.SimpleNamespace(id=geometry_tree)]),
             )
@@ -1219,7 +1220,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         try:
             bpy_mod.context.scene = scene
             self.engine_mod.ACEAudioEngine.ensure_instance = classmethod(lambda cls, _scene=None: engine)
-            self.assertEqual(self.engine_mod.auto_compile_timer(), 0.25)
+            self.assertEqual(self.handlers_mod.auto_compile_timer(), 0.25)
         finally:
             bpy_mod.context.scene = original_scene
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
