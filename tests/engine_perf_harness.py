@@ -189,6 +189,7 @@ def _load_engine_stack():
         "core.engine_probes",
         "core.engine_bake",
         "core.engine_parallel",
+        "core.engine_frontends",
         "core.engine_handlers",
         "core.audio_tasks_registry",
         "core.parallel_dsp",
@@ -786,9 +787,9 @@ def _run_engine_benchmark(
         _ = _drive_frames(start_frame=0, num_frames=int(max(warmup_frames, 0)), next_due_ts=next_due)
 
         # Measure only post-warmup frames.
-        engine.get_perf_snapshot(reset=True)
-        engine.get_runtime_diagnostics(reset=True)
-        engine.get_dsp_node_profile_snapshot(reset=True)
+        engine.diagnostics.get_perf_snapshot(reset=True)
+        engine.diagnostics.get_runtime_diagnostics(reset=True)
+        engine.diagnostics.get_dsp_node_profile_snapshot(reset=True)
         submit_counters["attempts"] = 0
         submit_counters["success"] = 0
         result_counters["requests"] = 0
@@ -802,9 +803,9 @@ def _run_engine_benchmark(
         )
         _drain_parallel_futures()
 
-        perf = engine.get_perf_snapshot(reset=False)
-        diag = engine.get_runtime_diagnostics(reset=False)
-        dsp_profile = engine.get_dsp_node_profile_snapshot(reset=False)
+        perf = engine.diagnostics.get_perf_snapshot(reset=False)
+        diag = engine.diagnostics.get_runtime_diagnostics(reset=False)
+        dsp_profile = engine.diagnostics.get_dsp_node_profile_snapshot(reset=False)
         dsp_stage_source = "engine_dsp"
         if mode == "processes_dsp":
             dsp_stage = dict(perf.get("dsp", {}) or {})

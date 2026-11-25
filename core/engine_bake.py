@@ -276,7 +276,7 @@ class BakeManager:
                 source["ace_bake_error"] = "Missing source file."
             return False
 
-        target_tree = tree if tree and self.engine._tree_has_ace_nodes(tree) else None
+        target_tree = tree if tree and self.engine.frontends._tree_has_ace_nodes(tree) else None
         try:
             self.engine.compile_scene_frontends(scene, preferred_tree=target_tree)
         except Exception as e:

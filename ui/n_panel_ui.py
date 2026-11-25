@@ -1367,8 +1367,8 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         except Exception as exc:
             utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#2", exc)
             tree_ptr = 0
-        pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
-        dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
+        pending_tree_ptr = int(getattr(getattr(engine, "frontends", None), "_pending_tree_ptr", 0) or 0)
+        dirty_tree_ptrs = getattr(getattr(engine, "frontends", None), "_dirty_tree_ptrs", set()) or set()
         dirty_tree_match = bool((tree_ptr and pending_tree_ptr == tree_ptr) or (tree_ptr and tree_ptr in dirty_tree_ptrs))
         if allow_dirty_rebuild:
             tree_dirty_hint = tree_dirty_hint or dirty_tree_match
@@ -1665,8 +1665,8 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
     if not engine:
         return False
 
-    pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
-    dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
+    pending_tree_ptr = int(getattr(getattr(engine, "frontends", None), "_pending_tree_ptr", 0) or 0)
+    dirty_tree_ptrs = getattr(getattr(engine, "frontends", None), "_dirty_tree_ptrs", set()) or set()
 
     if pending_tree_ptr:
         if tree is None:
@@ -2037,7 +2037,7 @@ class ACE_PT_project_settings(bpy.types.Panel):
         pending_changes = _ui_has_pending_engine_changes(context.scene, tree)
         auto_compile_enabled = bool(getattr(eng_settings, "auto_compile", True)) if eng_settings else True
         is_playing = bool(engine and ACEAudioEngine._is_animation_playing())
-        is_compiling = bool(engine and getattr(engine, "_is_compiling", False))
+        is_compiling = bool(engine and getattr(getattr(engine, "frontends", None), "_is_compiling", False))
         if (not is_compiling) and auto_compile_enabled and pending_changes:
             is_compiling = True
         has_runtime_graph = bool(engine and getattr(engine, "graphs", None))

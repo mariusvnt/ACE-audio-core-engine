@@ -160,13 +160,13 @@ class SourceProbes:
             any_updated = True
         if any_updated:
             with utils.logged_errors("audio_engine.ACEAudioEngine._flush_probe_updates#2"):
-                preferred_tree = self.engine._resolve_preferred_tree_from_discoveries(
-                    self.engine.discover_scene_frontends(scene) if scene is not None else [],
+                preferred_tree = self.engine.frontends._resolve_preferred_tree_from_discoveries(
+                    self.engine.frontends.discover_scene_frontends(scene) if scene is not None else [],
                     frontend_uid=str(getattr(self.engine, "_compiled_tree_frontend_uid", "") or ""),
                     tree_ptr=int(preferred_tree_ptr or 0),
                     tree_bl_idname=str(getattr(self.engine, "_compiled_tree_bl_idname", "") or ""),
                 )
-                self.engine.request_recompile(preferred_tree)
+                self.engine.frontends.request_recompile(preferred_tree)
         return any_updated
 
     def _apply_tempo_detection_to_source(self, source: ACEAudioSource, detected: Dict[str, Any]) -> bool:

@@ -22,8 +22,8 @@ def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifie
     previous_auto = bool(settings.auto_compile)
     settings.auto_compile = True
     requested = []
-    original_request = engine.request_recompile
-    engine.request_recompile = lambda tree: requested.append(tree)
+    original_request = engine.frontends.request_recompile
+    engine.frontends.request_recompile = lambda tree: requested.append(tree)
     try:
         bpy.context.view_layer.update()
         requested.clear()
@@ -32,7 +32,7 @@ def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifie
         obj.data.materials[0].diffuse_color = (0.2, 0.4, 0.6, 1.0)
         bpy.context.view_layer.update()
     finally:
-        engine.request_recompile = original_request
+        engine.frontends.request_recompile = original_request
         settings.auto_compile = previous_auto
     pointers = {t.as_pointer() for t in requested if t is not None}
     _assert(gn_tree.as_pointer() in pointers, "Object edit did not queue its Geometry Nodes frontend")
@@ -240,13 +240,13 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         state["offload_keys"] = {uid: list(getattr(g, "parallel_offload_attr_keys", []) or []) for uid, g in engine.graphs.items()}
         _assert(int(engine.parallel._parallel_result_accepts) > 0, f"No worker-process DSP result was accepted: {state}")
 
-    _assert(engine.bake_source_to_cache(src, tree=tree, scene=scene), "Bake did not start")
+    _assert(engine.bake.bake_source_to_cache(src, tree=tree, scene=scene), "Bake did not start")
     import time
     deadline = time.monotonic() + 60.0
     while str(src.get("ace_bake_status", "")) == "baking" and time.monotonic() < deadline:
-        engine.flush_bake_results()
+        engine.bake.flush_bake_results()
         time.sleep(0.05)
-    engine.flush_bake_results()
+    engine.bake.flush_bake_results()
     _assert(str(src.get("ace_bake_status", "")) == "done", f"Bake ended as {src.get('ace_bake_status')!r}: {src.get('ace_bake_error')!r}")
 
     bpy.data.objects.remove(obj, do_unlink=True)
@@ -352,7 +352,7 @@ def main():
             engine, scene, frontend_obj, frontend_mod, frontend_gn_tree, frontend_shader_tree
         )
 
-        discovered = engine.discover_scene_frontends(scene)
+        discovered = engine.frontends.discover_scene_frontends(scene)
         kinds = sorted(rec.frontend_ref.kind for rec in discovered)
         _assert("GEOMETRY_NODES" in kinds, "Scene frontend discovery missed Geometry Nodes frontend")
         _assert("SHADER_NODES" in kinds, "Scene frontend discovery missed Shader frontend")

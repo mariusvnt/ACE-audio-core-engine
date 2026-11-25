@@ -56,6 +56,7 @@ MODULE_NAMES = [
     "core.engine_probes",
     "core.engine_bake",
     "core.engine_parallel",
+    "core.engine_frontends",
     "core.audio_engine",             # 11. Engine orchestration
     "core.engine_handlers",          # Blender handlers and timers
     # ── nodes/ sub-package ──────────────────────────────────────────────────

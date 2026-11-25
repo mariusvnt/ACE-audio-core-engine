@@ -6,6 +6,7 @@ import time
 from .. import utils
 from .engine_common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, persistent
 from .audio_engine import ACEAudioEngine
+from .engine_frontends import FrontendTracker
 from .engine_preview import PreviewRouter
 
 
@@ -80,7 +81,7 @@ def frame_change_handler(scene):
             engine.execute_next_frame(scene, force=is_rendering)
             return
         try:
-            frontends = engine.discover_scene_frontends(scene)
+            frontends = engine.frontends.discover_scene_frontends(scene)
             if frontends:
                 engine.compile_scene_frontends(scene)
                 engine._bootstrap_fail_count = 0
@@ -142,7 +143,7 @@ def render_pre_handler(scene):
         return
     if not engine.graphs:
         try:
-            if engine.discover_scene_frontends(scene):
+            if engine.frontends.discover_scene_frontends(scene):
                 engine.compile_scene_frontends(scene)
         except Exception as e:
             utils.log_throttled("render_pre_compile", f"Render pre compile failed: {e}", "ERROR", min_interval=1.5)
@@ -222,20 +223,20 @@ def depsgraph_update_handler(scene, depsgraph):
     def _update_touches_ace_tree(update_id) -> bool:
         bl_idname = _id_type_name(update_id)
         if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
-            return bool(ACEAudioEngine._tree_is_ace_managed(update_id))
+            return bool(FrontendTracker._tree_is_ace_managed(update_id))
         if bl_idname == "Material":
             tree = getattr(update_id, "node_tree", None) if update_id is not None else None
-            return bool(ACEAudioEngine._tree_is_ace_managed(tree))
+            return bool(FrontendTracker._tree_is_ace_managed(tree))
         if bl_idname == "Object":
             obj = update_id
             for mod in getattr(obj, "modifiers", []) or []:
                 tree_ref = getattr(mod, "node_group", None)
-                if getattr(mod, "type", None) == "NODES" and ACEAudioEngine._tree_is_ace_managed(tree_ref):
+                if getattr(mod, "type", None) == "NODES" and FrontendTracker._tree_is_ace_managed(tree_ref):
                     return True
             for slot in getattr(obj, "material_slots", []) or []:
                 material = getattr(slot, "material", None)
                 tree = getattr(material, "node_tree", None) if material is not None else None
-                if ACEAudioEngine._tree_is_ace_managed(tree):
+                if FrontendTracker._tree_is_ace_managed(tree):
                     return True
         return False
 
@@ -244,7 +245,7 @@ def depsgraph_update_handler(scene, depsgraph):
             for update in getattr(depsgraph, "updates", []) or []:
                 if _update_touches_ace_tree(_original_id(update)):
                     with utils.logged_errors("audio_engine.depsgraph_update_handler"):
-                        engine.request_recompile(None)
+                        engine.frontends.request_recompile(None)
                     break
         return
 
@@ -293,13 +294,13 @@ def depsgraph_update_handler(scene, depsgraph):
         bl_idname = _id_type_name(_id)
 
         if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
-            if ACEAudioEngine._tree_is_ace_managed(_id):
+            if FrontendTracker._tree_is_ace_managed(_id):
                 _queue_recompile_target(_id)
             continue
 
         if bl_idname == "Material":
             tree = getattr(_id, "node_tree", None) if _id is not None else None
-            if ACEAudioEngine._tree_is_ace_managed(tree):
+            if FrontendTracker._tree_is_ace_managed(tree):
                 _queue_recompile_target(tree)
             continue
 
@@ -320,7 +321,7 @@ def depsgraph_update_handler(scene, depsgraph):
                 if discovered_frontends_by_uid is None:
                     discovered_frontends_by_uid = {
                         str(rec.frontend_ref.uid or ""): getattr(rec, "tree", None)
-                        for rec in (engine.discover_scene_frontends(scene) or [])
+                        for rec in (engine.frontends.discover_scene_frontends(scene) or [])
                     }
                 for frontend_uid, frontend_snapshot in compiled_frontend_snapshots.items():
                     owners = {
@@ -336,17 +337,17 @@ def depsgraph_update_handler(scene, depsgraph):
 
             for mod in getattr(obj, "modifiers", []) or []:
                 tree_ref = getattr(mod, "node_group", None)
-                if getattr(mod, "type", None) == "NODES" and ACEAudioEngine._tree_is_ace_managed(tree_ref):
+                if getattr(mod, "type", None) == "NODES" and FrontendTracker._tree_is_ace_managed(tree_ref):
                     _queue_recompile_target(tree_ref)
 
             for slot in getattr(obj, "material_slots", []) or []:
                 material = getattr(slot, "material", None)
                 tree = getattr(material, "node_tree", None) if material is not None else None
-                if ACEAudioEngine._tree_is_ace_managed(tree):
+                if FrontendTracker._tree_is_ace_managed(tree):
                     _queue_recompile_target(tree)
 
     for target in recompile_targets:
-        engine.request_recompile(target)
+        engine.frontends.request_recompile(target)
 
 
 def auto_compile_timer():
@@ -371,7 +372,7 @@ def auto_compile_timer():
                 return 0.25
             if engine._unsafe_for_handler_writes(scene):
                 return 0.25
-            compiled = engine._maybe_compile_dirty(scene)
+            compiled = engine.frontends._maybe_compile_dirty(scene)
             if compiled:
                 engine.execute_next_frame(scene, force=True)
     return 0.25

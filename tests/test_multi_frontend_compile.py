@@ -227,16 +227,16 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.current_frame = 0
         engine.last_scene_frame = -1
         engine.abstract_tree_ref = None
-        engine._pending_tree = None
-        engine._pending_tree_ptr = 0
-        engine._pending_tree_bl_idname = ""
-        engine._pending_scene_rebuild = False
-        engine._last_request_time = 0.0
+        engine.frontends._pending_tree = None
+        engine.frontends._pending_tree_ptr = 0
+        engine.frontends._pending_tree_bl_idname = ""
+        engine.frontends._pending_scene_rebuild = False
+        engine.frontends._last_request_time = 0.0
         engine._last_compile_time = 0.0
-        engine._dirty_trees = set()
-        engine._dirty_tree_ptrs = set()
-        engine._dirty_tree_bl_idnames = {}
-        engine._dirty_frontend_uids = set()
+        engine.frontends._dirty_trees = set()
+        engine.frontends._dirty_tree_ptrs = set()
+        engine.frontends._dirty_tree_bl_idnames = {}
+        engine.frontends._dirty_frontend_uids = set()
         engine._compiled_tree_ref = None
         engine._compiled_tree_ptr = 0
         engine._compiled_tree_frontend_uid = ""
@@ -246,7 +246,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._compiled_frontend_ptrs = {}
         engine._compiled_frontend_uids = ()
         engine._last_frontend_membership_signature = ()
-        engine._is_compiling = False
+        engine.frontends._is_compiling = False
         engine.probes._meta_cache = {}
         engine.probes._meta_cache_ttl = 30.0
         engine._last_tree_signature = None
@@ -370,8 +370,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
             ]
         )
 
-        frontends_a = engine.discover_scene_frontends(scene)
-        frontends_b = engine.discover_scene_frontends(scene)
+        frontends_a = engine.frontends.discover_scene_frontends(scene)
+        frontends_b = engine.frontends.discover_scene_frontends(scene)
 
         self.assertEqual(len(frontends_a), 2)
         self.assertEqual([rec.frontend_ref.uid for rec in frontends_a], [rec.frontend_ref.uid for rec in frontends_b])
@@ -399,8 +399,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         scene_a, gn_tree_a, sh_tree_a = _build_scene(reverse=False)
         scene_b, gn_tree_b, sh_tree_b = _build_scene(reverse=True)
 
-        frontends_a = engine.discover_scene_frontends(scene_a)
-        frontends_b = engine.discover_scene_frontends(scene_b)
+        frontends_a = engine.frontends.discover_scene_frontends(scene_a)
+        frontends_b = engine.frontends.discover_scene_frontends(scene_b)
 
         mapping_a = {rec.frontend_ref.tree_name: rec.frontend_ref.uid for rec in frontends_a}
         mapping_b = {rec.frontend_ref.tree_name: rec.frontend_ref.uid for rec in frontends_b}
@@ -423,9 +423,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
             ]
         )
 
-        frontends_a = engine.discover_scene_frontends(scene)
+        frontends_a = engine.frontends.discover_scene_frontends(scene)
         tree_uid_after_a = shared_tree.get("ace_frontend_uid")
-        frontends_b = engine.discover_scene_frontends(scene)
+        frontends_b = engine.frontends.discover_scene_frontends(scene)
 
         self.assertEqual(len(frontends_a), 1)
         self.assertEqual(len(frontends_b), 1)
@@ -533,9 +533,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
             ],
         )
 
-        sig_a = self.engine_mod.ACEAudioEngine._compute_tree_signature(tree_a)
-        sig_b = self.engine_mod.ACEAudioEngine._compute_tree_signature(tree_b)
-        sig_c = self.engine_mod.ACEAudioEngine._compute_tree_signature(tree_c)
+        sig_a = self.engine_mod.FrontendTracker._compute_tree_signature(tree_a)
+        sig_b = self.engine_mod.FrontendTracker._compute_tree_signature(tree_b)
+        sig_c = self.engine_mod.FrontendTracker._compute_tree_signature(tree_c)
 
         self.assertEqual(sig_a, sig_b)
         self.assertNotEqual(sig_a, sig_c)
@@ -561,13 +561,13 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         tree_a = self.abs_mod.ACEAbstractTree(frontends={"frontend_a": frontend_a})
         tree_b = self.abs_mod.ACEAbstractTree(frontends={"frontend_a": frontend_b})
-        discovery_a = self.engine_mod._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_a)
-        discovery_b = self.engine_mod._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_b)
+        discovery_a = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_a)
+        discovery_b = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_b)
 
-        tree_sig_a = self.engine_mod.ACEAudioEngine._compute_tree_signature(tree_a)
-        tree_sig_b = self.engine_mod.ACEAudioEngine._compute_tree_signature(tree_b)
-        membership_sig_a = self.engine_mod.ACEAudioEngine._frontend_membership_signature([discovery_a])
-        membership_sig_b = self.engine_mod.ACEAudioEngine._frontend_membership_signature([discovery_b])
+        tree_sig_a = self.engine_mod.FrontendTracker._compute_tree_signature(tree_a)
+        tree_sig_b = self.engine_mod.FrontendTracker._compute_tree_signature(tree_b)
+        membership_sig_a = self.engine_mod.FrontendTracker._frontend_membership_signature([discovery_a])
+        membership_sig_b = self.engine_mod.FrontendTracker._frontend_membership_signature([discovery_b])
 
         self.assertEqual(tree_sig_a, tree_sig_b)
         self.assertEqual(membership_sig_a, membership_sig_b)
@@ -625,25 +625,25 @@ class TestMultiFrontendCompile(unittest.TestCase):
             tree_bl_idname="GeometryNodeTree",
             tree_ptr=11,
         )
-        discovery = self.engine_mod._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref)
-        stable_sig = engine._frontend_membership_signature([discovery])
+        discovery = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref)
+        stable_sig = engine.frontends._frontend_membership_signature([discovery])
         engine._last_frontend_membership_signature = stable_sig
-        engine._dirty_frontend_uids = set()
-        engine._pending_scene_rebuild = True
-        engine._last_dirty_time = 0.0
+        engine.frontends._dirty_frontend_uids = set()
+        engine.frontends._pending_scene_rebuild = True
+        engine.frontends._last_dirty_time = 0.0
         engine._last_compile_time = 0.0
-        engine._first_dirty_time = 0.0
-        engine._is_compiling = False
+        engine.frontends._first_dirty_time = 0.0
+        engine.frontends._is_compiling = False
         engine._compiled_frontend_refs = {}
-        engine._pending_tree = None
-        engine._dirty_trees = set()
-        engine.discover_scene_frontends = lambda _scene: [discovery]
+        engine.frontends._pending_tree = None
+        engine.frontends._dirty_trees = set()
+        engine.frontends.discover_scene_frontends = lambda _scene: [discovery]
         engine.compile_scene_frontends = lambda *_args, **_kwargs: self.fail("compile_scene_frontends should be skipped")
 
-        compiled = engine._maybe_compile_dirty(_FakeScene())
+        compiled = engine.frontends._maybe_compile_dirty(_FakeScene())
 
         self.assertFalse(compiled)
-        self.assertFalse(engine._pending_scene_rebuild)
+        self.assertFalse(engine.frontends._pending_scene_rebuild)
 
     def test_object_property_dirty_recompile_is_absorbed_by_membership_gate(self):
         engine = self._engine_shell()
@@ -656,29 +656,29 @@ class TestMultiFrontendCompile(unittest.TestCase):
             material_name="ACE Mat",
             tree_ptr=22,
         )
-        discovery = self.engine_mod._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref, consumer_object_names=("Cube",))
-        stable_sig = engine._frontend_membership_signature([discovery])
+        discovery = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref, consumer_object_names=("Cube",))
+        stable_sig = engine.frontends._frontend_membership_signature([discovery])
         engine._last_frontend_membership_signature = stable_sig
-        engine._dirty_frontend_uids = set()
-        engine._pending_scene_rebuild = False
-        engine._last_dirty_time = 0.0
+        engine.frontends._dirty_frontend_uids = set()
+        engine.frontends._pending_scene_rebuild = False
+        engine.frontends._last_dirty_time = 0.0
         engine._last_compile_time = 0.0
-        engine._first_dirty_time = 0.0
-        engine._last_request_time = 0.0
-        engine._is_compiling = False
+        engine.frontends._first_dirty_time = 0.0
+        engine.frontends._last_request_time = 0.0
+        engine.frontends._is_compiling = False
         engine._compiled_frontend_refs = {}
-        engine._pending_tree = None
-        engine._dirty_trees = set()
-        engine.discover_scene_frontends = lambda _scene: [discovery]
+        engine.frontends._pending_tree = None
+        engine.frontends._dirty_trees = set()
+        engine.frontends.discover_scene_frontends = lambda _scene: [discovery]
         engine.compile_scene_frontends = lambda *_args, **_kwargs: self.fail("compile_scene_frontends should be skipped")
 
-        engine.request_recompile(None)
-        engine._last_dirty_time = 0.0
-        engine._first_dirty_time = 0.0
-        compiled = engine._maybe_compile_dirty(_FakeScene())
+        engine.frontends.request_recompile(None)
+        engine.frontends._last_dirty_time = 0.0
+        engine.frontends._first_dirty_time = 0.0
+        compiled = engine.frontends._maybe_compile_dirty(_FakeScene())
 
         self.assertFalse(compiled)
-        self.assertFalse(engine._pending_scene_rebuild)
+        self.assertFalse(engine.frontends._pending_scene_rebuild)
 
     def test_sink_binding_resolution_supports_mixed_geometry_and_shader_consumers(self):
         engine = self._engine_shell()
@@ -1113,7 +1113,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         compile_calls = []
         log_calls = []
-        engine.discover_scene_frontends = lambda _scene: [
+        engine.frontends.discover_scene_frontends = lambda _scene: [
             types.SimpleNamespace(
                 tree=shader_tree,
                 frontend_ref=frontend_ref,
@@ -1121,31 +1121,31 @@ class TestMultiFrontendCompile(unittest.TestCase):
             )
         ]
         engine._last_frontend_membership_signature = ()
-        engine._dirty_frontend_uids = {"ACE_FRONTEND_SHADER"}
-        engine._pending_scene_rebuild = False
-        engine._dirty_trees = [shader_tree]
-        engine._pending_tree = shader_tree
-        engine._last_dirty_time = 0.0
+        engine.frontends._dirty_frontend_uids = {"ACE_FRONTEND_SHADER"}
+        engine.frontends._pending_scene_rebuild = False
+        engine.frontends._dirty_trees = [shader_tree]
+        engine.frontends._pending_tree = shader_tree
+        engine.frontends._last_dirty_time = 0.0
         engine._last_compile_time = 0.0
-        engine._is_compiling = False
-        engine._first_dirty_time = 0.0
-        engine._dirty_tree_ptrs = {shader_tree.as_pointer()}
-        engine._dirty_tree_bl_idnames = {shader_tree.as_pointer(): "ShaderNodeTree"}
-        engine._pending_tree_ptr = shader_tree.as_pointer()
-        engine._pending_tree_bl_idname = "ShaderNodeTree"
+        engine.frontends._is_compiling = False
+        engine.frontends._first_dirty_time = 0.0
+        engine.frontends._dirty_tree_ptrs = {shader_tree.as_pointer()}
+        engine.frontends._dirty_tree_bl_idnames = {shader_tree.as_pointer(): "ShaderNodeTree"}
+        engine.frontends._pending_tree_ptr = shader_tree.as_pointer()
+        engine.frontends._pending_tree_bl_idname = "ShaderNodeTree"
         engine._structural_tree_writes_allowed = lambda *_args, **_kwargs: False
         engine.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
         orig_log = self.utils_mod.log_throttled
         self.utils_mod.log_throttled = lambda *args, **kwargs: log_calls.append((args, kwargs))
         try:
-            compiled = engine._maybe_compile_dirty(types.SimpleNamespace())
+            compiled = engine.frontends._maybe_compile_dirty(types.SimpleNamespace())
         finally:
             self.utils_mod.log_throttled = orig_log
 
         self.assertFalse(compiled)
         self.assertFalse(compile_calls)
-        self.assertEqual(engine._dirty_frontend_uids, {"ACE_FRONTEND_SHADER"})
-        self.assertEqual(engine._dirty_tree_ptrs, {shader_tree.as_pointer()})
+        self.assertEqual(engine.frontends._dirty_frontend_uids, {"ACE_FRONTEND_SHADER"})
+        self.assertEqual(engine.frontends._dirty_tree_ptrs, {shader_tree.as_pointer()})
         self.assertTrue(log_calls)
 
     def test_begin_undo_recovery_clears_cached_frontend_refs_and_sets_recovery_window(self):
@@ -1158,12 +1158,12 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._compiled_frontend_snapshots = {"frontend_a": object()}
         engine._compiled_frontend_ptrs = {"frontend_a": 123}
         engine._compiled_frontend_uids = ("frontend_a",)
-        engine._pending_tree_ptr = 456
-        engine._pending_tree_bl_idname = "ShaderNodeTree"
-        engine._dirty_tree_ptrs = {456}
-        engine._dirty_tree_bl_idnames = {456: "ShaderNodeTree"}
-        engine._dirty_frontend_uids = {"frontend_a"}
-        engine._pending_scene_rebuild = False
+        engine.frontends._pending_tree_ptr = 456
+        engine.frontends._pending_tree_bl_idname = "ShaderNodeTree"
+        engine.frontends._dirty_tree_ptrs = {456}
+        engine.frontends._dirty_tree_bl_idnames = {456: "ShaderNodeTree"}
+        engine.frontends._dirty_frontend_uids = {"frontend_a"}
+        engine.frontends._pending_scene_rebuild = False
         engine.probes._probe_pending_updates = {"file.wav": {"undo_generation": 0}}
         engine.probes._probe_in_flight = {"file.wav"}
         engine.diagnostics._pending_geometry_events = [{"frame": 1}]
@@ -1189,12 +1189,12 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(engine._compiled_tree_frontend_uid, "")
         self.assertEqual(engine._compiled_frontend_snapshots, {})
         self.assertEqual(engine._compiled_frontend_ptrs, {})
-        self.assertEqual(engine._pending_tree_ptr, 0)
-        self.assertEqual(engine._dirty_tree_ptrs, set())
+        self.assertEqual(engine.frontends._pending_tree_ptr, 0)
+        self.assertEqual(engine.frontends._dirty_tree_ptrs, set())
         self.assertEqual(engine.probes._probe_pending_updates, {})
         self.assertEqual(engine.probes._probe_in_flight, set())
         self.assertEqual(engine.diagnostics._pending_geometry_events, [])
-        self.assertTrue(engine._pending_scene_rebuild)
+        self.assertTrue(engine.frontends._pending_scene_rebuild)
 
     def test_depsgraph_handler_during_undo_recovery_marks_scene_rebuild_only(self):
         engine = _EngineStub(
@@ -1278,8 +1278,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
             }
         }
         source = _FakePropertyCtx(source_type="FILE", filepath="/tmp/a.wav", sample_rate=0, native_sample_rate=0, duration=0.0)
-        engine.discover_scene_frontends = lambda _scene: []
-        engine.request_recompile = lambda *_args, **_kwargs: self.fail("request_recompile should be skipped for stale probes")
+        engine.frontends.discover_scene_frontends = lambda _scene: []
+        engine.frontends.request_recompile = lambda *_args, **_kwargs: self.fail("request_recompile should be skipped for stale probes")
 
         updated = engine.probes._flush_probe_updates([source], scene=types.SimpleNamespace())
 
