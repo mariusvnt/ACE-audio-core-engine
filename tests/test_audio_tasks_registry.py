@@ -549,6 +549,16 @@ class TestAudioTasksRegistry(unittest.TestCase):
         loudness = task.process({0: chunk})
         self.assertAlmostEqual(float(loudness), 0.0, places=6)
 
+    def test_finite_copy_matches_nan_to_num_and_always_copies(self):
+        src = np.array([1.0, np.nan, np.inf, -np.inf, -2.5], dtype=np.float32)
+        out = atr._finite_copy(src)
+        self.assertTrue(np.array_equal(out, np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0)))
+        self.assertFalse(np.shares_memory(out, src))
+        clean = np.array([0.5, -0.5], dtype=np.float32)
+        self.assertFalse(np.shares_memory(atr._finite_copy(clean), clean))
+        self.assertEqual(atr._finite_copy(np.array([1.0], dtype=np.float64), dtype=None).dtype, np.float64)
+        self.assertEqual(atr._finite_copy([1, 2]).dtype, np.float32)
+
     def test_lufs_task_increases_with_signal_level(self):
         n = 2048
         sr = 48000

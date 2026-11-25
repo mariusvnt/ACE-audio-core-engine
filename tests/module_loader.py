@@ -1,7 +1,14 @@
 import importlib.util
+import os
 import sys
+import tempfile
 import types
 from pathlib import Path
+
+# Numba caches compiled kernels next to the source, keyed to the importing
+# module. Under the test package name those entries break the same checkout
+# when Blender loads it as the add-on, so tests cache elsewhere.
+os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(tempfile.gettempdir(), "ace_tests_numba_cache"))
 
 
 ROOT = Path(__file__).resolve().parents[1]
