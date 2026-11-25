@@ -44,6 +44,8 @@ Nodes
 - **Delta** nodes split the audio before analysis: frequency bands, mid/side,
   attack/release, the 12 notes of the chromagram, and percussive/harmonic
   components.
+  A split frequency can be driven by other nodes: Value, Integer, Math, Clamp,
+  Map Range, Scene Time and modifier inputs are followed.
 - **Stream** nodes measure the audio each frame: Loudness (RMS, LUFS or Peak,
   0..1 between -70 dB and 0 dB), Stereo (width or balance), Spectral
   (centroid, flux or zero-crossing rate), a stereo vector, onset and pitch. The

@@ -1,8 +1,9 @@
 """Blender property-group definitions for the AudioCore Engine add-on."""
 import bpy                                                                                                                          # type: ignore
+import os
+import re
 import time
 from . import utils
-from .utils import as_int as _as_int
 from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 
@@ -28,33 +29,6 @@ def _sync_live_flow_identifier(source_prop):
         source_prop.flow_identifier = compose_live_flow_identifier(source_prop)
 
 
-def _source_has_tempo_meter_selection(source_prop) -> bool:
-    """Return True when the source has a selected file or a valid live route."""
-    src_type = str(getattr(source_prop, "source_type", "") or "").upper()
-    if src_type == "FILE":
-        return bool(str(getattr(source_prop, "filepath", "") or "").strip())
-    if src_type != "LIVE":
-        return False
-
-    transport = str(getattr(source_prop, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE").upper()
-    if transport == "UDP":
-        try:
-            return int(getattr(source_prop, "live_udp_port", 0) or 0) > 0
-        except Exception as exc:
-            utils.note_swallowed("properties._source_has_tempo_meter_selection", exc)
-            return False
-
-    device = str(getattr(source_prop, "live_device_selector", "") or "").strip()
-    return bool(device) and device != "__MISSING__"
-
-
-def _sync_tempo_meter_panel_expansion(source_prop):
-    should_open = _source_has_tempo_meter_selection(source_prop)
-    with utils.logged_errors("properties._sync_tempo_meter_panel_expansion"):
-        if bool(getattr(source_prop, "tempo_meter_panel_open", False)) != bool(should_open):
-            source_prop.tempo_meter_panel_open = bool(should_open)
-
-
 def _clear_tempo_detection_state(source_prop):
     stale_keys = (
         "ace_tempo_detect_status",
@@ -70,9 +44,44 @@ def _clear_tempo_detection_state(source_prop):
                 del source_prop[key]
 
 
-def _on_live_routing_change(self, context):  # noqa: ARG001
+# Names the add-on gives a source before it points at anything.
+_AUTOMATIC_SOURCE_NAME = re.compile(r"(New Source|Audio Source( \d+)?)?(\.\d{3})?")
+
+
+def _adopt_source_name(source, wanted: str, scene) -> None:
+    """Give a still unnamed *source* the name *wanted*; a name the user chose is kept."""
+    wanted = str(wanted or "").strip()
+    old = str(source.name)
+    project = getattr(scene, "audiocore", None)
+    if not wanted or project is None or not _AUTOMATIC_SOURCE_NAME.fullmatch(old):
+        return
+    taken = {other.name for other in project.audio_sources if other.stable_id != source.stable_id}
+    name, number = wanted, 2
+    while name in taken:
+        name, number = f"{wanted} {number}", number + 1
+    source.name = name
+    # The Source nodes already placed carry the source's name as their title.
+    trees = list(bpy.data.node_groups) + [m.node_tree for m in bpy.data.materials if m.node_tree is not None]
+    for tree in trees:
+        for node in tree.nodes:
+            if source.stable_id and node.get("ace_source_id") == source.stable_id and node.label == old:
+                node.label = node.name = name
+
+
+def _adopt_live_name(source, scene) -> None:
+    if str(source.source_type) != "LIVE":
+        return
+    if str(source.live_transport) == "UDP":
+        _adopt_source_name(source, f"UDP {int(source.live_udp_port)}", scene)
+        return
+    device = str(source.live_device_selector or "")
+    _adopt_source_name(source, _LIVE_DEVICE_NAMES.get(device, ""), scene)
+
+
+def _on_live_routing_change(self, context):
     _sync_live_flow_identifier(self)
-    _sync_tempo_meter_panel_expansion(self)
+    with utils.logged_errors("properties._on_live_routing_change"):
+        _adopt_live_name(self, getattr(context, "scene", None))
 
 
 def _on_filepath_change(self, context):
@@ -81,7 +90,6 @@ def _on_filepath_change(self, context):
     error_msg = ""
     if fp and str(getattr(self, "source_type", "FILE")) == "FILE":
         with utils.logged_errors("properties._on_filepath_change"):
-            import os
             from .core.input.reception import AudioReception
             if not os.path.isfile(fp):
                 error_msg = "File not found"
@@ -90,7 +98,10 @@ def _on_filepath_change(self, context):
     with utils.logged_errors("properties._on_filepath_change#2"):
         self.ace_source_error = error_msg
     _clear_tempo_detection_state(self)
-    _sync_tempo_meter_panel_expansion(self)
+    if fp and not error_msg and str(self.source_type) == "FILE":
+        with utils.logged_errors("properties._on_filepath_change#3"):
+            stem = os.path.splitext(os.path.basename(fp.replace("\\", "/")))[0]
+            _adopt_source_name(self, stem, getattr(context, "scene", None))
     _on_engine_runtime_setting_change(self, context)
 
 
@@ -103,7 +114,8 @@ def _on_source_type_change(self, context):
         with utils.logged_errors("properties._on_source_type_change"):
             self.flow_identifier = ""
     _clear_tempo_detection_state(self)
-    _sync_tempo_meter_panel_expansion(self)
+    with utils.logged_errors("properties._on_source_type_change#2"):
+        _adopt_live_name(self, getattr(context, "scene", None))
     # Invalidate engine caches and force a recompile so the new source type
     # takes effect immediately (clears probe cache, stale parallel futures, etc.)
     _on_engine_runtime_setting_change(self, context)
@@ -119,19 +131,16 @@ def _on_engine_runtime_setting_change(self, context):  # noqa: ARG001
         engine.request_recompile(None)
 
 
-def _on_active_source_index_change(self, context):  # noqa: ARG001
-    sources = getattr(self, "audio_sources", None) or []
-    try:
-        idx = _as_int(getattr(self, "active_audio_source_index", None), -1)
-    except Exception as exc:
-        utils.note_swallowed("properties._on_active_source_index_change", exc)
-        idx = -1
-    if 0 <= idx < len(sources):
-        _sync_tempo_meter_panel_expansion(sources[idx])
+def _on_active_source_index_change(self, context):
+    with utils.logged_errors("properties._on_active_source_index_change"):
+        from .ui.panel.sync import _sync_ui_dummy_tree, follow_active_source
+        follow_active_source(self)
+        _sync_ui_dummy_tree(context, force=True)
 
 
 # Module-level cache for live-device enumeration.
 _LIVE_DEVICE_CACHE: list = []
+_LIVE_DEVICE_NAMES: dict[str, str] = {}  # selector value -> bare device name
 _LIVE_DEVICE_CACHE_TS: float = 0.0
 _LIVE_DEVICE_CACHE_INTERVAL: float = 2.0  # seconds between PortAudio rescans
 
@@ -160,6 +169,7 @@ def _refresh_live_device_cache() -> None:
             if in_ch <= 0:
                 continue
             name = str(dev.get("name", f"Device {idx}") or f"Device {idx}")
+            _LIVE_DEVICE_NAMES[str(idx)] = name
             host_name = ""
             try:
                 host_idx = int(dev.get("hostapi", -1))
@@ -181,6 +191,7 @@ def _refresh_live_device_cache() -> None:
                 if in_ch > 0 or out_ch <= 0:
                     continue
                 name = str(dev.get("name", f"Device {idx}") or f"Device {idx}")
+                _LIVE_DEVICE_NAMES[f"loopback:{idx}"] = name
                 host_name = ""
                 try:
                     host_idx = int(dev.get("hostapi", -1))
@@ -355,19 +366,19 @@ class ACEAudioSource(bpy.types.PropertyGroup):
 
     # These are fed into the Engine to pre-process the source signal
     enable_preprocessing: bpy.props.BoolProperty(                                                                                   # type: ignore
-        name="Enable Preprocessing",
+        name="Envelope",
         description="Apply source-side HPF/LPF filtering and signed attack/release smoothing before analysis",
         default=False,
     )
     envelope_attack: bpy.props.FloatProperty(                                                                                       # type: ignore
         name="Attack", 
         description="Smoothing time for rising signal magnitude (ms)", 
-        default=10.0, min=0.0, unit='TIME'
+        default=10.0, min=0.0
     )
     envelope_release: bpy.props.FloatProperty(                                                                                      # type: ignore
         name="Release", 
         description="Smoothing time for falling signal magnitude (ms)", 
-        default=100.0, min=0.0, unit='TIME'
+        default=100.0, min=0.0
     )
     freq_min: bpy.props.FloatProperty(                                                                                              # type: ignore
         name="Min Freq", 
@@ -391,13 +402,6 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         default=4, min=1, max=32,
         update=_mark_user_meter
     )
-    tempo_meter_panel_open: bpy.props.BoolProperty(                                                                                 # type: ignore
-        name="Tempo & Meter Expanded",
-        description="UI foldout state for Tempo & Meter settings.",
-        default=False,
-        options={'SKIP_SAVE'},
-    )
-
     live_status: bpy.props.StringProperty(                                                                                          # type: ignore
         name="Live Status",
         description="Status message for live inputs (warning when unavailable).",
@@ -422,11 +426,6 @@ class ACEAudioSource(bpy.types.PropertyGroup):
 class ACEEngineSettings(bpy.types.PropertyGroup):
     """Global configuration for the Audio Engine."""
 
-    auto_compile: bpy.props.BoolProperty(                                                                                           # type: ignore
-        name="Auto-Compile",
-        default=True,
-        description="Engine adapts in real-time to modifications made in the n-panel or in the GN editor."
-    )
     splitter_default_bands: bpy.props.IntProperty(                                                                                 # type: ignore
         name="Default Splitter Bands",
         description="Initial band count when adding a Frequency Splitter node",
@@ -510,12 +509,12 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
     )
 
 
-class ACEUIInstanceRow(bpy.types.PropertyGroup):
-    """One row of the Active ACE Instances tree: a source, or an object it drives."""
+class ACEUISourceRow(bpy.types.PropertyGroup):
+    """One row of the audio source list: a source, or an object it drives."""
     name: bpy.props.StringProperty(default="")                                                                                       # type: ignore
-    # "source", "instance", or "empty" (a source without connected instances).
+    # "source" or "instance".
     kind: bpy.props.StringProperty(default="instance")                                                                               # type: ignore
-    # Source stable_id for a source row, object name for an instance row.
+    # Source key (stable_id) for a source row, object name for an instance row.
     target: bpy.props.StringProperty(default="")                                                                                     # type: ignore
     detail: bpy.props.StringProperty(default="")                                                                                     # type: ignore
     icon: bpy.props.StringProperty(default="NONE")                                                                                   # type: ignore
@@ -526,9 +525,9 @@ class ACEUIInstanceRow(bpy.types.PropertyGroup):
     parent_row: bpy.props.IntProperty(default=-1)                                                                                    # type: ignore
 
 
-def _on_active_instance_row(self, context):
-    from .ui.panel.selection import select_instance_row
-    select_instance_row(self, context)
+def _on_active_source_row(self, context):
+    from .ui.panel.selection import select_source_row
+    select_source_row(self, context)
 
 
 class ACEProjectSettings(bpy.types.PropertyGroup):
@@ -541,9 +540,9 @@ class ACEProjectSettings(bpy.types.PropertyGroup):
         update=_on_active_source_index_change,
     )
     
-    # Active ACE Instances tree (rebuilt by the UI timer from the compiled graph).
-    instance_rows: bpy.props.CollectionProperty(type=ACEUIInstanceRow)                                                              # type: ignore
-    active_instance_row: bpy.props.IntProperty(default=0, update=_on_active_instance_row)                                          # type: ignore
+    # The audio source list: sources and, folded under each, the objects it drives.
+    source_rows: bpy.props.CollectionProperty(type=ACEUISourceRow)                                                                  # type: ignore
+    active_source_row: bpy.props.IntProperty(default=0, update=_on_active_source_row)                                              # type: ignore
 
     # Sub-Properties
     engine_settings: bpy.props.PointerProperty(type=ACEEngineSettings)                                                              # type: ignore
@@ -565,7 +564,7 @@ classes = (
     ACEUINode,
     ACEAudioSource,
     ACEEngineSettings,
-    ACEUIInstanceRow,
+    ACEUISourceRow,
     ACEProjectSettings,
 )
 
@@ -579,30 +578,55 @@ def _set_rename_name(self, value):
     set_rename_box_name(self, value)
 
 
+def _write_split_freq(node, index: int, hz: float) -> None:
+    from .nodes.split_freqs import set_split_freq
+    if set_split_freq(node, index, hz):
+        from .ui.n_panel_operators import sort_split_freqs_when_released
+        sort_split_freqs_when_released()
+
+
 def _split_freq_property(index: int):
     def get(node):
         from .nodes.split_freqs import get_split_freq
         return get_split_freq(node, index)
 
     def set_(node, value):
-        from .nodes.split_freqs import set_split_freq
-        if set_split_freq(node, index, value):
-            from .ui.n_panel_operators import sort_split_freqs_when_released
-            sort_split_freqs_when_released()
+        _write_split_freq(node, index, value)
 
     return bpy.props.FloatProperty(
         name=f"Split Freq {index + 1}",
         description="Frequency (Hz) where one band ends and the next begins. Sorted into ascending order when released",
-        min=0.0, max=20000.0, precision=0, get=get, set=set_,
+        min=0.0, max=20000.0, precision=0, step=100, get=get, set=set_,
     )
 
 
-# UI-only node properties: the splitter's sliders, which read and write its sockets (7 = 8 bands).
+def _split_position_property(index: int):
+    def get(node):
+        from .nodes.split_freqs import freq_to_position, get_split_freq
+        return freq_to_position(get_split_freq(node, index))
+
+    def set_(node, value):
+        from .nodes.split_freqs import position_to_freq
+        _write_split_freq(node, index, position_to_freq(value))
+
+    return bpy.props.FloatProperty(
+        name=f"Split Freq {index + 1}",
+        description="Logarithmic slider from 20 Hz (0) to 20 kHz (1)",
+        min=0.0, max=1.0, precision=2, get=get, set=set_,
+    )
+
+
+# UI-only node properties: each splitter socket's slider and Hz field (7 sockets = 8 bands).
 _NODE_PROPS = {f"ace_split_freq_{i + 1}": _split_freq_property(i) for i in range(7)}
+_NODE_PROPS.update({f"ace_split_pos_{i + 1}": _split_position_property(i) for i in range(7)})
 
 
-# UI-only window-manager properties: the rename box and the band strip's colour. The strip is
-# drawn disabled (half opacity over the panel), hence a colour brighter than it should look.
+def _get_band_fill(_self):
+    from .ui.panel.selection import band_fill_color
+    return band_fill_color()
+
+
+# UI-only window-manager properties: the rename box and the band strip's colour.
 _WM_PROPS = {
     "ace_rename_name": bpy.props.StringProperty(
         name="Name",
@@ -612,7 +636,7 @@ _WM_PROPS = {
     ),
     "ace_band_fill": bpy.props.FloatVectorProperty(
         name="Band", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
-        get=lambda _self: (0.55, 0.55, 0.55), set=lambda _self, _value: None,
+        get=_get_band_fill, set=lambda _self, _value: None,
     ),
 }
 

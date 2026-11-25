@@ -300,6 +300,26 @@ class TestParallelDSP(unittest.TestCase):
         self.assertTrue(np.isfinite(float(values["rms:0"])))
         self.assertGreater(float(values["rms:0"]), 0.0)
 
+    def test_worker_applies_per_frame_parameter_overrides(self):
+        n = 2048
+        t = np.arange(n, dtype=np.float32) / 48000.0
+        mono = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+        ir = self._specs_splitter_stream_graph_ir()
+        ir["nodes"]["split"]["parameters"] = {"in_1": 100.0}
+        job = {
+            "generation_id": 1099, "graph_uid": "driven_split_graph", "frame_id": 1, "block_size": n,
+            "sample_rate": 48000, "graph_ir_digest": "digest_driven", "graph_ir": ir,
+            "source_chunks": {"src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0}},
+        }
+        below = float(self.pds.evaluate_parallel_job(job)["values"]["rms:0"])
+        # Same graph, no new IR: the split frequency now sits above the tone.
+        job.update(frame_id=2, param_overrides={"split": {"in_1": 5000.0}})
+        job.pop("graph_ir")
+        above = float(self.pds.evaluate_parallel_job(job)["values"]["rms:0"])
+        # Loudness scale (0..1): only spectral leakage reaches the low band, then the whole tone.
+        self.assertLess(below, 0.7)
+        self.assertGreater(above, 0.9)
+
     def _job_for(self, graph_ir, digest):
         n = 512
         mono = np.zeros(n, dtype=np.float32)

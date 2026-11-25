@@ -20,6 +20,7 @@ class ACEAudioGraph:
         self.parallel_offload_attr_keys: List[str] = []
         self.parallel_output_shards: List[List[str]] = []
         self.parallel_local_attr_keys: List[str] = []
+        self.param_overrides: Dict[str, Dict[str, Any]] = {}  # per-frame values for the workers
         self.manual_preview_task_ids: List[str] = []
         self.auto_preview_task_ids: List[str] = []
         self.auto_preview_passthrough_specs: List[Tuple[str, int]] = []

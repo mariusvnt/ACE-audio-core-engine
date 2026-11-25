@@ -15,6 +15,7 @@ from ...core.abstract_tree import (
 )
 from ...core.id_management import ACEIdManager
 from ... import utils
+from ..split_freqs import capture_driven_splits
 from ..frontend import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _tree_pointer
 from .factory import ACEDummyNodeFactory
 from .identity import NodeIdentity
@@ -511,6 +512,10 @@ class ACEDummyTreeReader(NodeIdentity):
         params["frontend_node_index"] = int(
             self._node_order_by_ptr.get(self._node_pointer(bl_node), 0)
         )
+
+        if cat == 'delta' and typ == 'frequency_splitter':
+            with utils.logged_errors("reader.ACEDummyTreeReader._parse_node#driven"):
+                capture_driven_splits(bl_node, params)
 
         # Build Outputs
         outputs = []

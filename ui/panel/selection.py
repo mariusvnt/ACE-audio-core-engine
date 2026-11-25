@@ -6,8 +6,9 @@ from ...core.engine.engine import ACEAudioEngine
 from ... import utils
 from ...vars import ACE_NODES, node_modes, resolve_node_mode
 from .splitter import _splitter_display_bounds, splitter_band_widths
+from ...nodes.split_freqs import split_freq_states
 from .helpers import _describe_node, _find_active_node_tree, _find_tree_node_by_ace_id
-from .sync import _resolve_ui_list_selected_node, is_setting_active_row, note_editor_active, reveal_operator
+from .sync import _resolve_ui_list_selected_node, is_setting_active_row, note_editor_active, reveal_operator, is_setting_source_row, source_for_row
 from ...nodes.modes import automatic_node_label
 
 
@@ -128,19 +129,18 @@ def select_row_operator(active_source, _context) -> None:
             focus_operator(bpy_context(), item.segments[-1].node_id, frame=False)
 
 
-def select_instance_row(project, context) -> None:
-    """Update of ``active_instance_row``."""
-    idx = int(project.active_instance_row)
-    if not 0 <= idx < len(project.instance_rows):
+def select_source_row(project, context) -> None:
+    """Update of ``active_source_row``: a source becomes active; an instance also selects its object."""
+    if is_setting_source_row():
         return
-    item = project.instance_rows[idx]
-    if item.kind == "source":
-        for src_idx, src in enumerate(project.audio_sources):
-            if str(getattr(src, "stable_id", "") or "") == item.target:
-                if project.active_audio_source_index != src_idx:
-                    project.active_audio_source_index = src_idx
-                return
+    idx = int(project.active_source_row)
+    if not 0 <= idx < len(project.source_rows):
         return
+    item = project.source_rows[idx]
+    owner = project.source_rows[item.parent_row] if item.parent_row >= 0 else item
+    src_idx, _source = source_for_row(project, owner)
+    if src_idx >= 0 and project.active_audio_source_index != src_idx:
+        project.active_audio_source_index = src_idx
     if item.kind != "instance":
         return
     import bpy  # type: ignore
@@ -245,15 +245,36 @@ def _draw_selected_operator(layout, context) -> None:
         _draw_selected_node_operator_settings(layout, context)
 
 
-_BAND_GAP_PX = 2.5  # width of the gap at each cut, before UI scale
+# Gap at each cut, before UI scale. Blender truncates widths to whole pixels: 1 px at scale 1.
+_BAND_GAP_PX = 1.5
+
+# Blender's colour for bundle sockets and their links.
+_BUNDLE_SOCKET_COLOR = (0.30, 0.50, 0.50)
+
+_band_fill: tuple[float, float, float] = _BUNDLE_SOCKET_COLOR
+
+
+def band_fill_color() -> tuple[float, float, float]:
+    return _band_fill
+
+
+def _match_band_fill(context, shown: tuple) -> None:
+    """Pick the swatch colour that looks like *shown* once drawn disabled, at half opacity over the box."""
+    global _band_fill
+    ui = context.preferences.themes[0].user_interface
+    back, box = ui.panel_back, ui.wcol_box.inner
+    under = [back[i] * (1.0 - box[3]) + box[i] * box[3] for i in range(3)]
+    _band_fill = tuple(min(max(2.0 * shown[i] - under[i], 0.0), 1.0) for i in range(3))
 
 
 def _draw_band_strip(layout, context, widths: list[float], low_hz: float, high_hz: float) -> None:
-    """Bands as grey blocks sized on the log-frequency axis, with a gap at each cut."""
+    """Bands as blocks in the audio socket colour, sized on the log-frequency axis, with a gap at each cut."""
     wm = context.window_manager
+    _match_band_fill(context, _BUNDLE_SOCKET_COLOR)
     # The gap is a fixed number of pixels, so it stays visible in a narrow sidebar.
-    strip_px = max(context.region.width - 40, 100) if context.region else 300
-    gap = min(_BAND_GAP_PX * context.preferences.system.ui_scale / strip_px, 0.02)
+    scale_factor = context.preferences.system.ui_scale or 1.0  # 0 without a window
+    strip_px = max(context.region.width - 50 * scale_factor, 100) if context.region else 300
+    gap = min(_BAND_GAP_PX * scale_factor / strip_px, 0.02)
     band_share = max(1.0 - gap * max(len(widths) - 1, 0), 0.0)
     pieces: list[tuple[bool, float]] = []  # (is a band, share of the strip)
     for idx, width in enumerate(widths):
@@ -330,13 +351,20 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         if split_sockets:
             _draw_band_strip(box, context, splitter_band_widths(node, context.scene), low_hz, high_hz)
             box.operator("ace.even_splitter_freqs", text="Distribute horizontally", icon="SNAP_MIDPOINT")
-            for idx, sock in enumerate(split_sockets):
-                sub = box.row(align=True)
-                sub.label(text=sock.name)
-                if sock.is_linked:
-                    sub.label(text="Linked", icon="LINKED")
-                else:
-                    sub.prop(node, f"ace_split_freq_{idx + 1}", text="Hz", slider=True)
+            for idx, (sock, value, state) in enumerate(split_freq_states(node, context.scene)):
+                split = box.split(factor=0.28)
+                split.label(text=sock.name)
+                if state != "own":
+                    text = {
+                        "linked": f"Linked: {value:.0f} Hz" if value is not None else "",
+                        "unreadable": f"Link not readable, uses {value:.0f} Hz" if value is not None else "",
+                        "audio": "Linked to audio",
+                    }[state]
+                    split.label(text=text, icon="LINKED")
+                    continue
+                fields = split.split(factor=0.65, align=True)
+                fields.prop(node, f"ace_split_pos_{idx + 1}", text="", slider=True)
+                fields.prop(node, f"ace_split_freq_{idx + 1}", text="Hz")
 
     if parsed.get("category") == "utilities" and parsed.get("type") == "audio_math":
         drew_settings = True
@@ -401,13 +429,17 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
     return drew_settings
 
 
-def _draw_selected_node_description(layout, description: str):
+def _draw_selected_node_description(layout, context, description: str):
     desc = str(description or "").strip()
     if not desc:
         return
-    wrapped = textwrap.wrap(desc, width=42) or [desc]
-    for chunk in wrapped:
-        layout.label(text=chunk)
+    scale_factor = context.preferences.system.ui_scale or 1.0  # 0 without a window
+    width_px = (context.region.width if context.region else 300) - 40 * scale_factor
+    # Labels are a full widget row tall: a tight, squashed column reads as one paragraph.
+    column = layout.column(align=True)
+    column.scale_y = 0.7
+    for line in textwrap.wrap(desc, width=max(24, int(width_px / (6.5 * scale_factor)))) or [desc]:
+        column.label(text=line)
 
 
 def _draw_bake_controls(layout, context):

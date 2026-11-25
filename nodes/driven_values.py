@@ -1,0 +1,234 @@
+"""Values that reach an operator's input through a link.
+
+Blender gives Python no access to the value travelling through a link, so it is computed here
+from the nodes feeding it: Value, Integer, Math, Clamp, Map Range, Scene Time, reroutes and the
+modifier's own inputs. Anything else is unknown.
+"""
+
+import math
+import bpy  # type: ignore
+from .. import utils
+
+_MAX_DEPTH = 64
+
+
+class _Unknown(Exception):
+    """The chain holds something that cannot be computed here."""
+
+
+def linked_value(socket, scene=None) -> float | None:
+    """The value reaching input *socket* (its own value when unlinked), or None if it cannot be computed."""
+    try:
+        value = _input_value(socket, scene, 0)
+    except _Unknown:
+        return None
+    except Exception as exc:  # noqa: BLE001 boundary: a node layout we do not know is just unknown
+        utils.note_swallowed("driven_values.linked_value", exc)
+        return None
+    return value if math.isfinite(value) else None
+
+
+def fed_by_audio(socket) -> bool:
+    """True when an ACE node is somewhere upstream of *socket*."""
+    pending, seen = [socket], set()
+    while pending:
+        for link in pending.pop().links:
+            node = link.from_node
+            if node.as_pointer() in seen:
+                continue
+            seen.add(node.as_pointer())
+            if node.get("ace_id"):
+                return True
+            pending.extend(sock for sock in node.inputs if sock.is_linked)
+    return False
+
+
+def node_ref(node) -> tuple[str, str, str] | None:
+    """(owner kind, owner name, node name): finds *node* again without holding a reference to it."""
+    tree = node.id_data
+    if bpy.data.node_groups.get(tree.name) == tree:
+        return ("group", tree.name, node.name)
+    for material in bpy.data.materials:
+        if material.node_tree == tree:
+            return ("material", material.name, node.name)
+    return None
+
+
+def node_from_ref(ref):
+    if not ref:
+        return None
+    kind, owner_name, node_name = ref
+    if kind == "group":
+        tree = bpy.data.node_groups.get(owner_name)
+    else:
+        material = bpy.data.materials.get(owner_name)
+        tree = material.node_tree if material is not None else None
+    return tree.nodes.get(node_name) if tree is not None else None
+
+
+def _input_value(socket, scene, depth: int) -> float:
+    if depth > _MAX_DEPTH:
+        raise _Unknown
+    link = next((link for link in socket.links if not link.is_muted), None)
+    if link is None:
+        return float(socket.default_value)
+    return _output_value(link.from_node, link.from_socket, scene, depth + 1)
+
+
+def _output_value(node, output, scene, depth: int) -> float:
+    if node.mute:
+        raise _Unknown
+    kind = node.bl_idname
+
+    def arg(index: int) -> float:
+        return _input_value(node.inputs[index], scene, depth)
+
+    if kind == "NodeReroute":
+        if not node.inputs[0].is_linked:
+            raise _Unknown
+        return arg(0)
+    if kind == "ShaderNodeValue":
+        return float(node.outputs[0].default_value)
+    if kind == "FunctionNodeInputInt":
+        return float(node.integer)
+    if kind == "ShaderNodeMath":
+        arity, function = _MATH[node.operation]
+        result = function(*[arg(i) for i in range(arity)])
+        return min(max(result, 0.0), 1.0) if node.use_clamp else result
+    if kind == "ShaderNodeClamp":
+        value, low, high = arg(0), arg(1), arg(2)
+        if node.clamp_type == "RANGE" and low > high:
+            low, high = high, low
+        return min(max(value, low), high)
+    if kind == "ShaderNodeMapRange":
+        return _map_range(node, arg)
+    if kind == "GeometryNodeInputSceneTime":
+        scene = scene or bpy.context.scene
+        frame = scene.frame_current + scene.frame_subframe
+        if output.identifier == "Frame":
+            return float(frame)
+        return float(frame / (scene.render.fps / scene.render.fps_base))
+    if kind == "NodeGroupInput":
+        return _modifier_input(node.id_data, output.identifier, scene)
+    raise _Unknown
+
+
+def _modifier_input(tree, identifier: str, scene) -> float:
+    """The value a modifier gives the tree's input. Several objects may: the active one wins."""
+    objects = list(scene.objects if scene is not None else bpy.data.objects)
+    active = getattr(getattr(bpy.context, "view_layer", None), "objects", None)
+    active = getattr(active, "active", None)
+    if active is not None:
+        objects.insert(0, active)
+    for obj in objects:
+        for modifier in obj.modifiers:
+            if modifier.type != "NODES" or modifier.node_group != tree:
+                continue
+            entry = getattr(modifier.properties.inputs, identifier, None)
+            if entry is None or getattr(entry, "type", "VALUE") != "VALUE":
+                raise _Unknown
+            return float(entry.value)
+    raise _Unknown  # a nested group or a shader tree: its inputs have no single value
+
+
+def _divide(a: float, b: float) -> float:
+    return a / b if b != 0.0 else 0.0
+
+
+def _power(a: float, b: float) -> float:
+    if a < 0.0 and b != math.floor(b):
+        return 0.0
+    if a == 0.0 and b < 0.0:
+        return 0.0
+    return math.pow(a, b)
+
+
+def _log(a: float, base: float) -> float:
+    if a <= 0.0 or base <= 0.0:
+        return 0.0
+    return _divide(math.log(a), math.log(base))
+
+
+def _wrap(value: float, high: float, low: float) -> float:
+    span = high - low
+    return value - span * math.floor((value - low) / span) if span != 0.0 else low
+
+
+def _pingpong(a: float, scale: float) -> float:
+    if scale == 0.0:
+        return 0.0
+    turn = (a - scale) / (scale * 2.0)
+    return abs((turn - math.floor(turn)) * scale * 2.0 - scale)
+
+
+def _smooth_min(a: float, b: float, distance: float) -> float:
+    if distance == 0.0:
+        return min(a, b)
+    h = max(distance - abs(a - b), 0.0) / distance
+    return min(a, b) - h * h * h * distance / 6.0
+
+
+# Blender's Math node: operation -> (inputs used, function).
+_MATH = {
+    "ADD": (2, lambda a, b: a + b),
+    "SUBTRACT": (2, lambda a, b: a - b),
+    "MULTIPLY": (2, lambda a, b: a * b),
+    "DIVIDE": (2, _divide),
+    "MULTIPLY_ADD": (3, lambda a, b, c: a * b + c),
+    "POWER": (2, _power),
+    "LOGARITHM": (2, _log),
+    "SQRT": (1, lambda a: math.sqrt(a) if a > 0.0 else 0.0),
+    "INVERSE_SQRT": (1, lambda a: 1.0 / math.sqrt(a) if a > 0.0 else 0.0),
+    "ABSOLUTE": (1, abs),
+    "EXPONENT": (1, math.exp),
+    "MINIMUM": (2, min),
+    "MAXIMUM": (2, max),
+    "LESS_THAN": (2, lambda a, b: float(a < b)),
+    "GREATER_THAN": (2, lambda a, b: float(a > b)),
+    "SIGN": (1, lambda a: float((a > 0.0) - (a < 0.0))),
+    "COMPARE": (3, lambda a, b, c: float(abs(a - b) <= max(c, 1.1920929e-07))),
+    "SMOOTH_MIN": (3, _smooth_min),
+    "SMOOTH_MAX": (3, lambda a, b, c: -_smooth_min(-a, -b, c)),
+    "ROUND": (1, lambda a: float(math.floor(a + 0.5))),
+    "FLOOR": (1, lambda a: float(math.floor(a))),
+    "CEIL": (1, lambda a: float(math.ceil(a))),
+    "TRUNC": (1, lambda a: float(math.trunc(a))),
+    "FRACT": (1, lambda a: a - math.floor(a)),
+    "MODULO": (2, lambda a, b: math.fmod(a, b) if b != 0.0 else 0.0),
+    "FLOORED_MODULO": (2, lambda a, b: a - math.floor(a / b) * b if b != 0.0 else 0.0),
+    "WRAP": (3, _wrap),
+    "SNAP": (2, lambda a, b: math.floor(_divide(a, b)) * b),
+    "PINGPONG": (2, _pingpong),
+    "SINE": (1, math.sin),
+    "COSINE": (1, math.cos),
+    "TANGENT": (1, math.tan),
+    "ARCSINE": (1, lambda a: math.asin(min(max(a, -1.0), 1.0))),
+    "ARCCOSINE": (1, lambda a: math.acos(min(max(a, -1.0), 1.0))),
+    "ARCTANGENT": (1, math.atan),
+    "ARCTAN2": (2, math.atan2),
+    "SINH": (1, math.sinh),
+    "COSH": (1, math.cosh),
+    "TANH": (1, math.tanh),
+    "RADIANS": (1, math.radians),
+    "DEGREES": (1, math.degrees),
+}
+
+
+def _map_range(node, arg) -> float:
+    if node.data_type != "FLOAT":
+        raise _Unknown
+    value, from_min, from_max, to_min, to_max = (arg(i) for i in range(5))
+    if from_max == from_min:
+        return 0.0
+    factor = (value - from_min) / (from_max - from_min)
+    mode = node.interpolation_type
+    if mode == "STEPPED":
+        steps = arg(5)
+        factor = _divide(math.floor(factor * (steps + 1.0)), steps)
+    elif mode in {"SMOOTHSTEP", "SMOOTHERSTEP"}:
+        t = min(max(factor, 0.0), 1.0)
+        factor = t * t * (3.0 - 2.0 * t) if mode == "SMOOTHSTEP" else t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+    result = to_min + factor * (to_max - to_min)
+    if node.clamp and mode in {"LINEAR", "STEPPED"}:
+        result = min(max(result, min(to_min, to_max)), max(to_min, to_max))
+    return result

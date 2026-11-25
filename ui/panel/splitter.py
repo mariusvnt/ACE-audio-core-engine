@@ -2,6 +2,7 @@
 
 import bpy  # type: ignore
 from ... import utils
+from ...nodes.split_freqs import split_freq_states
 
 
 _SPLITTER_LOW_HZ = 20.0
@@ -40,13 +41,16 @@ def _splitter_display_bounds(scene) -> tuple[float, float]:
 
 
 def splitter_band_widths(node, scene) -> list[float]:
-    """Width of each band on the log-frequency axis (sums to 1), from the cut frequencies."""
+    """Width of each band on the log-frequency axis (sums to 1), from the cut frequencies.
+
+    A cut driven by an audio value is left out: it is not known here.
+    """
     low_hz, high_hz = _splitter_display_bounds(scene)
-    cuts = []
-    for sock in list(getattr(node, "inputs", []))[1:]:
-        value = utils.as_float(getattr(sock, "default_value", None), float("nan"))
-        if value == value:
-            cuts.append(min(max(_splitter_hz_to_norm(value, low_hz=low_hz, high_hz=high_hz), 0.0), 1.0))
+    cuts = [
+        min(max(_splitter_hz_to_norm(value, low_hz=low_hz, high_hz=high_hz), 0.0), 1.0)
+        for _sock, value, _state in split_freq_states(node, scene)
+        if value is not None
+    ]
     edges = [0.0] + sorted(cuts) + [1.0]
     return [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
 

@@ -11,19 +11,6 @@ from . import sync
 from .sync import _engine_latency_metrics, _ui_has_pending_engine_changes, _ui_load_post, _ui_sync_timer
 
 
-class ACE_UL_source_list(bpy.types.UIList):
-    """UIList row renderer for the audio source collection.
-
-    Shows a status icon (ERROR when proxy is missing, FILE for file sources,
-    SPEAKER for live sources) followed by the editable source name.
-    """
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        # Status icon policy is shared with the Active ACE Instances panel.
-        icon = _source_list_icon(item)
-        layout.prop(item, "name", text="", emboss=False, icon=icon)
-
-
 class ACE_UL_dummy_tree(bpy.types.UIList):
     """Active Operators drawn as a folded tree.
 
@@ -86,36 +73,36 @@ class ACE_UL_dummy_tree(bpy.types.UIList):
         return [self.bitflag_filter_item if visible else 0 for visible in shown], []
 
 
-class ACE_UL_instances(bpy.types.UIList):
-    """Active ACE Instances drawn as a tree: sources, and the objects each one drives.
+class ACE_UL_source_list(bpy.types.UIList):
+    """Audio sources, each folding open onto the objects it drives (closed by default).
 
-    Clicking a source makes it the active source; clicking an object selects it.
+    A source row shows a status icon (ERROR when its proxy is missing, FILE or SPEAKER) and its
+    editable name; clicking it makes it the active source. Clicking an object selects it.
     """
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
-        for _ in range(int(item.depth)):
-            row.label(text="", icon='BLANK1')
-        if item.has_children:
-            folded = item.branch_key in sync.instance_collapsed_keys()
-            op = row.operator(
-                "ace.toggle_operator_branch",
-                text="",
-                icon='DISCLOSURE_TRI_RIGHT' if folded else 'DISCLOSURE_TRI_DOWN',
-                emboss=False,
-            )
-            op.branch_key = item.branch_key
-            op.list_id = "instances"
-        elif item.depth:
-            row.label(text="", icon='BLANK1')
-        if item.kind == "empty":
-            sub = row.row()
-            sub.enabled = False
-            sub.label(text=item.name)
+        if item.kind == "source":
+            if item.has_children:
+                opened = item.branch_key in sync.expanded_source_keys()
+                op = row.operator(
+                    "ace.toggle_operator_branch",
+                    text="",
+                    icon='DISCLOSURE_TRI_DOWN' if opened else 'DISCLOSURE_TRI_RIGHT',
+                    emboss=False,
+                )
+                op.branch_key = item.branch_key
+                op.list_id = "sources"
+            else:
+                row.label(text="", icon='BLANK1')
+            _index, source = sync.source_for_row(data, item)
+            if source is None:
+                row.label(text=item.name)
+                return
+            row.prop(source, "name", text="", emboss=False, icon=_source_list_icon(source))
             return
-        if not item.detail:
-            row.label(text=item.name, icon=item.icon or 'NONE')
-            return
+        row.label(text="", icon='BLANK1')
+        row.label(text="", icon='BLANK1')
         split = row.split(factor=0.62, align=True)
         split.label(text=item.name, icon=item.icon or 'NONE')
         right = split.row(align=True)
@@ -137,7 +124,8 @@ class ACE_UL_instances(bpy.types.UIList):
             )
             for it in items
         ]
-        shown = operator_tree.visible_rows(rows, sync.instance_collapsed_keys(), self.filter_name)
+        closed = {row.branch_key for row in rows if row.has_children} - sync.expanded_source_keys()
+        shown = operator_tree.visible_rows(rows, closed, self.filter_name)
         return [self.bitflag_filter_item if visible else 0 for visible in shown], []
 
 
@@ -226,16 +214,13 @@ class ACE_PT_project_settings(bpy.types.Panel):
         return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
 
     def draw(self, context):
-        ace = context.scene.audiocore
         layout = self.layout
-        eng_settings = getattr(ace, "engine_settings", None)
         engine = ACEAudioEngine.get_instance(context.scene)
         tree = _find_active_node_tree(context)
         pending_changes = _ui_has_pending_engine_changes(context.scene, tree)
-        auto_compile_enabled = bool(getattr(eng_settings, "auto_compile", True)) if eng_settings else True
         is_playing = bool(engine and ACEAudioEngine._is_animation_playing())
         is_compiling = bool(engine and getattr(getattr(engine, "frontends", None), "_is_compiling", False))
-        if (not is_compiling) and auto_compile_enabled and pending_changes:
+        if (not is_compiling) and pending_changes:
             is_compiling = True
         has_runtime_graph = bool(engine and getattr(engine, "graphs", None))
         if is_compiling:
@@ -251,24 +236,13 @@ class ACE_PT_project_settings(bpy.types.Panel):
         status_row = layout.row(align=True)
         status_row.label(text=status_text, icon=status_icon)
 
-        if not auto_compile_enabled:
-            action_row = layout.row()
-            action_row.enabled = tree is not None
-            action_row.operator(
-                "audiocore.rebuild_engine",
-                icon="FILE_REFRESH",
-                text="Refresh Engine",
-            )
-
         latency_metrics = _engine_latency_metrics(context)
         render = getattr(context.scene, "render", None)
         raw_fps = float(getattr(render, "fps", 24.0) or 24.0)
         fps_base = float(getattr(render, "fps_base", 1.0) or 1.0)
         scene_fps = raw_fps / fps_base if fps_base > 0.0 else raw_fps
         frame_budget_ms = 1000.0 / max(scene_fps, 1e-6)
-        performance_box = layout.box()
-        performance_box.label(text="Engine Performance", icon="DRIVER")
-        performance_row = performance_box.row(align=True)
+        performance_row = layout.row(align=True)
         current_col = performance_row.column(align=True)
         current_col.label(text="Current Latency")
         current_col.label(text=f"{float(latency_metrics['total_latency_ms']):.2f} ms")
@@ -301,7 +275,7 @@ class ACE_PT_sub_latency_measures(bpy.types.Panel):
 
 
 class ACE_PT_sub_engine_settings(bpy.types.Panel):
-    """Sub-panel for engine configuration: sample rate, preprocessing, and compile mode."""
+    """Sub-panel for engine configuration: working sample rate and manual reset."""
 
     bl_label = "Engine Settings"
     bl_idname = "ACE_PT_sub_engine_settings"
@@ -317,31 +291,16 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
         return bool(ace and getattr(ace, "engine_settings", None)) and not _ui_is_blocked(context)
 
     def draw(self, context):
-        from ...utils import _get_active_source
-
         eng_settings = getattr(getattr(context.scene, "audiocore", None), "engine_settings", None)
         if eng_settings is None:
             return
         layout = self.layout
-        _, src = _get_active_source(context)
         sample_rate_row = layout.row(align=True)
         sample_rate_row.label(text="Sample Rate")
         sample_rate_buttons = sample_rate_row.row(align=True)
         for option in ("22050", "44100", "48000", "96000"):
             sample_rate_buttons.prop_enum(eng_settings, "ace_file_working_sample_rate", option)
-        if src:
-            layout.prop(src, "enable_preprocessing", text="Enable Source Preprocessing")
-            split = layout.split(factor=0.5, align=True)
-            split.enabled = bool(getattr(src, "enable_preprocessing", False))
-
-            left = split.column(align=True)
-            left.prop(src, "freq_min", text="Min Hz")
-            left.prop(src, "envelope_attack", text="Attack (ms)")
-
-            right = split.column(align=True)
-            right.prop(src, "freq_max", text="Max Hz")
-            right.prop(src, "envelope_release", text="Release (ms)")
-        layout.prop(eng_settings, "auto_compile", text="Auto-Compile Graph Changes")
+        layout.operator("audiocore.reset_engine", icon="FILE_REFRESH")
 
 
 class ACE_PT_audio_sources(bpy.types.Panel):
@@ -365,11 +324,12 @@ class ACE_PT_audio_sources(bpy.types.Panel):
 
         row = layout.row()
         row.template_list(
-            "ACE_UL_source_list", "", 
-            ace, "audio_sources", 
-            ace, "active_audio_source_index"
+            "ACE_UL_source_list", "",
+            ace, "source_rows",
+            ace, "active_source_row",
+            rows=4,
         )
-        
+
         col = row.column(align=True)
         col.operator("audiocore.add_audio_source", icon='ADD', text="")
         col.operator("audiocore.remove_audio_source", icon='REMOVE', text="")
@@ -413,7 +373,7 @@ class ACE_PT_audio_sources(bpy.types.Panel):
             warn_parallel = layout.row()
             warn_parallel.alert = True
             warn_parallel.label(
-                text="Parallel DSP disabled (restart limit reached). Re-compile to restore.",
+                text="Parallel DSP disabled (restart limit reached). Reset the engine to restore.",
                 icon="ERROR",
             )
 
@@ -424,37 +384,25 @@ class ACE_PT_audio_sources(bpy.types.Panel):
             err_row.alert = True
             err_row.label(text=file_error, icon="ERROR")
 
-        # Analysis Data — only shown when the source is actually linked to audio.
-        src_type = str(getattr(active_source, "source_type", "") or "").upper()
-        filepath = str(getattr(active_source, "filepath", "") or "").strip()
-        transport = str(getattr(active_source, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE")
-        device_sel = str(getattr(active_source, "live_device_selector", "") or "").strip()
-        source_configured = (
-            (src_type == "FILE" and bool(filepath))
-            or (src_type == "LIVE" and (transport == "UDP" or bool(device_sel)))
-        )
-        if source_configured:
-            col = layout.column(align=True)
-            dur = float(getattr(active_source, "duration", 0.0) or 0.0)
-            rate = _source_display_sample_rate(active_source)
-            if rate > 0:
-                col.label(text=f"Sample Rate: {rate}Hz")
-            if dur > 0.0:
-                col.label(text=f"Duration: {dur:.2f}s")
-            if rate <= 0 and dur <= 0.0:
-                col.label(text="Metadata unavailable for the selected source.", icon="INFO")
 
 
-class ACE_PT_sub_tempo_meter(bpy.types.Panel):
-    """Sub-panel for per-source BPM and beats-per-bar settings."""
+def _source_is_configured(source) -> bool:
+    """True once the source points at audio: a file, or a live route."""
+    src_type = str(getattr(source, "source_type", "") or "").upper()
+    if src_type == "FILE":
+        return bool(str(getattr(source, "filepath", "") or "").strip())
+    transport = str(getattr(source, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE")
+    device = str(getattr(source, "live_device_selector", "") or "").strip()
+    return src_type == "LIVE" and (transport == "UDP" or bool(device))
 
-    bl_label = "Tempo & Meter"
-    bl_idname = "ACE_PT_sub_tempo_meter"
+
+class _ACESourceSubPanel:
+    """A closed-by-default sub-panel about the active audio source."""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "AudioCore Engine"
     bl_parent_id = "ACE_PT_audio_sources"
-    bl_options = {'HIDE_HEADER'}
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -462,23 +410,47 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
         _, active_source = _get_active_source(context)
         return active_source is not None and not _ui_is_blocked(context)
 
+
+class ACE_PT_sub_source_info(_ACESourceSubPanel, bpy.types.Panel):
+    """Sample rate and duration of the active source."""
+
+    bl_label = "Info"
+    bl_idname = "ACE_PT_sub_source_info"
+    bl_order = 0
+
+    def draw(self, context):
+        from ...utils import _get_active_source
+        layout = self.layout
+        _, source = _get_active_source(context)
+        if source is None or not _source_is_configured(source):
+            layout.label(text="No audio selected for this source.", icon="INFO")
+            return
+        col = layout.column(align=True)
+        duration = float(getattr(source, "duration", 0.0) or 0.0)
+        rate = _source_display_sample_rate(source)
+        if rate > 0:
+            col.label(text=f"Sample Rate: {rate}Hz")
+        if duration > 0.0:
+            col.label(text=f"Duration: {duration:.2f}s")
+        if rate <= 0 and duration <= 0.0:
+            col.label(text="Metadata unavailable for the selected source.", icon="INFO")
+
+
+class ACE_PT_sub_tempo_meter(_ACESourceSubPanel, bpy.types.Panel):
+    """Sub-panel for per-source BPM and beats-per-bar settings."""
+
+    bl_label = "Tempo & Meter"
+    bl_idname = "ACE_PT_sub_tempo_meter"
+    bl_order = 1
+
     def draw(self, context):
         from ...utils import _get_active_source
         layout = self.layout
         _, src = _get_active_source(context)
-        
+
         if not src:
             layout.label(text="No Source Selected")
             return
-
-        panel_prop = getattr(layout, "panel_prop", None)
-        if callable(panel_prop):
-            with utils.logged_errors("panels.ACE_PT_sub_tempo_meter.draw"):
-                header, panel = panel_prop(src, "tempo_meter_panel_open")
-                header.label(text=self.bl_label)
-                if panel is None:
-                    return
-                layout = panel
 
         trigger_row = layout.row()
         trigger_row.enabled = bool(
@@ -510,6 +482,34 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
         row = layout.row(align=True)
         row.prop(src, "bpm", text="BPM")
         row.prop(src, "beats_per_bar", text="Beats/Bar")
+
+
+class ACE_PT_sub_envelope(_ACESourceSubPanel, bpy.types.Panel):
+    """Per-source preprocessing before analysis: attack/release envelope and frequency range."""
+
+    bl_label = "Envelope"
+    bl_idname = "ACE_PT_sub_envelope"
+    bl_order = 2
+
+    def draw_header(self, context):
+        from ...utils import _get_active_source
+        _, src = _get_active_source(context)
+        if src:
+            self.layout.prop(src, "enable_preprocessing", text="")
+
+    def draw(self, context):
+        from ...utils import _get_active_source
+        _, src = _get_active_source(context)
+        if not src:
+            return
+        col = self.layout.column()
+        col.active = bool(src.enable_preprocessing)
+        times = col.column(align=True)
+        times.prop(src, "envelope_attack", text="Attack (ms)")
+        times.prop(src, "envelope_release", text="Release (ms)")
+        freqs = col.column(align=True)
+        freqs.prop(src, "freq_min", text="Min Hz")
+        freqs.prop(src, "freq_max", text="Max Hz")
 
 
 class ACE_PT_information_streams(bpy.types.Panel):
@@ -561,7 +561,7 @@ class ACE_PT_information_streams_description(bpy.types.Panel):
     def draw(self, context):
         description = _selected_node_description(context)
         if description:
-            _draw_selected_node_description(self.layout, description)
+            _draw_selected_node_description(self.layout, context, description)
 
 
 class ACE_PT_capture_influx(bpy.types.Panel):
@@ -584,42 +584,9 @@ class ACE_PT_capture_influx(bpy.types.Panel):
         _draw_bake_controls(layout, context)
 
 
-class ACE_PT_stream_confluence(bpy.types.Panel):
-    """Read-only ledger of compiled source-to-frontend routing."""
-
-    bl_label = "Active ACE Instances"
-    bl_idname = "ACE_PT_stream_confluence"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "AudioCore Engine"
-    bl_order = 5
-
-    @classmethod
-    def poll(cls, context):
-        return (
-            hasattr(context.scene, "audiocore")
-            and not _ui_is_blocked(context)
-            and sync._has_ace_nodes_in_trees
-        )
-
-    def draw(self, context):
-        layout = self.layout
-        ace = context.scene.audiocore
-        if not len(ace.instance_rows):
-            layout.label(text="Engine offline or no sources found.")
-            return
-        layout.template_list(
-            "ACE_UL_instances", "",
-            ace, "instance_rows",
-            ace, "active_instance_row",
-            rows=4,
-        )
-
-
 classes = (
     ACE_UL_source_list,
     ACE_UL_dummy_tree,
-    ACE_UL_instances,
     ACE_PT_rename_operator,
     ACE_PT_presentation_panel,
     ACE_PT_unsatisfactory_config,
@@ -627,11 +594,12 @@ classes = (
     ACE_PT_sub_latency_measures,
     ACE_PT_sub_engine_settings,
     ACE_PT_audio_sources,
+    ACE_PT_sub_source_info,
     ACE_PT_sub_tempo_meter,
+    ACE_PT_sub_envelope,
     ACE_PT_information_streams,
     ACE_PT_information_streams_description,
     ACE_PT_capture_influx,
-    ACE_PT_stream_confluence,
 )
 
 

@@ -104,45 +104,35 @@ def _queue_engine_recompile(context, tree=None):
     return resolved_tree
 
 
-class ACE_OT_rebuild_audio_engine(bpy.types.Operator):
-    """Recompiles the Audio Engine from the active object's Node Tree"""
-    bl_idname = "audiocore.rebuild_engine"
-    bl_label = "Rebuild Engine"
-    bl_options = {'REGISTER', 'UNDO'}
+def _refresh_source_list(scene) -> None:
+    from .panel.sync import _sync_source_rows
+    with utils.logged_errors("n_panel_operators._refresh_source_list"):
+        _sync_source_rows(scene)
+
+
+class ACE_OT_reset_audio_engine(bpy.types.Operator):
+    """Restart the whole engine: workers, caches and graphs are dropped and rebuilt from the scene"""
+    bl_idname = "audiocore.reset_engine"
+    bl_label = "Manual Engine Reset"
+    bl_options = {'REGISTER'}
 
     @classmethod
     def poll(cls, context):
-        try:
-            scene = getattr(context, "scene", None)
-            if scene is None:
-                return False
-            engine = ACEAudioEngine.ensure_instance(scene)
-            return bool(engine.discover_scene_frontends(scene))
-        except Exception as exc:
-            utils.note_swallowed("n_panel_operators.ACE_OT_rebuild_audio_engine.poll", exc)
-            return False
-    
-    def execute(self, context):
-        scene = getattr(context, "scene", None)
-        if scene is None:
-            self.report({'ERROR'}, "Scene unavailable.")
-            return {'CANCELLED'}
+        return getattr(getattr(context, "scene", None), "audiocore", None) is not None
 
+    def execute(self, context):
+        from ..core.engine.handlers import hard_reset_engine
+        from .panel.sync import _sync_source_rows, _sync_ui_dummy_tree
         try:
-            engine = ACEAudioEngine.ensure_instance(scene)
-            if not engine.discover_scene_frontends(scene):
-                self.report({'ERROR'}, "No ACE-managed scene frontends found to compile.")
-                return {'CANCELLED'}
-            engine.compile_scene_frontends(scene)
-            engine.execute_next_frame(scene, force=True)
-            
-            task_count = sum(len(g.tasks) for g in engine.graphs.values()) if engine.graphs else 0
-            self.report({'INFO'}, f"Engine compiled: {task_count} tasks.")
-            
-        except Exception as e:
-             self.report({'ERROR'}, f"Compilation failed: {str(e)}")
-             return {'CANCELLED'}
-             
+            engine = hard_reset_engine(context.scene)
+        except Exception as exc:  # noqa: BLE001 boundary: the failure is shown to the user
+            self.report({'ERROR'}, f"Engine reset failed: {exc}")
+            return {'CANCELLED'}
+        with utils.logged_errors("n_panel_operators.ACE_OT_reset_audio_engine.execute"):
+            _sync_ui_dummy_tree(context, force=True)
+            _sync_source_rows(context.scene)
+        task_count = sum(len(g.tasks) for g in engine.graphs.values())
+        self.report({'INFO'}, f"Engine reset: {task_count} tasks.")
         return {'FINISHED'}
 
 
@@ -217,6 +207,7 @@ class ACE_OT_add_audio_sources_from_files(bpy.types.Operator, ImportHelper):
         if sonar_obj and not getattr(ace, "gn_target_object", None):
             with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_sources_from_files.execute#2"):
                 ace.gn_target_object = sonar_obj
+        _refresh_source_list(context.scene)
         return {'FINISHED'}
 
     def _create_proxy(self, context, source):
@@ -261,6 +252,7 @@ class ACE_OT_add_audio_source(bpy.types.Operator):
                 ace.gn_target_object = sonar_obj
             
         ace.active_audio_source_index = len(ace.audio_sources) - 1
+        _refresh_source_list(context.scene)
         return {'FINISHED'}
 
 
@@ -308,6 +300,7 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
                         engine.bake._cleanup_bake_entry(entry)
             engine._shutdown_graphs()
 
+        _refresh_source_list(context.scene)
         return {'FINISHED'}
     
 
@@ -525,9 +518,9 @@ class ACE_OT_toggle_operator_branch(bpy.types.Operator):
     list_id: bpy.props.StringProperty(default="operators", options={'HIDDEN', 'SKIP_SAVE'})                                      # type: ignore
 
     def execute(self, context):
-        from .panel.sync import toggle_branch, toggle_instance_branch
-        if self.list_id == "instances":
-            toggle_instance_branch(self.branch_key)
+        from .panel.sync import toggle_branch, toggle_source_branch
+        if self.list_id == "sources":
+            toggle_source_branch(self.branch_key)
         else:
             toggle_branch(self.branch_key)
         area = getattr(context, "area", None)
@@ -779,7 +772,7 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
         self._finish_modal(context)
 
 classes = (
-    ACE_OT_rebuild_audio_engine,
+    ACE_OT_reset_audio_engine,
     ACE_OT_add_audio_sources_from_files,
     ACE_OT_add_audio_source,
     ACE_OT_remove_audio_source,

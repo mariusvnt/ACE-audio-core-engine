@@ -5,10 +5,12 @@ Headless, from the repo root (enables the add-on from this checkout):
   python tests/run_in_blender.py
 """
 
+import types
 import bpy  # type: ignore
 import importlib
 import os
 import tempfile
+import wave
 
 
 def _assert(condition, message):
@@ -19,8 +21,6 @@ def _assert(condition, message):
 def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifier, gn_tree, shader_tree):
     """Depsgraph updates on an object or material reach request_recompile with the original trees."""
     settings = scene.audiocore.engine_settings
-    previous_auto = bool(settings.auto_compile)
-    settings.auto_compile = True
     requested = []
     original_request = engine.frontends.request_recompile
     engine.frontends.request_recompile = lambda tree, **_kw: requested.append(tree)
@@ -33,7 +33,6 @@ def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifie
         bpy.context.view_layer.update()
     finally:
         engine.frontends.request_recompile = original_request
-        settings.auto_compile = previous_auto
     pointers = {t.as_pointer() for t in requested if t is not None}
     _assert(gn_tree.as_pointer() in pointers, "Object edit did not queue its Geometry Nodes frontend")
     _assert(shader_tree.as_pointer() in pointers, "Material edit did not queue its shader frontend")
@@ -177,14 +176,12 @@ def _check_old_stream_nodes_migrate(addon_key, scene):
 
 
 def _check_operator_list_follows_tree(addon_key, scene):
-    """Active Operators: a folded tree that follows edits (auto-compile off), selects both ways, renames."""
+    """Active Operators: a folded tree that follows edits (without compiling), selects both ways, renames."""
     sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
     selection = importlib.import_module(f"{addon_key}.ui.panel.selection")
     operator_tree = importlib.import_module(f"{addon_key}.ui.panel.operator_tree")
     modes = importlib.import_module(f"{addon_key}.nodes.modes")
     settings = scene.audiocore.engine_settings
-    previous_auto = bool(settings.auto_compile)
-    settings.auto_compile = False
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_List")
     originals = (sync._find_active_node_tree, selection._find_active_node_tree)
     sync._find_active_node_tree = selection._find_active_node_tree = lambda *_a, **_k: tree
@@ -273,15 +270,20 @@ def _check_operator_list_follows_tree(addon_key, scene):
         old_ramp.nodes.new("ShaderNodeValToRGB")
         splitter_mod.remove_legacy_ramp_group()
         _assert(bpy.data.node_groups.get(splitter_mod._SPLITTER_RAMP_NODETREE_NAME) is None, "Old ramp group kept")
-        fill = tuple(wm.ace_band_fill)
-        _assert(fill[0] == fill[1] == fill[2] and 0.0 < fill[0] < 1.0, f"Strip colour {fill}")
+        socket_color = tuple(split.inputs[0].draw_color(bpy.context, split))[:3]
+        _assert(all(abs(a - b) < 1e-4 for a, b in zip(socket_color, selection._BUNDLE_SOCKET_COLOR)),
+                f"Bundle socket colour is {socket_color}")
+        selection._match_band_fill(bpy.context, socket_color)
+        ui = bpy.context.preferences.themes[0].user_interface
+        under = [ui.panel_back[i] * (1 - ui.wcol_box.inner[3]) + ui.wcol_box.inner[i] * ui.wcol_box.inner[3] for i in range(3)]
+        seen = [0.5 * wm.ace_band_fill[i] + 0.5 * under[i] for i in range(3)]
+        _assert(all(abs(a - b) < 0.01 for a, b in zip(seen, socket_color)), f"Strip looks {seen}, sockets {socket_color}")
 
         tree.links.remove(stereo.inputs["Audio"].links[0])
         # One band left: the splitter has no branch any more and folds into a single row.
         _assert(rows()[-1] == f"  Splitter{sep}{low}{sep}Bass", f"After disconnecting: {rows()}")
     finally:
         sync._find_active_node_tree, selection._find_active_node_tree = originals
-        settings.auto_compile = previous_auto
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
 
@@ -330,6 +332,281 @@ def _check_viewer_previews_audio(addon_key, scene, engine):
         bpy.data.node_groups.remove(tree)
 
 
+def _check_computed_link_values(addon_key, scene):
+    """Values computed for a linked input match what Blender's own evaluation gives."""
+    driven = importlib.import_module(f"{addon_key}.nodes.driven_values")
+    tree = bpy.data.node_groups.new("ACE_Smoke_Driven", "GeometryNodeTree")
+    mesh = bpy.data.meshes.new("ACE_Smoke_Driven")
+    mesh.from_pydata([(0.0, 0.0, 0.0)], [], [])
+    obj = bpy.data.objects.new("ACE_Smoke_Driven", mesh)
+    scene.collection.objects.link(obj)
+    try:
+        tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+        tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        cut = tree.interface.new_socket("Cut", in_out="INPUT", socket_type="NodeSocketFloat")
+        modifier = obj.modifiers.new("ACE_Smoke_Driven", "NODES")
+        modifier.node_group = tree
+        group_in = tree.nodes.new("NodeGroupInput")
+        group_out = tree.nodes.new("NodeGroupOutput")
+        store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = "FLOAT"
+        store.inputs["Name"].default_value = "probe"
+        tree.links.new(group_in.outputs["Geometry"], store.inputs["Geometry"])
+        tree.links.new(store.outputs["Geometry"], group_out.inputs["Geometry"])
+        target = store.inputs["Value"]
+
+        def blender_value():
+            obj.update_tag()
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            return obj.evaluated_get(depsgraph).data.attributes["probe"].data[0].value
+
+        def check(what):
+            expected, got = blender_value(), driven.linked_value(target, scene)
+            _assert(got is not None and abs(got - expected) <= 1e-4 * max(1.0, abs(expected)),
+                    f"{what}: computed {got}, Blender {expected}")
+
+        value = tree.nodes.new("ShaderNodeValue")
+        math_node = tree.nodes.new("ShaderNodeMath")
+        reroute = tree.nodes.new("NodeReroute")
+        tree.links.new(value.outputs[0], reroute.inputs[0])
+        tree.links.new(reroute.outputs[0], math_node.inputs[0])
+        tree.links.new(math_node.outputs[0], target)
+        operands = ((7.3, 2.0, 0.5), (-7.3, 2.5, 1.5), (0.4, 0.0, 0.0), (-2.0, -3.0, 0.2), (5.5, 4.0, -1.0))
+        operations = [item.identifier for item in math_node.bl_rna.properties["operation"].enum_items]
+        _assert(set(operations) == set(driven._MATH), f"Math operations: {set(operations) ^ set(driven._MATH)}")
+        for operation in operations:
+            math_node.operation = operation
+            for a, b, c in operands:
+                value.outputs[0].default_value = a
+                math_node.inputs[1].default_value = b
+                math_node.inputs[2].default_value = c
+                check(f"{operation} {a} {b} {c}")
+        math_node.operation, math_node.use_clamp = "ADD", True
+        check("clamped add")
+
+        remap = tree.nodes.new("ShaderNodeMapRange")
+        tree.links.new(value.outputs[0], remap.inputs[0])
+        tree.links.new(remap.outputs[0], target)
+        for mode in ("LINEAR", "STEPPED", "SMOOTHSTEP", "SMOOTHERSTEP"):
+            remap.interpolation_type = mode
+            for clamp in (False, True):
+                remap.clamp = clamp
+                for a, bounds in ((0.3, (0.0, 1.0, 20.0, 2000.0)), (1.7, (0.0, 1.0, 900.0, 100.0)),
+                                  (0.5, (2.0, 2.0, 0.0, 10.0))):
+                    value.outputs[0].default_value = a
+                    for index, bound in enumerate(bounds, start=1):
+                        remap.inputs[index].default_value = bound
+                    remap.inputs[5].default_value = 4.0
+                    check(f"map range {mode} clamp={clamp} {a} {bounds}")
+
+        clamp_node = tree.nodes.new("ShaderNodeClamp")
+        tree.links.new(value.outputs[0], clamp_node.inputs[0])
+        tree.links.new(clamp_node.outputs[0], target)
+        for clamp_type in ("MINMAX", "RANGE"):
+            clamp_node.clamp_type = clamp_type
+            for low, high in ((1.0, 3.0), (3.0, 1.0)):
+                clamp_node.inputs[1].default_value, clamp_node.inputs[2].default_value = low, high
+                value.outputs[0].default_value = 2.5
+                check(f"clamp {clamp_type} {low} {high}")
+
+        integer = tree.nodes.new("FunctionNodeInputInt")
+        integer.integer = 42
+        tree.links.new(integer.outputs[0], target)
+        check("integer")
+        tree.links.new(group_in.outputs["Cut"], target)
+        modifier.properties.inputs.__getattribute__(cut.identifier).value = 1234.0
+        check("modifier input")
+        clock = tree.nodes.new("GeometryNodeInputSceneTime")
+        for output in ("Frame", "Seconds"):
+            tree.links.new(clock.outputs[output], target)
+            check(f"scene time {output}")
+
+        noise = tree.nodes.new("ShaderNodeTexNoise")
+        tree.links.new(noise.outputs[0], target)
+        _assert(driven.linked_value(target, scene) is None, "A noise texture was computed")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.meshes.remove(mesh)
+        bpy.data.node_groups.remove(tree)
+
+
+def _check_driven_splits(addon_key, scene, engine):
+    """A linked split frequency reaches the engine and the strip, and follows without recompiling."""
+    split_freqs = importlib.import_module(f"{addon_key}.nodes.split_freqs")
+    splitter = importlib.import_module(f"{addon_key}.ui.panel.splitter")
+    dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_DrivenSplit")
+    try:
+        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        dynamic.ACESplitterManager.apply_variant_to_node(split, 3)
+        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        tree.links.new(source.outputs["Audio"], split.inputs[0])
+        tree.links.new(split.outputs[1], loud.inputs["Audio"])
+        split.inputs[1].default_value, split.inputs[2].default_value = 200.0, 5000.0
+        value = tree.nodes.new("ShaderNodeValue")
+        value.outputs[0].default_value = 5.0
+        times = tree.nodes.new("ShaderNodeMath")
+        times.operation = "MULTIPLY"
+        times.inputs[1].default_value = 10.0
+        tree.links.new(value.outputs[0], times.inputs[0])
+        tree.links.new(times.outputs[0], split.inputs[1])
+
+        def task_params():
+            return next(task.parameters for graph in engine.graphs.values() for node_id, task in graph.tasks.items()
+                        if node_id == split["ace_id"])
+
+        def states():
+            return [(None if v is None else round(v), s) for _sock, v, s in split_freqs.split_freq_states(split, scene)]
+
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(task_params().get("in_1") == 50.0 and task_params().get("in_2") == 5000.0,
+                f"Compiled split frequencies: {task_params()}")
+        _assert(states() == [(50, "linked"), (5000, "own")], f"States: {states()}")
+        narrow = splitter.splitter_band_widths(split, scene)
+
+        value.outputs[0].default_value = 100.0
+        split_freqs.refresh_driven_splits(engine.graphs.values(), scene)
+        _assert(task_params()["in_1"] == 1000.0, f"Engine did not follow: {task_params()['in_1']}")
+        _assert(any(g.param_overrides.get(split["ace_id"], {}).get("in_1") == 1000.0 for g in engine.graphs.values()),
+                "Workers are not told about the new value")
+        _assert(splitter.splitter_band_widths(split, scene)[0] > narrow[0] + 0.3, "The strip did not follow")
+        engine.frame.execute_next_frame(scene, force=True)
+
+        noise = tree.nodes.new("ShaderNodeTexNoise")
+        tree.links.new(noise.outputs[0], split.inputs[1])
+        _assert(states()[0] == (200, "unreadable"), f"Unreadable link: {states()}")
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(task_params().get("in_1") == 200.0, f"Unreadable link left the cut out: {task_params()}")
+        tree.links.new(loud.outputs[0], split.inputs[2])
+        _assert(states()[1] == (None, "audio"), f"Audio-driven link: {states()}")
+        _assert(len(splitter.splitter_band_widths(split, scene)) == 2, "An unknown cut was drawn")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
+def _check_selection_follows_sources(addon_key, scene):
+    """Clicking another source's node activates it; the list's active row holds the selected name."""
+    sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
+    operator_tree = importlib.import_module(f"{addon_key}.ui.panel.operator_tree")
+    ace = scene.audiocore
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_TwoSources")
+    original_tree = sync._find_active_node_tree
+    first_index = ace.active_audio_source_index
+    count = len(ace.audio_sources)
+    try:
+        bpy.ops.audiocore.add_audio_source()
+        bpy.ops.audiocore.add_audio_source()
+        a_index, b_index = count, count + 1
+        pairs = []
+        for index in (a_index, b_index):
+            ace.active_audio_source_index = index
+            source = _add_ace_node(addon_key, tree, "source_mngmt", "src", f"Source {index}")
+            loud = _add_ace_node(addon_key, tree, "stream", "loudness", f"Loud {index}")
+            tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
+            pairs.append((source, loud))
+        sync._find_active_node_tree = lambda _context, **_kw: tree
+
+        def active():
+            return ace.audio_sources[ace.active_audio_source_index]
+
+        def consistent(what):
+            src = active()
+            row = sync.current_rows()[src.active_ui_node_index]
+            _assert(any(seg.node_id == src.active_ui_node_id for seg in row.segments),
+                    f"{what}: selected {src.active_ui_node_id} is not on row {src.active_ui_node_index}")
+
+        ace.active_audio_source_index = a_index
+        tree.nodes.active = pairs[0][1]
+        sync._sync_ui_dummy_tree(bpy.context, force=True)
+        sync._sync_editor_active(tree, active())
+        tree.nodes.active = pairs[1][1]  # click on the other source's graph
+        sync._sync_editor_active(tree, active())
+        _assert(ace.active_audio_source_index == b_index, f"Source not switched: {ace.active_audio_source_index}")
+        _assert(active().active_ui_node_id == pairs[1][1]["ace_id"], "Clicked node not selected")
+        consistent("after a click")
+
+        # Switching sources in the list, with stale rows and selections on both sides.
+        for source_index, loud in ((a_index, pairs[0][1]), (b_index, pairs[1][1]), (a_index, pairs[0][1])):
+            src = ace.audio_sources[source_index]
+            src.active_ui_node_id = pairs[0][1]["ace_id"] if source_index == b_index else loud["ace_id"]
+            ace.active_audio_source_index = source_index
+            consistent(f"after switching to {source_index}")
+        _assert(operator_tree.row_of_node(sync.current_rows(), pairs[0][1]["ace_id"]) >= 0, "Rows not rebuilt on switch")
+    finally:
+        sync._find_active_node_tree = original_tree
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
+def _check_new_source_takes_input_name(addon_key, scene):
+    """An unnamed source takes the name of its first file or live input; a chosen name is kept."""
+    properties = importlib.import_module(f"{addon_key}.properties")
+    ace = scene.audiocore
+    count = len(ace.audio_sources)
+    first_index = ace.active_audio_source_index
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Names")
+    folder = tempfile.mkdtemp(prefix="ace_names_")
+    try:
+        paths = []
+        for stem in ("Jump stance", "Other take"):
+            paths.append(os.path.join(folder, f"{stem}.wav"))
+            with wave.open(paths[-1], "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(48000)
+                handle.writeframes(b"\x00\x00" * 4800)
+
+        bpy.ops.audiocore.add_audio_source()
+        source = ace.audio_sources[-1]
+        placed = _add_ace_node(addon_key, tree, "source_mngmt", "src", source.name)
+        source.filepath = paths[0]
+        _assert(source.name == "Jump stance", f"Name from the file: {source.name!r}")
+        _assert(placed.label == "Jump stance", f"Placed Source node keeps {placed.label!r}")
+        source.filepath = paths[1]
+        _assert(source.name == "Jump stance", f"A second file renamed the source: {source.name!r}")
+
+        bpy.ops.audiocore.add_audio_source()
+        other = ace.audio_sources[-1]
+        other.filepath = paths[0]
+        _assert(other.name == "Jump stance 2", f"Taken name: {other.name!r}")
+
+        bpy.ops.audiocore.add_audio_source()
+        live = ace.audio_sources[-1]
+        live.name = "Audio Source 9"
+        live.source_type = "LIVE"
+        _assert(live.name == "Audio Source 9", f"Auto input renamed the source: {live.name!r}")
+        live.live_transport = "UDP"
+        _assert(live.name == f"UDP {live.live_udp_port}", f"Name from UDP: {live.name!r}")
+
+        bpy.ops.audiocore.add_audio_source()
+        device = ace.audio_sources[-1]
+        device.source_type = "LIVE"
+        items = [("__AUTO__", "Auto", ""), ("3", "3: Microphone (MOTU M2) (MME)", "")]
+        saved = (properties._LIVE_DEVICE_CACHE, dict(properties._LIVE_DEVICE_NAMES))
+        properties._LIVE_DEVICE_CACHE = items
+        properties._LIVE_DEVICE_NAMES["3"] = "Microphone (MOTU M2)"
+        try:
+            device.live_device_selector = "3"
+            _assert(device.name == "Microphone (MOTU M2)", f"Name from the device: {device.name!r}")
+        finally:
+            properties._LIVE_DEVICE_CACHE = saved[0]
+            properties._LIVE_DEVICE_NAMES.clear()
+            properties._LIVE_DEVICE_NAMES.update(saved[1])
+    finally:
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
 def _check_splitter_sliders(addon_key, scene):
     """Split frequency sliders write their own socket; the release sorts the sockets."""
     splitter = importlib.import_module(f"{addon_key}.ui.panel.splitter")
@@ -358,6 +635,17 @@ def _check_splitter_sliders(addon_key, scene):
             _assert(sockets() == [value, 500, 2000] and sliders() == sockets(), f"Drag to {value}: {sockets()}")
         split_freqs.sort_all_split_freqs()  # what the release (and a file load) does
         _assert(sockets() == [500, 650, 2000] and sliders() == sockets(), f"After release: {sockets()}")
+
+        # The slider is logarithmic from 20 Hz to 20 kHz; the Hz field and the slider share a socket.
+        split.ace_split_pos_1 = 0.5
+        _assert(abs(split.inputs[1].default_value - 632.46) < 0.1, f"Mid slider: {split.inputs[1].default_value}")
+        _assert(abs(split.ace_split_pos_1 - 0.5) < 1e-4, f"Slider reads back {split.ace_split_pos_1}")
+        for position, hz in ((0.0, 20.0), (1.0, 20000.0)):
+            split.ace_split_pos_1 = position
+            _assert(abs(split.inputs[1].default_value - hz) < 0.01, f"Slider {position}: {split.inputs[1].default_value}")
+        split.ace_split_freq_1 = 200.0
+        _assert(abs(split.ace_split_pos_1 - 1.0 / 3.0) < 1e-4, f"200 Hz sits at {split.ace_split_pos_1}")
+        split.ace_split_freq_1 = 650.0
 
         split.ace_split_freq_3 = 99999.0
         split.ace_split_freq_1 = -5.0
@@ -392,8 +680,6 @@ def _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine):
     handlers = importlib.import_module(f"{addon_key}.core.engine.handlers")
     modes = importlib.import_module(f"{addon_key}.nodes.modes")
     settings = scene.audiocore.engine_settings
-    previous_auto = bool(settings.auto_compile)
-    settings.auto_compile = True
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Recompile")
     compiles = []
     original = engine.compiler.compile_scene_frontends
@@ -434,47 +720,191 @@ def _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine):
         _assert(counts == expected, f"Recompiles: {counts}")
     finally:
         engine.compiler.compile_scene_frontends = original
-        settings.auto_compile = previous_auto
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
 
 
-def _check_instances_tree(addon_key, scene, engine):
-    """Active ACE Instances: sources with the objects they drive; a click selects; sources fold."""
+def _check_source_list_instances(addon_key, scene, engine):
+    """Audio source list: each source folds open (closed at first) onto the objects it drives."""
     sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
     operator_tree = importlib.import_module(f"{addon_key}.ui.panel.operator_tree")
     ace = scene.audiocore
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Instances")
+
+    def shown():
+        flat = [
+            operator_tree.Row(depth=it.depth, segments=[operator_tree.Segment(it.target, it.name)],
+                              has_children=it.has_children, branch_key=it.branch_key, parent=it.parent_row)
+            for it in ace.source_rows
+        ]
+        closed = {row.branch_key for row in flat if row.has_children} - sync.expanded_source_keys()
+        return operator_tree.visible_rows(flat, closed)
+
+    def active_key():
+        return ace.audio_sources[ace.active_audio_source_index].stable_id
+
     try:
         source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
         loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         engine.compiler.compile_scene_frontends(scene)
-        sync._sync_instance_rows(scene)
-        rows = [(it.kind, it.name, it.depth, it.parent_row) for it in ace.instance_rows]
-        src_row = next(i for i, it in enumerate(ace.instance_rows) if it.kind == "source"
+        sync._sync_source_rows(scene)
+        rows = [(it.kind, it.name, it.depth, it.parent_row) for it in ace.source_rows]
+        _assert(sum(r[0] == "source" for r in rows) == len(ace.audio_sources), f"Not every source listed: {rows}")
+        src_row = next(i for i, it in enumerate(ace.source_rows) if it.kind == "source"
                        and it.target == source.get("ace_source_id"))
-        inst_row = next(i for i, it in enumerate(ace.instance_rows) if it.kind == "instance" and it.target == obj.name)
-        _assert(ace.instance_rows[inst_row].parent_row == src_row, f"Instance not under its source: {rows}")
-        _assert(ace.instance_rows[inst_row].detail == "Geometry", f"Instance type: {ace.instance_rows[inst_row].detail}")
+        inst_row = next(i for i, it in enumerate(ace.source_rows) if it.kind == "instance" and it.target == obj.name)
+        _assert(ace.source_rows[inst_row].parent_row == src_row, f"Instance not under its source: {rows}")
+        _assert(ace.source_rows[inst_row].detail == "Geometry", f"Instance type: {ace.source_rows[inst_row].detail}")
+        _assert(shown()[src_row] and not shown()[inst_row], "Instances are not folded at first")
+        sync.toggle_source_branch(ace.source_rows[src_row].branch_key)
+        _assert(shown()[inst_row], "Opening a source did not show its instances")
 
+        # Adding and removing a source updates the list at once and moves the highlight.
+        before = len(ace.audio_sources)
+        bpy.ops.audiocore.add_audio_source()
+        added = ace.source_rows[ace.active_source_row]
+        _assert(added.kind == "source" and added.target == active_key(), "New source not listed and highlighted")
         for other in scene.objects:
             other.select_set(False)
-        ace.active_instance_row = inst_row
+        ace.active_source_row = inst_row
         _assert(bpy.context.view_layer.objects.active == obj and obj.select_get(), "Clicking an instance did not select it")
-        ace.active_instance_row = src_row
-        active_src = ace.audio_sources[ace.active_audio_source_index]
-        _assert(active_src.stable_id == ace.instance_rows[src_row].target, "Clicking a source did not make it active")
+        _assert(active_key() == source.get("ace_source_id"), "Clicking an instance did not activate its source")
+        _assert(ace.active_source_row == inst_row, "The highlight left the clicked instance")
+        ace.active_audio_source_index = before
+        _assert(ace.source_rows[ace.active_source_row].target == active_key(), "Highlight does not follow the active source")
+        bpy.ops.audiocore.remove_audio_source()
+        _assert(len([it for it in ace.source_rows if it.kind == "source"]) == before, "Removed source still listed")
+        ace.active_source_row = src_row
+        _assert(active_key() == source.get("ace_source_id"), "Clicking a source did not make it active")
+        sync.toggle_source_branch(ace.source_rows[src_row].branch_key)
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
 
-        sync.toggle_instance_branch(ace.instance_rows[src_row].branch_key)
-        flat = [
-            operator_tree.Row(depth=it.depth, segments=[operator_tree.Segment(it.target, it.name)],
-                              has_children=it.has_children, branch_key=it.branch_key, parent=it.parent_row)
-            for it in ace.instance_rows
-        ]
-        shown = operator_tree.visible_rows(flat, sync.instance_collapsed_keys())
-        _assert(not shown[inst_row] and shown[src_row], "Folding a source did not hide its instances")
-        sync.toggle_instance_branch(ace.instance_rows[src_row].branch_key)
+
+class _CheckedLayout:
+    """Stand-in UILayout: fails on a property, operator, list or icon that does not exist."""
+
+    def __init__(self, seen):
+        self.seen = seen
+
+    def _icon(self, icon):
+        if icon not in {None, "", "NONE"}:
+            items = bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"].enum_items
+            _assert(icon in items, f"Unknown icon {icon!r}")
+
+    def row(self, **_kw):
+        return _CheckedLayout(self.seen)
+
+    column = box = row
+
+    def split(self, **_kw):
+        return _CheckedLayout(self.seen)
+
+    def prop(self, data, name, icon="NONE", **_kw):
+        _assert(name in data.bl_rna.properties, f"{type(data).__name__} has no property {name!r}")
+        self._icon(icon)
+        self.seen.append(("prop", name))
+
+    def prop_enum(self, data, name, value, **_kw):
+        self.prop(data, name)
+
+    def operator(self, idname, text="", icon="NONE", **_kw):
+        module, op = idname.split(".")
+        _assert(hasattr(bpy.types, f"{module.upper()}_OT_{op}"), f"No operator {idname!r}")
+        self._icon(icon)
+        self.seen.append(("operator", idname))
+        return types.SimpleNamespace()
+
+    def label(self, text="", icon="NONE", **_kw):
+        self._icon(icon)
+        self.seen.append(("label", text))
+
+    def template_list(self, list_type, _list_id, data, propname, active_data, active_propname, **_kw):
+        _assert(hasattr(bpy.types, list_type), f"No list {list_type!r}")
+        _assert(propname in data.bl_rna.properties and active_propname in active_data.bl_rna.properties, "List data")
+        self.seen.append(("list", list_type))
+
+    def separator(self, **_kw):
+        pass
+
+    template_icon = separator
+
+
+def _check_panels_draw(addon_key, scene):
+    """Every ACE panel and list row draws without naming anything that does not exist."""
+    panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
+    sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Panels")
+    original_tree = sync._find_active_node_tree
+    try:
+        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        tree.links.new(source.outputs["Audio"], split.inputs[0])
+        sync._find_active_node_tree = lambda _context, **_kw: tree
+        sync._sync_ui_dummy_tree(bpy.context, force=True)
+        sync._sync_source_rows(scene)
+        ace = scene.audiocore
+        _, active = importlib.import_module(f"{addon_key}.utils")._get_active_source(bpy.context)
+        active.active_ui_node_id = split["ace_id"]
+        context = types.SimpleNamespace(
+            scene=scene, window_manager=bpy.context.window_manager, preferences=bpy.context.preferences,
+            view_layer=bpy.context.view_layer, region=types.SimpleNamespace(width=320), active_node=None,
+        )
+        drawn: dict[str, list] = {}
+        for cls in panels.classes:
+            if not issubclass(cls, bpy.types.Panel) or cls is panels.ACE_PT_rename_operator:
+                continue
+            seen = drawn[cls.__name__] = []
+            panel = types.SimpleNamespace(layout=_CheckedLayout(seen), bl_label=cls.bl_label)
+            if hasattr(cls, "draw_header"):
+                cls.draw_header(panel, context)
+            cls.draw(panel, context)
+        seen = []
+        list_self = types.SimpleNamespace(layout_type="DEFAULT")
+        for list_cls, data, rows in ((panels.ACE_UL_source_list, ace, ace.source_rows),
+                                     (panels.ACE_UL_dummy_tree, active, active.ui_nodes)):
+            for index, item in enumerate(rows):
+                list_cls.draw_item(list_self, context, _CheckedLayout(seen), data, item, 0, data, "", index)
+
+        def props(panel_name):
+            return {value for kind, value in drawn[panel_name] if kind == "prop"}
+
+        _assert({"enable_preprocessing", "envelope_attack", "envelope_release"} <= props("ACE_PT_sub_envelope"),
+                f"Envelope panel: {props('ACE_PT_sub_envelope')}")
+        _assert({"bpm", "beats_per_bar"} <= props("ACE_PT_sub_tempo_meter"), "Tempo panel")
+        _assert(("operator", "audiocore.reset_engine") in drawn["ACE_PT_sub_engine_settings"], "No reset button")
+        _assert({"ace_split_pos_1", "ace_split_freq_1", "ace_band_fill"} <= props("ACE_PT_information_streams"),
+                f"Splitter settings: {props('ACE_PT_information_streams')}")
+        for name in ("ACE_PT_sub_source_info", "ACE_PT_sub_tempo_meter", "ACE_PT_sub_envelope"):
+            _assert("DEFAULT_CLOSED" in getattr(panels, name).bl_options, f"{name} is not closed by default")
+        order = [panels.ACE_PT_sub_source_info.bl_order, panels.ACE_PT_sub_tempo_meter.bl_order,
+                 panels.ACE_PT_sub_envelope.bl_order]
+        _assert(order == sorted(order), f"Source sub-panel order: {order}")
+    finally:
+        sync._find_active_node_tree = original_tree
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
+def _check_manual_engine_reset(addon_key, scene):
+    """Manual Engine Reset replaces the engine, empties the shared caches and compiles again."""
+    engine_cls = importlib.import_module(f"{addon_key}.core.engine.engine").ACEAudioEngine
+    analyzer = importlib.import_module(f"{addon_key}.core.tasks.analyzer").AudioFluxAnalyzer
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Reset")
+    try:
+        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
+        before = engine_cls.ensure_instance(scene)
+        before.compiler.compile_scene_frontends(scene)
+        analyzer._GLOBAL_SPECTRUM_CACHE["stale"] = None
+        _assert(bpy.ops.audiocore.reset_engine() == {'FINISHED'}, "Reset failed")
+        after = engine_cls.get_instance(scene)
+        _assert(after is not None and after is not before, "Reset kept the old engine")
+        _assert(not before.graphs and after.graphs, "Reset did not rebuild the graphs")
+        _assert("stale" not in analyzer._GLOBAL_SPECTRUM_CACHE, "Reset kept a stale cache")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
@@ -549,7 +979,6 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     tree.links.new(split.outputs[0], band_rms.inputs["Audio"])
 
     scene.frame_start, scene.frame_end = 1, 72
-    scene.audiocore.engine_settings.auto_compile = True
     engine.compiler.compile_scene_frontends(scene)
     _assert(bool(engine.graphs), "No runtime graph compiled for the file source")
     import time
@@ -780,10 +1209,16 @@ def main():
     _check_old_stream_nodes_migrate(addon_key, scene)
     _check_operator_list_follows_tree(addon_key, scene)
     _check_splitter_sliders(addon_key, scene)
+    _check_computed_link_values(addon_key, scene)
+    _check_driven_splits(addon_key, scene, engine)
+    _check_selection_follows_sources(addon_key, scene)
+    _check_new_source_takes_input_name(addon_key, scene)
     _check_viewer_previews_audio(addon_key, scene, engine)
     _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine)
-    _check_instances_tree(addon_key, scene, engine)
+    _check_source_list_instances(addon_key, scene, engine)
     _check_group_rebuild_keeps_input_values(addon_key, scene)
+    _check_panels_draw(addon_key, scene)
+    _check_manual_engine_reset(addon_key, scene)
 
     remove_result = bpy.ops.audiocore.remove_audio_source()
     _assert('FINISHED' in remove_result, "audiocore.remove_audio_source failed")

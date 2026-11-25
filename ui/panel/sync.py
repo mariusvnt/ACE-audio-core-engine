@@ -14,7 +14,8 @@ from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...nodes.shader.reader import ACEShaderTreeReader
 from ... import utils
 from . import operator_tree
-from .helpers import _build_ui_node_lookup_ids, _find_active_node_tree, _find_tree_node_by_ace_id, _tree_has_ace_nodes, _tree_pointer, _ui_is_blocked
+from ...nodes.split_freqs import split_freq_states
+from .helpers import _build_ui_node_lookup_ids, _find_active_node_tree, _find_tree_node_by_ace_id, _tree_pointer, _ui_is_blocked
 
 
 _UI_SYNC_MIN_INTERVAL = 0.25
@@ -66,31 +67,6 @@ _ui_tree_cache: dict = {
     "rows": [],
     "lookup_ids": {},
 }
-
-
-_has_ace_nodes_in_trees: bool = False
-
-
-def _refresh_ace_nodes_in_trees_flag(scene) -> None:
-    """Update the module-level ``_has_ace_nodes_in_trees`` flag."""
-    global _has_ace_nodes_in_trees
-    if scene is None:
-        _has_ace_nodes_in_trees = False
-        return
-    for obj in getattr(scene, "objects", []) or []:
-        for mod in getattr(obj, "modifiers", []) or []:
-            if getattr(mod, "type", None) != "NODES":
-                continue
-            if _tree_has_ace_nodes(getattr(mod, "node_group", None)):
-                _has_ace_nodes_in_trees = True
-                return
-        for slot in getattr(obj, "material_slots", []) or []:
-            mat = getattr(slot, "material", None)
-            tree = getattr(mat, "node_tree", None) if mat is not None else None
-            if _tree_has_ace_nodes(tree):
-                _has_ace_nodes_in_trees = True
-                return
-    _has_ace_nodes_in_trees = False
 
 
 def _resolve_ui_list_selected_node(context):
@@ -303,7 +279,14 @@ def _sync_ui_dummy_tree(context, force: bool = False):
         node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
         # Reading can assign missing ace_ids; sign the tree as it is now.
         topology_sig = _ui_tree_topology_signature(tree)
+        roots_by_node = {
+            str(node_lookup_ids.get(node.id, "") or node.id): set(node.root_sources) | (
+                {node.source_binding_id} if node.source_binding_id else set()
+            )
+            for node in abstract.nodes.values()
+        }
         _ui_tree_cache = {
+            "roots_by_node": roots_by_node,
             "tree_ptr": int(tree_ptr),
             "topology_sig": topology_sig,
             "sig_ts": float(now),
@@ -318,6 +301,7 @@ def _sync_ui_dummy_tree(context, force: bool = False):
         _write_ui_rows(active_source, rows)
     if active_source.active_ui_node_index >= len(active_source.ui_nodes):
         set_active_row(active_source, max(0, len(active_source.ui_nodes) - 1))
+    _align_selection(active_source)
     _ui_sync_last_key = sync_key
     _ui_sync_last_ts = now
 
@@ -331,6 +315,7 @@ def _empty_tree_cache(now: float = 0.0) -> dict:
         "source_proxy": "",
         "rows": [],
         "lookup_ids": {},
+        "roots_by_node": {},
     }
 
 
@@ -475,7 +460,10 @@ def note_editor_active(tree, node_id: str) -> None:
 
 
 def _sync_editor_active(tree, active_source) -> None:
-    """Selecting an operator node in the Node Editor selects it in the list."""
+    """Selecting an operator node in the Node Editor selects it in the list.
+
+    A node of another source's graph makes that source the active one first.
+    """
     global _last_editor_active
     nodes = getattr(tree, "nodes", None)
     active = getattr(nodes, "active", None) if nodes is not None else None
@@ -483,45 +471,128 @@ def _sync_editor_active(tree, active_source) -> None:
     key = (_tree_pointer(tree), node_id)
     if key == _last_editor_active:
         return
+    # Only a change within a tree already on screen is a click: showing a tree switches nothing.
+    clicked = key[0] == _last_editor_active[0]
     _last_editor_active = key
-    if not node_id or node_id == active_source.active_ui_node_id:
+    if not node_id:
+        return
+    switched = _activate_source_of(node_id) if clicked else None
+    if switched is not None:
+        active_source = switched
+    elif node_id == active_source.active_ui_node_id:
         return
     if operator_tree.row_of_node(current_rows(), node_id) < 0:
         return
     active_source.active_ui_node_id = node_id
     reveal_operator(active_source, node_id)
 
-_collapsed_instances: set[str] = set()
+
+def _activate_source_of(node_id: str):
+    """Make the source feeding *node_id* active when the active one does not; returns it, else None."""
+    context = bpy.context
+    project = context.scene.audiocore
+    roots = set(_ui_tree_cache.get("roots_by_node", {}).get(node_id, ()))
+    current = int(project.active_audio_source_index)
+    if 0 <= current < len(project.audio_sources) and project.audio_sources[current].stable_id in roots:
+        return None
+    for index, source in enumerate(project.audio_sources):
+        if source.stable_id and source.stable_id in roots:
+            project.active_audio_source_index = index
+            _sync_ui_dummy_tree(context, force=True)
+            return project.audio_sources[index]
+    return None
 
 
-def instance_collapsed_keys() -> set[str]:
-    return _collapsed_instances
+def _align_selection(active_source) -> None:
+    """Keep the list's active row and the selected operator on the same row."""
+    rows = current_rows()
+    if not rows or len(rows) != len(active_source.ui_nodes):
+        return
+    selected = str(active_source.active_ui_node_id or "")
+    current = min(max(int(active_source.active_ui_node_index), 0), len(rows) - 1)
+    index = operator_tree.row_of_node(rows, selected) if selected else -1
+    if index >= 0:
+        if not any(seg.kind == "node" and seg.node_id == selected for seg in rows[current].segments):
+            set_active_row(active_source, index)
+        return
+    # The selected operator is not in this source's graph: select what the active row shows.
+    set_active_row(active_source, current)
+    nodes = [seg for seg in rows[current].segments if seg.kind == "node"]
+    active_source.active_ui_node_id = nodes[-1].node_id if nodes else ""
 
 
-def toggle_instance_branch(branch_key: str) -> None:
-    if branch_key in _collapsed_instances:
-        _collapsed_instances.discard(branch_key)
+# The audio source list folds each source's instances; closed until opened.
+_expanded_sources: set[str] = set()
+_setting_source_row = False
+
+
+def expanded_source_keys() -> set[str]:
+    return _expanded_sources
+
+
+def toggle_source_branch(branch_key: str) -> None:
+    if branch_key in _expanded_sources:
+        _expanded_sources.discard(branch_key)
     else:
-        _collapsed_instances.add(branch_key)
+        _expanded_sources.add(branch_key)
 
 
-def _instance_rows(scene) -> list[tuple]:
+def _source_row_key(source, index: int) -> str:
+    return str(getattr(source, "stable_id", "") or "") or f"#{index}"
+
+
+def source_for_row(project, item):
+    """(index, source) a source row stands for, or (-1, None)."""
+    for index, source in enumerate(project.audio_sources):
+        if _source_row_key(source, index) == item.target:
+            return index, source
+    return -1, None
+
+
+def is_setting_source_row() -> bool:
+    return _setting_source_row
+
+
+def follow_active_source(project) -> None:
+    """Highlight the active source's row, unless one of its instances is highlighted."""
+    global _setting_source_row
+    index = int(project.active_audio_source_index)
+    if not 0 <= index < len(project.audio_sources):
+        return
+    key = _source_row_key(project.audio_sources[index], index)
+    rows = project.source_rows
+    current = int(project.active_source_row)
+    if 0 <= current < len(rows):
+        item = rows[current]
+        owner = rows[item.parent_row] if item.parent_row >= 0 else item
+        if owner.target == key:
+            return
+    for row_index, item in enumerate(rows):
+        if item.kind == "source" and item.target == key:
+            _setting_source_row = True
+            try:
+                project.active_source_row = row_index
+            finally:
+                _setting_source_row = False
+            return
+
+
+def _source_rows(scene) -> list[tuple]:
     """(kind, target, name, detail, icon, detail_icon, depth, has_children, branch_key, parent) rows."""
-    from .helpers import _compiled_source_instance_rows, _frontend_instance_type, _frontend_kind_icon, _frontend_object_name, _source_list_icon
+    from .helpers import _compiled_source_instance_rows, _frontend_instance_type, _frontend_kind_icon, _frontend_object_name
 
-    rows: list[tuple] = []
+    instances: dict[str, list] = {}
     for entry in _compiled_source_instance_rows(scene) or []:
         source_prop = entry.get("source_prop")
-        token = str(entry.get("source_token", "") or "")
-        refs = list(entry.get("frontend_refs", []) or [])
+        token = str(getattr(source_prop, "stable_id", "") or entry.get("source_token", "") or "")
+        instances[token] = list(entry.get("frontend_refs", []) or [])
+
+    rows: list[tuple] = []
+    for index, source in enumerate(scene.audiocore.audio_sources):
+        key = _source_row_key(source, index)
+        refs = instances.get(key, [])
         parent = len(rows)
-        rows.append((
-            "source", str(getattr(source_prop, "stable_id", "") or token),
-            str(entry.get("display_name", "") or "Unnamed Source"), "",
-            _source_list_icon(source_prop), "NONE", 0, True, f"src:{token}", -1,
-        ))
-        if not refs:
-            rows.append(("empty", "", "No connected instances", "", "BLANK1", "NONE", 1, False, "", parent))
+        rows.append(("source", key, str(source.name), "", "NONE", "NONE", 0, bool(refs), f"src:{key}", -1))
         for ref in refs:
             kind = str(getattr(ref, "kind", "") or "")
             rows.append((
@@ -538,18 +609,18 @@ def _row_tuple(item) -> tuple:
     )
 
 
-def _sync_instance_rows(scene) -> None:
+def _sync_source_rows(scene) -> None:
     ace = getattr(scene, "audiocore", None)
     if ace is None:
         return
-    rows = _instance_rows(scene)
-    if [_row_tuple(item) for item in ace.instance_rows] == rows:
-        return
-    ace.instance_rows.clear()
-    for row in rows:
-        item = ace.instance_rows.add()
-        (item.kind, item.target, item.name, item.detail, item.icon, item.detail_icon,
-         item.depth, item.has_children, item.branch_key, item.parent_row) = row
+    rows = _source_rows(scene)
+    if [_row_tuple(item) for item in ace.source_rows] != rows:
+        ace.source_rows.clear()
+        for row in rows:
+            item = ace.source_rows.add()
+            (item.kind, item.target, item.name, item.detail, item.icon, item.detail_icon,
+             item.depth, item.has_children, item.branch_key, item.parent_row) = row
+    follow_active_source(ace)
 
 
 def _refresh_active_source_metadata(scene, now: float | None = None):
@@ -769,6 +840,25 @@ def _engine_latency_metrics(context) -> dict[str, float | bool]:
     return metrics
 
 
+_last_driven_splits: tuple = ()
+
+
+def _redraw_on_driven_split_change(context) -> None:
+    global _last_driven_splits
+    node, parsed = _resolve_ui_list_selected_node(context)
+    values: tuple = ()
+    if node is not None and parsed and parsed.get("type") == "frequency_splitter":
+        values = tuple((value, state) for _sock, value, state in split_freq_states(node, context.scene)
+                       if state != "own")
+    if values == _last_driven_splits:
+        return
+    _last_driven_splits = values
+    for window in getattr(context.window_manager, "windows", []) or []:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
 def _ui_sync_timer():
     """Blender persistent timer callback: drive background UI sync."""
     global _ui_timer_last_quick_key, _ui_timer_last_sync_ts
@@ -780,7 +870,6 @@ def _ui_sync_timer():
         if _ui_is_blocked(context):
             return _UI_SYNC_TIMER_INTERVAL_IDLE
 
-        _refresh_ace_nodes_in_trees_flag(scene)
         tree = _find_active_node_tree(context, editor_context_only=True)
         quick_key = _ui_quick_state_key(context, scene, tree)
         now = time.monotonic()
@@ -809,8 +898,10 @@ def _ui_sync_timer():
             with utils.logged_errors("sync._ui_sync_timer#ramp"):
                 from .splitter import remove_legacy_ramp_group
                 remove_legacy_ramp_group()
-        with utils.logged_errors("sync._ui_sync_timer#instances"):
-            _sync_instance_rows(scene)
+        with utils.logged_errors("sync._ui_sync_timer#driven"):
+            _redraw_on_driven_split_change(context)
+        with utils.logged_errors("sync._ui_sync_timer#sources"):
+            _sync_source_rows(scene)
         engine = ACEAudioEngine.get_instance(scene)
         if engine is not None:
             with utils.logged_errors("sync._ui_sync_timer#3"):
@@ -824,12 +915,11 @@ def _ui_sync_timer():
 @persistent
 def _ui_load_post(_dummy):
     """Blender load_post handler: reset all UI state caches after a file load."""
-    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees, _last_editor_active
+    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _last_editor_active
     _ui_sync_last_ts = 0.0
     _ui_sync_last_key = ""
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
-    _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
         "scene_key": 0,
@@ -839,14 +929,14 @@ def _ui_load_post(_dummy):
     }
     _ui_tree_cache = _empty_tree_cache()
     _collapsed_by_tree.clear()
+    _expanded_sources.clear()
     _last_editor_active = (0, "")
 
 
 def reset_state():
-    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _has_ace_nodes_in_trees, _last_editor_active
+    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _last_editor_active
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
-    _has_ace_nodes_in_trees = False
     _ui_source_probe_last = {}
     _ui_latency_cache = {
         "scene_key": 0,

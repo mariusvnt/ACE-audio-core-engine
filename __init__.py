@@ -109,6 +109,7 @@ MODULE_NAMES = [
     "nodes.shader.factory",
     "nodes.shader.reader",
     "nodes.dynamic_audio_operators",
+    "nodes.driven_values",
     "nodes.split_freqs",
     "ui",
     "ui.gn_menu",

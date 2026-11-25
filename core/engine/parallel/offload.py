@@ -298,6 +298,9 @@ class ParallelOffload:
             "job_key": f"g{self.generation_id}:q{queue_key}:f{int(frame_index)}:j{self.job_seq}",
         }
         job.update(packed)
+        overrides = getattr(graph, "param_overrides", None)
+        if overrides:
+            job["param_overrides"] = {node_id: dict(params) for node_id, params in overrides.items()}
         if include_graph_ir:
             job["graph_ir"] = dict(getattr(graph, "parallel_ir", {}) or {})
         return job, slot_keys

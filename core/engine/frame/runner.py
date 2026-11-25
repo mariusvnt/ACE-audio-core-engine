@@ -141,6 +141,10 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs"):
             self.engine.parallel.refresh_specs_params()
 
+        with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs#driven"):
+            from ....nodes.split_freqs import refresh_driven_splits
+            refresh_driven_splits(self.engine.graphs.values(), scene)
+
         # Flush background probe results before the compile so native_sample_rate
         # is populated for any sources whose probe thread has just completed.
         with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs#2"):

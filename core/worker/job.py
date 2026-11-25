@@ -184,6 +184,12 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
         _WORKER_GRAPH_CACHE[cache_key] = graph
         _trim_worker_cache()
 
+    # Linked parameter values change from frame to frame without a new graph.
+    for node_id, params in dict(job.get("param_overrides", {}) or {}).items():
+        task = graph.tasks.get(str(node_id))
+        if task is not None:
+            task.parameters.update(params)
+
     resolved_payloads = _resolve_source_payloads(job)
     graph.set_source_payloads(
         payloads=resolved_payloads,

@@ -4,6 +4,8 @@ import bpy
 import numpy as np
 import time
 from ... import utils
+from ..tasks.analyzer import AudioFluxAnalyzer
+from ..tasks.specs import SourceSpecsTask
 from .common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, persistent
 from .engine import ACEAudioEngine
 from .frontends import FrontendTracker
@@ -16,6 +18,18 @@ def _load_post_reset_engine(_dummy):
     _refresh_loaded_node_groups()
     _migrate_legacy_nodes()
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
+
+
+def hard_reset_engine(scene):
+    """Manual reset: drop every engine, worker and cache, bring the nodes up to date, compile anew."""
+    _load_post_reset_engine(None)
+    AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.clear()
+    SourceSpecsTask._GLOBAL_LONG_TERM_CACHE.clear()
+    engine = ACEAudioEngine.ensure_instance(scene)
+    if engine.discover_scene_frontends(scene):
+        engine.compile_scene_frontends(scene)
+        engine.execute_next_frame(scene, force=True)
+    return engine
 
 
 def _refresh_loaded_node_groups():
@@ -180,8 +194,6 @@ def depsgraph_update_handler(scene, depsgraph):
     """bpy.app.handlers.depsgraph_update_post: react to node-tree edits in real time."""
     engine = ACEAudioEngine.get_instance(scene)
     ace = getattr(scene, "audiocore", None)
-    engine_settings = getattr(ace, "engine_settings", None)
-    auto_compile_enabled = bool(ace and engine_settings and engine_settings.auto_compile)
 
     def _update_touches_ace_tree(update_id) -> bool:
         bl_idname = _id_type_name(update_id)
@@ -204,12 +216,11 @@ def depsgraph_update_handler(scene, depsgraph):
         return False
 
     if engine is not None and engine._undo_recovery_active():
-        if auto_compile_enabled:
-            for update in getattr(depsgraph, "updates", []) or []:
-                if _update_touches_ace_tree(_original_id(update)):
-                    with utils.logged_errors("handlers.depsgraph_update_handler"):
-                        engine.frontends.request_recompile(None)
-                    break
+        for update in getattr(depsgraph, "updates", []) or []:
+            if _update_touches_ace_tree(_original_id(update)):
+                with utils.logged_errors("handlers.depsgraph_update_handler"):
+                    engine.frontends.request_recompile(None)
+                break
         return
 
     if engine is not None:
@@ -224,7 +235,7 @@ def depsgraph_update_handler(scene, depsgraph):
                     or float(getattr(_src, "duration", 0.0) or 0.0) <= 0.0
                 ):
                     engine.probes._dispatch_async_probe(_fp)
-    if not auto_compile_enabled:
+    if ace is None:
         return
 
     engine = engine or ACEAudioEngine.ensure_instance(scene)
@@ -312,14 +323,13 @@ def depsgraph_update_handler(scene, depsgraph):
 
 
 def auto_compile_timer():
-    """bpy.app.timers callback (0.25 s): compile dirty trees when auto_compile is on."""
+    """bpy.app.timers callback (0.25 s): compile dirty trees."""
     with utils.logged_errors("handlers.auto_compile_timer"):
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         if scene is None:
             return 0.25
         ace = getattr(scene, "audiocore", None)
-        settings = getattr(ace, "engine_settings", None)
-        if ace and settings and settings.auto_compile:
+        if ace:
             engine = ACEAudioEngine.ensure_instance(scene)
             if engine._undo_recovery_active():
                 return 0.25

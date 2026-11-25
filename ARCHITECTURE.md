@@ -136,7 +136,8 @@ covered by local DSP.
   `use_lock_interface` off; viewport renders keep updating.
 - **Auto-compile.** Depsgraph updates mark trees dirty. A rebuild runs after a
   quiet window, or after 2 s of continuous edits, so link-editing does not
-  rebuild on every click.
+  rebuild on every click. It cannot be turned off; *Manual Engine Reset*
+  drops every engine, worker and cache and rebuilds, as a file load does.
 - **Undo.** The engine holds no RNA references across undo; an undo bumps the
   undo generation, drops in-flight results and rebuilds.
 - **UI sync.** A timer refreshes the N-panel from the compiled graph, throttled
