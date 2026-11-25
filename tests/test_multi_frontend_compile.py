@@ -254,10 +254,10 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._block_size_state = {}
         engine._bootstrap_retry_at = 0.0
         engine._bootstrap_fail_count = 0
-        engine._bake_cache = {}
-        engine._bake_jobs = {}
+        engine.bake._bake_cache = {}
+        engine.bake._bake_jobs = {}
         import queue as _queue
-        engine._bake_result_queue = _queue.Queue()
+        engine.bake._bake_result_queue = _queue.Queue()
         engine._source_specs_task_registry = {}
         engine._current_delta_frames = 1.0
         engine.diagnostics._pending_geometry_events = []

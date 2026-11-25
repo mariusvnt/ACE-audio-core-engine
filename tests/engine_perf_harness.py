@@ -187,6 +187,7 @@ def _load_engine_stack():
         "core.engine_preview",
         "core.engine_diagnostics",
         "core.engine_probes",
+        "core.engine_bake",
         "core.engine_handlers",
         "core.audio_tasks_registry",
         "core.parallel_dsp",

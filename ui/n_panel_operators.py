@@ -319,10 +319,10 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
             # entries are freed immediately rather than waiting for the next
             # compile's _prune_bake_cache() sweep.
             if src_uid:
-                entry = engine._bake_cache.pop(src_uid, None)
+                entry = engine.bake._bake_cache.pop(src_uid, None)
                 if isinstance(entry, dict):
                     with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute#3"):
-                        engine._cleanup_bake_entry(entry)
+                        engine.bake._cleanup_bake_entry(entry)
             engine._shutdown_graphs()
 
         return {'FINISHED'}
