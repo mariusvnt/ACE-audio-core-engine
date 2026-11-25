@@ -10,8 +10,8 @@ extend-exclude = ["_vendor", "tests/artifacts"]
 # checked by tests/test_error_handling.py, since ruff cannot see the helpers.
 select = ["E9", "F", "E722", "S110"]
 # Blender property annotations (name: bpy.props.X(...)) read as string
-# annotations to pyflakes.
-ignore = ["F722", "F821"]
+# annotations, which F722 reports.
+ignore = ["F722"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test cleanup blocks may ignore teardown failures.

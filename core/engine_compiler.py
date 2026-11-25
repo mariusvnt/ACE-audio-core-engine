@@ -1,5 +1,6 @@
 """Compile scene frontends into per-source runtime task graphs."""
 
+from dataclasses import dataclass
 import bpy
 import time
 from collections import OrderedDict
@@ -13,6 +14,25 @@ from .audio_tasks_registry import ACEAudioGraph, ACEAudioTask, AttackReleaseSpli
 from .id_management import ACEIdManager
 from .proxy_management import ACEProxyManager
 from .engine_common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, engine_settings
+
+
+@dataclass
+class _CompileContext:
+    """Values shared by the per-source compile steps."""
+
+    abstract_tree: Any
+    blender_scene: Any
+    fps: Any
+    engine_settings: Any
+    scheduler_mode: Any
+    timeslice_mode: Any
+    preview_block_size: Any
+    single_source_mode: Any
+    source_context_lookup: Any
+    stream_accumulator_state: Any
+    manual_preview_winner_id: Any
+    has_manual_preview: Any
+    sink_writes_allowed: Any
 
 
 class GraphCompiler:
@@ -58,30 +78,7 @@ class GraphCompiler:
         self.engine.frontends._pending_tree_ptr = 0
         self.engine.frontends._pending_tree_bl_idname = ""
         self.engine.frontends._pending_scene_rebuild = False
-        # Preserve stateful utility-node runtime across graph recompiles.
-        stream_accumulator_state: Dict[tuple[str, str], Dict[str, Any]] = {}
-        for graph_key, graph in dict(getattr(self.engine, "graphs", {}) or {}).items():
-            source_key = str(
-                getattr(graph, "source_uid", "")
-                or graph_key
-                or getattr(graph, "proxy_name", "")
-                or ""
-            )
-            if not source_key:
-                continue
-            for node_id, task in dict(getattr(graph, "tasks", {}) or {}).items():
-                if not isinstance(task, StreamAccumulatorTask):
-                    continue
-                export_fn = getattr(task, "export_state", None)
-                if not callable(export_fn):
-                    continue
-                try:
-                    state = dict(export_fn() or {})
-                except Exception as exc:
-                    utils.note_swallowed("audio_engine.ACEAudioEngine.compile", exc)
-                    state = {}
-                if state:
-                    stream_accumulator_state[(source_key, str(node_id))] = state
+        stream_accumulator_state = self._export_stream_accumulator_state()
         self.engine._shutdown_graphs()
         self.engine.parallel._parallel_reset_generation()
         self.engine.graphs.clear()
@@ -119,6 +116,62 @@ class GraphCompiler:
         )
         fallback_sr = self.engine.effective_sample_rate
 
+        source_runtime, source_context_lookup = self._resolve_sources(blender_scene, sources, fallback_sr, engine_settings, fps, timeslice_mode)
+        manual_preview_winner_id, has_manual_preview = self._resolve_preview_winner(abstract_tree)
+        ctx = _CompileContext(
+            abstract_tree=abstract_tree,
+            blender_scene=blender_scene,
+            fps=fps,
+            engine_settings=engine_settings,
+            scheduler_mode=scheduler_mode,
+            timeslice_mode=timeslice_mode,
+            preview_block_size=preview_block_size,
+            single_source_mode=single_source_mode,
+            source_context_lookup=source_context_lookup,
+            stream_accumulator_state=stream_accumulator_state,
+            manual_preview_winner_id=manual_preview_winner_id,
+            has_manual_preview=has_manual_preview,
+            sink_writes_allowed=sink_writes_allowed,
+        )
+        for runtime in source_runtime:
+            self._build_source_graph(ctx, runtime)
+
+        if self.engine.writer is not None and sink_writes_allowed:
+            self._prune_stale_consumer_properties()
+
+        with utils.logged_errors("audio_engine.ACEAudioEngine.compile#7"):
+            ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
+        self._last_compile_time = time.time()
+
+    def _export_stream_accumulator_state(self):
+        """Stream Accumulator state of the current graphs, keyed by (source, node), to restore after the rebuild."""
+        stream_accumulator_state: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for graph_key, graph in dict(getattr(self.engine, "graphs", {}) or {}).items():
+            source_key = str(
+                getattr(graph, "source_uid", "")
+                or graph_key
+                or getattr(graph, "proxy_name", "")
+                or ""
+            )
+            if not source_key:
+                continue
+            for node_id, task in dict(getattr(graph, "tasks", {}) or {}).items():
+                if not isinstance(task, StreamAccumulatorTask):
+                    continue
+                export_fn = getattr(task, "export_state", None)
+                if not callable(export_fn):
+                    continue
+                try:
+                    state = dict(export_fn() or {})
+                except Exception as exc:
+                    utils.note_swallowed("audio_engine.ACEAudioEngine.compile", exc)
+                    state = {}
+                if state:
+                    stream_accumulator_state[(source_key, str(node_id))] = state
+        return stream_accumulator_state
+
+    def _resolve_sources(self, blender_scene, sources, fallback_sr, engine_settings, fps, timeslice_mode):
+        """Proxy name, sample rate and block size per source, and a lookup by uid and proxy name."""
         existing_ids = [getattr(s, "stable_id", "") for s in getattr(blender_scene.audiocore, "audio_sources", []) if getattr(s, "stable_id", "")]
         source_runtime: list[dict[str, Any]] = []
         source_context_lookup: Dict[str, ACEAudioSource] = {}
@@ -165,7 +218,10 @@ class GraphCompiler:
                 "source_type": source_type,
                 "block_size": block_size,
             })
+        return source_runtime, source_context_lookup
 
+    def _resolve_preview_winner(self, abstract_tree):
+        """The one manual Audio Preview node that plays, if any."""
         manual_preview_winner_id, manual_preview_candidates = self.engine.preview._resolve_global_manual_preview_winner(
             abstract_tree
         )
@@ -180,222 +236,270 @@ class GraphCompiler:
                 "WARNING",
                 min_interval=2.0,
             )
+        return manual_preview_winner_id, has_manual_preview
 
-        for runtime in source_runtime:
-            source = runtime["source"]
-            src_uid = runtime["src_uid"]
-            src_proxy_name = runtime["src_proxy_name"]
-            source_sr = runtime["source_sr"]
-            source_type = runtime["source_type"]
-            block_size = runtime["block_size"]
-            required_node_ids = self._compute_required_node_ids_for_source(
+    def _build_source_graph(self, ctx, runtime):
+        """Build, wire and register the runtime graph of one source."""
+        required_node_ids = self._compute_required_node_ids_for_source(
+            ctx.abstract_tree,
+            runtime["src_uid"],
+            runtime["src_proxy_name"],
+            ctx.single_source_mode,
+            scheduler_mode=ctx.scheduler_mode,
+        )
+        graph = self._create_graph_tasks(ctx, runtime, required_node_ids)
+        self._wire_graph_links(ctx, graph, required_node_ids)
+        self._assign_graph_outputs(ctx, runtime, graph)
+        self._add_auto_preview_taps(ctx, runtime, graph)
+        self._index_source_tasks(graph)
+        self._register_graph(ctx, runtime, graph)
+
+    def _create_graph_tasks(self, ctx, runtime, required_node_ids):
+        """A graph for the source with one task per required node (accumulator state restored)."""
+        abstract_tree = ctx.abstract_tree
+        blender_scene = ctx.blender_scene
+        fps = ctx.fps
+        engine_settings = ctx.engine_settings
+        scheduler_mode = ctx.scheduler_mode
+        timeslice_mode = ctx.timeslice_mode
+        source_context_lookup = ctx.source_context_lookup
+        stream_accumulator_state = ctx.stream_accumulator_state
+        source = runtime["source"]
+        src_uid = runtime["src_uid"]
+        src_proxy_name = runtime["src_proxy_name"]
+        source_sr = runtime["source_sr"]
+        source_type = runtime["source_type"]
+        block_size = runtime["block_size"]
+        graph = ACEAudioGraph(source, src_proxy_name)
+        graph.source_uid = src_uid
+        graph.block_size = block_size
+        graph.scheduler_mode = scheduler_mode
+        graph.timeslice_mode = timeslice_mode
+        graph.proxy_lookup_fn = self.engine.sinks._lookup_proxy_object
+        for node_id in sorted(required_node_ids):
+            node = abstract_tree.nodes.get(node_id)
+            if node is None:
+                continue
+            task = self._create_task_for_node(node, block_size)
+            if task:
+                graph.tasks[node_id] = task
+                if isinstance(task, StreamAccumulatorTask):
+                    restore_source_keys = [
+                        str(src_uid or ""),
+                        str(src_proxy_name or ""),
+                    ]
+                    for restore_source_key in restore_source_keys:
+                        if not restore_source_key:
+                            continue
+                        state = stream_accumulator_state.get((restore_source_key, str(node_id)))
+                        if not state:
+                            continue
+                        import_fn = getattr(task, "import_state", None)
+                        if callable(import_fn):
+                            with utils.logged_errors("audio_engine.ACEAudioEngine.compile#4"):
+                                import_fn(state)
+                        break
+                task.engine_ref = self.engine
+                task.undo_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
+                task.resolve_block_size_fn = self._block_size_resolver(fps, source_sr, source_type, graph)
+                if isinstance(task, (SourceTask, SourceSpecsTask)):
+                    node_ctx = self._resolve_source_context_for_node(
+                        node,
+                        source_context_lookup,
+                        default_source=source,
+                    )
+                    task.source_context = node_ctx
+                task.scene_fps = fps
+                task.scene_frame_start = int(getattr(blender_scene, "frame_start", 1) or 1)
+                task.engine_settings = engine_settings
+        return graph
+
+    def _wire_graph_links(self, ctx, graph, required_node_ids):
+        """Connect the tasks along the abstract tree links."""
+        abstract_tree = ctx.abstract_tree
+        for link in abstract_tree.links:
+            if link.source_node_id not in required_node_ids or link.target_node_id not in required_node_ids:
+                continue
+            source_task = graph.tasks.get(link.source_node_id)
+            target_task = graph.tasks.get(link.target_node_id)
+
+            if source_task and target_task:
+                target_task.connect_input(
+                    input_idx=link.target_socket_idx,
+                    target_task=source_task,
+                    target_output_idx=link.source_socket_idx
+                )
+        self.engine.frame._rebuild_graph_execution_order(graph)
+
+    def _assign_graph_outputs(self, ctx, runtime, graph):
+        """Output keys, sink bindings and manual preview of the graph."""
+        abstract_tree = ctx.abstract_tree
+        single_source_mode = ctx.single_source_mode
+        manual_preview_winner_id = ctx.manual_preview_winner_id
+        has_manual_preview = ctx.has_manual_preview
+        src_uid = runtime["src_uid"]
+        src_proxy_name = runtime["src_proxy_name"]
+        filtered_keys = []
+        for k in self.engine.writer.output_defs.keys():
+            info = self.engine.writer.output_defs.get(k)
+            node = abstract_tree.nodes.get(info.get("node_id")) if info else None
+            if not node:
+                continue
+            if node.id not in graph.tasks:
+                continue
+            if not self._is_output_node(node):
+                continue
+            if not self._node_matches_source(node, src_uid, src_proxy_name, single_source_mode):
+                continue
+            filtered_keys.append(k)
+        graph.output_attr_keys = filtered_keys
+        graph.sink_bindings_by_attr = self.engine.sinks._resolve_sink_bindings_for_graph(
+            graph,
+            abstract_tree,
+            source_uid=src_uid,
+            proxy_name=src_proxy_name,
+            single_source_mode=single_source_mode,
+        )
+        self._rebuild_graph_output_slot_specs(graph)
+        graph.manual_preview_task_ids = []
+        if has_manual_preview and manual_preview_winner_id in graph.tasks:
+            graph.manual_preview_task_ids = [str(manual_preview_winner_id)]
+
+    def _add_auto_preview_taps(self, ctx, runtime, graph):
+        """Without a manual preview, tap Group Output audio links (passthrough or a preview sink)."""
+        abstract_tree = ctx.abstract_tree
+        blender_scene = ctx.blender_scene
+        fps = ctx.fps
+        engine_settings = ctx.engine_settings
+        preview_block_size = ctx.preview_block_size
+        single_source_mode = ctx.single_source_mode
+        has_manual_preview = ctx.has_manual_preview
+        src_uid = runtime["src_uid"]
+        src_proxy_name = runtime["src_proxy_name"]
+        source_sr = runtime["source_sr"]
+        source_type = runtime["source_type"]
+        auto_preview_task_ids: list[str] = []
+        auto_preview_passthrough_specs: list[tuple[str, int]] = []
+        if not has_manual_preview:
+            auto_preview_specs = self._group_output_preview_specs_for_source(
                 abstract_tree,
                 src_uid,
                 src_proxy_name,
                 single_source_mode,
-                scheduler_mode=scheduler_mode,
             )
-            graph = ACEAudioGraph(source, src_proxy_name)
-            graph.source_uid = src_uid
-            graph.block_size = block_size
-            graph.scheduler_mode = scheduler_mode
-            graph.timeslice_mode = timeslice_mode
-            graph.proxy_lookup_fn = self.engine.sinks._lookup_proxy_object
-            for node_id in sorted(required_node_ids):
-                node = abstract_tree.nodes.get(node_id)
-                if node is None:
+            for upstream_node_id, upstream_sock_idx in auto_preview_specs:
+                upstream_task = graph.tasks.get(upstream_node_id)
+                if upstream_task is None:
                     continue
-                task = self._create_task_for_node(node, block_size)
-                if task:
-                    graph.tasks[node_id] = task
-                    if isinstance(task, StreamAccumulatorTask):
-                        restore_source_keys = [
-                            str(src_uid or ""),
-                            str(src_proxy_name or ""),
-                        ]
-                        for restore_source_key in restore_source_keys:
-                            if not restore_source_key:
-                                continue
-                            state = stream_accumulator_state.get((restore_source_key, str(node_id)))
-                            if not state:
-                                continue
-                            import_fn = getattr(task, "import_state", None)
-                            if callable(import_fn):
-                                with utils.logged_errors("audio_engine.ACEAudioEngine.compile#4"):
-                                    import_fn(state)
-                            break
-                    task.engine_ref = self.engine
-                    task.undo_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
-                    task.resolve_block_size_fn = (
-                        lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self.engine:
-                        eng.frame._resolve_block_size(
-                            sr or src_sr,
-                            fps_val,
-                            source_type=src_type,
-                            timeslice_mode=getattr(g, "timeslice_mode", eng.frame._timeslice_mode()),
-                            delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
-                        )
-                    )
-                    if isinstance(task, (SourceTask, SourceSpecsTask)):
-                        node_ctx = self._resolve_source_context_for_node(
-                            node,
-                            source_context_lookup,
-                            default_source=source,
-                        )
-                        task.source_context = node_ctx
-                    task.scene_fps = fps
-                    task.scene_frame_start = int(getattr(blender_scene, "frame_start", 1) or 1)
-                    task.engine_settings = engine_settings
-
-            for link in abstract_tree.links:
-                if link.source_node_id not in required_node_ids or link.target_node_id not in required_node_ids:
+                upstream_node = abstract_tree.nodes.get(upstream_node_id)
+                if (
+                    isinstance(upstream_task, SourceTask)
+                    and upstream_node is not None
+                    and str(getattr(upstream_node, "category", "")) == "source_mngmt"
+                    and str(getattr(upstream_node, "type", "")) == "src"
+                ):
+                    auto_preview_passthrough_specs.append((str(upstream_node_id), int(upstream_sock_idx)))
                     continue
-                source_task = graph.tasks.get(link.source_node_id)
-                target_task = graph.tasks.get(link.target_node_id)
-
-                if source_task and target_task:
-                    target_task.connect_input(
-                        input_idx=link.target_socket_idx,
-                        target_task=source_task,
-                        target_output_idx=link.source_socket_idx
-                    )
-            self.engine.frame._rebuild_graph_execution_order(graph)
-
-            filtered_keys = []
-            for k in self.engine.writer.output_defs.keys():
-                info = self.engine.writer.output_defs.get(k)
-                node = abstract_tree.nodes.get(info.get("node_id")) if info else None
-                if not node:
+                auto_task_id = f"__ace_auto_preview__{upstream_node_id}_{int(upstream_sock_idx)}"
+                if auto_task_id in graph.tasks:
                     continue
-                if node.id not in graph.tasks:
-                    continue
-                if not self._is_output_node(node):
-                    continue
-                if not self._node_matches_source(node, src_uid, src_proxy_name, single_source_mode):
-                    continue
-                filtered_keys.append(k)
-            graph.output_attr_keys = filtered_keys
-            graph.sink_bindings_by_attr = self.engine.sinks._resolve_sink_bindings_for_graph(
-                graph,
-                abstract_tree,
-                source_uid=src_uid,
-                proxy_name=src_proxy_name,
-                single_source_mode=single_source_mode,
-            )
-            self._rebuild_graph_output_slot_specs(graph)
-            graph.manual_preview_task_ids = []
-            if has_manual_preview and manual_preview_winner_id in graph.tasks:
-                graph.manual_preview_task_ids = [str(manual_preview_winner_id)]
-
-            auto_preview_task_ids: list[str] = []
-            auto_preview_passthrough_specs: list[tuple[str, int]] = []
-            if not has_manual_preview:
-                auto_preview_specs = self._group_output_preview_specs_for_source(
-                    abstract_tree,
-                    src_uid,
-                    src_proxy_name,
-                    single_source_mode,
+                preview_task = PreviewSinkTask(auto_task_id, {"preview_enabled": True}, int(preview_block_size))
+                preview_task.engine_ref = self.engine
+                preview_task.resolve_block_size_fn = self._block_size_resolver(fps, source_sr, source_type, graph)
+                preview_task.scene_fps = fps
+                preview_task.scene_frame_start = int(getattr(blender_scene, "frame_start", 1) or 1)
+                preview_task.engine_settings = engine_settings
+                preview_task.connect_input(
+                    input_idx=0,
+                    target_task=upstream_task,
+                    target_output_idx=int(upstream_sock_idx),
                 )
-                for upstream_node_id, upstream_sock_idx in auto_preview_specs:
-                    upstream_task = graph.tasks.get(upstream_node_id)
-                    if upstream_task is None:
-                        continue
-                    upstream_node = abstract_tree.nodes.get(upstream_node_id)
-                    if (
-                        isinstance(upstream_task, SourceTask)
-                        and upstream_node is not None
-                        and str(getattr(upstream_node, "category", "")) == "source_mngmt"
-                        and str(getattr(upstream_node, "type", "")) == "src"
-                    ):
-                        auto_preview_passthrough_specs.append((str(upstream_node_id), int(upstream_sock_idx)))
-                        continue
-                    auto_task_id = f"__ace_auto_preview__{upstream_node_id}_{int(upstream_sock_idx)}"
-                    if auto_task_id in graph.tasks:
-                        continue
-                    preview_task = PreviewSinkTask(auto_task_id, {"preview_enabled": True}, int(preview_block_size))
-                    preview_task.engine_ref = self.engine
-                    preview_task.resolve_block_size_fn = (
-                        lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self.engine:
-                        eng.frame._resolve_block_size(
-                            sr or src_sr,
-                            fps_val,
-                            source_type=src_type,
-                            timeslice_mode=getattr(g, "timeslice_mode", eng.frame._timeslice_mode()),
-                            delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
-                        )
-                    )
-                    preview_task.scene_fps = fps
-                    preview_task.scene_frame_start = int(getattr(blender_scene, "frame_start", 1) or 1)
-                    preview_task.engine_settings = engine_settings
-                    preview_task.connect_input(
-                        input_idx=0,
-                        target_task=upstream_task,
-                        target_output_idx=int(upstream_sock_idx),
-                    )
-                    graph.tasks[auto_task_id] = preview_task
-                    auto_preview_task_ids.append(auto_task_id)
+                graph.tasks[auto_task_id] = preview_task
+                auto_preview_task_ids.append(auto_task_id)
 
-            graph.auto_preview_task_ids = sorted(auto_preview_task_ids)
-            graph.auto_preview_passthrough_specs = sorted(set(auto_preview_passthrough_specs))
-            # A single manual Audio Preview node wins globally; otherwise use per-graph auto taps.
-            if has_manual_preview:
-                graph.preview_task_ids = list(graph.manual_preview_task_ids)
+        graph.auto_preview_task_ids = sorted(auto_preview_task_ids)
+        graph.auto_preview_passthrough_specs = sorted(set(auto_preview_passthrough_specs))
+        # A single manual Audio Preview node wins globally; otherwise use per-graph auto taps.
+        if has_manual_preview:
+            graph.preview_task_ids = list(graph.manual_preview_task_ids)
+        else:
+            graph.preview_task_ids = list(graph.auto_preview_task_ids)
+
+    def _index_source_tasks(self, graph):
+        """Cache which tasks are sources, live and file."""
+        source_task_ids: list[str] = []
+        live_source_task_ids: list[str] = []
+        file_source_task_ids: list[str] = []
+        for node_id, task in graph.tasks.items():
+            if not isinstance(task, SourceTask):
+                continue
+            source_task_ids.append(node_id)
+            source_kind = str(getattr(getattr(task, "source_context", None), "source_type", "") or "").upper()
+            if source_kind == "LIVE":
+                live_source_task_ids.append(node_id)
             else:
-                graph.preview_task_ids = list(graph.auto_preview_task_ids)
-            source_task_ids: list[str] = []
-            live_source_task_ids: list[str] = []
-            file_source_task_ids: list[str] = []
-            for node_id, task in graph.tasks.items():
-                if not isinstance(task, SourceTask):
-                    continue
-                source_task_ids.append(node_id)
-                source_kind = str(getattr(getattr(task, "source_context", None), "source_type", "") or "").upper()
-                if source_kind == "LIVE":
-                    live_source_task_ids.append(node_id)
-                else:
-                    file_source_task_ids.append(node_id)
-            graph.source_task_ids = source_task_ids
-            graph.live_source_task_ids = live_source_task_ids
-            graph.file_source_task_ids = file_source_task_ids
-            # _prepare_parallel_graph_ir() reads BPM/beats-per-bar from this source
-            # context, so it must be set before the IR is built.
-            graph.source_context = source
-            self.engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
-            self.engine.graphs[src_uid] = graph
-            self.engine._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
+                file_source_task_ids.append(node_id)
+        graph.source_task_ids = source_task_ids
+        graph.live_source_task_ids = live_source_task_ids
+        graph.file_source_task_ids = file_source_task_ids
 
-            if self.engine.writer is not None and sink_writes_allowed:
-                with utils.logged_errors("audio_engine.ACEAudioEngine.compile#5"):
-                    self.engine.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
-                    self.engine._last_attr_sync_frame[src_uid] = int(self.engine.current_frame)
-            elif self.engine.writer is not None and self.engine._is_rendering_job():
-                utils.log_throttled(
-                    "render_lock_interface_compile_stage_c",
-                    "Skipping ACE sink layout writes during render. Enable Render > Lock Interface for safe handler updates.",
-                    "WARNING",
-                    min_interval=5.0,
-                )
+    def _register_graph(self, ctx, runtime, graph):
+        """Build the worker IR, store the graph and lay out its sinks."""
+        abstract_tree = ctx.abstract_tree
+        sink_writes_allowed = ctx.sink_writes_allowed
+        source = runtime["source"]
+        src_uid = runtime["src_uid"]
+        # _prepare_parallel_graph_ir() reads BPM/beats-per-bar from this source
+        # context, so it must be set before the IR is built.
+        graph.source_context = source
+        self.engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
+        self.engine.graphs[src_uid] = graph
+        self.engine._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
 
-        # Prune stale ACE_* custom properties from consumer objects.
-        # After all graphs' sink bindings are resolved, build the active set
-        # and remove any ACE_ props that are no longer written by the engine.
         if self.engine.writer is not None and sink_writes_allowed:
-            with utils.logged_errors("audio_engine.ACEAudioEngine.compile#6"):
-                active_props_by_object: Dict[str, Set[str]] = {}
-                for g in self.engine.graphs.values():
-                    for bindings in getattr(g, "sink_bindings_by_attr", {}).values():
-                        for binding in (bindings or []):
-                            if str(getattr(binding, "sink_kind", "") or "") != "OBJECT_PROPERTY":
-                                continue
-                            obj_name = str(getattr(binding, "target_object_name", "") or "")
-                            prop_name = str(getattr(binding, "target_data_name", "") or "")
-                            if obj_name and prop_name:
-                                active_props_by_object.setdefault(obj_name, set()).add(prop_name)
-                self.engine.writer.prune_consumer_objects(active_props_by_object)
+            with utils.logged_errors("audio_engine.ACEAudioEngine.compile#5"):
+                self.engine.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
+                self.engine._last_attr_sync_frame[src_uid] = int(self.engine.current_frame)
+        elif self.engine.writer is not None and self.engine._is_rendering_job():
+            utils.log_throttled(
+                "render_lock_interface_compile_stage_c",
+                "Skipping ACE sink layout writes during render. Enable Render > Lock Interface for safe handler updates.",
+                "WARNING",
+                min_interval=5.0,
+            )
 
-        with utils.logged_errors("audio_engine.ACEAudioEngine.compile#7"):
-            ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
-        self._last_compile_time = time.time()
+    def _prune_stale_consumer_properties(self):
+        """Remove ACE_* custom properties that no graph writes any more."""
+        # Runs after every graph's sink bindings are resolved; the caller checks
+        # that a writer exists and sink writes are allowed.
+        with utils.logged_errors("audio_engine.ACEAudioEngine.compile#6"):
+            active_props_by_object: Dict[str, Set[str]] = {}
+            for g in self.engine.graphs.values():
+                for bindings in getattr(g, "sink_bindings_by_attr", {}).values():
+                    for binding in (bindings or []):
+                        if str(getattr(binding, "sink_kind", "") or "") != "OBJECT_PROPERTY":
+                            continue
+                        obj_name = str(getattr(binding, "target_object_name", "") or "")
+                        prop_name = str(getattr(binding, "target_data_name", "") or "")
+                        if obj_name and prop_name:
+                            active_props_by_object.setdefault(obj_name, set()).add(prop_name)
+            self.engine.writer.prune_consumer_objects(active_props_by_object)
+
+    def _block_size_resolver(self, fps, source_sr, source_type, graph):
+        """Block-size callback for a task: follows the graph's timeslice mode and the frame delta.
+
+        Tasks call it as (sample_rate, fps, source_type=..., timeslice_mode=...,
+        delta_frames=...); the source type, the graph's timeslice mode and the
+        engine's frame delta are the ones that count, so those hints are ignored.
+        """
+        eng = self.engine
+        return lambda sr=None, fps_val=fps, **_caller_hints: eng.frame._resolve_block_size(
+            sr or source_sr,
+            fps_val,
+            source_type=source_type,
+            timeslice_mode=getattr(graph, "timeslice_mode", eng.frame._timeslice_mode()),
+            delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
+        )
 
     def compile_scene_frontends(self, scene, preferred_tree=None):
         """Discover, parse, merge, and compile all ACE frontends in the scene."""
