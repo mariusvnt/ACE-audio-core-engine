@@ -746,7 +746,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             ],
         )
 
-        bindings = engine._resolve_sink_bindings_for_graph(
+        bindings = engine.sinks._resolve_sink_bindings_for_graph(
             graph,
             tree,
             source_uid="src_a",
@@ -805,7 +805,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             ],
         )
 
-        bindings = engine._resolve_sink_bindings_for_graph(
+        bindings = engine.sinks._resolve_sink_bindings_for_graph(
             graph,
             tree,
             source_uid="src_a",
@@ -858,14 +858,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
             lambda cls, node, proxy_name="", scene=None, attr_names_by_idx=None: True
         )
         try:
-            changed, changed_node_ids = engine._sync_shader_output_ids(shader_tree, abstract_tree, scene)
+            changed, changed_node_ids = engine.sinks._sync_shader_output_ids(shader_tree, abstract_tree, scene)
         finally:
             self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
 
         expected_topology = "[\"src_b\"]|[]"
         # Shader sinks are one custom property per node instance, so their
         # names leave out the topology signature (it is still stored).
-        expected_name = engine._build_auto_attr_name(
+        expected_name = engine.sinks._build_auto_attr_name(
             "ACE_PROXY_b",
             "node_shader",
             "RMS",
@@ -930,7 +930,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
         self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = classmethod(_fake_sync)
         try:
-            changed, changed_node_ids = engine._sync_shader_output_ids(shader_tree, abstract_tree, scene)
+            changed, changed_node_ids = engine.sinks._sync_shader_output_ids(shader_tree, abstract_tree, scene)
         finally:
             self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
 
