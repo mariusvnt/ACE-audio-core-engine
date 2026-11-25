@@ -1,6 +1,7 @@
 import math
 
 import bpy # type: ignore
+from .. import utils
 from .dummy_tree import ACEDummyNodeFactory
 
 
@@ -35,10 +36,8 @@ def _ensure_variant_group(name: str, tree_or_type) -> bpy.types.NodeTree | None:
     tree_type = _tree_bl_idname(tree_or_type)
     ng = bpy.data.node_groups.get(name)
     if ng is not None and getattr(ng, "bl_idname", "") != tree_type:
-        try:
+        with utils.logged_errors("dynamic_audio_operators._ensure_variant_group"):
             bpy.data.node_groups.remove(ng)
-        except Exception:
-            pass
         ng = None
     if ng is None:
         ng = bpy.data.node_groups.new(name, tree_type)
@@ -71,10 +70,8 @@ class ACESplitterManager:
                 ACESplitterManager._ensure_split_socket_limits(ng)
                 ACESplitterManager._ensure_variant_internals(ng, band_count)
                 return ng
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager.get_or_create_variant"):
                 bpy.data.node_groups.remove(ng)
-            except Exception:
-                pass
             
         # 3. Create New Blueprint
         return ACESplitterManager._build_variant(variant_name, band_count, tree_or_type)
@@ -97,10 +94,8 @@ class ACESplitterManager:
             mid = name[len(prefix):-len("_bands")]
             if not mid.isdigit():
                 continue
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager.refresh_existing_variants"):
                 ACESplitterManager.get_or_create_variant(int(mid), tree_or_type)
-            except Exception:
-                pass
         # Ensure baseline variant exists for fresh sessions.
         ACESplitterManager.get_or_create_variant(2, tree_or_type)
 
@@ -142,26 +137,16 @@ class ACESplitterManager:
 
     @staticmethod
     def _set_interface_socket_limits(sock):
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits"):
             sock.min_value = 0.0
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#2"):
             sock.max_value = 20000.0
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#3"):
             sock.soft_min = 20.0
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#4"):
             sock.soft_max = 20000.0
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#5"):
             sock.default_value = float(min(max(float(sock.default_value), 20.0), 20000.0))
-        except Exception:
-            pass
 
     @staticmethod
     def _ensure_split_socket_limits(ng: bpy.types.NodeTree):
@@ -169,7 +154,8 @@ class ACESplitterManager:
             try:
                 if getattr(item, "in_out", "") == 'INPUT' and str(getattr(item, "name", "")).startswith("Split Freq"):
                     ACESplitterManager._set_interface_socket_limits(item)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._ensure_split_socket_limits", exc)
                 continue
 
     @staticmethod
@@ -177,22 +163,14 @@ class ACESplitterManager:
         for idx, sock in enumerate(getattr(node, "inputs", [])):
             if idx == 0:
                 continue
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits"):
                 sock.min_value = 0.0
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits#2"):
                 sock.max_value = 20000.0
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits#3"):
                 sock.soft_min = 20.0
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits#4"):
                 sock.soft_max = 20000.0
-            except Exception:
-                pass
 
     @staticmethod
     def _variant_has_current_internals(ng: bpy.types.NodeTree) -> bool:
@@ -205,10 +183,8 @@ class ACESplitterManager:
     def _ensure_variant_internals(ng: bpy.types.NodeTree, band_count: int):
         if ACESplitterManager._variant_has_current_internals(ng):
             return
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_variant_internals"):
             ng.nodes.clear()
-        except Exception:
-            pass
         ACESplitterManager._build_variant_internals(ng, band_count)
 
     @staticmethod
@@ -250,7 +226,8 @@ class ACESplitterManager:
             geo_item = combine_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
             try:
                 ng.links.new(sep_bundle.outputs[0], combine_bundle.inputs[geo_item.name])
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._build_variant_internals", exc)
                 ng.links.new(sep_bundle.outputs[0], combine_bundle.inputs[0])
 
             for split_idx in range(split_count):
@@ -262,19 +239,19 @@ class ACESplitterManager:
                     try:
                         freq_item = combine_bundle.bundle_items.new(data_kind, f"Split Freq {split_idx + 1}")
                         break
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._build_variant_internals#2", exc)
                         freq_item = None
                 if freq_item is None:
                     continue
                 try:
                     ng.links.new(input_node.outputs[input_idx], combine_bundle.inputs[freq_item.name])
-                except Exception:
-                    try:
+                except Exception as exc:
+                    utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._build_variant_internals#3", exc)
+                    with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._build_variant_internals#4"):
                         last_idx = len(getattr(combine_bundle, "inputs", [])) - 1
                         if last_idx >= 0:
                             ng.links.new(input_node.outputs[input_idx], combine_bundle.inputs[last_idx])
-                    except Exception:
-                        pass
 
             ng.links.new(combine_bundle.outputs[0], output_node.inputs[out_idx])
 
@@ -372,10 +349,8 @@ class ACEAudioMathManager:
             if getattr(ng, "bl_idname", "") == tree_type:
                 ACEAudioMathManager._ensure_variant_internals(ng, count)
                 return ng
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACEAudioMathManager.get_or_create_variant"):
                 bpy.data.node_groups.remove(ng)
-            except Exception:
-                pass
 
         return ACEAudioMathManager._build_variant(variant_name, count, tree_or_type)
 
@@ -393,10 +368,8 @@ class ACEAudioMathManager:
             mid = name[len(prefix):-len("_inputs")]
             if not mid.isdigit():
                 continue
-            try:
+            with utils.logged_errors("dynamic_audio_operators.ACEAudioMathManager.refresh_existing_variants"):
                 ACEAudioMathManager.get_or_create_variant(int(mid), tree_or_type)
-            except Exception:
-                pass
         ACEAudioMathManager.get_or_create_variant(2, tree_or_type)
 
     @staticmethod
@@ -410,10 +383,8 @@ class ACEAudioMathManager:
     def _ensure_variant_internals(ng: bpy.types.NodeTree, input_count: int):
         if ACEAudioMathManager._variant_has_current_internals(ng):
             return
-        try:
+        with utils.logged_errors("dynamic_audio_operators.ACEAudioMathManager._ensure_variant_internals"):
             ng.nodes.clear()
-        except Exception:
-            pass
         ACEAudioMathManager._build_variant_internals(ng, input_count)
 
     @staticmethod
@@ -479,7 +450,8 @@ class ACEAudioMathManager:
 
             try:
                 ng.links.new(sep_bundle.outputs[0], join_geo.inputs['Geometry'])
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dynamic_audio_operators.ACEAudioMathManager._build_variant_internals", exc)
                 ng.links.new(sep_bundle.outputs[0], join_geo.inputs[0])
 
         combine_bundle = ng.nodes.new('NodeCombineBundle')
@@ -488,7 +460,8 @@ class ACEAudioMathManager:
         geo_item = combine_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
         try:
             ng.links.new(join_geo.outputs[0], combine_bundle.inputs[geo_item.name])
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dynamic_audio_operators.ACEAudioMathManager._build_variant_internals#2", exc)
             ng.links.new(join_geo.outputs[0], combine_bundle.inputs[0])
 
         if len(getattr(output_node, "inputs", [])) > 0:

@@ -26,7 +26,7 @@ def _ensure_dependency_paths():
     try:
         from . import utils as _ace_utils
         _ace_utils.ensure_dependency_vendor_path(create=True)
-    except Exception:
+    except ImportError:
         vendor_path = os.path.join(os.path.dirname(__file__), "_vendor")
         if vendor_path and os.path.isdir(vendor_path) and vendor_path not in sys.path:
             sys.path.insert(0, vendor_path)
@@ -74,13 +74,28 @@ def _import_or_reload_submodule(module_name: str):
         return importlib.reload(sys.modules[qualified_name])
     return importlib.import_module(f".{module_name}", PACKAGE_NAME)
 
+def _remove_handlers_and_timers(log):
+    """Remove ACE handlers and timers; safe to call when they were never added."""
+    try:
+        from .core.audio_engine import unregister_handlers
+        unregister_handlers()
+    except Exception as exc:  # noqa: BLE001 boundary: teardown must reach the timer below
+        log(f"Removing ACE handlers failed: {exc}", 'ERROR')
+    try:
+        import bpy  # type: ignore
+        from .properties import _live_device_cache_timer
+        if bpy.app.timers.is_registered(_live_device_cache_timer):
+            bpy.app.timers.unregister(_live_device_cache_timer)
+    except Exception as exc:  # noqa: BLE001 boundary: teardown
+        log(f"Removing the live-device timer failed: {exc}", 'ERROR')
+
+
 # --- MAIN REGISTRATION ---
 
 def register():
     """Register all submodules in the correct order."""
 
     from .utils import log
-    global modules
     modules.clear()
 
     imported_modules = []
@@ -97,29 +112,26 @@ def register():
                 register_fn()
                 registered_modules.append(module)
 
-        try:
-            from .core.audio_engine import register_handlers
-            register_handlers()
-        except (ImportError, AttributeError):
-            pass
-        try:
-            import bpy  # type: ignore
-            from .properties import _live_device_cache_timer
-            if not bpy.app.timers.is_registered(_live_device_cache_timer):
-                bpy.app.timers.register(_live_device_cache_timer, first_interval=0.1, persistent=True)
-        except Exception:
-            pass
+        # A failure here is a registration failure: without handlers the
+        # engine never runs, so it goes to the rollback below.
+        from .core.audio_engine import register_handlers
+        register_handlers()
+        import bpy  # type: ignore
+        from .properties import _live_device_cache_timer
+        if not bpy.app.timers.is_registered(_live_device_cache_timer):
+            bpy.app.timers.register(_live_device_cache_timer, first_interval=0.1, persistent=True)
 
         modules[:] = imported_modules
         log(f"Registered successfully ({len(modules)} modules).")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 boundary: roll back, then re-raise
         log(f"Registration failed: {e}", 'ERROR')
+        _remove_handlers_and_timers(log)
         for module in reversed(registered_modules):
             unregister_fn = getattr(module, "unregister", None)
             if callable(unregister_fn):
                 try:
                     unregister_fn()
-                except Exception as rollback_error:
+                except Exception as rollback_error:  # noqa: BLE001 boundary: keep rolling back
                     log(
                         f"Rollback failed for module '{module.__name__}': {rollback_error}",
                         'ERROR',
@@ -131,28 +143,16 @@ def unregister():
     """Unregister all submodules in reverse order."""
 
     from .utils import log
-    global modules
-    
+
     # 1. Remove Handlers
-    try:
-        from .core.audio_engine import unregister_handlers
-        unregister_handlers()
-    except (ImportError, AttributeError):
-        pass
-    try:
-        import bpy  # type: ignore
-        from .properties import _live_device_cache_timer
-        if bpy.app.timers.is_registered(_live_device_cache_timer):
-            bpy.app.timers.unregister(_live_device_cache_timer)
-    except Exception:
-        pass
+    _remove_handlers_and_timers(log)
 
     # 2. Unregister Blender Classes
     for module in reversed(list(modules)):
         if hasattr(module, "unregister"):
             try:
                 module.unregister()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 boundary: unregister every module
                 log(f"Failed to unregister module '{module.__name__}': {e}", 'ERROR')
     
     modules.clear()

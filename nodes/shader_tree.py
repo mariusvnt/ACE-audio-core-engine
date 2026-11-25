@@ -40,7 +40,8 @@ class ACEShaderNodeFactory:
                 default=str,
             ).encode("utf-8")
             return hashlib.blake2b(serialized, digest_size=8).hexdigest()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._ace_nodes_hash", exc)
             return ""
 
     @staticmethod
@@ -72,7 +73,8 @@ class ACEShaderNodeFactory:
         for candidate in candidates:
             try:
                 return ng.interface.new_socket(sock_name, in_out=in_out, socket_type=candidate)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._new_socket", exc)
                 continue
         return None
 
@@ -198,7 +200,8 @@ class ACEShaderNodeFactory:
         for attr_name in ("socket_type", "bl_socket_idname", "type"):
             try:
                 raw = getattr(item, attr_name, "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._interface_socket_type", exc)
                 raw = ""
             token = str(raw or "")
             if token:
@@ -242,7 +245,8 @@ class ACEShaderNodeFactory:
                 for item in ng.interface.items_tree
                 if getattr(item, "in_out", None) == "OUTPUT"
             }
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._node_group_needs_refresh", exc)
             return True
         if not expected_inputs.issubset(set(inputs.keys())) or not expected_outputs.issubset(set(outputs.keys())):
             return True
@@ -307,7 +311,8 @@ class ACEShaderNodeFactory:
                             continue
                         if not list(getattr(inp, "links", []) or []):
                             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._node_group_needs_refresh#2", exc)
             return True
         return False
 
@@ -338,7 +343,8 @@ class ACEShaderNodeFactory:
                     attr_node.attribute_type = enum_token
                     changed = True
                     break
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("shader_tree.ACEShaderNodeFactory._set_attr_node_defaults", exc)
                     continue
         name = str(attr_name or "").strip()
         if not name:
@@ -353,15 +359,14 @@ class ACEShaderNodeFactory:
                 continue
             try:
                 current_name = str(getattr(attr_node, prop_name, "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._set_attr_node_defaults#2", exc)
                 current_name = ""
             if current_name == name:
                 continue
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._set_attr_node_defaults#3"):
                 setattr(attr_node, prop_name, name)
                 changed = True
-            except Exception:
-                pass
         return changed
 
     @staticmethod
@@ -389,7 +394,8 @@ class ACEShaderNodeFactory:
             return None
         try:
             sink_node = ng.nodes.new("ShaderNodeAttribute")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._create_output_sink_node", exc)
             return None
         sink_kind = "ATTRIBUTE"
         cls._set_attr_node_defaults(
@@ -399,23 +405,15 @@ class ACEShaderNodeFactory:
         out_sock = cls._shader_attr_output_socket(sink_node, socket_type)
 
         sink_node.location = (300, -200 - (int(output_idx) * 150))
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._create_output_sink_node#2"):
             sink_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._create_output_sink_node#3"):
             sink_node[cls._OUTPUT_NODE_KIND_KEY] = str(sink_kind)
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._create_output_sink_node#4"):
             sink_node["ace_shader_output_name"] = str(socket_name or "")
-        except Exception:
-            pass
         if out_sock is not None:
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._create_output_sink_node#5"):
                 ng.links.new(out_sock, output_node.inputs[int(output_idx)])
-            except Exception:
-                pass
         return sink_node
 
     @classmethod
@@ -431,16 +429,15 @@ class ACEShaderNodeFactory:
                 ),
                 None,
             )
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._set_socket_default", exc)
             item = None
         if item is None:
             return
         if not hasattr(item, "default_value"):
             return
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._set_socket_default#2"):
             item.default_value = default_value
-        except Exception:
-            pass
 
     @classmethod
     def _ensure_attr_interface_visible(cls, ng, category: str, node_type: str):
@@ -454,10 +451,8 @@ class ACEShaderNodeFactory:
                 None,
             )
             if item is not None and hasattr(item, "hide_value"):
-                try:
+                with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_attr_interface_visible"):
                     item.hide_value = False
-                except Exception:
-                    pass
 
     @staticmethod
     def _bundle_item_candidates_for_socket(socket_type: str) -> tuple[str, ...]:
@@ -481,7 +476,8 @@ class ACEShaderNodeFactory:
         for item_type in candidates:
             try:
                 return bundle_node.bundle_items.new(item_type, item_name)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._safe_bundle_item", exc)
                 continue
         return None
 
@@ -492,7 +488,8 @@ class ACEShaderNodeFactory:
             reroute.location = (int(location_x), int(location_y))
             ng.links.new(source_socket, reroute.inputs[0])
             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._link_or_consume_reroute", exc)
             return False
 
     @classmethod
@@ -513,20 +510,16 @@ class ACEShaderNodeFactory:
                     continue
                 name = str(getattr(item, "name", "") or "")
                 if name == "Window (s)":
-                    try:
+                    with utils.logged_errors("shader_tree.ACEShaderNodeFactory._build_group_content"):
                         item.default_value = 0.4
-                    except Exception:
-                        pass
                     for attr_name, value in (
                         ("min_value", 0.05),
                         ("max_value", 3.0),
                         ("soft_min", 0.05),
                         ("soft_max", 3.0),
                     ):
-                        try:
+                        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._build_group_content#2"):
                             setattr(item, attr_name, value)
-                        except Exception:
-                            pass
 
         for sock_type_str, sock_name, default_value in extra_inputs:
             cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
@@ -585,10 +578,8 @@ class ACEShaderNodeFactory:
             if _bundle_in is not None:
                 for output_idx in bundle_output_indices:
                     if output_idx < len(getattr(output_node, "inputs", [])):
-                        try:
+                        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._build_group_content#3"):
                             ng.links.new(_bundle_in, output_node.inputs[int(output_idx)])
-                        except Exception:
-                            pass
 
         # Consume every non-helper, non-primary-bundle input via reroute.
         for _ci, (socket_type, socket_name) in enumerate(all_inputs):
@@ -614,10 +605,8 @@ class ACEShaderNodeFactory:
             source_out = helper_source_by_idx.get(int(output_idx))
             if source_out is None:
                 continue
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._build_group_content#4"):
                 ng.links.new(source_out, output_node.inputs[int(output_idx)])
-            except Exception:
-                pass
 
         # LUFS-specific shader equivalent of the GN index-driver trick:
         # Window * 0 + 1 multiplies each scalar property output by 1, preserving
@@ -647,10 +636,8 @@ class ACEShaderNodeFactory:
                     socket_type = str(base_outputs[output_idx][0] or "")
                     target_input = output_node.inputs[int(output_idx)]
                     for link in list(getattr(target_input, "links", []) or []):
-                        try:
+                        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._build_group_content#5"):
                             ng.links.remove(link)
-                        except Exception:
-                            pass
                     if source_out is None:
                         continue
 
@@ -662,7 +649,8 @@ class ACEShaderNodeFactory:
                         scale_input = None
                         try:
                             scale_input = vec_mul.inputs.get("Scale")
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._build_group_content#6", exc)
                             scale_input = None
                         if scale_input is None and len(getattr(vec_mul, "inputs", [])) > 1:
                             scale_input = vec_mul.inputs[1]
@@ -734,11 +722,9 @@ class ACEShaderNodeFactory:
 
         changed = False
         if current_group != group:
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_shared_group_for_node"):
                 node.node_tree = group
                 changed = True
-            except Exception:
-                pass
         return group, changed
 
     @classmethod
@@ -753,16 +739,15 @@ class ACEShaderNodeFactory:
     def _coerce_xy(raw_value) -> tuple[float, float]:
         if raw_value is None:
             return 0.0, 0.0
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._coerce_xy"):
             return (
                 float(getattr(raw_value, "x")),
                 float(getattr(raw_value, "y")),
             )
-        except Exception:
-            pass
         try:
             return float(raw_value[0]), float(raw_value[1])
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._coerce_xy#2", exc)
             return 0.0, 0.0
 
     @classmethod
@@ -815,7 +800,8 @@ class ACEShaderNodeFactory:
         try:
             node.location = (target_x, target_y)
             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._set_node_location", exc)
             return False
 
     @staticmethod
@@ -833,21 +819,17 @@ class ACEShaderNodeFactory:
             return False
         changed = False
         if hasattr(helper_node, "hide"):
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_node_compact_display"):
                 if not bool(getattr(helper_node, "hide", False)):
                     helper_node.hide = True
                     changed = True
-            except Exception:
-                pass
         if hasattr(helper_node, "width_hidden"):
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_node_compact_display#2"):
                 current = float(getattr(helper_node, "width_hidden", 0.0) or 0.0)
                 target = float(cls._HELPER_HIDDEN_WIDTH)
                 if abs(current - target) > 0.5:
                     helper_node.width_hidden = target
                     changed = True
-            except Exception:
-                pass
         return changed
 
     @classmethod
@@ -859,7 +841,8 @@ class ACEShaderNodeFactory:
         abs_x, abs_y = cls._node_absolute_location(node)
         try:
             node.parent = parent
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._parent_node_preserve_absolute", exc)
             return False
         if parent is None:
             cls._set_node_location(node, (abs_x, abs_y))
@@ -876,7 +859,8 @@ class ACEShaderNodeFactory:
                 continue
             try:
                 owner = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._find_helper_frame_node", exc)
                 owner = ""
             if owner == target_owner:
                 return helper_node
@@ -892,7 +876,8 @@ class ACEShaderNodeFactory:
         if cls._is_frame_node(owner_parent):
             try:
                 parent_owner = str(owner_parent.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._ensure_helper_frame", exc)
                 parent_owner = ""
             if not parent_owner or parent_owner == str(ace_id or ""):
                 return owner_parent, False
@@ -902,44 +887,35 @@ class ACEShaderNodeFactory:
         if frame_node is None:
             try:
                 frame_node = tree.nodes.new("NodeFrame")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._ensure_helper_frame#2", exc)
                 return None, False
             created = True
             changed = True
             cls._set_node_location(frame_node, cls._node_absolute_location(owner_node))
 
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_frame#3"):
             if str(frame_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "") != str(ace_id or ""):
                 frame_node[cls._HELPER_FRAME_OWNER_KEY] = str(ace_id or "")
                 changed = True
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_frame#4"):
             if str(frame_node.get(cls._HELPER_FRAME_KIND_KEY, "") or "") != "ATTRIBUTE_CLUSTER":
                 frame_node[cls._HELPER_FRAME_KIND_KEY] = "ATTRIBUTE_CLUSTER"
                 changed = True
-        except Exception:
-            pass
         frame_name = cls._helper_frame_name(ace_id)
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_frame#5"):
             if str(getattr(frame_node, "name", "") or "") != frame_name:
                 frame_node.name = frame_name
                 changed = True
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_frame#6"):
             if str(getattr(frame_node, "label", "") or "") != "":
                 frame_node.label = ""
                 changed = True
-        except Exception:
-            pass
         if hasattr(frame_node, "shrink"):
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_frame#7"):
                 if not bool(getattr(frame_node, "shrink", False)):
                     frame_node.shrink = True
                     changed = True
-            except Exception:
-                pass
         if created or getattr(owner_node, "parent", None) != frame_node:
             if cls._parent_node_preserve_absolute(owner_node, frame_node):
                 changed = True
@@ -994,7 +970,8 @@ class ACEShaderNodeFactory:
                 continue
             try:
                 owner = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._find_helper_attr_nodes", exc)
                 owner = ""
             matched_by_owner = bool(target_ace_id and owner == target_ace_id)
             if not matched_by_owner:
@@ -1005,7 +982,8 @@ class ACEShaderNodeFactory:
                     continue
             try:
                 out_idx = utils.as_int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY), -1)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._find_helper_attr_nodes#2", exc)
                 out_idx = -1
             if out_idx < 0:
                 # Derive index from the node name if the custom property is missing.
@@ -1033,49 +1011,38 @@ class ACEShaderNodeFactory:
         if helper_node is None:
             try:
                 helper_node = tree.nodes.new("ShaderNodeAttribute")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node", exc)
                 return None, False
             changed = True
             created = True
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#2"):
             if str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "") != str(ace_id or ""):
                 helper_node[cls._HELPER_NODE_OWNER_KEY] = str(ace_id or "")
                 changed = True
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#3"):
             if utils.as_int(helper_node.get(cls._ATTR_NODE_OUTPUT_IDX_KEY), -1) != int(output_idx):
                 helper_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
                 changed = True
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#4"):
             if str(helper_node.get(cls._OUTPUT_NODE_KIND_KEY, "") or "") != "TOP_LEVEL_ATTRIBUTE":
                 helper_node[cls._OUTPUT_NODE_KIND_KEY] = "TOP_LEVEL_ATTRIBUTE"
                 changed = True
-        except Exception:
-            pass
         helper_name = cls._helper_node_name(ace_id, output_idx)
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#5"):
             if str(getattr(helper_node, "name", "") or "") != helper_name:
                 helper_node.name = helper_name
                 changed = True
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#6"):
             label = f"ACE {str(output_name or f'Out {int(output_idx + 1)}')}"
             if str(getattr(helper_node, "label", "") or "") != label:
                 helper_node.label = label
                 changed = True
-        except Exception:
-            pass
         if cls._ensure_helper_node_compact_display(helper_node):
             changed = True
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#7"):
             if location is not None:
                 helper_node.location = (float(location[0]), float(location[1]))
-        except Exception:
-            pass
         return helper_node, changed
 
     @classmethod
@@ -1086,19 +1053,15 @@ class ACEShaderNodeFactory:
             if str(getattr(sock, "name", "") or "") not in helper_names:
                 continue
             if hasattr(sock, "hide"):
-                try:
+                with utils.logged_errors("shader_tree.ACEShaderNodeFactory._hide_helper_inputs"):
                     if not bool(getattr(sock, "hide", False)):
                         sock.hide = True
                         changed = True
-                except Exception:
-                    pass
             if hasattr(sock, "hide_value"):
-                try:
+                with utils.logged_errors("shader_tree.ACEShaderNodeFactory._hide_helper_inputs#2"):
                     if not bool(getattr(sock, "hide_value", False)):
                         sock.hide_value = True
                         changed = True
-                except Exception:
-                    pass
         return changed
 
     @classmethod
@@ -1109,16 +1072,12 @@ class ACEShaderNodeFactory:
         for link in list(getattr(target_input, "links", []) or []):
             if getattr(link, "from_node", None) == helper_node and getattr(link, "from_socket", None) == helper_output:
                 return changed
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_link"):
                 tree.links.remove(link)
                 changed = True
-            except Exception:
-                pass
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_link#2"):
             tree.links.new(helper_output, target_input)
             changed = True
-        except Exception:
-            pass
         return changed
 
     @classmethod
@@ -1128,14 +1087,16 @@ class ACEShaderNodeFactory:
         target_name = str(attr_name or "")
         try:
             current_name = str(helper_node.get(cls._HELPER_ATTR_NAME_KEY, "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._store_helper_attr_name", exc)
             current_name = ""
         if current_name == target_name:
             return False
         try:
             helper_node[cls._HELPER_ATTR_NAME_KEY] = target_name
             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._store_helper_attr_name#2", exc)
             return False
 
     @classmethod
@@ -1154,7 +1115,8 @@ class ACEShaderNodeFactory:
             return helper_node, False
         try:
             prev_location = cls._node_local_location(helper_node)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._rebuild_helper_attr_node", exc)
             prev_location = None
 
         preserved_links: list[tuple[str, object]] = []
@@ -1168,7 +1130,8 @@ class ACEShaderNodeFactory:
 
         try:
             tree.nodes.remove(helper_node)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory._rebuild_helper_attr_node#2", exc)
             return helper_node, False
 
         rebuilt_node, changed = cls._ensure_helper_attr_node(
@@ -1200,11 +1163,9 @@ class ACEShaderNodeFactory:
                 source_socket = fallback_output
             if source_socket is None or target_socket is None:
                 continue
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory._rebuild_helper_attr_node#3"):
                 tree.links.new(source_socket, target_socket)
                 changed = True
-            except Exception:
-                pass
         return rebuilt_node, changed
 
     @classmethod
@@ -1216,7 +1177,8 @@ class ACEShaderNodeFactory:
         for node in getattr(tree, "nodes", []) or []:
             try:
                 ace_id = str(node.get("ace_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory.cleanup_tree_helper_nodes", exc)
                 ace_id = ""
             if ace_id:
                 live_owner_ids.add(ace_id)
@@ -1234,22 +1196,22 @@ class ACEShaderNodeFactory:
             if bl_idname == "ShaderNodeAttribute":
                 try:
                     owner_id = str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "")
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("shader_tree.ACEShaderNodeFactory.cleanup_tree_helper_nodes#2", exc)
                     owner_id = ""
             elif cls._is_frame_node(helper_node):
                 try:
                     owner_id = str(helper_node.get(cls._HELPER_FRAME_OWNER_KEY, "") or "")
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("shader_tree.ACEShaderNodeFactory.cleanup_tree_helper_nodes#3", exc)
                     owner_id = ""
                 if owner_id:
                     has_children = any(getattr(node, "parent", None) == helper_node for node in getattr(tree, "nodes", []) or [])
                     if has_children and owner_id in live_owner_ids:
                         continue
-                    try:
+                    with utils.logged_errors("shader_tree.ACEShaderNodeFactory.cleanup_tree_helper_nodes#4"):
                         tree.nodes.remove(helper_node)
                         changed = True
-                    except Exception:
-                        pass
                     continue
             else:
                 continue
@@ -1263,11 +1225,9 @@ class ACEShaderNodeFactory:
             if node_name and node_name in live_node_names:
                 continue
             # Neither check passed — orphan, remove it.
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory.cleanup_tree_helper_nodes#5"):
                 tree.nodes.remove(helper_node)
                 changed = True
-            except Exception:
-                pass
         return changed
 
     @classmethod
@@ -1281,9 +1241,10 @@ class ACEShaderNodeFactory:
         if scene is None:
             try:
                 scene = getattr(getattr(bpy, "context", None), "scene", None)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings", exc)
                 scene = None
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings#2"):
             from ..core.audio_engine import ACEAudioEngine
             if not ACEAudioEngine._structural_tree_writes_allowed(
                 scene,
@@ -1291,11 +1252,10 @@ class ACEShaderNodeFactory:
                 frontend_kind=FRONTEND_KIND_SHADER,
             ):
                 return False
-        except Exception:
-            pass
         try:
             ace_id = str(node.get("ace_id", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings#3", exc)
             ace_id = ""
         parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
         if not parsed:
@@ -1320,7 +1280,8 @@ class ACEShaderNodeFactory:
         for raw_idx, raw_name in dict(attr_names_by_idx or {}).items():
             try:
                 out_idx = int(raw_idx)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings#4", exc)
                 continue
             sanitized = cls._sanitize_explicit_name(str(raw_name or ""))
             if sanitized:
@@ -1351,11 +1312,9 @@ class ACEShaderNodeFactory:
         for stale_idx, stale_node in list(helper_nodes_by_idx.items()):
             if int(stale_idx) in expected_idx_set:
                 continue
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings#5"):
                 tree.nodes.remove(stale_node)
                 changed = True
-            except Exception:
-                pass
             helper_nodes_by_idx.pop(int(stale_idx), None)
 
         for out_idx in expected_indices:
@@ -1432,7 +1391,8 @@ class ACEShaderNodeFactory:
         if ng is not None and getattr(ng, "bl_idname", "") != "ShaderNodeTree":
             try:
                 bpy.data.node_groups.remove(ng)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("shader_tree.ACEShaderNodeFactory.rebuild_node_group", exc)
                 ng = None
             else:
                 ng = None
@@ -1466,10 +1426,8 @@ class ACEShaderNodeFactory:
             if drivers is None or len(drivers) == 0:
                 continue
             for fc in list(drivers):
-                try:
+                with utils.logged_errors("shader_tree.ACEShaderNodeFactory._cleanup_legacy_drivers"):
                     drivers.remove(fc)
-                except Exception:
-                    pass
 
     @classmethod
     def ensure_node_groups_exist(cls):
@@ -1489,7 +1447,8 @@ class ACEShaderNodeFactory:
                 if ng is not None and getattr(ng, "bl_idname", "") != "ShaderNodeTree":
                     try:
                         bpy.data.node_groups.remove(ng)
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("shader_tree.ACEShaderNodeFactory.ensure_node_groups_exist", exc)
                         ng = None
                     else:
                         ng = None
@@ -1502,13 +1461,11 @@ class ACEShaderNodeFactory:
                     cls._ensure_attr_interface_visible(ng, cat_key, type_key)
                     continue
                 cls._build_group_content(ng, node_def, cat_key, type_key)
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderNodeFactory.ensure_node_groups_exist#2"):
             from .dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 
             ACESplitterManager.refresh_existing_variants("ShaderNodeTree")
             ACEAudioMathManager.refresh_existing_variants("ShaderNodeTree")
-        except Exception:
-            pass
         if current_hash:
             cls._NODES_CONTENT_HASH = current_hash
             ACEShaderTreeReader._GROUP_NAME_LOOKUP.clear()
@@ -1543,22 +1500,16 @@ class ACEShaderTreeReader(ACEDummyTreeReader):
         """Return True when *tree* is a shader frontend containing ACE nodes."""
         if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
             return False
-        try:
+        with utils.logged_errors("shader_tree.ACEShaderTreeReader.is_managed_tree"):
             if bool(tree.get("ace_frontend_uid", "")):
                 return True
-        except Exception:
-            pass
         for node in getattr(tree, "nodes", []) or []:
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderTreeReader.is_managed_tree#2"):
                 if bool(node.get("ace_id", "")):
                     return True
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("shader_tree.ACEShaderTreeReader.is_managed_tree#3"):
                 if bool(node.get("ace_source_id", "")):
                     return True
-            except Exception:
-                pass
             if str(getattr(node, "type", "") or "") != "GROUP":
                 continue
             group = getattr(node, "node_tree", None)

@@ -7,6 +7,7 @@ the engine and the live device list.
 """
 import bpy                                                                                                                          # type: ignore
 import time
+from . import utils
 from .utils import as_int as _as_int
 from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
@@ -17,18 +18,14 @@ from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 def _mark_user_bpm(self, context):  # noqa: ARG001 - Blender passes context
     """Set ace_bpm_user_override so auto-detection does not overwrite the user's BPM."""
-    try:
+    with utils.logged_errors("properties._mark_user_bpm"):
         self["ace_bpm_user_override"] = True
-    except Exception:
-        pass
 
 
 def _mark_user_meter(self, context):  # noqa: ARG001
     """Set ace_meter_user_override so auto-detection does not overwrite the user's meter."""
-    try:
+    with utils.logged_errors("properties._mark_user_meter"):
         self["ace_meter_user_override"] = True
-    except Exception:
-        pass
 
 
 def compose_live_flow_identifier(source_prop) -> str:
@@ -38,10 +35,8 @@ def compose_live_flow_identifier(source_prop) -> str:
 
 def _sync_live_flow_identifier(source_prop):
     """Write the current live route token into source_prop.flow_identifier."""
-    try:
+    with utils.logged_errors("properties._sync_live_flow_identifier"):
         source_prop.flow_identifier = compose_live_flow_identifier(source_prop)
-    except Exception:
-        pass
 
 
 def _source_has_tempo_meter_selection(source_prop) -> bool:
@@ -56,7 +51,8 @@ def _source_has_tempo_meter_selection(source_prop) -> bool:
     if transport == "UDP":
         try:
             return int(getattr(source_prop, "live_udp_port", 0) or 0) > 0
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("properties._source_has_tempo_meter_selection", exc)
             return False
 
     device = str(getattr(source_prop, "live_device_selector", "") or "").strip()
@@ -66,11 +62,9 @@ def _source_has_tempo_meter_selection(source_prop) -> bool:
 def _sync_tempo_meter_panel_expansion(source_prop):
     """Keep Tempo & Meter foldout state aligned with source selection/config."""
     should_open = _source_has_tempo_meter_selection(source_prop)
-    try:
+    with utils.logged_errors("properties._sync_tempo_meter_panel_expansion"):
         if bool(getattr(source_prop, "tempo_meter_panel_open", False)) != bool(should_open):
             source_prop.tempo_meter_panel_open = bool(should_open)
-    except Exception:
-        pass
 
 
 def _clear_tempo_detection_state(source_prop):
@@ -84,11 +78,9 @@ def _clear_tempo_detection_state(source_prop):
         "ace_meter_auto",
     )
     for key in stale_keys:
-        try:
+        with utils.logged_errors("properties._clear_tempo_detection_state"):
             if hasattr(source_prop, "keys") and key in source_prop.keys():
                 del source_prop[key]
-        except Exception:
-            pass
 
 
 def _on_live_routing_change(self, context):  # noqa: ARG001
@@ -107,19 +99,15 @@ def _on_filepath_change(self, context):
     fp = str(getattr(self, "filepath", "") or "").strip()
     error_msg = ""
     if fp and str(getattr(self, "source_type", "FILE")) == "FILE":
-        try:
+        with utils.logged_errors("properties._on_filepath_change"):
             import os
             from .core.audio_influx import AudioReception
             if not os.path.isfile(fp):
                 error_msg = "File not found"
             elif not AudioReception.is_supported_file_path(fp):
                 error_msg = "Unsupported or unreadable audio format"
-        except Exception:
-            pass
-    try:
+    with utils.logged_errors("properties._on_filepath_change#2"):
         self.ace_source_error = error_msg
-    except Exception:
-        pass
     _clear_tempo_detection_state(self)
     _sync_tempo_meter_panel_expansion(self)
     _on_engine_runtime_setting_change(self, context)
@@ -138,10 +126,8 @@ def _on_source_type_change(self, context):
     else:
         # Switching back to FILE: clear the live flow identifier so stale "sd:"
         # or UDP tokens don't persist and confuse the source routing logic.
-        try:
+        with utils.logged_errors("properties._on_source_type_change"):
             self.flow_identifier = ""
-        except Exception:
-            pass
     _clear_tempo_detection_state(self)
     _sync_tempo_meter_panel_expansion(self)
     # Invalidate engine caches and force a recompile so the new source type
@@ -154,12 +140,10 @@ def _on_engine_runtime_setting_change(self, context):  # noqa: ARG001
     scene = getattr(context, "scene", None) if context else None
     if scene is None:
         return
-    try:
+    with utils.logged_errors("properties._on_engine_runtime_setting_change"):
         from .core.audio_engine import ACEAudioEngine
         engine = ACEAudioEngine.ensure_instance(scene)
         engine.request_recompile(None)
-    except Exception:
-        pass
 
 
 def _on_active_source_index_change(self, context):  # noqa: ARG001
@@ -167,7 +151,8 @@ def _on_active_source_index_change(self, context):  # noqa: ARG001
     sources = getattr(self, "audio_sources", None) or []
     try:
         idx = _as_int(getattr(self, "active_audio_source_index", None), -1)
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("properties._on_active_source_index_change", exc)
         idx = -1
     if 0 <= idx < len(sources):
         _sync_tempo_meter_panel_expansion(sources[idx])
@@ -199,7 +184,8 @@ def _refresh_live_device_cache() -> None:
                 host_idx = int(dev.get("hostapi", -1))
                 if 0 <= host_idx < len(hostapis):
                     host_name = str(hostapis[host_idx].get("name", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("properties._refresh_live_device_cache#2", exc)
                 host_name = ""
             label = f"{idx}: {name}"
             if host_name:
@@ -219,13 +205,15 @@ def _refresh_live_device_cache() -> None:
                     host_idx = int(dev.get("hostapi", -1))
                     if 0 <= host_idx < len(hostapis):
                         host_name = str(hostapis[host_idx].get("name", "") or "")
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("properties._refresh_live_device_cache#3", exc)
                     host_name = ""
                 label = f"{idx}: {name} [Loopback]"
                 if host_name:
                     label = f"{label} ({host_name})"
                 items.append((f"loopback:{idx}", label, f"WASAPI loopback — capture {out_ch} ch from this output"))
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("properties._refresh_live_device_cache", exc)
         items.append(
             (
                 "__MISSING__",

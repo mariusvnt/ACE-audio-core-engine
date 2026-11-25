@@ -14,12 +14,10 @@ from ..core.audio_engine import ACEAudioEngine
 from ..core.audio_influx import AudioReception, build_live_flow_identifier
 from ..core.proxy_management import ACEProxyManager
 def _supported_audio_filter_glob() -> str:
-    try:
+    with utils.logged_errors("n_panel_operators._supported_audio_filter_glob"):
         glob = AudioReception.supported_file_filter_glob()
         if glob:
             return glob
-    except Exception:
-        pass
     return "*.wav;*.wave"
 
 
@@ -28,13 +26,11 @@ def _resolve_panel_selected_node(context):
     Resolve the ACE node currently targeted by the N-panel.
     Prefer the active graph list selection used by the N-panel UI itself.
     """
-    try:
+    with utils.logged_errors("n_panel_operators._resolve_panel_selected_node"):
         from .n_panel_ui import _resolve_capture_node
         node, parsed = _resolve_capture_node(context)
         if node and parsed:
             return node, parsed
-    except Exception:
-        pass
 
     node = getattr(context, "active_node", None)
     if node and getattr(node, "type", "") == 'GROUP':
@@ -46,7 +42,8 @@ def _resolve_panel_selected_node(context):
     try:
         from .n_panel_ui import _find_active_node_tree
         tree = _find_active_node_tree(context)
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_operators._resolve_panel_selected_node#2", exc)
         tree = None
     if not tree:
         return None, None
@@ -54,7 +51,8 @@ def _resolve_panel_selected_node(context):
     try:
         from ..utils import _get_active_source
         _, active_source = _get_active_source(context)
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_operators._resolve_panel_selected_node#3", exc)
         active_source = None
     if not active_source:
         return None, None
@@ -70,7 +68,8 @@ def _resolve_panel_selected_node(context):
     for candidate in getattr(tree, "nodes", []):
         try:
             ace_id = str(candidate.get("ace_id", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators._resolve_panel_selected_node#4", exc)
             ace_id = ""
         if ace_id == node_id:
             parsed = ACEIdManager.parse_node_id(ace_id)
@@ -88,19 +87,15 @@ def _refresh_node_instance(node):
     if not node:
         return
 
-    try:
+    with utils.logged_errors("n_panel_operators._refresh_node_instance"):
         node.update()
-    except Exception:
-        pass
 
     tree = getattr(node, "id_data", None)
     if tree is None:
         return
 
-    try:
+    with utils.logged_errors("n_panel_operators._refresh_node_instance#2"):
         tree.update_tag()
-    except Exception:
-        pass
 
 
 def _queue_engine_recompile(context, tree=None):
@@ -113,7 +108,8 @@ def _queue_engine_recompile(context, tree=None):
         try:
             from .n_panel_ui import _find_active_node_tree
             resolved_tree = _find_active_node_tree(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators._queue_engine_recompile", exc)
             resolved_tree = None
     if not resolved_tree:
         return None
@@ -136,7 +132,8 @@ class ACE_OT_rebuild_audio_engine(bpy.types.Operator):
                 return False
             engine = ACEAudioEngine.ensure_instance(scene)
             return bool(engine.discover_scene_frontends(scene))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_rebuild_audio_engine.poll", exc)
             return False
     
     def execute(self, context):
@@ -222,11 +219,9 @@ class ACE_OT_add_audio_sources_from_files(bpy.types.Operator, ImportHelper):
             new_source.name = file_name
             new_source.filepath = filepath
             new_source.source_type = 'FILE'
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_sources_from_files.execute"):
                 engine = ACEAudioEngine.ensure_instance(context.scene)
                 engine._probe_source_metadata(new_source)
-            except Exception:
-                pass
             
             # Create Proxy
             self._create_proxy(context, new_source)
@@ -234,10 +229,8 @@ class ACE_OT_add_audio_sources_from_files(bpy.types.Operator, ImportHelper):
         ace.active_audio_source_index = len(ace.audio_sources) - 1
         sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
         if sonar_obj and not getattr(ace, "gn_target_object", None):
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_sources_from_files.execute#2"):
                 ace.gn_target_object = sonar_obj
-            except Exception:
-                pass
         return {'FINISHED'}
 
     def _create_proxy(self, context, source):
@@ -271,19 +264,15 @@ class ACE_OT_add_audio_source(bpy.types.Operator):
         new_source.source_type = source_type
         new_source.name = f"Audio Source {len(ace.audio_sources)}"
         if source_type == 'LIVE':
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_source.execute"):
                 new_source.flow_identifier = build_live_flow_identifier(new_source)
-            except Exception:
-                pass
         
         # Create Proxy (hidden + locked transforms)
         ACEProxyManager.ensure_proxy_for_source(new_source, scene=context.scene)
         sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
         if sonar_obj and not getattr(ace, "gn_target_object", None):
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_source.execute#2"):
                 ace.gn_target_object = sonar_obj
-            except Exception:
-                pass
             
         ace.active_audio_source_index = len(ace.audio_sources) - 1
         return {'FINISHED'}
@@ -319,15 +308,11 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
 
         sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
         if not ace.audio_sources and getattr(ace, "gn_target_object", None) and getattr(ace.gn_target_object, "name", "") == ACEProxyManager.SONAR_OBJECT_NAME:
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute"):
                 ace.gn_target_object = None
-            except Exception:
-                pass
         elif sonar_obj and not getattr(ace, "gn_target_object", None):
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute#2"):
                 ace.gn_target_object = sonar_obj
-            except Exception:
-                pass
         engine = ACEAudioEngine.get_instance(context.scene)
         if engine:
             # Eagerly release the bake cache for this source so its SHM/disk
@@ -336,10 +321,8 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
             if src_uid:
                 entry = engine._bake_cache.pop(src_uid, None)
                 if isinstance(entry, dict):
-                    try:
+                    with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute#3"):
                         engine._cleanup_bake_entry(entry)
-                    except Exception:
-                        pass
             engine._shutdown_graphs()
 
         return {'FINISHED'}
@@ -380,7 +363,8 @@ class ACE_OT_sort_splitter_freqs(bpy.types.Operator):
                 continue
             try:
                 val = float(getattr(sock, "default_value", 0.0))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_operators.ACE_OT_sort_splitter_freqs.execute", exc)
                 continue
             split_sockets.append((sock, val))
         if not split_sockets:
@@ -388,24 +372,21 @@ class ACE_OT_sort_splitter_freqs(bpy.types.Operator):
 
         sorted_vals = sorted(v for _, v in split_sockets)
         for (sock, _), val in zip(split_sockets, sorted_vals):
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#2"):
                 sock.default_value = float(val)
-            except Exception:
-                pass
         _refresh_node_instance(node)
 
         try:
             from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#3", exc)
             tree = None
             _sync_ui_dummy_tree = None  # type: ignore
         _queue_engine_recompile(context, tree=tree)
         if _sync_ui_dummy_tree:
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#4"):
                 _sync_ui_dummy_tree(context, force=False)
-            except Exception:
-                pass
         return {'FINISHED'}
 
 
@@ -426,7 +407,8 @@ class ACE_OT_even_splitter_freqs(bpy.types.Operator):
                 continue
             try:
                 _ = float(getattr(sock, "default_value", 0.0))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_operators.ACE_OT_even_splitter_freqs.execute", exc)
                 continue
             split_sockets.append(sock)
         if not split_sockets:
@@ -447,24 +429,21 @@ class ACE_OT_even_splitter_freqs(bpy.types.Operator):
         for i, sock in enumerate(split_sockets):
             t = float(i + 1) / float(count + 1)
             freq = low_hz * (ratio ** t)
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_even_splitter_freqs.execute#2"):
                 sock.default_value = float(freq)
-            except Exception:
-                pass
         _refresh_node_instance(node)
 
         try:
             from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_even_splitter_freqs.execute#3", exc)
             tree = None
             _sync_ui_dummy_tree = None  # type: ignore
         _queue_engine_recompile(context, tree=tree)
         if _sync_ui_dummy_tree:
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_even_splitter_freqs.execute#4"):
                 _sync_ui_dummy_tree(context, force=False)
-            except Exception:
-                pass
         return {'FINISHED'}
 
 
@@ -531,7 +510,8 @@ class ACE_OT_apply_splitter_ramp(bpy.types.Operator):
                 continue
             try:
                 _ = float(getattr(sock, "default_value", 0.0))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_operators.ACE_OT_apply_splitter_ramp.execute", exc)
                 continue
             cut_sockets.append(sock)
         if not cut_sockets:
@@ -558,29 +538,24 @@ class ACE_OT_apply_splitter_ramp(bpy.types.Operator):
             return {'CANCELLED'}
 
         for sock, hz in zip(cut_sockets, hz_values):
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#2"):
                 sock.default_value = float(hz)
-            except Exception:
-                pass
         _refresh_node_instance(node)
 
         try:
             from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#3", exc)
             tree = None
             _sync_ui_dummy_tree = None  # type: ignore
         _queue_engine_recompile(context, tree=tree)
         if _sync_ui_dummy_tree:
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#4"):
                 _sync_ui_dummy_tree(context, force=False)
-            except Exception:
-                pass
 
-        try:
+        with utils.logged_errors("n_panel_operators.ACE_OT_apply_splitter_ramp.execute#5"):
             _sync_splitter_ramp_texture_from_node(node, context.scene, force=True)
-        except Exception:
-            pass
         return {'FINISHED'}
 
 
@@ -631,7 +606,8 @@ class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
     def poll(cls, context):
         try:
             _, active_source = utils._get_active_source(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_detect_source_tempo_meter.poll", exc)
             active_source = None
         if not active_source:
             return False
@@ -642,7 +618,8 @@ class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
     def execute(self, context):
         try:
             _, active_source = utils._get_active_source(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_detect_source_tempo_meter.execute", exc)
             active_source = None
         if not active_source:
             self.report({'ERROR'}, "No active source selected.")
@@ -650,10 +627,8 @@ class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
 
         engine = ACEAudioEngine.ensure_instance(context.scene)
         ok, message = engine.request_source_tempo_detection(active_source)
-        try:
+        with utils.logged_errors("n_panel_operators.ACE_OT_detect_source_tempo_meter.execute#2"):
             engine.flush_source_tempo_detection_updates([active_source])
-        except Exception:
-            pass
 
         if not ok:
             self.report({'ERROR'}, message or "Tempo detection could not start.")
@@ -759,7 +734,8 @@ class ACE_OT_toggle_preview_sink(bpy.types.Operator):
         try:
             from .n_panel_ui import _find_active_node_tree, _sync_ui_dummy_tree
             tree = _find_active_node_tree(context)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_toggle_preview_sink.execute", exc)
             tree = None
             _sync_ui_dummy_tree = None  # type: ignore
 
@@ -767,10 +743,8 @@ class ACE_OT_toggle_preview_sink(bpy.types.Operator):
             _queue_engine_recompile(context, tree=tree)
 
         if _sync_ui_dummy_tree:
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_toggle_preview_sink.execute#2"):
                 _sync_ui_dummy_tree(context, force=False)
-            except Exception:
-                pass
 
         return {'FINISHED'}
 
@@ -809,10 +783,8 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
 
     def _finish_modal(self, context):
         if self._timer is not None:
-            try:
+            with utils.logged_errors("n_panel_operators.ACE_OT_bake_active_source._finish_modal"):
                 context.window_manager.event_timer_remove(self._timer)
-            except Exception:
-                pass
             self._timer = None
 
     def modal(self, context, event):
@@ -820,10 +792,8 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             return {'PASS_THROUGH'}
 
         engine = ACEAudioEngine.ensure_instance(context.scene)
-        try:
+        with utils.logged_errors("n_panel_operators.ACE_OT_bake_active_source.modal"):
             engine.flush_bake_results()
-        except Exception:
-            pass
 
         source = self._find_source_by_uid(context, self._source_uid)
         if source is None:
@@ -833,7 +803,8 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
 
         try:
             status = str(source.get("ace_bake_status", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_operators.ACE_OT_bake_active_source.modal#2", exc)
             status = ""
         if status in {"done", "ready"}:
             self._finish_modal(context)
@@ -843,7 +814,8 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             err = ""
             try:
                 err = str(source.get("ace_bake_error", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_operators.ACE_OT_bake_active_source.modal#3", exc)
                 err = ""
             self._finish_modal(context)
             self.report({'ERROR'}, f"Bake failed: {err or 'Unknown error'}")
@@ -869,10 +841,8 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
             return {'CANCELLED'}
 
         engine = ACEAudioEngine.ensure_instance(context.scene)
-        try:
+        with utils.logged_errors("n_panel_operators.ACE_OT_bake_active_source.execute"):
             engine.compile_scene_frontends(context.scene)
-        except Exception:
-            pass
         ok = engine.bake_source_to_cache(active_source, None, scene=context.scene)
         if not ok:
             self.report({'ERROR'}, "Bake request failed.")

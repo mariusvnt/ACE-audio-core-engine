@@ -67,7 +67,8 @@ class ACEProxyManager:
         scene = ACEProxyManager._resolve_scene(scene)
         try:
             from .audio_engine import ACEAudioEngine
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("proxy_management.ACEProxyManager._shader_tree_writes_are_unsafe", exc)
             return False
         try:
             return not bool(
@@ -77,18 +78,17 @@ class ACEProxyManager:
                     tree_bl_idname="ShaderNodeTree",
                 )
             )
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("proxy_management.ACEProxyManager._shader_tree_writes_are_unsafe#2", exc)
             return False
 
     @staticmethod
     def _defer_shader_tree_sync(tree, scene=None) -> None:
         if tree is None:
             return
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager._defer_shader_tree_sync"):
             ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, [])
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager._defer_shader_tree_sync#2"):
             from .audio_engine import ACEAudioEngine
             resolved_scene = ACEProxyManager._resolve_scene(scene)
             engine = ACEAudioEngine.get_instance(resolved_scene)
@@ -96,8 +96,6 @@ class ACEProxyManager:
                 engine = ACEAudioEngine.ensure_instance(resolved_scene)
             if engine is not None:
                 engine.request_recompile(tree)
-        except Exception:
-            pass
 
     @staticmethod
     def _ensure_internal_collection(scene=None) -> bpy.types.Collection:
@@ -156,10 +154,8 @@ class ACEProxyManager:
             The proxy Blender Object.  Also writes source_prop.proxy_object_name.
         """
         utils.assert_main_thread("ensure_proxy_for_source")
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager.ensure_proxy_for_source"):
             ACEIdManager.ensure_source_uid(source_prop)
-        except Exception:
-            pass
         stable_id = getattr(source_prop, "stable_id", "") or ""
         source_name = getattr(source_prop, "name", "") or "Source"
         proxy_name = ACEIdManager.generate_source_proxy_name(
@@ -502,7 +498,8 @@ class ACEProxyManager:
         if isinstance(prev, (list, tuple)) and isinstance(curr, (list, tuple)):
             try:
                 return bool(np.allclose(np.asarray(prev, dtype=np.float32), np.asarray(curr, dtype=np.float32), atol=1e-6))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager._values_equal", exc)
                 return False
         return prev == curr
 
@@ -511,7 +508,8 @@ class ACEProxyManager:
         if attr_type == "FLOAT":
             try:
                 return float(value)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager._normalize_object_prop_value", exc)
                 return 0.0
         if hasattr(value, "tolist"):
             value = value.tolist()
@@ -555,17 +553,14 @@ class ACEProxyManager:
         if not stale:
             return False
         for k in stale:
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.prune_object_ace_properties"):
                 del obj[k]
-            except Exception:
-                pass
         try:
             obj.update_tag(refresh={"OBJECT"})
-        except Exception:
-            try:
+        except Exception as exc:
+            utils.note_swallowed("proxy_management.ACEProxyManager.prune_object_ace_properties#2", exc)
+            with utils.logged_errors("proxy_management.ACEProxyManager.prune_object_ace_properties#3"):
                 obj.update_tag()
-            except Exception:
-                pass
         return True
 
     def ensure_object_property_sinks(self, object_name: str, bindings, prune: bool = False) -> bool:
@@ -590,18 +585,14 @@ class ACEProxyManager:
             zero_value = self._zero_value_for_type(str(getattr(binding, "attr_type", "FLOAT") or "FLOAT"))
             already_exists = prop_name in obj.keys()
             if not already_exists:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.ensure_object_property_sinks"):
                     obj[prop_name] = zero_value
                     layout_changed = True
-                except Exception:
-                    pass
             if mesh_data is not None:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.ensure_object_property_sinks#2"):
                     if prop_name not in mesh_data.keys():
                         mesh_data[prop_name] = zero_value
                         layout_changed = True
-                except Exception:
-                    pass
         if prune:
             if self.prune_object_ace_properties(obj, active_prop_names):
                 layout_changed = True
@@ -611,11 +602,10 @@ class ACEProxyManager:
                     obj.update_tag(refresh={"OBJECT", "DATA"})
                 else:
                     obj.update_tag(refresh={"OBJECT"})
-            except Exception:
-                try:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.ensure_object_property_sinks#3", exc)
+                with utils.logged_errors("proxy_management.ACEProxyManager.ensure_object_property_sinks#4"):
                     obj.update_tag()
-                except Exception:
-                    pass
         return True
 
     def update_object_property_sinks(self, object_name: str, prop_values: Dict[str, Any], prop_types: Dict[str, str]) -> bool:
@@ -652,14 +642,13 @@ class ACEProxyManager:
             try:
                 obj[prop_name] = norm_value
                 wrote = True
-            except Exception:
-                try:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.update_object_property_sinks", exc)
+                with utils.logged_errors("proxy_management.ACEProxyManager.update_object_property_sinks#2"):
                     zero_value = self._zero_value_for_type(attr_type)
                     obj[prop_name] = zero_value
                     norm_value = zero_value
                     wrote = True
-                except Exception:
-                    pass
             if wrote:
                 changed_values[prop_name] = norm_value
 
@@ -667,14 +656,13 @@ class ACEProxyManager:
             for prop_name, norm_value in changed_values.items():
                 try:
                     current_val = mesh_data.get(prop_name, None)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("proxy_management.ACEProxyManager.update_object_property_sinks#3", exc)
                     current_val = None
                 if self._values_equal(current_val, norm_value):
                     continue
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.update_object_property_sinks#4"):
                     mesh_data[prop_name] = norm_value
-                except Exception:
-                    pass
 
         if changed_values:
             last_vals.update(changed_values)
@@ -683,11 +671,10 @@ class ACEProxyManager:
                     obj.update_tag(refresh={"OBJECT", "DATA"})
                 else:
                     obj.update_tag(refresh={"OBJECT"})
-            except Exception:
-                try:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.update_object_property_sinks#5", exc)
+                with utils.logged_errors("proxy_management.ACEProxyManager.update_object_property_sinks#6"):
                     obj.update_tag()
-                except Exception:
-                    pass
         return True
 
     def prune_consumer_objects(self, active_props_by_object: Dict[str, Set[str]]) -> bool:
@@ -711,7 +698,8 @@ class ACEProxyManager:
             obj_name = str(getattr(obj, "name", "") or "")
             try:
                 ace_props = [k for k in list(obj.keys()) if str(k).startswith(ACEIdManager.PREFIX)]
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.prune_consumer_objects", exc)
                 ace_props = []
             if not ace_props:
                 continue
@@ -840,7 +828,8 @@ class ACEProxyManager:
             if dtype == 'FLOAT':
                 try:
                     val = float(value)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("proxy_management.ACEProxyManager.update_proxy_object", exc)
                     continue
                 prev = last_vals.get(attr_name)
                 if not _is_transient and isinstance(prev, float) and abs(prev - val) <= 1e-6:
@@ -894,9 +883,10 @@ class ACEProxyManager:
                         buf = self._get_write_buffer(mesh.name, attr_name, count * 4)
                         np.copyto(buf.reshape(count, 4), col)
                         attr.data.foreach_set("color", buf)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.update_proxy_object#2", exc)
                 # Fallback to zeroing on failure
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.update_proxy_object#3"):
                     if dtype == 'FLOAT':
                         if count == 1:
                             attr.data[0].value = 0.0
@@ -919,8 +909,6 @@ class ACEProxyManager:
                             buf.fill(0.0)
                             buf.reshape(count, 4)[:, 3] = 1.0
                             attr.data.foreach_set("color", buf)
-                except Exception:
-                    pass
 
     # =========================================================================
     # 4. SONAR OBJECT / DEFAULT TREE
@@ -961,10 +949,8 @@ class ACEProxyManager:
     @staticmethod
     def _ensure_cube_mesh(mesh: bpy.types.Mesh):
         verts, faces = ACEProxyManager._cube_vertices_faces()
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager._ensure_cube_mesh"):
             mesh.clear_geometry()
-        except Exception:
-            pass
         mesh.from_pydata(verts, [], faces)
         mesh.update()
 
@@ -999,23 +985,19 @@ class ACEProxyManager:
         if tree is None and sources:
             tree = bpy.data.node_groups.new(ACEProxyManager.SONAR_TREE_NAME, 'GeometryNodeTree')
         if tree is not None:
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_setup"):
                 tree.is_modifier = True
-            except Exception:
-                pass
         mod.node_group = tree
 
         if tree:
             ACEProxyManager._sync_sonar_tree(tree, sources or [])
         ACEProxyManager.ensure_sonar_shader_setup(scene, sources, obj=obj)
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_setup#2"):
             ace = getattr(scene, "audiocore", None)
             if ace and not getattr(ace, "gn_target_object", None):
                 ace.gn_target_object = obj
-        except Exception:
-            pass
         if created:
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_setup#3"):
                 view_layer = None
                 if scene is not None:
                     view_layers = list(getattr(scene, "view_layers", []) or [])
@@ -1034,8 +1016,6 @@ class ACEProxyManager:
                     except TypeError:
                         obj.select_set(True, view_layer=view_layer)
                     view_layer.objects.active = obj
-            except Exception:
-                pass
         return obj
 
     @staticmethod
@@ -1071,34 +1051,26 @@ class ACEProxyManager:
                         linked = True
                         break
                 if not linked:
-                    try:
+                    with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_shader_setup"):
                         obj_materials.append(material)
                         linked = True
-                    except Exception:
-                        pass
             if not linked:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_shader_setup#2"):
                     obj.active_material = material
-                except Exception:
-                    pass
 
         if material is None:
             return None
 
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_shader_setup#3"):
             if not bool(getattr(material, "use_nodes", False)):
                 material.use_nodes = True
-        except Exception:
-            pass
 
         tree = getattr(material, "node_tree", None)
         if tree is None:
             return None
 
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_shader_setup#4"):
             ACEProxyManager.sync_managed_source_tree(tree, sources or [], scene=scene)
-        except Exception:
-            pass
         return tree
 
     @staticmethod
@@ -1143,10 +1115,8 @@ class ACEProxyManager:
             return
 
         factory_cls = ACEProxyManager._source_group_factory_for_tree(tree)
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree"):
             factory_cls.ensure_node_groups_exist()
-        except Exception:
-            pass
 
         frontend_kind = ACEProxyManager._frontend_kind_for_tree(tree)
         frontend_uid = ensure_frontend_uid(tree, frontend_kind, [])
@@ -1163,7 +1133,8 @@ class ACEProxyManager:
         for src in sources or []:
             try:
                 src_id = ACEIdManager.ensure_source_uid(src, existing_ids=existing_source_ids)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.sync_managed_source_tree#2", exc)
                 src_id = getattr(src, "stable_id", "") or getattr(src, "name", "Source")
             if src_id and src_id not in existing_source_ids:
                 existing_source_ids.append(src_id)
@@ -1172,15 +1143,14 @@ class ACEProxyManager:
         def _is_managed_source_node(node: bpy.types.Node) -> bool:
             if getattr(node, "type", "") != "GROUP":
                 return False
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree._is_managed_source_node"):
                 if node.get("ace_source_id"):
                     return True
-            except Exception:
-                pass
             ace_id = ""
             try:
                 ace_id = str(node.get("ace_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.sync_managed_source_tree._is_managed_source_node#2", exc)
                 ace_id = ""
             parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
             if not parsed:
@@ -1197,7 +1167,8 @@ class ACEProxyManager:
         for node in managed_nodes:
             try:
                 src_id = str(node.get("ace_source_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("proxy_management.ACEProxyManager.sync_managed_source_tree#3", exc)
                 src_id = ""
             if src_id:
                 if src_id in node_by_source_id:
@@ -1207,19 +1178,15 @@ class ACEProxyManager:
             else:
                 unassigned_nodes.append(node)
         for node in duplicate_nodes:
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#4"):
                 tree.nodes.remove(node)
-            except Exception:
-                pass
 
         desired_ids = {src_id for src_id, _src_name, _src in desired_sources if src_id}
         for src_id, node in list(node_by_source_id.items()):
             if src_id in desired_ids:
                 continue
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#5"):
                 tree.nodes.remove(node)
-            except Exception:
-                pass
             node_by_source_id.pop(src_id, None)
 
         def _take_reusable() -> bpy.types.Node | None:
@@ -1249,53 +1216,40 @@ class ACEProxyManager:
             ace_id = ACEProxyManager._managed_source_ace_id(frontend_uid, src_id, existing_ids=existing_node_ids)
             if ace_id and ace_id not in existing_node_ids:
                 existing_node_ids.append(ace_id)
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#6"):
                 node["ace_id"] = ace_id
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#7"):
                 node["ace_source_id"] = src_id
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#8"):
                 node["ace_source_name"] = src_name
-            except Exception:
-                pass
             node.label = src_name
             node.name = src_name
             if created_node:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#9"):
                     node.location = (0, -220 * idx)
-                except Exception:
-                    pass
 
             if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#10"):
                     proxy_obj = bpy.data.objects.get(getattr(src, "proxy_object_name", ""))
                     proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                     if proxy_obj and proxy_socket:
                         proxy_socket.default_value = proxy_obj
-                except Exception:
-                    pass
             elif frontend_kind == FRONTEND_KIND_SHADER:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#11"):
                     proxy_name = str(getattr(src, "proxy_object_name", "") or "")
                     proxy_socket = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
                     if proxy_socket and proxy_name:
                         try:
                             current = getattr(proxy_socket, "default_value", None)
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("proxy_management.ACEProxyManager.sync_managed_source_tree#12", exc)
                             current = None
                         if isinstance(current, str):
                             proxy_socket.default_value = proxy_name
-                except Exception:
-                    pass
 
         for node in unassigned_nodes:
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager.sync_managed_source_tree#13"):
                 tree.nodes.remove(node)
-            except Exception:
-                pass
 
     @staticmethod
     def _sync_sonar_tree(tree: bpy.types.NodeTree, sources):
@@ -1307,10 +1261,8 @@ class ACEProxyManager:
         if tree is None:
             return
 
-        try:
+        with utils.logged_errors("proxy_management.ACEProxyManager._sync_sonar_tree"):
             ACEDummyNodeFactory.ensure_node_groups_exist()
-        except Exception:
-            pass
 
         base_group_name = ACEDummyNodeFactory.get_group_name('source_mngmt', 'src')
         base_group = bpy.data.node_groups.get(base_group_name)
@@ -1333,21 +1285,15 @@ class ACEProxyManager:
                 if getattr(item, "in_out", None) == 'OUTPUT'
             }
             if "Geometry" not in output_names:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager._sync_sonar_tree#2"):
                     tree.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
-                except Exception:
-                    pass
             if "Audio" not in output_names:
-                try:
+                with utils.logged_errors("proxy_management.ACEProxyManager._sync_sonar_tree#3"):
                     tree.interface.new_socket("Audio", in_out='OUTPUT', socket_type='NodeSocketBundle')
-                except Exception:
-                    pass
         geom_out_sock = next((s for s in output_node.inputs if s.name == "Geometry"), None)
         if "Geometry" in input_node.outputs and geom_out_sock and not geom_out_sock.is_linked:
-            try:
+            with utils.logged_errors("proxy_management.ACEProxyManager._sync_sonar_tree#4"):
                 tree.links.new(input_node.outputs["Geometry"], geom_out_sock)
-            except Exception:
-                pass
         ACEProxyManager.sync_managed_source_tree(tree, sources or [])
 
     # =========================================================================

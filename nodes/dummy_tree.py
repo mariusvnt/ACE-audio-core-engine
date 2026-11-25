@@ -36,7 +36,8 @@ FRONTEND_KIND_SHADER = "SHADER_NODES"
 def _tree_pointer(tree) -> int:
     try:
         return int(tree.as_pointer())
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("dummy_tree._tree_pointer", exc)
         return id(tree)
 
 
@@ -48,7 +49,8 @@ def ensure_frontend_uid(tree, frontend_kind: str, existing_uids) -> str:
     current_uid = ""
     try:
         current_uid = str(tree.get("ace_frontend_uid", "") or "")
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("dummy_tree.ensure_frontend_uid", exc)
         current_uid = ""
     if current_uid and current_uid not in existing:
         return current_uid
@@ -65,10 +67,8 @@ def ensure_frontend_uid(tree, frontend_kind: str, existing_uids) -> str:
         candidate = f"ACE_FRONTEND_{kind_token}_{suffix}"
         if candidate in existing:
             continue
-        try:
+        with utils.logged_errors("dummy_tree.ensure_frontend_uid#2"):
             tree["ace_frontend_uid"] = candidate
-        except Exception:
-            pass
         return candidate
     return current_uid
 
@@ -108,7 +108,8 @@ class ACEDummyNodeFactory:
         try:
             serialized = json.dumps(ACE_NODES, sort_keys=True, default=str).encode("utf-8")
             return hashlib.blake2b(serialized, digest_size=8).hexdigest()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyNodeFactory._ace_nodes_hash", exc)
             return ""
 
     @staticmethod
@@ -144,12 +145,10 @@ class ACEDummyNodeFactory:
                     ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
 
         # 2. Dynamic variants are ensured separately to keep sockets consistent.
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyNodeFactory.ensure_node_groups_exist"):
             from .dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
             ACESplitterManager.refresh_existing_variants("GeometryNodeTree")
             ACEAudioMathManager.refresh_existing_variants("GeometryNodeTree")
-        except Exception:
-            pass
 
         # Cache the hash so subsequent calls with an unchanged registry skip the scan.
         # Also invalidate the ACEDummyTreeReader reverse-lookup so it is rebuilt on
@@ -228,7 +227,8 @@ class ACEDummyNodeFactory:
         try:
             inputs = {item.name for item in ng.interface.items_tree if getattr(item, "in_out", None) == 'INPUT'}
             outputs = {item.name for item in ng.interface.items_tree if getattr(item, "in_out", None) == 'OUTPUT'}
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyNodeFactory._node_group_needs_refresh", exc)
             return True
 
         if node_type == "src":
@@ -372,10 +372,8 @@ class ACEDummyNodeFactory:
                 None,
             )
             if item is not None and hasattr(item, "hide_value"):
-                try:
+                with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._ensure_attr_interface_visible"):
                     item.hide_value = False
-                except Exception:
-                    pass
 
     @staticmethod
     def _build_group_content(ng, node_def, category, node_type):
@@ -405,20 +403,16 @@ class ACEDummyNodeFactory:
                     continue
                 name = str(getattr(item, "name", "") or "")
                 if name == "Window (s)":
-                    try:
+                    with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._build_group_content"):
                         item.default_value = 0.4
-                    except Exception:
-                        pass
                     for attr_name, value in (
                         ("min_value", 0.05),
                         ("max_value", 3.0),
                         ("soft_min", 0.05),
                         ("soft_max", 3.0),
                     ):
-                        try:
+                        with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._build_group_content#2"):
                             setattr(item, attr_name, value)
-                        except Exception:
-                            pass
         
         # --- 2. INTERNALS SWITCH ---
         ACEDummyNodeFactory._create_dummy_internals(ng, inputs, outputs, category, node_type)
@@ -496,12 +490,10 @@ class ACEDummyNodeFactory:
                 sock_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
                 if not any(s.name == sock_name for s in ng.interface.items_tree):
                     ng.interface.new_socket(sock_name, in_out='INPUT', socket_type='NodeSocketString')
-                try:
+                with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._create_dummy_internals"):
                     ng.interface.items_tree[sock_name].default_value = (
                         "ACE_undefined" if out_idx == 0 else f"ACE_undefined_{int(out_idx + 1)}"
                     )
-                except Exception:
-                    pass
                 attr_socket_names.append(sock_name)
 
             attr_id_start_idx = len(inputs_def)
@@ -857,7 +849,8 @@ class ACEDummyTreeReader:
         """
         try:
             return int(node.as_pointer())
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._node_pointer", exc)
             return id(node)
 
     def _reserve_unique_ace_id(
@@ -909,7 +902,8 @@ class ACEDummyTreeReader:
                 existing_ids=existing_ids,
                 deterministic_seed=seed_payload,
             )
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._reserve_unique_ace_id", exc)
             return ace_id
 
         self._ace_id_owner[new_id] = node_ptr
@@ -917,10 +911,8 @@ class ACEDummyTreeReader:
         self._reserved_node_ids.add(new_id)
         # Persist the disambiguated ID back into the node's custom property so
         # that duplicate nodes have stable unique IDs on the next session/reload.
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._reserve_unique_ace_id#2"):
             bl_node["ace_id"] = new_id
-        except Exception:
-            pass
         return new_id
 
     def _resolve_node_kind(self, bl_node) -> tuple[str, str]:
@@ -990,25 +982,21 @@ class ACEDummyTreeReader:
 
     @staticmethod
     def _socket_index_for(node, sock, is_input: bool) -> int:
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._socket_index_for"):
             idx_val = getattr(sock, "index")
             if idx_val is not None:
                 return int(idx_val)
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._socket_index_for#2"):
             seq = getattr(node, "inputs" if is_input else "outputs", [])
             for idx, ref in enumerate(seq):
                 if ref == sock:
                     return int(idx)
-        except Exception:
-            pass
         return 0
 
     def _topology_signature(self, bl_node) -> dict[str, list[tuple[int, int, str]]]:
         incoming: list[tuple[int, int, str]] = []
         outgoing: list[tuple[int, int, str]] = []
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._topology_signature"):
             for in_sock in getattr(bl_node, "inputs", []):
                 in_idx = self._socket_index_for(bl_node, in_sock, is_input=True)
                 for link in getattr(in_sock, "links", []):
@@ -1018,9 +1006,7 @@ class ACEDummyTreeReader:
                         continue
                     src_idx = self._socket_index_for(src_node, src_sock, is_input=False)
                     incoming.append((int(in_idx), int(src_idx), self._node_kind_token(src_node)))
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._topology_signature#2"):
             for out_sock in getattr(bl_node, "outputs", []):
                 out_idx = self._socket_index_for(bl_node, out_sock, is_input=False)
                 for link in getattr(out_sock, "links", []):
@@ -1030,8 +1016,6 @@ class ACEDummyTreeReader:
                         continue
                     dst_idx = self._socket_index_for(dst_node, dst_sock, is_input=True)
                     outgoing.append((int(out_idx), int(dst_idx), self._node_kind_token(dst_node)))
-        except Exception:
-            pass
         return {
             "incoming": sorted(set(incoming)),
             "outgoing": sorted(set(outgoing)),
@@ -1048,7 +1032,8 @@ class ACEDummyTreeReader:
         if category == "source_mngmt" and node_type == "src":
             try:
                 source_context = str(bl_node.get("ace_source_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._build_deterministic_node_seed", exc)
                 source_context = ""
         payload = {
             "frontend_uid": str(self.frontend_uid or ""),
@@ -1188,14 +1173,16 @@ class ACEDummyTreeReader:
         # bl_node["ace_id"] without the id drifting when connections change.
         try:
             stored_ace_id = str(bl_node.get("ace_id", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._ensure_ace_id", exc)
             stored_ace_id = ""
         parsed_stored = ACEIdManager.parse_node_id(stored_ace_id) if stored_ace_id else None
         if parsed_stored and parsed_stored.get("category") == resolved_cat and parsed_stored.get("type") == resolved_type:
             if resolved_cat == "source_mngmt" and resolved_type == "src":
                 try:
                     source_id = str(bl_node.get("ace_source_id", "") or "")
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("dummy_tree.ACEDummyTreeReader._ensure_ace_id#2", exc)
                     source_id = ""
                 # Must not accidentally use the source's own stable_id as the node id.
                 if stored_ace_id == source_id:
@@ -1213,11 +1200,9 @@ class ACEDummyTreeReader:
             )
             # Persist back so duplicated nodes (which get a new id from _reserve_unique_ace_id)
             # are also stable on the next compile.
-            try:
+            with utils.logged_errors("dummy_tree.ACEDummyTreeReader._ensure_ace_id#3"):
                 if str(bl_node.get("ace_id", "") or "") != resolved_id:
                     bl_node["ace_id"] = resolved_id
-            except Exception:
-                pass
             return resolved_id
 
         seed = self._build_deterministic_node_seed(
@@ -1233,7 +1218,8 @@ class ACEDummyTreeReader:
                 existing_ids=list(self._ace_id_owner.keys()),
                 deterministic_seed=seed,
             )
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._ensure_ace_id#4", exc)
             return ""
         resolved_id = self._reserve_unique_ace_id(
             bl_node,
@@ -1244,11 +1230,9 @@ class ACEDummyTreeReader:
         )
         # Persist the generated id so the next compile reuses it instead of re-generating
         # from topology (which changes whenever the user adds/removes links).
-        try:
+        with utils.logged_errors("dummy_tree.ACEDummyTreeReader._ensure_ace_id#5"):
             if str(bl_node.get("ace_id", "") or "") != resolved_id:
                 bl_node["ace_id"] = resolved_id
-        except Exception:
-            pass
         return resolved_id
 
     def _find_source_nodes(self):
@@ -1275,7 +1259,8 @@ class ACEDummyTreeReader:
                 source_id = ""
                 try:
                     source_id = str(node.get("ace_source_id", "") or "")
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("dummy_tree.ACEDummyTreeReader._find_source_nodes", exc)
                     source_id = ""
                 if not source_id or not ACEIdManager.parse_node_id(source_id):
                     continue
@@ -1358,7 +1343,8 @@ class ACEDummyTreeReader:
                     try:
                         if len(getattr(current_bl_node, "inputs", [])) > 0:
                             target_socket_idx = 0
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("dummy_tree.ACEDummyTreeReader._traverse_from_sources", exc)
                         target_socket_idx = None
 
                 if target_socket_idx is not None:
@@ -1395,7 +1381,8 @@ class ACEDummyTreeReader:
             return f"name:{name}"
         try:
             return f"idx:{int(getattr(sock, 'index'))}"
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._socket_state_key", exc)
             return f"obj:{id(sock)}"
 
     @staticmethod
@@ -1403,14 +1390,16 @@ class ACEDummyTreeReader:
         target_socket_idx = None
         try:
             target_socket_idx = to_socket.index  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx", exc)
             target_socket_idx = None
         if target_socket_idx is not None:
             return target_socket_idx
 
         try:
             target_socket_idx = next((i for i, s in enumerate(target_node.inputs) if s == to_socket), None)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#2", exc)
             target_socket_idx = None
         if target_socket_idx is not None:
             return target_socket_idx
@@ -1418,7 +1407,8 @@ class ACEDummyTreeReader:
         sock_name = ""
         try:
             sock_name = getattr(to_socket, "name", "") or ""
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#3", exc)
             sock_name = ""
         if sock_name:
             try:
@@ -1426,7 +1416,8 @@ class ACEDummyTreeReader:
                     (i for i, s in enumerate(target_node.inputs) if getattr(s, "name", "") == sock_name),
                     None,
                 )
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#4", exc)
                 target_socket_idx = None
         if target_socket_idx is not None:
             return target_socket_idx
@@ -1434,7 +1425,8 @@ class ACEDummyTreeReader:
         sock_identifier = ""
         try:
             sock_identifier = getattr(to_socket, "identifier", "") or ""
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#5", exc)
             sock_identifier = ""
         if sock_identifier:
             try:
@@ -1442,7 +1434,8 @@ class ACEDummyTreeReader:
                     (i for i, s in enumerate(target_node.inputs) if getattr(s, "identifier", "") == sock_identifier),
                     None,
                 )
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx#6", exc)
                 target_socket_idx = None
         return target_socket_idx
 
@@ -1454,7 +1447,8 @@ class ACEDummyTreeReader:
         root_id = ""
         try:
             root_id = bl_node.get("ace_source_id", "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_root_id", exc)
             root_id = ""
         if not root_id:
             try:
@@ -1465,7 +1459,8 @@ class ACEDummyTreeReader:
                         root_id = str(proxy_value or "").strip()
                     else:
                         root_id = getattr(proxy_value, "name", "") or ""
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_root_id#2", exc)
                 root_id = ""
         return root_id
 

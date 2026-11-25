@@ -72,10 +72,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if idx < 0 or idx >= len(ace.audio_sources):
             return ""
         source = ace.audio_sources[idx]
-        try:
+        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._resolve_active_proxy_name"):
             ACEProxyManager.ensure_proxy_for_source(source, scene=getattr(context, "scene", None))
-        except Exception:
-            pass
         return getattr(source, "proxy_object_name", "") or ""
 
     @staticmethod
@@ -98,21 +96,15 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         ]
         source_uid = ACEIdManager.ensure_source_uid(active_source, existing_ids=existing_ids)
         source_name = str(getattr(active_source, "name", "") or "Source")
-        try:
+        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding"):
             node["ace_source_id"] = str(source_uid or "")
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding#2"):
             node["ace_source_name"] = source_name
-        except Exception:
-            pass
         node.label = source_name
         node.name = source_name
 
-        try:
+        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding#3"):
             ACEProxyManager.ensure_proxy_for_source(active_source, scene=getattr(context, "scene", None))
-        except Exception:
-            pass
 
         proxy_name = str(getattr(active_source, "proxy_object_name", "") or "")
         proxy_sock = next((s for s in getattr(node, "inputs", []) if getattr(s, "name", "") == "Proxy Object"), None)
@@ -121,14 +113,16 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             if proxy_name:
                 try:
                     proxy_obj = bpy.data.objects.get(proxy_name)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_source_binding#4", exc)
                     proxy_obj = None
             try:
                 if proxy_obj is not None:
                     proxy_sock.default_value = proxy_obj
                 elif proxy_name:
                     ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_source_binding#5", exc)
                 if proxy_name:
                     ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
 
@@ -144,7 +138,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             uid = ""
             try:
                 uid = str(tree.get("ace_frontend_uid", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._collect_scene_frontend_uids._push_uid", exc)
                 uid = ""
             if uid and uid not in ordered:
                 ordered.append(uid)
@@ -188,7 +183,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if proxy_name:
             try:
                 proxy_obj = bpy.data.objects.get(proxy_name)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_auto_attr_ids", exc)
                 proxy_obj = None
 
         if is_stream and len(node.outputs) > 0:
@@ -249,7 +245,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             if proxy_sock:
                 try:
                     proxy_sock.default_value = proxy_obj
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_auto_attr_ids#2", exc)
                     if proxy_name:
                         ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
         if is_stream_accumulator and proxy_obj:
@@ -257,7 +254,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             if proxy_sock:
                 try:
                     proxy_sock.default_value = proxy_obj
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_auto_attr_ids#3", exc)
                     if proxy_name:
                         ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
 
@@ -268,12 +266,14 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             return False
         try:
             current = getattr(sock, "default_value", None)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("gn_menu.ACE_OT_add_node_group._set_socket_default_value", exc)
             current = None
         if hasattr(value, "name"):
             try:
                 value_name = str(getattr(value, "name", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._set_socket_default_value#2", exc)
                 value_name = ""
             if isinstance(current, str):
                 value = value_name
@@ -283,7 +283,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         try:
             sock.default_value = value
             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("gn_menu.ACE_OT_add_node_group._set_socket_default_value#3", exc)
             return False
 
     @staticmethod
@@ -293,7 +294,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             "Frames per Beat Attribute ID",
             "Beat Phase Attribute ID",
         }
-        try:
+        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._show_attr_id_socket_values"):
             node_tree = getattr(node, "node_tree", None)
             if node_tree is not None:
                 for item in getattr(node_tree.interface, "items_tree", []):
@@ -303,14 +304,10 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                         and hasattr(item, "hide_value")
                     ):
                         item.hide_value = False
-        except Exception:
-            pass
         for sock in getattr(node, "inputs", []):
             if getattr(sock, "name", "") in attr_socket_names:
-                try:
+                with utils.logged_errors("gn_menu.ACE_OT_add_node_group._show_attr_id_socket_values#2"):
                     sock.hide_value = False
-                except Exception:
-                    pass
 
     @classmethod
     def poll(cls, context):
@@ -346,7 +343,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 ace = getattr(getattr(context, "scene", None), "audiocore", None)
                 settings = getattr(ace, "engine_settings", None) if ace else None
                 splitter_bands = int(getattr(settings, "splitter_default_bands", 2) or 2)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("gn_menu.ACE_OT_add_node_group.execute", exc)
                 splitter_bands = 2
             splitter_bands = max(2, min(splitter_bands, 8))
             group = ACESplitterManager.get_or_create_variant(splitter_bands, tree)
@@ -355,7 +353,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 ace = getattr(getattr(context, "scene", None), "audiocore", None)
                 settings = getattr(ace, "engine_settings", None) if ace else None
                 audio_math_inputs = int(getattr(settings, "audio_math_default_inputs", 2) or 2)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("gn_menu.ACE_OT_add_node_group.execute#2", exc)
                 audio_math_inputs = 2
             audio_math_inputs = max(2, min(audio_math_inputs, 8))
             group = ACEAudioMathManager.get_or_create_variant(audio_math_inputs, tree)
@@ -402,10 +401,8 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if self.node_type_key == 'frequency_splitter':
             node['ace_band_count'] = max(2, min(int(node.get('ace_band_count', splitter_bands)), 8))
             node.label = f"{node.label} ({int(node['ace_band_count'])} Bands)"
-            try:
+            with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#3"):
                 ACESplitterManager._ensure_node_socket_limits(node)
-            except Exception:
-                pass
         if self.node_type_key == 'audio_math':
             node["ace_input_count"] = max(2, min(int(node.get("ace_input_count", audio_math_inputs)), 8))
             node["ace_op"] = node.get("ace_op", "add")
@@ -421,7 +418,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         self._initialize_auto_attr_ids(node, context)
         self._show_attr_id_socket_values(node)
         if tree_type == "ShaderNodeTree":
-            try:
+            with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#4"):
                 from ..core.audio_engine import ACEAudioEngine
 
                 scene = getattr(context, "scene", None)
@@ -442,8 +439,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                         proxy_name=proxy_name,
                         scene=scene,
                     )
-            except Exception:
-                pass
 
         # 5. UI Cleanup (Selection)
         for n in tree.nodes:
@@ -583,9 +578,7 @@ def register():
 def unregister():
     bpy.types.NODE_MT_add.remove(add_node_menu_func)
     if hasattr(bpy.types, "NODE_MT_category_shader_add"):
-        try:
+        with utils.logged_errors("gn_menu.unregister"):
             bpy.types.NODE_MT_category_shader_add.remove(add_shader_category_menu_func)
-        except Exception:
-            pass
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

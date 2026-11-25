@@ -34,11 +34,11 @@ import numpy as np
 try:
     from numba import njit  # type: ignore
     _NUMBA_AVAILABLE = True
-except Exception:
+except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
     _NUMBA_AVAILABLE = False
 try:
     from bpy.app.handlers import persistent  # type: ignore
-except Exception:  # pragma: no cover - Blender provides this at runtime
+except ImportError:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 
@@ -86,13 +86,13 @@ from .. import utils
 
 try:
     from concurrent.futures.process import BrokenProcessPool
-except Exception:  # pragma: no cover - platform/runtime dependent
+except ImportError:  # pragma: no cover - platform/runtime dependent
     BrokenProcessPool = RuntimeError
 
 try:
     from multiprocessing import shared_memory as mp_shared_memory
     _SHARED_MEMORY_AVAILABLE = True
-except Exception:  # pragma: no cover - runtime/platform dependent
+except ImportError:  # pragma: no cover - runtime/platform dependent
     mp_shared_memory = None
     _SHARED_MEMORY_AVAILABLE = False
 
@@ -408,13 +408,11 @@ class _ACEPreviewFeeder:
                     # next loop iteration.
                     if not getattr(self, "_ring_append_error_logged", False):
                         self._ring_append_error_logged = True
-                        try:
+                        with utils.logged_errors("audio_engine._ACEPreviewFeeder._loop"):
                             utils.log(
                                 f"[ACE-Feeder] ring_append_fn failed (audio may drop): {_ring_exc!r}",
                                 "WARNING",
                             )
-                        except Exception:
-                            pass
 
                 if partial:
                     break
@@ -552,7 +550,8 @@ class _ACEPreviewAudioMonitor:
         try:
             mono = np.asarray(getattr(chunk, "mono", None), dtype=np.float32).reshape(-1)
             return int(mono.shape[0] or 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine._ACEPreviewAudioMonitor._chunk_frame_count", exc)
             return 0
 
     def _drop_prepare_payload_locked(self, payload):
@@ -602,15 +601,13 @@ class _ACEPreviewAudioMonitor:
                 self._preview_consecutive_errors = 0
             except Exception as _exc:
                 self._preview_consecutive_errors += 1
-                try:
+                with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._prepare_loop"):
                     import traceback as _tb
                     utils.log(
                         f"[ACE-Preview] _prepare_preview_payload error "
                         f"(#{self._preview_consecutive_errors}): {_exc!r}\n{_tb.format_exc()}",
                         "WARNING",
                     )
-                except Exception:
-                    pass
                 continue
 
     def _append_ring_block_locked(self, frames: np.ndarray):
@@ -669,10 +666,8 @@ class _ACEPreviewAudioMonitor:
 
         outdata[:, :] = out
         if ring_frames_after < refill_threshold:
-            try:
+            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._callback"):
                 self._feeder.notify_ring_low()
-            except Exception:
-                pass
 
     def _ensure_stream(self, sample_rate: int):
         sd = self._resolve_backend()
@@ -739,13 +734,11 @@ class _ACEPreviewAudioMonitor:
 
         gain = float(min(max(self._limiter_gain, 0.0), 1.0))
         if _NUMBA_AVAILABLE:
-            try:
+            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._apply_safety_limiter"):
                 out, gain = _preview_limiter_block_numba(arr, ceiling, release_step, gain)
                 np.clip(out, -ceiling, ceiling, out=out)
                 self._limiter_gain = float(min(max(gain, 0.0), 1.0))
                 return out.astype(np.float32, copy=False)
-            except Exception:
-                pass
 
         # Vectorized fallback: instant-attack via np.minimum.accumulate,
         # release recovery via np.maximum.accumulate on the per-frame increments.
@@ -980,14 +973,10 @@ class _ACEPreviewAudioMonitor:
             self._last_callback_ts = 0.0
             self._last_push_ts = 0.0
         if self._stream is not None:
-            try:
+            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._close_stream_only"):
                 self._stream.stop()
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor._close_stream_only#2"):
                 self._stream.close()
-            except Exception:
-                pass
         self._stream = None
         self._sample_rate = 0
         self._block_size = max(int(self._preferred_block_size(SAMPLE_RATE)), 64)
@@ -1004,10 +993,8 @@ class _ACEPreviewAudioMonitor:
             worker = self._prepare_thread
             self._prepare_thread = None
         if worker is not None and worker is not threading.current_thread():
-            try:
+            with utils.logged_errors("audio_engine._ACEPreviewAudioMonitor.close"):
                 worker.join(timeout=0.5)
-            except Exception:
-                pass
         self._close_stream_only()
 
 
@@ -1210,10 +1197,8 @@ class ACEAudioEngine:
     def _scene_key(scene) -> int:
         """Return ``scene.as_pointer()`` as an int, or 0 if unavailable."""
         if scene is not None and hasattr(scene, "as_pointer"):
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._scene_key"):
                 return int(scene.as_pointer())
-            except Exception:
-                pass
         return 0
 
     @staticmethod
@@ -1223,7 +1208,8 @@ class ACEAudioEngine:
             return ""
         try:
             return str(getattr(scene, "name_full", "") or getattr(scene, "name", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._scene_name", exc)
             return ""
 
     def _clear_blender_runtime_refs(self) -> None:
@@ -1262,7 +1248,8 @@ class ACEAudioEngine:
             return False
         try:
             return bool(engine._undo_recovery_active())
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._undo_recovery_active_for_scene", exc)
             return False
 
     @classmethod
@@ -1298,10 +1285,8 @@ class ACEAudioEngine:
         if tree is None:
             return 0
         if hasattr(tree, "as_pointer"):
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._node_tree_pointer"):
                 return int(tree.as_pointer())
-            except Exception:
-                pass
         return id(tree)
 
     @staticmethod
@@ -1370,34 +1355,25 @@ class ACEAudioEngine:
         the next session if Numba and scipy are still absent.
         """
         for inst in list(cls._instances.values()):
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances"):
                 inst._shutdown_graphs(wait_parallel_pool=True, clear_bake_cache=True)
-            except Exception:
-                pass
         cls._instances.clear()
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#2"):
             cls._preview_monitor.close()
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#3"):
             SourceSpecsTask.shutdown_background_worker()
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#4"):
             _clear_file_open_locks()
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.shutdown_all_instances#5"):
             reset_biquad_fallback_warned()
-        except Exception:
-            pass
 
     @classmethod
     def preview_monitor_available(cls) -> bool:
         """Return True if the sounddevice backend loaded successfully."""
         try:
             return bool(cls._preview_monitor._resolve_backend())
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine.preview_monitor_available", exc)
             return False
 
     @classmethod
@@ -1405,7 +1381,8 @@ class ACEAudioEngine:
         """Return the current consecutive DSP error count from the prepare worker."""
         try:
             return int(cls._preview_monitor._preview_consecutive_errors)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine.preview_monitor_consecutive_errors", exc)
             return 0
 
     @staticmethod
@@ -1425,7 +1402,8 @@ class ACEAudioEngine:
         try:
             val = str(getattr(settings, "ace_scheduler_mode", "demand") or "demand").strip().lower()
             return val if val in {"demand", "legacy"} else "demand"
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._scheduler_mode", exc)
             return "demand"
 
     @classmethod
@@ -1434,7 +1412,8 @@ class ACEAudioEngine:
         try:
             val = str(getattr(settings, "ace_timeslice_mode", "fixed") or "fixed").strip().lower()
             return val if val in {"fixed", "adaptive"} else "fixed"
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._timeslice_mode", exc)
             return "fixed"
 
     @classmethod
@@ -1443,7 +1422,8 @@ class ACEAudioEngine:
         try:
             val = str(getattr(settings, "ace_parallel_mode", "processes_dsp") or "processes_dsp").strip().lower()
             return val if val in {"processes_dsp", "threads_io", "off"} else "processes_dsp"
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._parallel_mode", exc)
             return "processes_dsp"
 
     @classmethod
@@ -1452,7 +1432,8 @@ class ACEAudioEngine:
         raw = 256
         try:
             raw = int(getattr(settings, "ace_preview_block_size", 256) or 256)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._preview_block_size", exc)
             raw = 256
         return int(resolve_preview_block_size(raw))
 
@@ -1461,7 +1442,8 @@ class ACEAudioEngine:
         settings = cls._engine_settings(scene_or_engine_settings)
         try:
             return bool(getattr(settings, "ace_perf_enabled", False))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._perf_enabled", exc)
             return False
 
     def _perf_add(self, stage: str, duration_s: float):
@@ -1534,13 +1516,15 @@ class ACEAudioEngine:
             return ""
         try:
             name = str(getattr(datablock, "name_full", "") or getattr(datablock, "name", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._id_metric_token", exc)
             name = ""
         if not name:
             return ""
         try:
             type_name = str(getattr(getattr(datablock, "bl_rna", None), "identifier", "") or type(datablock).__name__)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._id_metric_token#2", exc)
             type_name = type(datablock).__name__
         return f"{type_name}:{name}"
 
@@ -1799,13 +1783,15 @@ class ACEAudioEngine:
             raw = str(
                 getattr(settings, "ace_file_working_sample_rate", str(default_cap)) or str(default_cap)
             ).strip().lower()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._file_working_sample_rate_cap", exc)
             raw = str(default_cap)
         if raw in {"native", "off", "0"}:
             return 0
         try:
             return max(int(raw), 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._file_working_sample_rate_cap#2", exc)
             return default_cap
 
     @classmethod
@@ -1828,13 +1814,15 @@ class ACEAudioEngine:
         if source_type == "FILE":
             try:
                 sr = int(getattr(source, "native_sample_rate", 0) or 0)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._source_original_sample_rate", exc)
                 sr = 0
             if sr > 0:
                 return sr
         try:
             return int(getattr(source, "sample_rate", 0) or 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._source_original_sample_rate#2", exc)
             return 0
 
     def _source_task_target_sample_rate(self, task: Optional[SourceTask]) -> Optional[int]:
@@ -1904,7 +1892,8 @@ class ACEAudioEngine:
                 continue
             try:
                 socket_idx = int(sock_idx_str) if sock_idx_str else 0
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._rebuild_graph_output_slot_specs", exc)
                 socket_idx = 0
             specs.append((str(attr_key), str(node_id), int(socket_idx)))
         graph.output_slot_specs = specs
@@ -1953,7 +1942,8 @@ class ACEAudioEngine:
                 continue
             try:
                 socket_idx = int(sock_idx_str) if sock_idx_str else 0
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._graph_output_slot_specs", exc)
                 socket_idx = 0
             subset.append((str(attr_key), str(node_id), int(socket_idx)))
         subset_cache[key_tuple] = subset
@@ -1996,7 +1986,8 @@ class ACEAudioEngine:
         """
         try:
             override = int(os.environ.get("ACE_PARALLEL_WORKERS", "0") or 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._parallel_worker_count", exc)
             override = 0
         cpu_count = max(int(os.cpu_count() or 1), 1)
         if override > 0:
@@ -2044,27 +2035,19 @@ class ACEAudioEngine:
         if not wait_effective:
             # Realtime paths must stay non-blocking. Best-effort cancel pending jobs.
             for future_obj in list(self._parallel_future_meta.keys()):
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_parallel_pool"):
                     future_obj.cancel()
-                except Exception:
-                    pass
             # Terminate worker processes immediately so they release SHM file
             # descriptors and CPU. Without this, already-running workers outlive
             # the executor shutdown and hold /dev/shm blocks until completion.
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_parallel_pool#2"):
                 procs = dict(getattr(executor, "_processes", {}) or {})
                 for proc in procs.values():
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_parallel_pool#3"):
                         proc.terminate()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
         if executor is not None:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_parallel_pool#4"):
                 executor.shutdown(wait=wait_effective, cancel_futures=True)
-            except Exception:
-                pass
         self._parallel_clear_runtime_state(keep_last_valid=False)
 
     def _parallel_reset_generation(self):
@@ -2166,7 +2149,8 @@ class ACEAudioEngine:
                 continue
             try:
                 _ = int(sock_idx_str) if sock_idx_str else 0
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._prepare_parallel_graph_ir", exc)
                 continue
             offload_attr_keys.append(attr_key)
             offload_node_ids.add(node_id)
@@ -2306,7 +2290,8 @@ class ACEAudioEngine:
                 separators=(",", ":"),
             ).encode("utf-8")
             graph.parallel_ir_digest = hashlib.blake2b(digest_payload, digest_size=8).hexdigest()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._prepare_parallel_graph_ir#2", exc)
             graph.parallel_ir_digest = hashlib.blake2b(
                 str(graph.parallel_ir).encode("utf-8", "ignore"),
                 digest_size=8,
@@ -2403,34 +2388,28 @@ class ACEAudioEngine:
         }
         frontend_config = getattr(chunk, "frontend_config", None)
         if isinstance(frontend_config, (list, tuple)) and len(frontend_config) >= 4:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._build_parallel_source_payload"):
                 payload["frontend_config"] = (
                     float(frontend_config[0] or 0.0),
                     float(frontend_config[1] or 0.0),
                     float(frontend_config[2] or 0.0),
                     float(frontend_config[3] or 0.0),
                 )
-            except Exception:
-                pass
         band_indices = getattr(chunk, "band_indices", None)
         if band_indices is not None:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._build_parallel_source_payload#2"):
                 band_arr = np.asarray(band_indices, dtype=np.int64).reshape(-1)
                 payload["band_indices"] = band_arr
                 payload["band_index_fft_size"] = int(
                     max(int(getattr(chunk, "band_index_fft_size", 0) or 0), 1)
                 )
-            except Exception:
-                pass
         band_hz_bounds = getattr(chunk, "band_hz_bounds", None)
         if isinstance(band_hz_bounds, (list, tuple)) and len(band_hz_bounds) >= 2:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._build_parallel_source_payload#3"):
                 low_hz = float(band_hz_bounds[0])
                 high_hz = float(band_hz_bounds[1])
                 if high_hz > low_hz:
                     payload["band_hz_bounds"] = (low_hz, high_hz)
-            except Exception:
-                pass
         return payload
 
     def _parallel_drop_future(self, future_obj):
@@ -2474,10 +2453,8 @@ class ACEAudioEngine:
                     meta["stale_job"] = True
                     self._parallel_future_meta[future_obj] = dict(meta)
                     self._parallel_stale_job_drops += 1
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine._parallel_poll_futures"):
                     future_obj.cancel()
-                except Exception:
-                    pass
                 self._parallel_drop_future(future_obj)
                 continue
 
@@ -2524,10 +2501,8 @@ class ACEAudioEngine:
                     continue
                 worker_elapsed_s = float(payload.get("elapsed_s", 0.0) or 0.0)
                 if worker_elapsed_s > 0.0:
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._parallel_poll_futures#2"):
                         self._perf_add("dsp", worker_elapsed_s)
-                    except Exception:
-                        pass
                 frame_id = utils.as_int(payload.get("frame_id"), -1)
                 if frame_id < (int(current_frame) - int(self._PARALLEL_STALE_FRAME_GRACE)):
                     self._parallel_stale_result_drops += 1
@@ -2617,7 +2592,8 @@ class ACEAudioEngine:
             oldest_meta = dict(self._parallel_future_meta.get(oldest, {}) or {})
             try:
                 oldest_frame = int(oldest_meta.get("frame_id", frame_index) or frame_index)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._parallel_submit_graph_job", exc)
                 oldest_frame = int(frame_index)
             frame_delta = int(frame_index) - int(oldest_frame)
             if frame_delta <= int(self._PARALLEL_CANCEL_STALE_FRAME_DELTA):
@@ -2822,7 +2798,8 @@ class ACEAudioEngine:
                     continue
                 try:
                     state = dict(export_fn() or {})
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_engine.ACEAudioEngine.compile", exc)
                     state = {}
                 if state:
                     stream_accumulator_state[(source_key, str(node_id))] = state
@@ -2871,7 +2848,8 @@ class ACEAudioEngine:
             # Ensure a proxy exists and resolve the stable proxy name for filtering
             try:
                 proxy_obj = ACEProxyManager.ensure_proxy_for_source(source, scene=blender_scene)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine.compile#2", exc)
                 proxy_obj = None
             src_uid = ACEIdManager.ensure_source_uid(source, existing_ids=existing_ids)
             if src_uid and src_uid not in existing_ids:
@@ -2882,10 +2860,8 @@ class ACEAudioEngine:
                     getattr(source, "name", "") or src_uid or "Source",
                     stable_seed=src_uid or getattr(source, "name", "") or "source",
                 )
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine.compile#3"):
                     source.proxy_object_name = src_proxy_name
-                except Exception:
-                    pass
 
             if src_uid:
                 source_context_lookup[src_uid] = source
@@ -2966,10 +2942,8 @@ class ACEAudioEngine:
                                 continue
                             import_fn = getattr(task, "import_state", None)
                             if callable(import_fn):
-                                try:
+                                with utils.logged_errors("audio_engine.ACEAudioEngine.compile#4"):
                                     import_fn(state)
-                                except Exception:
-                                    pass
                             break
                     task.engine_ref = self
                     task.undo_generation = int(getattr(self, "undo_generation", 0) or 0)
@@ -3112,11 +3086,9 @@ class ACEAudioEngine:
             self._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync
 
             if self.writer is not None and sink_writes_allowed:
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine.compile#5"):
                     self.writer.ensure_sink_layout(graph, active_keys=set(graph.output_attr_keys))
                     self._last_attr_sync_frame[src_uid] = int(self.current_frame)
-                except Exception:
-                    pass
             elif self.writer is not None and self._is_rendering_job():
                 self._log_runtime(
                     "render_lock_interface_compile_stage_c",
@@ -3129,7 +3101,7 @@ class ACEAudioEngine:
         # After all graphs' sink bindings are resolved, build the active set
         # and remove any ACE_ props that are no longer written by the engine.
         if self.writer is not None and sink_writes_allowed:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.compile#6"):
                 active_props_by_object: Dict[str, Set[str]] = {}
                 for g in self.graphs.values():
                     for bindings in getattr(g, "sink_bindings_by_attr", {}).values():
@@ -3141,13 +3113,9 @@ class ACEAudioEngine:
                             if obj_name and prop_name:
                                 active_props_by_object.setdefault(obj_name, set()).add(prop_name)
                 self.writer.prune_consumer_objects(active_props_by_object)
-            except Exception:
-                pass
 
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.compile#7"):
             ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
-        except Exception:
-            pass
         self._last_compile_time = time.time()
 
     def _log_runtime(self, key: str, message: str, level: str = "ERROR", min_interval: float = 2.0):
@@ -3193,14 +3161,12 @@ class ACEAudioEngine:
         cache_key = f"FILE:{fp}"
         cached = self._meta_cache.get(cache_key)
         if cached and cached.get("mtime") == mtime and (time.time() - cached.get("ts", 0.0) <= self._meta_cache_ttl):
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._probe_source_metadata"):
                 cached_sample_rate = int(cached.get("sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
                 if should_refresh_working_rate:
                     source.sample_rate = cached_sample_rate
                 source.native_sample_rate = int(cached.get("native_sample_rate", cached_sample_rate) or cached_sample_rate)
                 source.duration = cached.get("duration", 0.0)
-            except Exception:
-                pass
             return
         # Cache miss: dispatch background probe to avoid blocking the main thread.
         # Results are flushed into bpy props by _flush_probe_updates() on the next frame.
@@ -3241,10 +3207,8 @@ class ACEAudioEngine:
                     )
                     duration = float(getattr(rec, "duration", 0.0) or 0.0)
                 finally:
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._run_probe_in_bg#2"):
                         rec.close()
-                    except Exception:
-                        pass
                 with self._probe_thread_lock:
                     if int(undo_generation) != int(getattr(self, "undo_generation", 0) or 0):
                         return
@@ -3256,8 +3220,8 @@ class ACEAudioEngine:
                         "ts": _time.time(),
                         "undo_generation": int(undo_generation),
                     }
-        except Exception:
-            pass
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._run_probe_in_bg", exc)
         finally:
             with self._probe_thread_lock:
                 self._probe_in_flight.discard(fp)
@@ -3284,14 +3248,12 @@ class ACEAudioEngine:
             result = updates[fp]
             if int(result.get("undo_generation", active_generation) or active_generation) != active_generation:
                 continue
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._flush_probe_updates"):
                 native_sr = int(result.get("native_sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
                 source.native_sample_rate = native_sr
                 source.duration = float(result.get("duration", 0.0) or 0.0)
                 if not int(getattr(source, "sample_rate", 0) or 0):
                     source.sample_rate = native_sr
-            except Exception:
-                pass
             cache_key = f"FILE:{fp}"
             self._meta_cache[cache_key] = result
             if len(self._meta_cache) > self._META_CACHE_MAX_ENTRIES:
@@ -3303,7 +3265,7 @@ class ACEAudioEngine:
                     self._meta_cache.pop(stale_key, None)
             any_updated = True
         if any_updated:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._flush_probe_updates#2"):
                 preferred_tree = self._resolve_preferred_tree_from_discoveries(
                     self.discover_scene_frontends(scene) if scene is not None else [],
                     frontend_uid=str(getattr(self, "_compiled_tree_frontend_uid", "") or ""),
@@ -3311,8 +3273,6 @@ class ACEAudioEngine:
                     tree_bl_idname=str(getattr(self, "_compiled_tree_bl_idname", "") or ""),
                 )
                 self.request_recompile(preferred_tree)
-            except Exception:
-                pass
         return any_updated
 
     def _apply_tempo_detection_to_source(self, source: ACEAudioSource, detected: Dict[str, Any]) -> bool:
@@ -3330,7 +3290,8 @@ class ACEAudioEngine:
             source["ace_tempo_detect_status"] = "ready"
             source["ace_tempo_detect_message"] = f"Detected {float(bpm):.2f} BPM / {int(beats_per_bar)} BPB"
             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._apply_tempo_detection_to_source", exc)
             return False
 
     def request_source_tempo_detection(self, source: Optional[ACEAudioSource]) -> tuple[bool, str]:
@@ -3341,41 +3302,33 @@ class ACEAudioEngine:
 
         target = SourceSpecsTask.resolve_analysis_target(source)
         if target is None:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection"):
                 source["ace_tempo_detect_status"] = "failed"
                 source["ace_tempo_detect_message"] = "Select a valid file source before detecting tempo."
-            except Exception:
-                pass
             return False, "Select a valid file source before detecting tempo."
 
         filepath, mtime = target
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection#2"):
             source["ace_tempo_detect_status"] = "pending"
             source["ace_tempo_detect_message"] = "Analyzing source tempo in the background..."
             source["ace_tempo_detect_filepath"] = str(filepath)
             source["ace_tempo_detect_mtime"] = float(mtime)
-        except Exception:
-            pass
 
         cached = SourceSpecsTask.get_cached_analysis(target)
         if cached:
             if cached.get("bpm", None) is not None and self._apply_tempo_detection_to_source(source, cached):
                 return True, "Tempo detection updated from cache."
             error_msg = str(cached.get("error", "") or "Tempo analysis failed.")
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection#3"):
                 source["ace_tempo_detect_status"] = "failed"
                 source["ace_tempo_detect_message"] = error_msg
-            except Exception:
-                pass
             return False, error_msg
 
         queued = SourceSpecsTask._queue_background_analysis(target)
         if not queued:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.request_source_tempo_detection#4"):
                 source["ace_tempo_detect_status"] = "failed"
                 source["ace_tempo_detect_message"] = "Tempo analysis queue is full. Try again in a moment."
-            except Exception:
-                pass
             return False, "Tempo analysis queue is full. Try again in a moment."
 
         return True, "Tempo detection queued."
@@ -3389,7 +3342,8 @@ class ACEAudioEngine:
                 continue
             try:
                 status = str(source.get("ace_tempo_detect_status", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates", exc)
                 status = ""
             if status != "pending":
                 continue
@@ -3397,7 +3351,8 @@ class ACEAudioEngine:
             try:
                 filepath = str(source.get("ace_tempo_detect_filepath", "") or "")
                 mtime = float(source.get("ace_tempo_detect_mtime", 0.0) or 0.0)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates#2", exc)
                 filepath = ""
                 mtime = 0.0
             if not filepath or mtime <= 0.0:
@@ -3405,11 +3360,9 @@ class ACEAudioEngine:
 
             current_target = SourceSpecsTask.resolve_analysis_target(source)
             if current_target is None or str(current_target[0]) != filepath or abs(float(current_target[1]) - mtime) > 1e-6:
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates#3"):
                     source["ace_tempo_detect_status"] = "failed"
                     source["ace_tempo_detect_message"] = "Source changed. Run tempo detection again."
-                except Exception:
-                    pass
                 any_updated = True
                 continue
 
@@ -3418,13 +3371,11 @@ class ACEAudioEngine:
                 continue
 
             if cached.get("bpm", None) is None:
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine.flush_source_tempo_detection_updates#4"):
                     source["ace_tempo_detect_status"] = "failed"
                     source["ace_tempo_detect_message"] = str(
                         cached.get("error", "") or "Tempo analysis failed."
                     )
-                except Exception:
-                    pass
                 any_updated = True
                 continue
 
@@ -3439,19 +3390,18 @@ class ACEAudioEngine:
             if source_type == "FILE":
                 try:
                     sr = int(getattr(source, "native_sample_rate", 0) or 0)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_engine.ACEAudioEngine._collect_sample_rate_floor", exc)
                     sr = 0
             else:
                 sr = int(getattr(source, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
             cache_key = ""
             mtime = None
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#2"):
                 if source_type == "LIVE":
                     live_flow_id = build_live_flow_identifier(source)
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#3"):
                         source.flow_identifier = live_flow_id
-                    except Exception:
-                        pass
                     # Compile path must not touch live devices/sockets.
                     live_transport = str(getattr(source, "live_transport", "") or "").upper()
                     udp_sr = int(getattr(source, "live_udp_sample_rate", 0) or 0)
@@ -3459,10 +3409,8 @@ class ACEAudioEngine:
                         sr = udp_sr
                     elif sr <= 0:
                         sr = SAMPLE_RATE
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#4"):
                         source.sample_rate = int(sr)
-                    except Exception:
-                        pass
                     if min_sr is None or sr < min_sr:
                         min_sr = sr
                     continue
@@ -3484,15 +3432,11 @@ class ACEAudioEngine:
                     ts_ok = cached and (getattr(__import__("time"), "time")() - cached.get("ts", 0.0) <= self._meta_cache_ttl)
                     if cached and cached.get("mtime") == mtime and ts_ok:
                         sr = int(cached.get("native_sample_rate", cached.get("sample_rate", sr)) or sr)
-                        try:
+                        with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#5"):
                             source.native_sample_rate = int(sr)
-                        except Exception:
-                            pass
                         if getattr(source, "duration", 0.0) == 0.0:
-                            try:
+                            with utils.logged_errors("audio_engine.ACEAudioEngine._collect_sample_rate_floor#6"):
                                 source.duration = float(cached.get("duration", 0.0))
-                            except Exception:
-                                pass
                         working_sr = self._cap_source_sample_rate(source_type, sr, engine_settings)
                         if min_sr is None or working_sr < min_sr:
                             min_sr = working_sr
@@ -3503,8 +3447,6 @@ class ACEAudioEngine:
                     # which triggers a recompile so the correct sample-rate is picked up.
                     self._dispatch_async_probe(getattr(source, "filepath", ""))
                 # Use current sr as fallback; updated on recompile after probe completes.
-            except Exception:
-                pass
             working_sr = self._cap_source_sample_rate(source_type, sr, engine_settings)
             if min_sr is None or working_sr < min_sr:
                 min_sr = working_sr
@@ -3640,7 +3582,8 @@ class ACEAudioEngine:
             return None
         try:
             return bpy.data.objects.get(str(proxy_name))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._lookup_proxy_object", exc)
             return None
 
     @staticmethod
@@ -3665,7 +3608,8 @@ class ACEAudioEngine:
             return ""
         try:
             return str(tree.get("ace_frontend_uid", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._tree_frontend_uid", exc)
             return ""
 
     @staticmethod
@@ -4272,19 +4216,15 @@ class ACEAudioEngine:
             return
         npz_obj = entry.pop("_npz_cache", None)
         if npz_obj is not None:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._cleanup_bake_entry"):
                 close_fn = getattr(npz_obj, "close", None)
                 if callable(close_fn):
                     close_fn()
-            except Exception:
-                pass
         npz_path = str(entry.get("npz_path", "") or "")
         if npz_path:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._cleanup_bake_entry#2"):
                 if os.path.isfile(npz_path):
                     os.remove(npz_path)
-            except Exception:
-                pass
 
     def _prune_bake_cache(self, sources, tree_signature):
         valid_ids: set[str] = set()
@@ -4440,14 +4380,13 @@ class ACEAudioEngine:
                 if int(getattr(upstream, "last_frame_processed", -1)) == frame_idx:
                     extract_fn = getattr(upstream, "_extract_result", None)
                     if callable(extract_fn):
-                        try:
+                        with utils.logged_errors("audio_engine.ACEAudioEngine._evaluate_graph_plan_iterative"):
                             input_data[input_idx] = extract_fn(socket_idx)
                             continue
-                        except Exception:
-                            pass
                 try:
                     input_data[input_idx] = upstream.get_output(frame_idx, socket_idx)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_engine.ACEAudioEngine._evaluate_graph_plan_iterative#2", exc)
                     input_data[input_idx] = None
 
             try:
@@ -4458,7 +4397,8 @@ class ACEAudioEngine:
                 if callable(tag_fn):
                     tag_fn(task.cached_output, frame_idx)
                 task.last_frame_processed = frame_idx
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._evaluate_graph_plan_iterative#3", exc)
                 continue
 
     def _collect_graph_results_for_frame(
@@ -4484,7 +4424,8 @@ class ACEAudioEngine:
                 if callable(extract_fn):
                     try:
                         val = extract_fn(socket_idx)
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("audio_engine.ACEAudioEngine._collect_graph_results_for_frame", exc)
                         val = task.get_output(frame_index, socket_idx)
                 else:
                     val = task.get_output(frame_index, socket_idx)
@@ -4534,7 +4475,8 @@ class ACEAudioEngine:
             try:
                 npz_cache = np.load(npz_path, allow_pickle=False)
                 entry["_npz_cache"] = npz_cache
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._get_baked_frame_results", exc)
                 return None
         results: Dict[str, Any] = {}
         for attr_key in graph.output_attr_keys:
@@ -4586,7 +4528,8 @@ class ACEAudioEngine:
             ace_id = ""
             try:
                 ace_id = bl_node.get("ace_id", "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._sync_auto_attr_ids", exc)
                 ace_id = ""
             if not ace_id:
                 continue
@@ -4651,7 +4594,7 @@ class ACEAudioEngine:
             if not desired_map:
                 continue
 
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#2"):
                 node_tree = getattr(bl_node, "node_tree", None)
                 if node_tree is not None:
                     for item in getattr(node_tree.interface, "items_tree", []):
@@ -4661,14 +4604,10 @@ class ACEAudioEngine:
                             and hasattr(item, "hide_value")
                         ):
                             item.hide_value = False
-            except Exception:
-                pass
             for sock in getattr(bl_node, "inputs", []):
                 if getattr(sock, "name", "") in socket_map:
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#3"):
                         sock.hide_value = False
-                    except Exception:
-                        pass
 
             socket_bindings: list[tuple[Any, str, str]] = []
             for sock in getattr(bl_node, "inputs", []):
@@ -4682,19 +4621,15 @@ class ACEAudioEngine:
             for sock, current, target in socket_bindings:
                 if not target or current == target:
                     continue
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#4"):
                     sock.default_value = target
                     changed = True
                     changed_node_ids.add(str(abs_node.id))
-                except Exception:
-                    pass
 
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._sync_auto_attr_ids#5"):
                 if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
                     bl_node["ace_auto_attr_topology_json"] = topology_sig
                     changed = True
-            except Exception:
-                pass
         return changed, changed_node_ids
 
     @staticmethod
@@ -4730,7 +4665,8 @@ class ACEAudioEngine:
             ace_id = ""
             try:
                 ace_id = str(bl_node.get("ace_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._refresh_abstract_attr_params_from_tree", exc)
                 ace_id = ""
             if not ace_id or ace_id not in node_id_set:
                 continue
@@ -4788,14 +4724,13 @@ class ACEAudioEngine:
         try:
             from ..nodes.shader_tree import ACEShaderNodeFactory as _ACEShaderNodeFactory
             shader_factory = _ACEShaderNodeFactory
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._sync_shader_output_ids", exc)
             shader_factory = None
         if shader_factory is not None and not shader_tree_mutations_unsafe:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#2"):
                 if shader_factory.cleanup_tree_helper_nodes(bl_tree):
                     changed = True
-            except Exception:
-                pass
 
         incoming_by_target: Dict[str, list[tuple[str, int, int]]] = {}
         for link in (getattr(abstract_tree, "links", []) or []):
@@ -4814,7 +4749,8 @@ class ACEAudioEngine:
         for bl_node in getattr(bl_tree, "nodes", []):
             try:
                 ace_id = str(bl_node.get("ace_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._sync_shader_output_ids#3", exc)
                 ace_id = ""
             if not ace_id:
                 continue
@@ -4896,25 +4832,21 @@ class ACEAudioEngine:
                     target = desired_map.get(socket_key, "")
                     current = str(getattr(sock, "default_value", "") or "")
                     if target and target != current:
-                        try:
+                        with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#4"):
                             sock.default_value = target
                             changed = True
                             changed_node_ids.add(str(abs_node.id))
-                        except Exception:
-                            pass
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#5"):
                     if str(bl_node.get("ace_auto_attr_topology_json", "")) != topology_sig:
                         bl_node["ace_auto_attr_topology_json"] = topology_sig
                         changed = True
-                except Exception:
-                    pass
             # Allow sync during viewport Material Preview / Rendered view —
             # only a full render job (use_lock_interface=False) is truly unsafe.
             # Viewport renders re-sync Cycles per frame anyway, so updating the
             # ShaderNodeAttribute attribute_name or creating a missing helper
             # node during viewport render is safe and necessary.
             if shader_factory is not None and not shader_tree_mutations_unsafe:
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine._sync_shader_output_ids#6"):
                     _names_by_idx = {int(k): str(v) for k, v in desired_map.items() if v} or None
                     if shader_factory.sync_node_instance_group_bindings(
                         bl_node,
@@ -4924,8 +4856,6 @@ class ACEAudioEngine:
                     ):
                         changed = True
                         changed_node_ids.add(str(abs_node.id))
-                except Exception:
-                    pass
             # Write computed attr names into abstract tree params so that
             # _emit_consumer_intents / _resolve_sink_data_name use the same
             # names that were set on the companion ShaderNodeAttribute helpers.
@@ -5007,16 +4937,14 @@ class ACEAudioEngine:
     def _parallel_close_unlink_shm(shm_obj):
         if shm_obj is None:
             return
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine._parallel_close_unlink_shm"):
             shm_obj.close()
-        except Exception:
-            pass
         try:
             shm_obj.unlink()
         except FileNotFoundError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._parallel_close_unlink_shm#2", exc)
 
     def _parallel_destroy_payload_slot(self, slot_key: str):
         key = str(slot_key)
@@ -5238,10 +5166,8 @@ class ACEAudioEngine:
             for task in graph.tasks.values():
                 close_fn = getattr(task, "close", None)
                 if callable(close_fn):
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine._shutdown_graphs"):
                         close_fn()
-                    except Exception:
-                        pass
         self.graphs.clear()
         self._block_size_state.clear()
         self._clear_blender_runtime_refs()
@@ -5263,29 +5189,23 @@ class ACEAudioEngine:
                 self._bake_result_queue.get_nowait()
         except queue.Empty:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._shutdown_graphs#2", exc)
 
     def invalidate_runtime_caches(self):
         writer = self.writer
         if writer is None:
             return
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.invalidate_runtime_caches"):
             writer.clear_runtime_caches()
-        except Exception:
-            pass
 
     def begin_undo_recovery(self, scene=None, cooldown_s: float = 0.75) -> None:
         self.undo_generation = int(getattr(self, "undo_generation", 0) or 0) + 1
         self.undo_recovery_until = time.monotonic() + max(float(cooldown_s), 0.0)
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.begin_undo_recovery"):
             self.invalidate_runtime_caches()
-        except Exception:
-            pass
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.begin_undo_recovery#2"):
             SourceSpecsTask.shutdown_background_worker()
-        except Exception:
-            pass
         self._shutdown_graphs(wait_parallel_pool=False, clear_bake_cache=False)
         now = time.time()
         self._pending_scene_rebuild = True
@@ -5300,11 +5220,9 @@ class ACEAudioEngine:
     def _tree_has_ace_nodes(tree: bpy.types.NodeTree | None) -> bool:
         if not tree:
             return False
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine._tree_has_ace_nodes"):
             if bool(tree.get("ace_frontend_uid", "")):
                 return True
-        except Exception:
-            pass
         try:
             for node in getattr(tree, "nodes", []) or []:
                 get_prop = getattr(node, "get", lambda _k, d=None: d)
@@ -5321,7 +5239,8 @@ class ACEAudioEngine:
                 if group_name.startswith(".ACE_") or norm_group_name.startswith("ACE_"):
                     return True
             return False
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._tree_has_ace_nodes#2", exc)
             return False
 
     @staticmethod
@@ -5414,10 +5333,8 @@ class ACEAudioEngine:
         # Shader driver bindings need concrete proxy object names before the
         # frontend sync stage; ensure proxies are materialized up-front.
         for source in sources:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends"):
                 ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
-            except Exception:
-                pass
         reserved_node_ids: set[str] = set()
         merged_tree = ACEAbstractTree()
 
@@ -5429,18 +5346,14 @@ class ACEAudioEngine:
                 continue
 
             if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends#2"):
                     from ..nodes.dummy_tree import ACEDummyNodeFactory
                     removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
                     if removed:
                         utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
-                except Exception:
-                    pass
 
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends#3"):
                 ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
-            except Exception:
-                pass
 
             if frontend_kind == FRONTEND_KIND_SHADER:
                 from ..nodes.shader_tree import ACEShaderTreeReader
@@ -5468,7 +5381,8 @@ class ACEAudioEngine:
                     changed, changed_node_ids = self._sync_shader_output_ids(tree, partial_tree, scene)
                 else:
                     changed, changed_node_ids = self._sync_auto_attr_ids(tree, partial_tree, scene)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine.compile_scene_frontends#4", exc)
                 changed = False
                 changed_node_ids = set()
             if changed:
@@ -5548,7 +5462,8 @@ class ACEAudioEngine:
             if isinstance(t, SourceTask):
                 try:
                     t._set_block_size_from_engine(new_block_size)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_engine.ACEAudioEngine.adjust_graph_block_size_for_task", exc)
                     t.block_size = new_block_size
                     t.silence_buffer = np.zeros(new_block_size, dtype=np.float32)
                     t._ensure_frontend_workspace(new_block_size)
@@ -5667,7 +5582,8 @@ class ACEAudioEngine:
         try:
             checker = getattr(bpy.app, "is_job_running", None)
             return bool(checker("RENDER")) if callable(checker) else False
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._is_rendering_job", exc)
             return False
 
     @staticmethod
@@ -5678,7 +5594,8 @@ class ACEAudioEngine:
             return False
         try:
             return not bool(getattr(getattr(scene, "render", None), "use_lock_interface", False))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._unsafe_for_handler_writes", exc)
             return True
 
     @staticmethod
@@ -5699,7 +5616,8 @@ class ACEAudioEngine:
                     if active_space is None:
                         try:
                             space_iter = list(spaces or [])
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("audio_engine.ACEAudioEngine._is_shader_viewport_preview_active#2", exc)
                             space_iter = []
                     else:
                         space_iter = [active_space]
@@ -5710,7 +5628,8 @@ class ACEAudioEngine:
                         shading_type = str(getattr(shading, "type", "") or "")
                         if shading_type in {"RENDERED", "MATERIAL"}:
                             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._is_shader_viewport_preview_active", exc)
             return False
         return False
 
@@ -5724,15 +5643,13 @@ class ACEAudioEngine:
     @staticmethod
     def _is_animation_playing() -> bool:
         """Return True if any Blender window is currently playing back animation."""
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine._is_animation_playing"):
             wm = getattr(getattr(bpy, "context", None), "window_manager", None)
             windows = getattr(wm, "windows", []) if wm else []
             for win in windows:
                 screen = getattr(win, "screen", None)
                 if screen and bool(getattr(screen, "is_animation_playing", False)):
                     return True
-        except Exception:
-            pass
         return False
 
     @staticmethod
@@ -5878,12 +5795,14 @@ class ACEAudioEngine:
             try:
                 if np.asarray(idx).size > 0:
                     return False
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._chunk_is_unmasked_audio", exc)
                 return False
         try:
             if bool(getattr(chunk, "analysis_ops", ())):
                 return False
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._chunk_is_unmasked_audio#2", exc)
             return False
         return True
 
@@ -5896,7 +5815,8 @@ class ACEAudioEngine:
         """
         try:
             chunk_frame = utils.as_int(getattr(task, "_current_chunk_frame", None), -1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine._task_current_chunk_for_frame", exc)
             chunk_frame = -1
         if chunk_frame != int(frame_index):
             return None
@@ -5928,7 +5848,8 @@ class ACEAudioEngine:
                     t0 = time.perf_counter()
                     direct_chunk = source_task.get_output(frame_index, int(source_sock_idx))
                     self._perf_add("preview", time.perf_counter() - t0)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_engine.ACEAudioEngine._collect_preview_chunk", exc)
                     continue
                 if direct_chunk is not None and self._chunk_is_unmasked_audio(direct_chunk):
                     chunks.append(self._fit_preview_chunk_block(direct_chunk, preview_block_size))
@@ -5952,7 +5873,8 @@ class ACEAudioEngine:
                         t0 = time.perf_counter()
                         direct_chunk = upstream.get_output(frame_index, int(getattr(conn, "socket_index", 0) or 0))
                         self._perf_add("preview", time.perf_counter() - t0)
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("audio_engine.ACEAudioEngine._collect_preview_chunk#2", exc)
                         direct_chunk = None
                     if direct_chunk is not None and self._chunk_is_unmasked_audio(direct_chunk):
                         chunks.append(self._fit_preview_chunk_block(direct_chunk, preview_block_size))
@@ -5961,7 +5883,8 @@ class ACEAudioEngine:
                 t0 = time.perf_counter()
                 chunk = task.get_output(frame_index, 0)
                 self._perf_add("preview", time.perf_counter() - t0)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_engine.ACEAudioEngine._collect_preview_chunk#3", exc)
                 continue
             if hasattr(chunk, "mono") and hasattr(chunk, "sample_rate"):
                 chunks.append(self._fit_preview_chunk_block(chunk, preview_block_size))
@@ -6009,12 +5932,10 @@ class ACEAudioEngine:
                 item = self._preview_worker_queue[-1]
                 self._preview_worker_queue.clear()
             task, upstream_chunk = item
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine._preview_worker_loop"):
                 result_chunk = task.process({0: upstream_chunk})
                 if result_chunk is not None and hasattr(result_chunk, "mono"):
                     monitor.push_chunk(result_chunk)
-            except Exception:
-                pass
 
     def _submit_preview_work(self, task, upstream_chunk) -> bool:
         """Enqueue a PreviewSinkTask for background DSP processing.
@@ -6246,7 +6167,8 @@ class ACEAudioEngine:
 
         try:
             delta_frames = float(int(scene_frame) - int(prev_scene_frame)) if prev_scene_frame >= 0 else 1.0
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame", exc)
             delta_frames = 1.0
         if abs(delta_frames) <= 1e-9:
             delta_frames = 1.0
@@ -6261,7 +6183,8 @@ class ACEAudioEngine:
             fps_base = float(getattr(getattr(scene, "render", None), "fps_base", 1.0) or 1.0)
             if fps_base > 0.0:
                 fps = raw_fps / fps_base
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#2", exc)
             fps = 24.0
         self._current_scene_fps = max(float(fps), 1.0)
 
@@ -6270,14 +6193,12 @@ class ACEAudioEngine:
         # This is especially important for LIVE sources that have no auto-BPM
         # detection: the user sets BPM manually and the worker must see the update
         # on the very next frame rather than waiting for the next full recompile.
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#3"):
             self._refresh_specs_ir_bpm()
-        except Exception:
-            pass
 
         # Flush background probe results before the compile so native_sample_rate
         # is populated for any sources whose probe thread has just completed.
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#4"):
             ace = getattr(scene, "audiocore", None)
             sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
             if self._flush_probe_updates(
@@ -6287,8 +6208,6 @@ class ACEAudioEngine:
             ):
                 pass  # recompile already requested inside _flush_probe_updates
             self.flush_source_tempo_detection_updates(sources)
-        except Exception:
-            pass
 
         if self._maybe_compile_dirty(scene):
             # Freshly compiled this frame — skip DSP writes so Blender's GN
@@ -6309,21 +6228,17 @@ class ACEAudioEngine:
             self._shutdown_parallel_pool()
 
         # Keep the preview feeder's drift-correction in sync with the scene fps.
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#5"):
             self.__class__._preview_monitor.update_scene_fps(fps)
-        except Exception:
-            pass
 
         # Seek detection: flush stale audio from all monitor buffers when the
         # user scrubs to a non-adjacent frame or scrubs backward. Without this,
         # the ring buffer can hold future-relative audio that plays at the wrong
         # timeline position.  Any backward frame (delta < 0) triggers a flush
         # because even going back one frame means buffered audio is now "ahead".
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#6"):
             if abs(delta_frames) > 2 or delta_frames < -0.5:
                 self.__class__._preview_monitor.clear()
-        except Exception:
-            pass
 
         self._parallel_poll_futures(scene, current_frame=int(self.current_frame))
         preview_allowed = self._is_animation_playing()
@@ -6338,10 +6253,8 @@ class ACEAudioEngine:
             _gbs = int(getattr(graph, "block_size", 0) or 0)
             if _gbs >= 64:
                 _min_analysis_bs = _gbs if _min_analysis_bs == 0 else min(_min_analysis_bs, _gbs)
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#7"):
             self.__class__._preview_monitor.hint_block_size(_min_analysis_bs)
-        except Exception:
-            pass
         preview_interval_s = max(
             float(preview_block_size) / float(max(preview_sample_rate, 1)),
             float(self._PREVIEW_MIN_INTERVAL_S),
@@ -6423,7 +6336,8 @@ class ACEAudioEngine:
                     for source_task in source_tasks:
                         try:
                             source_task.get_output(self.current_frame, 0)
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#8", exc)
                             continue
 
                 proxy = graph.get_proxy_object()
@@ -6577,7 +6491,8 @@ class ACEAudioEngine:
                             continue
                         try:
                             src_chunk = source_task.get_output(self.current_frame, 0)
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#9", exc)
                             src_chunk = None
                         if hasattr(src_chunk, "mono") and hasattr(src_chunk, "sample_rate"):
                             source_chunks_for_worker[str(src_node_id)] = src_chunk
@@ -6660,7 +6575,8 @@ class ACEAudioEngine:
                                     t0 = time.perf_counter()
                                     raw_chunk = src_task.get_output(self.current_frame, int(src_sock_idx))
                                     self._perf_add("preview", time.perf_counter() - t0)
-                                except Exception:
+                                except Exception as exc:
+                                    utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#10", exc)
                                     raw_chunk = None
                             if raw_chunk is not None and self._chunk_is_unmasked_audio(raw_chunk):
                                 preview_chunks.append(
@@ -6692,7 +6608,8 @@ class ACEAudioEngine:
                                         self.current_frame, sock_idx
                                     )
                                     self._perf_add("preview", time.perf_counter() - t0)
-                                except Exception:
+                                except Exception as exc:
+                                    utils.note_swallowed("audio_engine.ACEAudioEngine.execute_next_frame#11", exc)
                                     upstream_chunk = None
                             if upstream_chunk is not None:
                                 if self._submit_preview_work(preview_task, upstream_chunk):
@@ -6719,11 +6636,9 @@ class ACEAudioEngine:
                 else:
                     mixed_preview = self._preview_last_chunk
                 if mixed_preview is not None:
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#12"):
                         self._preview_monitor.push_chunk(mixed_preview)
                         preview_pushed = True
-                    except Exception:
-                        pass
                 self._perf_add("preview", time.perf_counter() - t0)
             else:
                 self._preview_last_chunk = None
@@ -6731,10 +6646,8 @@ class ACEAudioEngine:
                 self._preview_next_eval_ts = 0.0
 
             if (not preview_allowed) or (not preview_pushed):
-                try:
+                with utils.logged_errors("audio_engine.ACEAudioEngine.execute_next_frame#13"):
                     self._preview_monitor.clear()
-                except Exception:
-                    pass
         finally:
             if geometry_proxy_names:
                 self._mark_geometry_eval_pending(scene, proxy_names=geometry_proxy_names)
@@ -6813,15 +6726,13 @@ class ACEAudioEngine:
             "mtime": self._safe_file_mtime(filepath),
         }
 
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine._finalise_bake_arrays"):
             source["ace_bake_status"] = "done"
             source["ace_bake_error"] = ""
             source["ace_bake_progress"] = 1.0
             source["ace_bake_frame_start"] = frame_start
             source["ace_bake_frame_end"] = frame_end
             source["ace_bake_samples"] = max(frame_end - frame_start + 1, 0)
-        except Exception:
-            pass
 
         # Reset runtime tasks after offline bake so live playback state remains stable.
         try:
@@ -6852,19 +6763,15 @@ class ACEAudioEngine:
 
                 if kind == "progress":
                     if source is not None:
-                        try:
+                        with utils.logged_errors("audio_engine.ACEAudioEngine.flush_bake_results#2"):
                             source["ace_bake_progress"] = float(max(0.0, min(float(payload), 1.0)))
-                        except Exception:
-                            pass
                     continue
 
                 if kind == "error":
                     if source is not None:
-                        try:
+                        with utils.logged_errors("audio_engine.ACEAudioEngine.flush_bake_results#3"):
                             source["ace_bake_status"] = "error"
                             source["ace_bake_error"] = str(payload or "Bake failed.")
-                        except Exception:
-                            pass
                     self._bake_jobs.pop(src_uid, None)
                     continue
 
@@ -6872,8 +6779,8 @@ class ACEAudioEngine:
                     self._finalise_bake_arrays(src_uid, payload)
         except queue.Empty:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.ACEAudioEngine.flush_bake_results", exc)
 
     def bake_source_to_cache(self, source, tree=None, scene=None):
         """Precompute stream/spec outputs for a file source and cache them in memory."""
@@ -6885,11 +6792,9 @@ class ACEAudioEngine:
             return False
         filepath = getattr(source, "filepath", "") or ""
         if not filepath or not os.path.isfile(filepath):
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache"):
                 source["ace_bake_status"] = "error"
                 source["ace_bake_error"] = "Missing source file."
-            except Exception:
-                pass
             return False
 
         target_tree = tree if tree and self._tree_has_ace_nodes(tree) else None
@@ -6911,18 +6816,14 @@ class ACEAudioEngine:
         if not self.writer:
             return False
         if graph is None:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache#2"):
                 source["ace_bake_status"] = "error"
                 source["ace_bake_error"] = "Source graph unavailable."
-            except Exception:
-                pass
             return False
         if not graph.output_attr_keys:
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache#3"):
                 source["ace_bake_status"] = "error"
                 source["ace_bake_error"] = "No stream/spec outputs to bake."
-            except Exception:
-                pass
             return False
 
         frame_start = int(getattr(scene, "frame_start", 1))
@@ -6932,12 +6833,10 @@ class ACEAudioEngine:
         total_frames = max(frame_end - frame_start + 1, 1)
         output_attr_keys = list(graph.output_attr_keys)
 
-        try:
+        with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache#4"):
             source["ace_bake_status"] = "baking"
             source["ace_bake_error"] = ""
             source["ace_bake_progress"] = 0.0
-        except Exception:
-            pass
 
         prev_entry = self._bake_cache.get(src_uid)
         if isinstance(prev_entry, dict):
@@ -6964,23 +6863,18 @@ class ACEAudioEngine:
                         baked_values[attr_key].append(
                             frame_results.get(attr_key, engine_ref._zero_value_for_attr(attr_key))
                         )
-                    try:
+                    with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#2"):
                         engine_ref._bake_result_queue.put_nowait(
                             ("progress", str(src_uid), float(i + 1) / float(total_frames))
                         )
-                    except Exception:
-                        pass
             except Exception as exc:
-                try:
+                utils.note_swallowed("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker", exc)
+                with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#3"):
                     engine_ref._bake_result_queue.put_nowait(("error", str(src_uid), str(exc)))
-                except Exception:
-                    pass
                 return
 
-            try:
+            with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#4"):
                 engine_ref._bake_result_queue.put_nowait(("done", str(src_uid), baked_values))
-            except Exception:
-                pass
 
         t = threading.Thread(target=_bake_worker, name=f"ACE_BakeWorker_{src_uid}", daemon=True)
         t.start()
@@ -7025,10 +6919,8 @@ def _undo_redo_invalidate_engine_caches(_dummy):
     that may have been removed or remapped by the undo/redo operation.
     """
     for engine in ACEAudioEngine.iter_instances():
-        try:
+        with utils.logged_errors("audio_engine._undo_redo_invalidate_engine_caches"):
             engine.begin_undo_recovery(getattr(getattr(bpy, "context", None), "scene", None))
-        except Exception:
-            pass
 
 
 @persistent
@@ -7149,10 +7041,8 @@ def render_post_handler(scene):
     if engine is None:
         return
     engine._mark_render_complete(scene, cancelled=False)
-    try:
+    with utils.logged_errors("audio_engine.render_post_handler"):
         ACEAudioEngine._preview_monitor.clear()
-    except Exception:
-        pass
 
 
 @persistent
@@ -7229,10 +7119,8 @@ def depsgraph_update_handler(scene, depsgraph):
         if auto_compile_enabled:
             for update in getattr(depsgraph, "updates", []) or []:
                 if _update_touches_ace_tree(_original_id(update)):
-                    try:
+                    with utils.logged_errors("audio_engine.depsgraph_update_handler"):
                         engine.request_recompile(None)
-                    except Exception:
-                        pass
                     break
         return
 
@@ -7265,7 +7153,8 @@ def depsgraph_update_handler(scene, depsgraph):
             return
         try:
             key = int(tree_obj.as_pointer())
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_engine.depsgraph_update_handler._queue_recompile_target", exc)
             key = id(tree_obj)
         if key in seen_targets:
             return
@@ -7346,7 +7235,7 @@ def auto_compile_timer():
     Returns:
         0.25 — reschedule interval in seconds (always).
     """
-    try:
+    with utils.logged_errors("audio_engine.auto_compile_timer"):
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         if scene is None:
             return 0.25
@@ -7361,8 +7250,6 @@ def auto_compile_timer():
             compiled = engine._maybe_compile_dirty(scene)
             if compiled:
                 engine.execute_next_frame(scene, force=True)
-    except Exception:
-        pass
     return 0.25
 
 
@@ -7393,14 +7280,12 @@ def _shm_drain_timer():
             if not engine._is_animation_playing():
                 engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
     except Exception as _exc:
-        try:
+        with utils.logged_errors("audio_engine._shm_drain_timer"):
             utils.log(
                 f"[ACE-SHM] Drain timer error — completed futures may not be released "
                 f"and shared memory may leak: {_exc!r}",
                 "WARNING",
             )
-        except Exception:
-            pass
     return 2.0
 
 
@@ -7433,10 +7318,8 @@ def _ace_handler_remove_all(handler_list, func):
     else:
         to_remove = [h for h in handler_list if getattr(h, "__qualname__", None) == target_name]
     for h in to_remove:
-        try:
+        with utils.logged_errors("audio_engine._ace_handler_remove_all"):
             handler_list.remove(h)
-        except Exception:
-            pass
 
 
 def register_handlers():
@@ -7450,11 +7333,9 @@ def register_handlers():
     # Trigger Numba JIT compilation at addon load time so the first preview frame
     # does not pay the cold-start compilation penalty (~50–200 ms).
     if _NUMBA_AVAILABLE:
-        try:
+        with utils.logged_errors("audio_engine.register_handlers"):
             _dummy = np.zeros((4, 2), dtype=np.float32)
             _preview_limiter_block_numba(_dummy, 0.891, 0.0001, 1.0)
-        except Exception:
-            pass
 
     if not _ace_handler_registered(bpy.app.handlers.load_post, _load_post_reset_engine):
         bpy.app.handlers.load_post.append(_load_post_reset_engine)

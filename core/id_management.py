@@ -2,6 +2,7 @@ import hashlib
 import re
 from typing import Dict, Optional
 
+from .. import utils
 from ..vars import ACE_PROXY_PREFIX
 
 
@@ -105,7 +106,8 @@ class ACEIdManager:
         # Robust parsing against category/type keys that themselves contain "_".
         try:
             from ..vars import ACE_NODES
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("id_management.ACEIdManager.parse_node_id", exc)
             ACE_NODES = {}
 
         matches: list[tuple[str, str]] = []
@@ -171,10 +173,8 @@ class ACEIdManager:
             existing_ids=existing,
             deterministic_seed=f"source:{legacy_seed or 'default'}",
         )
-        try:
+        with utils.logged_errors("id_management.ACEIdManager.ensure_source_uid"):
             source_prop.stable_id = sid  # type: ignore[attr-defined]
-        except Exception:
-            pass
         return sid
 
     # -------------------------------------------------------------------------

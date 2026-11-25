@@ -5,7 +5,7 @@ prefs_panel_ui.py is responsible for all the UI related elements of the add-on p
 import bpy # type: ignore
 try:
     from bpy.app.handlers import persistent  # type: ignore
-except Exception:  # pragma: no cover - Blender provides this at runtime
+except ImportError:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 from .. import utils
@@ -153,10 +153,8 @@ def sync_preferences_dependencies():
         return
     pref = _get_addon_preferences()
     if pref and hasattr(pref, "_refresh_dependencies"):
-        try:
+        with utils.logged_errors("prefs_panel_ui.sync_preferences_dependencies"):
             pref._refresh_dependencies(REQUIRED_LIBRARIES)
-        except Exception:
-            pass
 
 
 @persistent

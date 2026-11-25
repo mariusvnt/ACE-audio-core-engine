@@ -11,19 +11,21 @@ import wave
 from queue import Queue, Empty, Full
 from typing import Any, Dict, Optional, Tuple
 
+from .. import utils
+
 import numpy as np
 from ..utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 try:
     import soundfile as sf  # type: ignore
     SF_AVAILABLE = True
-except Exception:
+except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
     SF_AVAILABLE = False
 
 try:
     import sounddevice as sd  # type: ignore
     SOUNDDEVICE_AVAILABLE = True
-except Exception:
+except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
     SOUNDDEVICE_AVAILABLE = False
 
 
@@ -208,7 +210,8 @@ class AudioReception:
             handle = sf.SoundFile(filepath, mode="r")  # type: ignore
             handle.close()
             return True
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_influx.AudioReception.is_supported_file_path", exc)
             return False
 
     def __init__(self, source_type: str, filepath: str = "", flow_id: str = "", live_latency_ms: int = 50):
@@ -316,21 +319,17 @@ class AudioReception:
         """Release any underlying IO resources."""
         # Close live stream
         if self._live_stream:
-            try:
+            with utils.logged_errors("audio_influx.AudioReception.close"):
                 self._live_stream.stop()
                 self._live_stream.close()
-            except Exception:
-                pass
             self._live_stream = None
         if self._live_queue:
             with self._live_queue.mutex:
                 self._live_queue.queue.clear()
             self._live_queue = None
         if self._live_udp_socket:
-            try:
+            with utils.logged_errors("audio_influx.AudioReception.close#2"):
                 self._live_udp_socket.close()
-            except Exception:
-                pass
             self._live_udp_socket = None
 
         # Close file readers
@@ -355,6 +354,7 @@ class AudioReception:
                 self._cursor_sample = int(sample_index)
                 return True
         except Exception as e:
+            utils.note_swallowed("audio_influx.AudioReception.seek", e)
             self.last_error = f"seek failed: {e}"
             return False
         return False
@@ -403,6 +403,7 @@ class AudioReception:
                     if mono is not None and mono.shape[-1] < block_size:
                         reached_eof = True
         except Exception as e:
+            utils.note_swallowed("audio_influx.AudioReception.read_block", e)
             self.last_error = f"read_block failed ({self.kind}): {e}"
             self.error_kind = "read_failed"
             return None
@@ -433,13 +434,11 @@ class AudioReception:
     # ------------------------------------------------------------------
     def _close_file_reader(self):
         """Close the active file reader (soundfile or wave) and clear the handle."""
-        try:
+        with utils.logged_errors("audio_influx.AudioReception._close_file_reader"):
             if self.kind == "soundfile" and self.reader:
                 self.reader.close()  # type: ignore
             elif self.kind == "wave" and self.reader:
                 self.reader.close()
-        except Exception:
-            pass
         self.reader = None
 
     def _open_file_path(self, path: str) -> bool:
@@ -482,7 +481,8 @@ class AudioReception:
                 self.sample_rate = int(self.reader.samplerate)
                 try:
                     self.duration = float(len(self.reader)) / float(self.sample_rate)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_influx.AudioReception._open_file_path#2", exc)
                     self.duration = 0.0
                 self.kind = "soundfile"
                 self._eof = False
@@ -490,6 +490,7 @@ class AudioReception:
                 self.error_kind = None
                 return True
             except Exception as e:
+                utils.note_swallowed("audio_influx.AudioReception._open_file_path", e)
                 self.last_error = f"soundfile open failed: {e}"
                 self.reader = None
                 # Fall through to wave fallback — soundfile may refuse the format even
@@ -501,7 +502,8 @@ class AudioReception:
             self.sample_rate = self.reader.getframerate()
             try:
                 self.duration = float(self.reader.getnframes()) / float(self.sample_rate)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_influx.AudioReception._open_file_path#4", exc)
                 self.duration = 0.0
             self.kind = "wave"
             self._eof = False
@@ -509,6 +511,7 @@ class AudioReception:
             self.error_kind = None
             return True
         except Exception as e:
+            utils.note_swallowed("audio_influx.AudioReception._open_file_path#3", e)
             self.reader = None
             self.last_error = f"wave open failed: {e}"
 
@@ -680,11 +683,9 @@ class AudioReception:
             return proxy_path
 
         tmp_path = f"{proxy_path}.tmp"
-        try:
+        with utils.logged_errors("audio_influx.AudioReception._ensure_resampled_proxy"):
             if os.path.isfile(tmp_path):
                 os.remove(tmp_path)
-        except Exception:
-            pass
 
         try:
             if not self._build_resampled_proxy(input_path, tmp_path, int(target_sample_rate)):
@@ -692,12 +693,11 @@ class AudioReception:
             os.replace(tmp_path, proxy_path)
             return proxy_path
         except Exception as e:
+            utils.note_swallowed("audio_influx.AudioReception._ensure_resampled_proxy#2", e)
             self.last_error = f"proxy build failed: {e}"
-            try:
+            with utils.logged_errors("audio_influx.AudioReception._ensure_resampled_proxy#3"):
                 if os.path.isfile(tmp_path):
                     os.remove(tmp_path)
-            except Exception:
-                pass
             return None
 
     def _open_file(self) -> bool:
@@ -747,14 +747,16 @@ class AudioReception:
                 self.reader.seek(0)
                 self._eof = False
                 self._cursor_sample = 0
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_influx.AudioReception._reset_file", exc)
                 self.reader = None
         elif self.kind == "wave" and self.reader is not None:
             try:
                 self.reader.rewind()
                 self._eof = False
                 self._cursor_sample = 0
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_influx.AudioReception._reset_file#2", exc)
                 self.reader = None
 
     # ------------------------------------------------------------------
@@ -978,6 +980,7 @@ class AudioReception:
             self._live_last_capture_block_samples = 0
             return True
         except Exception as e:
+            utils.note_swallowed("audio_influx.AudioReception._open_live_udp", e)
             self._live_udp_socket = None
             self.kind = "live_stub"
             self.last_error = f"UDP live stream failed to open: {e}"
@@ -996,7 +999,8 @@ class AudioReception:
         for args in attempts:
             try:
                 info = sd.query_devices(*args)  # type: ignore[misc]
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_influx.AudioReception._query_sounddevice_input_info", exc)
                 continue
             if isinstance(info, dict):
                 return info
@@ -1025,12 +1029,10 @@ class AudioReception:
         if not SOUNDDEVICE_AVAILABLE:
             # Re-attempt import — sounddevice may have been installed after startup
             # or the module-level import may have run before sys.path was fully set up.
-            try:
+            with utils.logged_errors("audio_influx.AudioReception._open_live_sounddevice"):
                 import sounddevice as _sd  # type: ignore
                 sd = _sd
                 SOUNDDEVICE_AVAILABLE = True
-            except Exception:
-                pass
         if not SOUNDDEVICE_AVAILABLE:
             self.kind = "live_stub"
             self.last_error = (
@@ -1060,7 +1062,8 @@ class AudioReception:
             if device_info is not None:
                 try:
                     max_input_channels = int(device_info.get("max_input_channels", 0) or 0)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#3", exc)
                     max_input_channels = 0
                 if max_input_channels > 0 and not _use_wasapi_loopback:
                     # Normal input device — clamp to its channel count.
@@ -1070,7 +1073,8 @@ class AudioReception:
                     # (e.g. speakers/headphones for WASAPI loopback capture).
                     try:
                         max_output_channels = int(device_info.get("max_output_channels", 0) or 0)
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#4", exc)
                         max_output_channels = 0
                     if max_output_channels > 0:
                         channels = min(channels, max_output_channels)
@@ -1086,7 +1090,8 @@ class AudioReception:
                         )
                 try:
                     default_sample_rate = int(float(device_info.get("default_samplerate", 0) or 0))
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#5", exc)
                     default_sample_rate = 0
                 if sample_rate <= 0 and default_sample_rate > 0:
                     sample_rate = default_sample_rate
@@ -1103,10 +1108,8 @@ class AudioReception:
                 # for minor events like input_overflow which are common at startup.
                 # Returning early would silently drop valid audio frames.
                 if status:
-                    try:
+                    with utils.logged_errors("audio_influx.AudioReception._open_live_sounddevice._callback"):
                         self._live_stream_error = str(status)
-                    except Exception:
-                        pass
                 if not self._live_queue:
                     return
                 block = indata.copy()
@@ -1140,7 +1143,8 @@ class AudioReception:
             if _use_wasapi_loopback:
                 try:
                     wasapi_extra = {"extra_settings": sd.WasapiSettings(loopback=True)}  # type: ignore
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#6", exc)
                     wasapi_extra = None  # WASAPI not available on this platform
             channel_attempts = [channels]
             if channels > 1:
@@ -1159,6 +1163,7 @@ class AudioReception:
                         open_error = None
                         break
                     except Exception as e:
+                        utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#7", e)
                         open_error = e
                         self._live_stream = None
                 if self._live_stream is not None:
@@ -1176,6 +1181,7 @@ class AudioReception:
             self._live_last_capture_block_samples = 0
             return True
         except Exception as e:
+            utils.note_swallowed("audio_influx.AudioReception._open_live_sounddevice#2", e)
             self._live_stream = None
             self._live_queue = None
             self.kind = "live_stub"
@@ -1223,7 +1229,8 @@ class AudioReception:
             return False
         try:
             return bool(stream.active)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_influx.AudioReception._live_stream_active", exc)
             return False
 
     def _read_live_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
@@ -1347,7 +1354,8 @@ class AudioReception:
                     packet_frames = frames
             except BlockingIOError:
                 break
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_influx.AudioReception._read_live_udp_block", exc)
                 self.last_error = "UDP live stream read failed"
                 break
 
@@ -1470,7 +1478,8 @@ class AudioReception:
                 data = np.frombuffer(frames, dtype=dtype).astype(np.float64, copy=False)
                 scale = float(1 << ((8 * int(sampwidth)) - 1))
                 mono = (data / max(scale, 1.0)).astype(np.float32, copy=False)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_influx.AudioReception._decode_wave_bytes", exc)
                 mono = np.zeros(0, dtype=np.float32)
 
         if channels > 1 and mono is not None:

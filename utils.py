@@ -4,6 +4,7 @@ utils.py contains helper functions used across the add-on.
 import sys
 import os
 import threading
+import time
 import importlib.util
 from typing import Any
 
@@ -107,6 +108,83 @@ def log(message, type='INFO', debug_active: bool | None = None):
     if flag:
         print(f"[ACE {type}] {message}")
 
+
+# --- Throttled logging and recorded error suppression ---
+_THROTTLE_LAST: dict = {}
+_THROTTLE_MAX_KEYS = 512
+_SWALLOWED: dict = {}
+_SWALLOWED_LOCK = threading.Lock()
+
+
+def log_throttled(key: str, message: str, level: str = "ERROR", min_interval: float = 2.0) -> bool:
+    """Log *message* at most once per *min_interval* seconds per *key*.
+
+    For hot paths (frame handlers, pollers) where one condition can recur every
+    frame. Returns True when the message was emitted.
+    """
+    now = time.monotonic()
+    last = _THROTTLE_LAST.get(key)
+    if last is not None and (now - last) < float(min_interval):
+        return False
+    if len(_THROTTLE_LAST) >= _THROTTLE_MAX_KEYS:
+        _THROTTLE_LAST.clear()
+    _THROTTLE_LAST[key] = now
+    log(message, level)
+    return True
+
+
+def note_swallowed(key: str, exc: BaseException, level: str = "DEBUG") -> None:
+    """Record an exception a fallback path absorbs, and log it (throttled).
+
+    Every suppressed error goes through here or ``logged_errors`` so it is
+    counted in ``swallowed_errors()`` and visible with debug logging on.
+    """
+    summary = f"{type(exc).__name__}: {exc}"
+    with _SWALLOWED_LOCK:
+        entry = _SWALLOWED.get(key)
+        if entry is None:
+            _SWALLOWED[key] = [1, summary]
+        else:
+            entry[0] += 1
+            entry[1] = summary
+    log_throttled(f"swallowed:{key}", f"{key} absorbed {summary}", level, min_interval=5.0)
+
+
+def swallowed_errors() -> dict:
+    """Return ``{key: (count, last_error)}`` for every suppressed error so far."""
+    with _SWALLOWED_LOCK:
+        return {k: (v[0], v[1]) for k, v in _SWALLOWED.items()}
+
+
+def reset_swallowed_errors() -> None:
+    with _SWALLOWED_LOCK:
+        _SWALLOWED.clear()
+
+
+class logged_errors:
+    """Context manager that suppresses ``Exception`` and records it.
+
+    ``with utils.logged_errors("module.function"):`` replaces
+    ``try: ... except Exception: pass`` where carrying on is the right
+    outcome; the error still shows up in ``swallowed_errors()`` and in the
+    debug log.
+    """
+
+    __slots__ = ("key", "level")
+
+    def __init__(self, key: str, level: str = "DEBUG"):
+        self.key = key
+        self.level = level
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, _tb):
+        if exc_type is None or not issubclass(exc_type, Exception):
+            return False
+        note_swallowed(self.key, exc, self.level)
+        return True
+
 def get_python_executable():
     """Return the path to the Python executable used by Blender.
 
@@ -129,8 +207,8 @@ def dependency_vendor_path(create: bool = False) -> str:
     if create:
         try:
             os.makedirs(path, exist_ok=True)
-        except Exception:
-            pass
+        except OSError as exc:
+            note_swallowed("utils.dependency_vendor_path", exc)
     return path
 
 
@@ -182,8 +260,9 @@ def is_module_installed(module_name):
         __import__(module_name)
         _module_presence_cache[key] = True
         return True
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 boundary: any import failure means "not installed"
         # Native extension failed to initialise (missing DLL, ABI mismatch …).
+        log(f"Module '{module_name}' found but failed to import: {type(exc).__name__}: {exc}", "DEBUG")
         _module_presence_cache[key] = False
         return False
 
@@ -205,8 +284,8 @@ def is_module_in_vendor(module_name: str) -> bool:
             normalized = entry.lower().replace("-", "_")
             if normalized == token or normalized.startswith(token + "-") or normalized.startswith(token + "."):
                 return True
-    except Exception:
-        pass
+    except OSError as exc:
+        note_swallowed("utils.is_module_in_vendor", exc)
     return False
 
 
@@ -214,11 +293,7 @@ def refresh_import_caches():
     """
     Invalidate importlib caches to reflect recent installs/uninstalls.
     """
-    try:
-        import importlib
-        importlib.invalidate_caches()
-    except Exception:
-        pass
+    importlib.invalidate_caches()
     _module_presence_cache.clear()
 
 
@@ -251,18 +326,9 @@ def compose_live_flow_identifier(source_like: Any) -> str:
         transport = "SOUNDDEVICE"
 
     if transport == "UDP":
-        try:
-            port = int(getattr(source_like, "live_udp_port", 7001) or 7001)
-        except Exception:
-            port = 7001
-        try:
-            channels = int(getattr(source_like, "live_udp_channels", 2) or 2)
-        except Exception:
-            channels = 2
-        try:
-            sample_rate = int(getattr(source_like, "live_udp_sample_rate", 44100) or 44100)
-        except Exception:
-            sample_rate = 44100
+        port = as_int(getattr(source_like, "live_udp_port", 7001) or 7001, 7001)
+        channels = as_int(getattr(source_like, "live_udp_channels", 2) or 2, 2)
+        sample_rate = as_int(getattr(source_like, "live_udp_sample_rate", 44100) or 44100, 44100)
 
         port = min(max(port, 1), 65535)
         channels = min(max(channels, 1), 8)
@@ -313,10 +379,8 @@ def unregister():
     """Cleanup preview collections to prevent ResourceWarnings on reload/unload."""
     import bpy.utils.previews                                                                                                               # type: ignore
     for pcoll in _preview_collections.values():
-        try:
+        with logged_errors("utils.unregister"):
             bpy.utils.previews.remove(pcoll)
-        except Exception:
-            pass
     _preview_collections.clear()
     global _logo_icon_id
     _logo_icon_id = None

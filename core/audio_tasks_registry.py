@@ -44,7 +44,7 @@ except ImportError:
 try:
     from numba import njit  # type: ignore
     NUMBA_AVAILABLE = True
-except Exception:
+except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
     NUMBA_AVAILABLE = False
 
 try:
@@ -317,7 +317,8 @@ class SourceFrontendProcessor:
                 freq_max = float(frontend_config[1] or 0.0)
                 attack_ms = float(frontend_config[2] or 0.0)
                 release_ms = float(frontend_config[3] or 0.0)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.SourceFrontendProcessor._ensure_config", exc)
                 freq_min = 0.0
                 freq_max = 0.0
                 attack_ms = 0.0
@@ -343,7 +344,7 @@ class SourceFrontendProcessor:
         y_prev = float(state.get("y1", 0.0))
 
         if NUMBA_AVAILABLE:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceFrontendProcessor._run_iir"):
                 out, x_last, y_last = _iir1_filter_block(
                     src,
                     float(b0),
@@ -355,8 +356,6 @@ class SourceFrontendProcessor:
                 state["x1"] = float(x_last)
                 state["y1"] = float(y_last)
                 return out.astype(np.float32, copy=False)
-            except Exception:
-                pass
 
         out = np.empty_like(src, dtype=np.float32)
         x1 = float(x_prev)
@@ -380,12 +379,10 @@ class SourceFrontendProcessor:
 
         env_state = float(self._env_states.get(state_key, 0.0) or 0.0)
         if NUMBA_AVAILABLE:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceFrontendProcessor._run_envelope"):
                 env_out, env_last = _signed_smooth_block(src, float(attack_c), float(release_c), float(env_state))
                 self._env_states[state_key] = float(env_last)
                 return env_out.astype(np.float32, copy=False)
-            except Exception:
-                pass
 
         out = np.empty_like(src, dtype=np.float32)
         env = float(env_state)
@@ -520,7 +517,8 @@ class AudioChunk:
         if band_index_fft_size is not None:
             try:
                 self.band_index_fft_size = max(int(band_index_fft_size), 1)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.AudioChunk.__init__", exc)
                 self.band_index_fft_size = None
         elif band_indices is not None:
             # Default behavior: assume indices target the chunk FFT domain.
@@ -828,7 +826,8 @@ class AudioFluxAnalyzer:
                     auto_length=pitch_len
                 )
                 self.pitch_buffer = np.zeros(self.pitch.auto_length, dtype=np.float32)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer.__init__", exc)
                 self.bft = None
                 self.spectral = None
                 self.pitch = None
@@ -875,7 +874,8 @@ class AudioFluxAnalyzer:
                 )
                 or cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT
             )
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._global_spectrum_cache_limit", exc)
             raw = int(cls._GLOBAL_SPECTRUM_CACHE_MAX_DEFAULT)
         return int(min(max(raw, 16), 1024))
 
@@ -927,7 +927,8 @@ class AudioFluxAnalyzer:
                     src_fft_size = max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 1), 1)
                 try:
                     src_fft_size = max(int(src_fft_size), 1)
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._resolve_chunk_mask_indices", exc)
                     src_fft_size = self.fft_length
                 indices = _remap_indices_fft_domain(
                     np.asarray(indices, dtype=np.int64),
@@ -943,7 +944,8 @@ class AudioFluxAnalyzer:
             return indices
         try:
             low_hz, high_hz = float(bounds[0]), float(bounds[1])
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._resolve_chunk_mask_indices#2", exc)
             return indices
         if high_hz <= low_hz:
             return indices
@@ -994,10 +996,8 @@ class AudioFluxAnalyzer:
 
         mag = np.abs(spec)
         time_len = mag.shape[-1]
-        try:
+        with utils.logged_errors("audio_tasks_registry.AudioFluxAnalyzer._ensure_spectrum"):
             self.spectral.set_time_length(time_len)
-        except Exception:
-            pass
 
         self.cache[spec_key] = mag
         # Populate global cross-instance cache with LRU eviction.
@@ -1007,7 +1007,8 @@ class AudioFluxAnalyzer:
         while len(AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE) > int(max_entries):
             try:
                 AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.popitem(last=False)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.AudioFluxAnalyzer._ensure_spectrum#2", exc)
                 break
         if self.bft.is_temporal:
             try:
@@ -1254,7 +1255,8 @@ def resolve_context_block_size(
 
     try:
         delta_mag = abs(float(delta_frames))
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("audio_tasks_registry.resolve_context_block_size", exc)
         delta_mag = 1.0
     if not math.isfinite(delta_mag):
         delta_mag = 1.0
@@ -1359,26 +1361,27 @@ class ACEAudioTask:
                     if int(getattr(upstream, "last_frame_processed", -1)) != frame_idx:
                         try:
                             input_data[in_sock_idx] = upstream.get_output(frame_idx, socket_idx)
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative", exc)
                             input_data[in_sock_idx] = None
                         continue
                     extract_fn = getattr(upstream, "_extract_result", None)
                     if callable(extract_fn):
-                        try:
+                        with utils.logged_errors("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative#2"):
                             input_data[in_sock_idx] = extract_fn(socket_idx)
                             continue
-                        except Exception:
-                            pass
                     try:
                         input_data[in_sock_idx] = upstream.get_output(frame_idx, socket_idx)
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative#3", exc)
                         input_data[in_sock_idx] = None
 
                 try:
                     task.cached_output = task.process(input_data)
                     task._tag_output_frame(task.cached_output, frame_idx)
                     task.last_frame_processed = frame_idx
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("audio_tasks_registry.ACEAudioTask._evaluate_frame_iterative#4", exc)
                     continue
                 continue
 
@@ -1568,7 +1571,8 @@ class SourceTask(ACEAudioTask):
             self._current_frame_request = target_frame
             try:
                 chunk = self._read_next_block_sync(track_perf_stage=False)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.SourceTask._prefetch_loop", exc)
                 chunk = None
             finally:
                 # Only restore the previous value if the main thread hasn't
@@ -1605,17 +1609,16 @@ class SourceTask(ACEAudioTask):
             self._pending_ctx_writes.clear()
             return
         for attr, val in list(self._pending_ctx_writes.items()):
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask._flush_pending_ctx_writes"):
                 setattr(ctx, attr, val)
-            except Exception:
-                pass
         self._pending_ctx_writes.clear()
 
     def _timeslice_mode_hint(self) -> str:
         settings = getattr(self, "engine_settings", None)
         try:
             mode = str(getattr(settings, "ace_timeslice_mode", "fixed") or "fixed").strip().lower()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceTask._timeslice_mode_hint", exc)
             mode = "fixed"
         if mode not in {"fixed", "adaptive"}:
             mode = "fixed"
@@ -1653,7 +1656,8 @@ class SourceTask(ACEAudioTask):
             freq_max = float(max(getattr(ctx, "freq_max", 0.0) or 0.0, 0.0))
             attack_ms = float(max(getattr(ctx, "envelope_attack", 0.0) or 0.0, 0.0))
             release_ms = float(max(getattr(ctx, "envelope_release", 0.0) or 0.0, 0.0))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceTask._frontend_runtime_config", exc)
             return None
         return (freq_min, freq_max, attack_ms, release_ms)
 
@@ -1661,10 +1665,8 @@ class SourceTask(ACEAudioTask):
         engine = getattr(self, "engine_ref", None)
         resolver = getattr(engine, "_source_task_requires_local_frontend", None)
         if callable(resolver):
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask._should_materialize_local_frontend"):
                 return bool(resolver(self))
-            except Exception:
-                pass
         return True
 
     @staticmethod
@@ -1756,16 +1758,12 @@ class SourceTask(ACEAudioTask):
 
     def _reopen_for_config_change(self):
         if self.reception is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask._reopen_for_config_change"):
                 self.reception.close()
-            except Exception:
-                pass
         self.reception = None
         if self.analysis is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask._reopen_for_config_change#2"):
                 AudioFluxAnalyzer.release(self.analysis)
-            except Exception:
-                pass
         self.analysis = None
         self._reset_sample_clocks()
         self.cached_output = None
@@ -1793,7 +1791,8 @@ class SourceTask(ACEAudioTask):
         if callable(target_sr_resolver):
             try:
                 target_sample_rate = target_sr_resolver(self)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.SourceTask._load_source", exc)
                 target_sample_rate = None
 
         self.reader_path = filepath
@@ -1836,7 +1835,8 @@ class SourceTask(ACEAudioTask):
         resolve_fn = self.resolve_block_size_fn or _resolve_block_size_default
         try:
             delta_frames = float(getattr(getattr(self, "engine_ref", None), "_current_delta_frames", 1.0) or 1.0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceTask._load_source#2", exc)
             delta_frames = 1.0
         timeslice_mode = self._timeslice_mode_hint()
         try:
@@ -1855,7 +1855,7 @@ class SourceTask(ACEAudioTask):
         self._reset_sample_clocks()
 
         if ctx:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask._load_source#3"):
                 duration_val = float(getattr(self.reception, "duration", 0.0) or 0.0)
                 native_sample_rate = int(getattr(self.reception, "native_sample_rate", 0) or 0)
                 if native_sample_rate <= 0:
@@ -1865,8 +1865,6 @@ class SourceTask(ACEAudioTask):
                 self._pending_ctx_writes["duration"] = duration_val
                 if hasattr(ctx, "live_status") and opened:
                     self._pending_ctx_writes["live_status"] = ""
-            except Exception:
-                pass
 
         if not self.source_ready:
             self.analysis = None
@@ -1933,7 +1931,7 @@ class SourceTask(ACEAudioTask):
         x_prev = float(state.get("x1", 0.0))
         y_prev = float(state.get("y1", 0.0))
         if NUMBA_AVAILABLE:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask._run_iir"):
                 src = data.astype(np.float32, copy=False)
                 filtered, x_last, y_last = _iir1_filter_block(
                     src,
@@ -1947,8 +1945,6 @@ class SourceTask(ACEAudioTask):
                 state["x1"] = float(x_last)
                 state["y1"] = float(y_last)
                 return out
-            except Exception:
-                pass
 
         prev_input = self._iir_prev_input
         if prev_input is None:
@@ -2003,7 +1999,8 @@ class SourceTask(ACEAudioTask):
     def _requested_frame(self) -> int:
         try:
             return int(getattr(self, "_current_frame_request", 0) or 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceTask._requested_frame", exc)
             return 0
 
     def _samples_per_frame(self, sample_rate: int) -> float:
@@ -2107,7 +2104,8 @@ class SourceTask(ACEAudioTask):
             return
         try:
             current_cursor = int(getattr(self.reception, "_cursor_sample", self.read_cursor) or self.read_cursor)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceTask._sync_reader_cursor", exc)
             current_cursor = int(self.read_cursor)
         self.read_cursor = current_cursor
         delta = int(desired_sample) - int(current_cursor)
@@ -2188,7 +2186,8 @@ class SourceTask(ACEAudioTask):
             resolve_fn = self.resolve_block_size_fn or _resolve_block_size_default
             try:
                 delta_frames = float(getattr(getattr(self, "engine_ref", None), "_current_delta_frames", 1.0) or 1.0)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.SourceTask._read_next_block_sync", exc)
                 delta_frames = 1.0
             timeslice_mode = self._timeslice_mode_hint()
             try:
@@ -2290,7 +2289,8 @@ class SourceTask(ACEAudioTask):
                                 getattr(self.reception, "_cursor_sample", desired_sample + int(mono.shape[-1]))
                                 or (desired_sample + int(mono.shape[-1]))
                             )
-                        except Exception:
+                        except Exception as exc:
+                            utils.note_swallowed("audio_tasks_registry.SourceTask._read_next_block_sync#2", exc)
                             self.read_cursor = desired_sample + int(mono.shape[-1])
                     elif getattr(self.reception, "_eof", False):
                         return None
@@ -2337,17 +2337,13 @@ class SourceTask(ACEAudioTask):
             if bool(track_perf_stage):
                 perf_add = getattr(engine, "_perf_add", None)
                 if callable(perf_add):
-                    try:
+                    with utils.logged_errors("audio_tasks_registry.SourceTask._read_next_block_sync#3"):
                         perf_add("source_read", elapsed)
-                    except Exception:
-                        pass
             else:
                 prefetch_add = getattr(engine, "_record_source_prefetch", None)
                 if callable(prefetch_add):
-                    try:
+                    with utils.logged_errors("audio_tasks_registry.SourceTask._read_next_block_sync#4"):
                         prefetch_add(elapsed)
-                    except Exception:
-                        pass
 
     def compute_feature(self, name: str, chunk: AudioChunk):
         if not self.analysis:
@@ -2359,10 +2355,8 @@ class SourceTask(ACEAudioTask):
         # reception.read_block() after the underlying resource is freed.
         self._stop_prefetch_thread()
         if self.reception:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceTask.close"):
                 self.reception.close()
-            except Exception:
-                pass
             self.reception = None
         if self.analysis:
             AudioFluxAnalyzer.release(self.analysis)
@@ -2430,7 +2424,7 @@ class SourceSpecsTask(ACEAudioTask):
         if ctx:
             # If the user changed BPM or meter after an automatic estimate, honor
             # that override and stop auto-updates for this source.
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask.process"):
                 auto_val = ctx.get(self._auto_bpm_key, None) if hasattr(ctx, "get") else None
                 if auto_val is not None:
                     current = float(getattr(ctx, "bpm", 120.0))
@@ -2438,9 +2432,7 @@ class SourceSpecsTask(ACEAudioTask):
                         ctx["ace_bpm_user_override"] = True
                         self._long_term_done = True
                         self._reset_long_term_analysis_state(clear_target=False)
-            except Exception:
-                pass
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask.process#2"):
                 auto_meter = ctx.get(self._auto_meter_key, None) if hasattr(ctx, "get") else None
                 if auto_meter is not None:
                     current_meter = int(getattr(ctx, "beats_per_bar", 4) or 4)
@@ -2448,8 +2440,6 @@ class SourceSpecsTask(ACEAudioTask):
                         ctx["ace_meter_user_override"] = True
                         self._long_term_done = True
                         self._reset_long_term_analysis_state(clear_target=False)
-            except Exception:
-                pass
         fps = getattr(self, "scene_fps", 24.0)
         self._maybe_run_long_term_analysis(ctx)
 
@@ -2497,7 +2487,8 @@ class SourceSpecsTask(ACEAudioTask):
             try:
                 if getter("ace_bpm_user_override", False) or getter("ace_meter_user_override", False):
                     return True
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.SourceSpecsTask._user_overrode_tempo", exc)
                 return False
         return False
 
@@ -2505,18 +2496,14 @@ class SourceSpecsTask(ACEAudioTask):
         self._release_global_analysis_slot(self._long_term_target)
         rec = self._analysis_rec
         if rec is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask._reset_long_term_analysis_state"):
                 rec.close()
-            except Exception:
-                pass
         self._analysis_rec = None
 
         analyzer = self._analysis_analyzer
         if analyzer is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask._reset_long_term_analysis_state#2"):
                 AudioFluxAnalyzer.release(analyzer)
-            except Exception:
-                pass
         self._analysis_analyzer = None
 
         self._analysis_block = 0
@@ -2641,10 +2628,8 @@ class SourceSpecsTask(ACEAudioTask):
         cls._BG_STOP_EVENT.set()
         thread = cls._BG_THREAD
         if thread is not None and thread.is_alive():
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask.shutdown_background_worker"):
                 thread.join(timeout=0.25)
-            except Exception:
-                pass
         cls._BG_THREAD = None
         with cls._GLOBAL_CACHE_LOCK:
             cls._BG_PENDING.clear()
@@ -2696,19 +2681,17 @@ class SourceSpecsTask(ACEAudioTask):
                     continue
                 if cls._user_overrode_tempo(ctx):
                     continue
-                try:
+                with utils.logged_errors("audio_tasks_registry.SourceSpecsTask.flush_pending_ctx_writes#2"):
                     ctx[task._auto_bpm_key] = float(bpm_val)
                     ctx[task._auto_meter_key] = int(max(1, beats_per_bar))
                     ctx.bpm = float(bpm_val)
                     ctx.beats_per_bar = int(max(1, beats_per_bar))
                     ctx["ace_bpm_user_override"] = False
                     ctx["ace_meter_user_override"] = False
-                except Exception:
-                    pass
         except Empty:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceSpecsTask.flush_pending_ctx_writes", exc)
 
     @classmethod
     def _queue_background_analysis(cls, target: Tuple[str, float]) -> bool:
@@ -2747,16 +2730,15 @@ class SourceSpecsTask(ACEAudioTask):
                         float(detected["bpm"]),
                         int(detected["beats_per_bar"]),
                     )
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.SourceSpecsTask._background_worker_loop", exc)
                 cls._store_global_analysis_failure(target)
             finally:
                 with cls._GLOBAL_CACHE_LOCK:
                     cls._BG_PENDING.discard(target)
                     cls._BG_QUEUED.discard(target)
-                try:
+                with utils.logged_errors("audio_tasks_registry.SourceSpecsTask._background_worker_loop#2"):
                     cls._BG_TASK_QUEUE.task_done()
-                except Exception:
-                    pass
 
     @staticmethod
     def _flux_peak_indices(flux_arr: np.ndarray) -> np.ndarray:
@@ -2905,10 +2887,8 @@ class SourceSpecsTask(ACEAudioTask):
 
             return cls._estimate_tempo_from_flux(flux_vals, block, sr)
         finally:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask._estimate_tempo_for_target"):
                 rec.close()
-            except Exception:
-                pass
 
     def _apply_detected_tempo(
         self,
@@ -2927,7 +2907,7 @@ class SourceSpecsTask(ACEAudioTask):
         if ctx and (not respect_override or not SourceSpecsTask._user_overrode_tempo(ctx)):
             target = self._long_term_target
             if target is not None:
-                try:
+                with utils.logged_errors("audio_tasks_registry.SourceSpecsTask._apply_detected_tempo"):
                     SourceSpecsTask._PENDING_CTX_WRITES.put_nowait(
                         (
                             target,
@@ -2936,8 +2916,6 @@ class SourceSpecsTask(ACEAudioTask):
                             int(getattr(self, "undo_generation", 0) or 0),
                         )
                     )
-                except Exception:
-                    pass
 
     def _start_long_term_analysis(self, target: Tuple[str, float]) -> bool:
         filepath, _ = target
@@ -2951,11 +2929,10 @@ class SourceSpecsTask(ACEAudioTask):
         block = int(max(MIN_BLOCK_SIZE, min(block, MAX_BLOCK_SIZE)))
         try:
             analyzer = AudioFluxAnalyzer(sr, block)
-        except Exception:
-            try:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.SourceSpecsTask._start_long_term_analysis", exc)
+            with utils.logged_errors("audio_tasks_registry.SourceSpecsTask._start_long_term_analysis#2"):
                 rec.close()
-            except Exception:
-                pass
             return False
 
         self._analysis_rec = rec
@@ -3363,10 +3340,8 @@ def _resolve_chunk_fft_size(chunk: AudioChunk, fallback_size: int) -> int:
     analyzer = getattr(provider, "analysis", None) if provider is not None else None
     fft_len = getattr(analyzer, "fft_length", None)
     if fft_len:
-        try:
+        with utils.logged_errors("audio_tasks_registry._resolve_chunk_fft_size"):
             return max(int(fft_len), 1)
-        except Exception:
-            pass
     return max(int(fallback_size), 1)
 
 
@@ -3383,14 +3358,16 @@ def _resolve_effective_bin_indices(chunk: AudioChunk, fft_size: int) -> Optional
     if raw_idx is not None:
         try:
             arr = np.asarray(raw_idx, dtype=np.int64).ravel()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry._resolve_effective_bin_indices", exc)
             arr = np.zeros(0, dtype=np.int64)
         src_fft_size = getattr(chunk, "band_index_fft_size", None)
         if src_fft_size is None:
             src_fft_size = max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 1), 1)
         try:
             src_fft_size = max(int(src_fft_size), 1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry._resolve_effective_bin_indices#2", exc)
             src_fft_size = max(int(fft_size), 1)
         idx = _remap_indices_fft_domain(
             arr,
@@ -3404,7 +3381,8 @@ def _resolve_effective_bin_indices(chunk: AudioChunk, fft_size: int) -> Optional
         try:
             low_hz = float(bounds[0])
             high_hz = float(bounds[1])
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry._resolve_effective_bin_indices#3", exc)
             low_hz = 0.0
             high_hz = 0.0
         if high_hz > low_hz:
@@ -3440,7 +3418,8 @@ class FrequencySplitterTask(ACEAudioTask):
             try:
                 parent_low = float(parent_bounds[0])
                 parent_high = float(parent_bounds[1])
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.FrequencySplitterTask._resolve_band_limits", exc)
                 parent_low, parent_high = audible_low, audible_high
             low = max(audible_low, parent_low)
             high = min(audible_high, parent_high)
@@ -3935,11 +3914,13 @@ class LUFSTask(ACEAudioTask):
                 return float(fallback)
             try:
                 return float(value[0])
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.LUFSTask._coerce_scalar", exc)
                 return float(fallback)
         try:
             return float(value)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.LUFSTask._coerce_scalar#2", exc)
             return float(fallback)
 
     def _resolve_seconds(
@@ -4035,7 +4016,7 @@ class LUFSTask(ACEAudioTask):
             return out.astype(np.float32, copy=False)
 
         if SCIPY_AVAILABLE and callable(scipy_lfilter):
-            try:
+            with utils.logged_errors("audio_tasks_registry.LUFSTask._apply_biquad"):
                 out_64, zf = scipy_lfilter(
                     np.array([b0, b1, b2], dtype=np.float64),
                     np.array([1.0, a1, a2], dtype=np.float64),
@@ -4045,8 +4026,6 @@ class LUFSTask(ACEAudioTask):
                 state[0] = float(zf[0])
                 state[1] = float(zf[1])
                 return out_64.astype(np.float32, copy=False)
-            except Exception:
-                pass
 
         out = np.empty_like(src, dtype=np.float32)
         s1 = z1
@@ -4076,7 +4055,8 @@ class LUFSTask(ACEAudioTask):
         """Map a dB-like value to [0, 1] with 0 dB -> 1 and -inf dB -> 0."""
         try:
             db = float(db_value)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.LUFSTask._db_to_unit", exc)
             return 0.0
         if not np.isfinite(db):
             return 0.0
@@ -4200,12 +4180,10 @@ class PitchTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("pitch", lambda: chunk.provider.compute_feature("pitch", chunk))
         if val is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.PitchTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
-            except Exception:
-                pass
 
         analysis_mono = _masked_mono_signal(chunk)
         return _autocorr_pitch_estimate(analysis_mono, int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE))
@@ -4226,12 +4204,10 @@ class SpectralCentroidTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("centroid", lambda: chunk.provider.compute_feature("centroid", chunk))
         if val is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SpectralCentroidTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
-            except Exception:
-                pass
 
         mag, freqs = _masked_spectrum(chunk)
         denom = float(np.sum(mag, dtype=np.float64))
@@ -4288,12 +4264,10 @@ class SpectralFluxTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("flux", lambda: chunk.provider.compute_feature("flux", chunk))
         if val is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.SpectralFluxTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
-            except Exception:
-                pass
 
         return self._fallback_flux(chunk)
 
@@ -4352,12 +4326,10 @@ class OnsetTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("onset", lambda: chunk.provider.compute_feature("onset", chunk))
         if val is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.OnsetTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
-            except Exception:
-                pass
 
         return self._fallback_onset(chunk)
 
@@ -4377,12 +4349,10 @@ class ZeroCrossTask(ACEAudioTask):
         if isinstance(chunk, AudioChunk) and chunk.provider:
             val = chunk.get_feature("zcr", lambda: chunk.provider.compute_feature("zcr", chunk))
         if val is not None:
-            try:
+            with utils.logged_errors("audio_tasks_registry.ZeroCrossTask.process"):
                 resolved = float(val)
                 if np.isfinite(resolved):
                     return resolved
-            except Exception:
-                pass
         analysis_mono, _ = _analysis_signals_normalized(chunk)
         return _zero_crossing_rate(analysis_mono)
 
@@ -4511,7 +4481,8 @@ def _run_biquad(
             state[0] = float(z1_new)
             state[1] = float(z2_new)
             return out
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry._run_biquad", exc)
             pass  # Fall through to Tier 2.
 
     # ── Tier 2: scipy.signal.lfilter ─────────────────────────────────────────
@@ -4596,7 +4567,8 @@ class PreviewSinkTask(ACEAudioTask):
         try:
             low_hz = float(bounds[0])
             high_hz = float(bounds[1])
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.PreviewSinkTask._resolve_bounds", exc)
             return None
         if high_hz <= low_hz:
             return None
@@ -4620,7 +4592,8 @@ class PreviewSinkTask(ACEAudioTask):
             src_fft_size = max(int(n), 1)
         try:
             src_fft_size = max(int(src_fft_size), 1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.PreviewSinkTask._resolve_sparse_mask", exc)
             src_fft_size = max(int(n), 1)
         arr = _remap_indices_fft_domain(
             arr,
@@ -4642,7 +4615,8 @@ class PreviewSinkTask(ACEAudioTask):
         try:
             low_hz = float(bounds[0])
             high_hz = float(bounds[1])
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.PreviewSinkTask._coerce_bounds", exc)
             return None
         nyquist = 0.5 * max(float(sample_rate), 1.0)
         low = max(0.0, min(low_hz, nyquist - 2.0))
@@ -5123,7 +5097,8 @@ class StreamAccumulatorTask(ACEAudioTask):
             return {}
         try:
             acc = np.asarray(self._accumulator, dtype=np.float64).reshape(-1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask.export_state", exc)
             return {}
         if acc.size <= 0:
             return {}
@@ -5149,7 +5124,8 @@ class StreamAccumulatorTask(ACEAudioTask):
         raw_last = state.get("last_frame_request")
         try:
             self._last_frame_request = int(raw_last) if raw_last is not None else None
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask.import_state", exc)
             self._last_frame_request = None
         self._manual_reset_latched = bool(state.get("manual_reset_latched", False))
         return True
@@ -5165,7 +5141,8 @@ class StreamAccumulatorTask(ACEAudioTask):
             return np.asarray([resolved], dtype=np.float64)
         try:
             arr = np.asarray(raw_value, dtype=np.float64).reshape(-1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask._coerce_input_array", exc)
             return np.zeros(1, dtype=np.float64)
         if arr.size <= 0:
             return np.zeros(1, dtype=np.float64)
@@ -5179,7 +5156,8 @@ class StreamAccumulatorTask(ACEAudioTask):
         if isinstance(raw_value, (int, float, np.integer, np.floating)):
             try:
                 return bool(np.isfinite(float(raw_value)) and abs(float(raw_value)) > 1e-9)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask._coerce_reset_flag", exc)
                 return False
         if isinstance(raw_value, str):
             token = raw_value.strip().lower()
@@ -5222,7 +5200,8 @@ class StreamAccumulatorTask(ACEAudioTask):
 
         try:
             frame_idx = utils.as_int(getattr(self, "_current_frame_request", None), -1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("audio_tasks_registry.StreamAccumulatorTask.process", exc)
             frame_idx = -1
         manual_reset = self._manual_reset_requested(inputs)
         should_reset = self._should_reset_for_frame(frame_idx, manual_reset)
@@ -5346,7 +5325,8 @@ class AudioMathTask(ACEAudioTask):
             try:
                 low = float(bounds[0])
                 high = float(bounds[1])
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.AudioMathTask._merge_band_hz_bounds", exc)
                 return None
             if high <= low:
                 return None
@@ -5530,7 +5510,8 @@ class ACEAudioGraph:
         if callable(resolver):
             try:
                 return resolver(str(self.proxy_name or ""))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("audio_tasks_registry.ACEAudioGraph.get_proxy_object", exc)
                 return None
         return None
 

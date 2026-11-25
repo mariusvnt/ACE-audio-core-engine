@@ -13,7 +13,7 @@ import time
 import hashlib
 try:
     from bpy.app.handlers import persistent  # type: ignore
-except Exception:  # pragma: no cover - Blender provides this at runtime
+except ImportError:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 
@@ -111,7 +111,8 @@ def _deal_breakers():
     try:
         if tuple(getattr(bpy.app, "version", (0, 0, 0))) < (5, 0, 0):
             issues.append("Blender 5.0+ is required.")
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._deal_breakers", exc)
         issues.append("Unable to read Blender version.")
     if not utils.is_module_installed("audioflux"):
         issues.append("AudioFlux is not installed although it is one of the core elements of the engine; see add-on preferences to install it.")
@@ -164,7 +165,8 @@ def _iter_visible_node_editor_trees(context):
                 continue
             try:
                 area_ptr = int(area.as_pointer())
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_ui._iter_visible_node_editor_trees", exc)
                 area_ptr = id(area)
             if area_ptr in seen_area_ptrs:
                 continue
@@ -258,7 +260,7 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
     # Respect Blender's context resolver only when currently in the Node Editor.
     space = getattr(context, "space_data", None)
     if getattr(space, "type", "") == 'NODE_EDITOR':
-        try:
+        with utils.logged_errors("n_panel_ui._find_active_node_tree"):
             resolver = getattr(getattr(bpy, "types", None), "NodeTree", None)
             if resolver is not None and hasattr(resolver, "get_from_context"):
                 resolved = resolver.get_from_context(context)
@@ -269,8 +271,6 @@ def _find_active_node_tree(context, editor_context_only: bool = False):
                 chosen = _consider_tree(tree)
                 if chosen is not None:
                     return chosen
-        except Exception:
-            pass
         for tree in (getattr(space, "edit_tree", None), getattr(space, "node_tree", None)):
             chosen = _consider_tree(tree)
             if chosen is not None:
@@ -334,7 +334,8 @@ def _describe_node(cat: str, typ: str) -> str:
     """Return the human-readable description string for an ACE node type, or ''."""
     try:
         return ACE_NODES[cat]["nodes"][typ]["description"]
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._describe_node", exc)
         return ""
 
 
@@ -424,7 +425,8 @@ def _label_icon_supported(icon_name: str) -> bool:
                 for item in (enum_items or [])
                 if str(getattr(item, "identifier", "") or "")
             }
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._label_icon_supported", exc)
             _ui_label_icon_ids = set()
     return icon_name in (_ui_label_icon_ids or set())
 
@@ -547,13 +549,15 @@ def _source_display_sample_rate(source) -> int:
     if source_type == "FILE":
         try:
             sr = int(getattr(source, "native_sample_rate", 0) or 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._source_display_sample_rate", exc)
             sr = 0
         if sr > 0:
             return sr
     try:
         return int(getattr(source, "sample_rate", 0) or 0)
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._source_display_sample_rate#2", exc)
         return 0
 
 
@@ -561,7 +565,8 @@ def _node_type_display(cat: str, typ: str) -> str:
     """Return the human-readable category label for an ACE node, falling back to the raw key."""
     try:
         cat_label = str(ACE_NODES[cat]["meta"]["label"] or "").strip()
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._node_type_display", exc)
         cat_label = str(cat or "").replace("_", " ").strip()
     return cat_label
 
@@ -654,7 +659,8 @@ def _splitter_cut_sockets(node) -> list:
             continue
         try:
             _ = float(getattr(sock, "default_value", 0.0))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._splitter_cut_sockets", exc)
             continue
         sockets.append(sock)
     return sockets
@@ -680,7 +686,8 @@ def _find_tree_node_by_ace_id(tree, node_id: str):
         ace_id = ""
         try:
             ace_id = str(candidate.get("ace_id", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._find_tree_node_by_ace_id", exc)
             ace_id = ""
         if ace_id == node_id:
             return candidate, parsed
@@ -700,7 +707,8 @@ def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
         try:
             reader = ACEDummyTreeReader(tree)
             reader.build()
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._build_ui_node_lookup_ids", exc)
             return {}
 
     lookup_ids: dict[str, str] = {}
@@ -708,14 +716,16 @@ def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
     for candidate in getattr(tree, "nodes", []):
         try:
             node_ptr = int(candidate.as_pointer())
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._build_ui_node_lookup_ids#2", exc)
             node_ptr = id(candidate)
         abstract_id = str(node_id_by_ptr.get(node_ptr, "") or "")
         if not abstract_id:
             continue
         try:
             blender_id = str(candidate.get("ace_id", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._build_ui_node_lookup_ids#3", exc)
             blender_id = ""
         if blender_id and ACEIdManager.parse_node_id(blender_id):
             lookup_ids[abstract_id] = blender_id
@@ -856,17 +866,16 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                 continue
             try:
                 val = float(getattr(sock, "default_value", 0.0))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_ui._draw_selected_node_operator_settings", exc)
                 continue
             split_sockets.append(sock)
             split_values.append(val)
-            try:
+            with utils.logged_errors("n_panel_ui._draw_selected_node_operator_settings#2"):
                 sock.min_value = 0.0
                 sock.max_value = 20000.0
                 sock.soft_min = 20.0
                 sock.soft_max = 20000.0
-            except Exception:
-                pass
 
         if split_values:
             bar = _splitter_ramp_ascii(sorted(split_values), low_hz=low_hz, high_hz=high_hz)
@@ -884,7 +893,8 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                 sub = box.row(align=True)
                 try:
                     hz = float(getattr(sock, "default_value", 0.0))
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("n_panel_ui._draw_selected_node_operator_settings#3", exc)
                     hz = 0.0
                 pos = _splitter_hz_to_norm(hz, low_hz=low_hz, high_hz=high_hz)
                 sub.label(text=f"Cut {idx} ({pos:.2f})")
@@ -977,7 +987,8 @@ def _draw_bake_controls(layout, context):
 
     try:
         status = str(active_source.get("ace_bake_status", "") or "")
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._draw_bake_controls", exc)
         status = ""
     if not status:
         layout.label(text="Bake stream outputs over the scene frame range.", icon="INFO")
@@ -986,7 +997,8 @@ def _draw_bake_controls(layout, context):
         err = ""
         try:
             err = str(active_source.get("ace_bake_error", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._draw_bake_controls#2", exc)
             err = ""
         warn = layout.row()
         warn.alert = True
@@ -999,7 +1011,8 @@ def _draw_bake_controls(layout, context):
         progress = 0.0
         try:
             progress = float(active_source.get("ace_bake_progress", 0.0) or 0.0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._draw_bake_controls#3", exc)
             progress = 0.0
         pct = int(max(0.0, min(progress, 1.0)) * 100.0)
         layout.label(text=f"Baking in progress... {pct}%", icon="TIME")
@@ -1014,10 +1027,8 @@ def _splitter_node_signature(node, scene) -> str:
     low_hz, high_hz = _splitter_display_bounds(scene)
     values = []
     for sock in _splitter_cut_sockets(node):
-        try:
+        with utils.logged_errors("n_panel_ui._splitter_node_signature"):
             values.append(float(getattr(sock, "default_value", 0.0)))
-        except Exception:
-            pass
     values = sorted(values)
     rounded = ",".join(f"{v:.3f}" for v in values)
     return f"{low_hz:.3f}|{high_hz:.3f}|{rounded}"
@@ -1031,7 +1042,8 @@ def _ensure_splitter_ramp_texture():
     scene = getattr(getattr(bpy, "context", None), "scene", None)
     try:
         node_groups = bpy.data.node_groups
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._ensure_splitter_ramp_texture", exc)
         return None
 
     tree = node_groups.get(_SPLITTER_RAMP_NODETREE_NAME)
@@ -1045,7 +1057,8 @@ def _ensure_splitter_ramp_texture():
     if tree is None:
         try:
             tree = node_groups.new(_SPLITTER_RAMP_NODETREE_NAME, 'ShaderNodeTree')
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._ensure_splitter_ramp_texture#2", exc)
             return None
 
     ramp_node = tree.nodes.get(_SPLITTER_RAMP_NODE_NAME)
@@ -1057,7 +1070,8 @@ def _ensure_splitter_ramp_texture():
             ramp_node.name = _SPLITTER_RAMP_NODE_NAME
             ramp_node.label = "ACE Splitter Ramp"
             ramp_node.location = (0, 0)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._ensure_splitter_ramp_texture#3", exc)
             return None
 
     return ramp_node
@@ -1084,10 +1098,8 @@ def _sync_splitter_ramp_texture_from_node(node, scene, force: bool = False):
 
     cut_values = []
     for sock in _splitter_cut_sockets(node):
-        try:
+        with utils.logged_errors("n_panel_ui._sync_splitter_ramp_texture_from_node"):
             cut_values.append(float(getattr(sock, "default_value", 0.0)))
-        except Exception:
-            pass
     cut_values = sorted(cut_values)
 
     ramp = ramp_owner.color_ramp
@@ -1151,7 +1163,8 @@ def _tree_pointer(tree) -> int:
         return 0
     try:
         return int(tree.as_pointer())
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._tree_pointer", exc)
         return id(tree)
 
 
@@ -1189,20 +1202,24 @@ def _ui_tree_topology_signature(tree) -> str:
         preview_enabled = True
         try:
             ace_id = str(node.get("ace_id", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._ui_tree_topology_signature", exc)
             ace_id = ""
         if ace_id:
             try:
                 source_id = str(node.get("ace_source_id", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#2", exc)
                 source_id = ""
             try:
                 op_value = str(node.get("ace_op", "") or "")
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#3", exc)
                 op_value = ""
             try:
                 preview_enabled = bool(node.get("ace_preview_enabled", True))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#4", exc)
                 preview_enabled = True
 
         proxy_name = ""
@@ -1212,7 +1229,8 @@ def _ui_tree_topology_signature(tree) -> str:
             if sock_name == "Proxy Object" and not bool(getattr(sock, "is_linked", False)):
                 try:
                     proxy_name = str(getattr(getattr(sock, "default_value", None), "name", "") or "")
-                except Exception:
+                except Exception as exc:
+                    utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#5", exc)
                     proxy_name = ""
             if sock_name not in attr_socket_names or bool(getattr(sock, "is_linked", False)):
                 continue
@@ -1257,11 +1275,13 @@ def _ui_tree_topology_signature(tree) -> str:
         )
         try:
             from_sock_idx = int(getattr(from_socket, "index", -1))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#6", exc)
             from_sock_idx = -1
         try:
             to_sock_idx = int(getattr(to_socket, "index", -1))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._ui_tree_topology_signature#7", exc)
             to_sock_idx = -1
 
         link_tokens.append(
@@ -1301,7 +1321,8 @@ def _ui_nodes_match(active_source, node_ids: list[str]) -> bool:
             if str(getattr(ui_nodes[idx], "node_id", "") or "") != str(node_id or ""):
                 return False
         return True
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._ui_nodes_match", exc)
         return False
 
 
@@ -1316,10 +1337,8 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
     if not active_source:
         utils.log("UI sync skipped: no active source.", "DEBUG")
         return
-    try:
+    with utils.logged_errors("n_panel_ui._sync_ui_dummy_tree"):
         ACEIdManager.ensure_source_uid(active_source)
-    except Exception:
-        pass
     # Abort if collection is not writable in the current context (e.g., during draw in some areas)
     if not hasattr(active_source, "ui_nodes"):
         utils.log("UI sync skipped: active_source has no ui_nodes property.", "DEBUG")
@@ -1345,7 +1364,8 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         tree_ptr = 0
         try:
             tree_ptr = int(tree.as_pointer())
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#2", exc)
             tree_ptr = 0
         pending_tree_ptr = int(getattr(engine, "_pending_tree_ptr", 0) or 0)
         dirty_tree_ptrs = getattr(engine, "_dirty_tree_ptrs", set()) or set()
@@ -1419,7 +1439,8 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
                 for _idx, _bl_node in enumerate(getattr(tree, "nodes", [])):
                     try:
                         _ace_id = str(_bl_node.get("ace_id", "") or "")
-                    except Exception:
+                    except Exception as exc:
+                        utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#3", exc)
                         _ace_id = ""
                     if _ace_id:
                         bl_order[_ace_id] = _idx
@@ -1512,7 +1533,8 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
             if attr.data_type == 'FLOAT_COLOR':
                 col = attr.data[0].color
                 return float(sum(col) / len(col))
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree._read_attr_value", exc)
             return None
         return None
 
@@ -1534,7 +1556,8 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
         for idx, node in enumerate(nodes):
             try:
                 item = active_source.ui_nodes[idx]
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("n_panel_ui._sync_ui_dummy_tree#4", exc)
                 continue
             _write_ui_item(item, node)
     else:
@@ -1551,11 +1574,9 @@ def _sync_ui_dummy_tree(context, force: bool = False, allow_dirty_rebuild: bool 
                 break
             _write_ui_item(item, node)
 
-    try:
+    with utils.logged_errors("n_panel_ui._sync_ui_dummy_tree#5"):
         if active_source.active_ui_node_index >= len(active_source.ui_nodes):
             active_source.active_ui_node_index = max(0, len(active_source.ui_nodes) - 1)
-    except Exception:
-        pass
     _ui_sync_last_key = sync_key
     _ui_sync_last_ts = now
 
@@ -1601,11 +1622,9 @@ def _refresh_active_source_metadata(scene, now: float | None = None):
         return
 
     _ui_source_probe_last[source_key] = ts_now
-    try:
+    with utils.logged_errors("n_panel_ui._refresh_active_source_metadata"):
         engine = ACEAudioEngine.ensure_instance(scene)
         engine._probe_source_metadata(src)
-    except Exception:
-        pass
 
 
 def _ui_quick_state_key(context, scene, tree) -> str:
@@ -1621,7 +1640,8 @@ def _ui_quick_state_key(context, scene, tree) -> str:
     if ace is not None:
         try:
             src_idx = utils.as_int(getattr(ace, "active_audio_source_index", None), -1)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui._ui_quick_state_key", exc)
             src_idx = -1
         sources = getattr(ace, "audio_sources", None) or []
         if 0 <= src_idx < len(sources):
@@ -1651,18 +1671,17 @@ def _ui_has_pending_engine_changes(scene, tree) -> bool:
     if pending_tree_ptr:
         if tree is None:
             return True
-        try:
+        with utils.logged_errors("n_panel_ui._ui_has_pending_engine_changes"):
             if int(tree.as_pointer()) == pending_tree_ptr:
                 return True
-        except Exception:
-            pass
     if not dirty_tree_ptrs:
         return False
     if tree is None:
         return True
     try:
         return int(tree.as_pointer()) in dirty_tree_ptrs
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("n_panel_ui._ui_has_pending_engine_changes#2", exc)
         return False
 
 
@@ -1827,7 +1846,7 @@ def _ui_sync_timer():
         Float interval in seconds for the next timer invocation.
     """
     global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_timer_last_dirty_rebuild_ts
-    try:
+    with utils.logged_errors("n_panel_ui._ui_sync_timer"):
         context = getattr(bpy, "context", None)
         scene = getattr(context, "scene", None) if context else None
         if not scene:
@@ -1855,13 +1874,11 @@ def _ui_sync_timer():
         allow_dirty_rebuild = bool(force_sync)
 
         _refresh_active_source_metadata(scene, now=now)
-        try:
+        with utils.logged_errors("n_panel_ui._ui_sync_timer#2"):
             engine = ACEAudioEngine.ensure_instance(scene)
             ace = getattr(scene, "audiocore", None)
             sources = list(getattr(ace, "audio_sources", []) or []) if ace else []
             engine.flush_source_tempo_detection_updates(sources)
-        except Exception:
-            pass
 
         if key_changed or engine_dirty or ((now - _ui_timer_last_sync_ts) >= target_interval):
             t0 = time.perf_counter()
@@ -1872,17 +1889,13 @@ def _ui_sync_timer():
             )
             engine = ACEAudioEngine.get_instance(scene)
             if engine is not None:
-                try:
+                with utils.logged_errors("n_panel_ui._ui_sync_timer#3"):
                     engine._perf_add("ui_sync", time.perf_counter() - t0)
-                except Exception:
-                    pass
             _ui_timer_last_quick_key = quick_key
             _ui_timer_last_sync_ts = now
             if dirty_rebuild_due:
                 _ui_timer_last_dirty_rebuild_ts = now
         return target_interval
-    except Exception:
-        pass
     return _UI_SYNC_TIMER_INTERVAL_IDLE
 
 
@@ -2262,14 +2275,12 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
 
         panel_prop = getattr(layout, "panel_prop", None)
         if callable(panel_prop):
-            try:
+            with utils.logged_errors("n_panel_ui.ACE_PT_sub_tempo_meter.draw"):
                 header, panel = panel_prop(src, "tempo_meter_panel_open")
                 header.label(text=self.bl_label)
                 if panel is None:
                     return
                 layout = panel
-            except Exception:
-                pass
 
         trigger_row = layout.row()
         trigger_row.enabled = bool(
@@ -2285,7 +2296,8 @@ class ACE_PT_sub_tempo_meter(bpy.types.Panel):
         try:
             detect_status = str(src.get("ace_tempo_detect_status", "") or "")
             detect_message = str(src.get("ace_tempo_detect_message", "") or "")
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("n_panel_ui.ACE_PT_sub_tempo_meter.draw#2", exc)
             detect_status = ""
             detect_message = ""
         if detect_status == "pending":

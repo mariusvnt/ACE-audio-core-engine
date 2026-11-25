@@ -18,10 +18,11 @@ import numpy as np
 try:
     from multiprocessing import shared_memory as mp_shared_memory
     _SHARED_MEMORY_AVAILABLE = True
-except Exception:  # pragma: no cover - runtime/platform dependent
+except ImportError:  # pragma: no cover - runtime/platform dependent
     mp_shared_memory = None
     _SHARED_MEMORY_AVAILABLE = False
 
+from .. import utils
 from .audio_tasks_registry import (
     SAMPLE_RATE,
     AudioChunk,
@@ -248,14 +249,16 @@ class _WorkerSourceBridgeTask:
         if band_indices is not None:
             try:
                 band_indices = np.asarray(band_indices, dtype=np.int64).reshape(-1)
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("parallel_dsp._WorkerSourceBridgeTask.set_chunk", exc)
                 band_indices = None
 
         band_hz_bounds = payload.get("band_hz_bounds")
         if isinstance(band_hz_bounds, (list, tuple)) and len(band_hz_bounds) >= 2:
             try:
                 band_hz_bounds = (float(band_hz_bounds[0]), float(band_hz_bounds[1]))
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("parallel_dsp._WorkerSourceBridgeTask.set_chunk#2", exc)
                 band_hz_bounds = None
         else:
             band_hz_bounds = None
@@ -269,7 +272,8 @@ class _WorkerSourceBridgeTask:
                     float(frontend_config[2] or 0.0),
                     float(frontend_config[3] or 0.0),
                 )
-            except Exception:
+            except Exception as exc:
+                utils.note_swallowed("parallel_dsp._WorkerSourceBridgeTask.set_chunk#3", exc)
                 frontend_config = None
         else:
             frontend_config = None
@@ -378,10 +382,8 @@ class _CompiledWorkerGraph:
         for task in self.tasks.values():
             close_fn = getattr(task, "close", None)
             if callable(close_fn):
-                try:
+                with utils.logged_errors("parallel_dsp._CompiledWorkerGraph.close"):
                     close_fn()
-                except Exception:
-                    pass
         closed = set()
         for provider in self.source_providers.values():
             key = id(provider)
@@ -588,10 +590,8 @@ def _close_worker_shm_cache_entry(cache_key: str):
     shm_obj = entry.get("shm")
     if shm_obj is None:
         return
-    try:
+    with utils.logged_errors("parallel_dsp._close_worker_shm_cache_entry"):
         shm_obj.close()
-    except Exception:
-        pass
 
 
 def _close_worker_shm_cache():
@@ -794,7 +794,8 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
             continue
         try:
             raw_val = task.get_output(frame_id, socket_idx)
-        except Exception:
+        except Exception as exc:
+            utils.note_swallowed("parallel_dsp.evaluate_parallel_job", exc)
             continue
         if raw_val is None:
             continue

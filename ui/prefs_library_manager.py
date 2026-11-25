@@ -58,7 +58,8 @@ def _remove_library_from_target(lib_name: str, target_dir: str) -> bool:
     removed = False
     try:
         entries = list(os.listdir(target_dir))
-    except Exception:
+    except Exception as exc:
+        utils.note_swallowed("prefs_library_manager._remove_library_from_target", exc)
         return False
 
     for entry in entries:
@@ -118,11 +119,9 @@ class ACE_OT_install_library(bpy.types.Operator):
 
             self.report({'INFO'}, f"{lib_name} installed. Refreshing UI...")
             utils.refresh_import_caches()
-            try:
+            with utils.logged_errors("prefs_library_manager.ACE_OT_install_library.execute"):
                 from .prefs_panel_ui import sync_preferences_dependencies
                 sync_preferences_dependencies()
-            except Exception:
-                pass
             return {'FINISHED'}
 
         except Exception as e:
@@ -175,11 +174,9 @@ class ACE_OT_install_missing_libraries(bpy.types.Operator):
                 failed.append(lib_name)
 
         utils.refresh_import_caches()
-        try:
+        with utils.logged_errors("prefs_library_manager.ACE_OT_install_missing_libraries.execute"):
             from .prefs_panel_ui import sync_preferences_dependencies
             sync_preferences_dependencies()
-        except Exception:
-            pass
 
         if failed:
             self.report(
@@ -230,11 +227,9 @@ class ACE_OT_uninstall_library(bpy.types.Operator):
             self.report({'INFO'}, f"{lib_name} uninstalled. Refreshing UI...")
             # Force import cache refresh so prefs detect removal immediately
             utils.refresh_import_caches()
-            try:
+            with utils.logged_errors("prefs_library_manager.ACE_OT_uninstall_library.execute"):
                 from .prefs_panel_ui import sync_preferences_dependencies
                 sync_preferences_dependencies()
-            except Exception:
-                pass
             return {'FINISHED'}
         except Exception as e:
             utils.log(f"Uninstall failed for {lib_name}: {e}", type='ERROR')
