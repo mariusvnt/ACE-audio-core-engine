@@ -1624,7 +1624,7 @@ def _refresh_active_source_metadata(scene, now: float | None = None):
     _ui_source_probe_last[source_key] = ts_now
     with utils.logged_errors("n_panel_ui._refresh_active_source_metadata"):
         engine = ACEAudioEngine.ensure_instance(scene)
-        engine._probe_source_metadata(src)
+        engine.probes._probe_source_metadata(src)
 
 
 def _ui_quick_state_key(context, scene, tree) -> str:

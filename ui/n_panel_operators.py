@@ -221,7 +221,7 @@ class ACE_OT_add_audio_sources_from_files(bpy.types.Operator, ImportHelper):
             new_source.source_type = 'FILE'
             with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_sources_from_files.execute"):
                 engine = ACEAudioEngine.ensure_instance(context.scene)
-                engine._probe_source_metadata(new_source)
+                engine.probes._probe_source_metadata(new_source)
             
             # Create Proxy
             self._create_proxy(context, new_source)

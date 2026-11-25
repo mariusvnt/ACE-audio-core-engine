@@ -12,6 +12,7 @@ _MODULE_PATHS = {
     "engine_common": ("core", ROOT / "core" / "engine_common.py"),
     "engine_preview": ("core", ROOT / "core" / "engine_preview.py"),
     "engine_diagnostics": ("core", ROOT / "core" / "engine_diagnostics.py"),
+    "engine_probes": ("core", ROOT / "core" / "engine_probes.py"),
     "engine_handlers": ("core", ROOT / "core" / "engine_handlers.py"),
     "audio_influx": ("core", ROOT / "core" / "audio_influx.py"),
     "audio_tasks_registry": ("core", ROOT / "core" / "audio_tasks_registry.py"),

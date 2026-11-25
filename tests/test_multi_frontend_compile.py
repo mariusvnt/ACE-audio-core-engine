@@ -247,8 +247,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._compiled_frontend_uids = ()
         engine._last_frontend_membership_signature = ()
         engine._is_compiling = False
-        engine._meta_cache = {}
-        engine._meta_cache_ttl = 30.0
+        engine.probes._meta_cache = {}
+        engine.probes._meta_cache_ttl = 30.0
         engine._last_tree_signature = None
         engine._last_attr_sync_frame = {}
         engine._block_size_state = {}
@@ -286,9 +286,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._preview_worker_cond = threading.Condition()
         engine._preview_worker_queue = []
         engine._preview_worker_thread = None
-        engine._probe_pending_updates = {}
-        engine._probe_in_flight = set()
-        engine._probe_thread_lock = threading.Lock()
+        engine.probes._probe_pending_updates = {}
+        engine.probes._probe_in_flight = set()
+        engine.probes._probe_thread_lock = threading.Lock()
         engine._attr_schema_dirty = set()
         engine._last_attr_sync_frame = {}
         engine.scene_key = 0
@@ -1164,8 +1164,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine._dirty_tree_bl_idnames = {456: "ShaderNodeTree"}
         engine._dirty_frontend_uids = {"frontend_a"}
         engine._pending_scene_rebuild = False
-        engine._probe_pending_updates = {"file.wav": {"undo_generation": 0}}
-        engine._probe_in_flight = {"file.wav"}
+        engine.probes._probe_pending_updates = {"file.wav": {"undo_generation": 0}}
+        engine.probes._probe_in_flight = {"file.wav"}
         engine.diagnostics._pending_geometry_events = [{"frame": 1}]
         engine._preview_worker_thread = None
         engine._parallel_executor = None
@@ -1191,8 +1191,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual(engine._compiled_frontend_ptrs, {})
         self.assertEqual(engine._pending_tree_ptr, 0)
         self.assertEqual(engine._dirty_tree_ptrs, set())
-        self.assertEqual(engine._probe_pending_updates, {})
-        self.assertEqual(engine._probe_in_flight, set())
+        self.assertEqual(engine.probes._probe_pending_updates, {})
+        self.assertEqual(engine.probes._probe_in_flight, set())
         self.assertEqual(engine.diagnostics._pending_geometry_events, [])
         self.assertTrue(engine._pending_scene_rebuild)
 
@@ -1269,7 +1269,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
     def test_flush_probe_updates_ignores_results_from_stale_undo_generation(self):
         engine = self._engine_shell()
         engine.undo_generation = 5
-        engine._probe_pending_updates = {
+        engine.probes._probe_pending_updates = {
             "/tmp/a.wav": {
                 "sample_rate": 48000,
                 "native_sample_rate": 48000,
@@ -1281,7 +1281,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.discover_scene_frontends = lambda _scene: []
         engine.request_recompile = lambda *_args, **_kwargs: self.fail("request_recompile should be skipped for stale probes")
 
-        updated = engine._flush_probe_updates([source], scene=types.SimpleNamespace())
+        updated = engine.probes._flush_probe_updates([source], scene=types.SimpleNamespace())
 
         self.assertFalse(updated)
         self.assertEqual(source["native_sample_rate"], 0)

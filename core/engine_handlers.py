@@ -260,7 +260,7 @@ def depsgraph_update_handler(scene, depsgraph):
                     int(getattr(_src, "native_sample_rate", 0) or 0) <= 0
                     or float(getattr(_src, "duration", 0.0) or 0.0) <= 0.0
                 ):
-                    engine._dispatch_async_probe(_fp)
+                    engine.probes._dispatch_async_probe(_fp)
     if not auto_compile_enabled:
         return
 
