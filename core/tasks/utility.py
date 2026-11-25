@@ -284,7 +284,7 @@ class AudioMathTask(ACEAudioTask):
                 utils.note_swallowed("utility.AudioMathTask._merge_band_hz_bounds", exc)
                 return None
             if high <= low:
-                return None
+                continue  # an empty splitter band adds nothing to the range
             if merged_low is None or low < merged_low:
                 merged_low = low
             if merged_high is None or high > merged_high:

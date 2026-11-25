@@ -55,8 +55,8 @@ Nodes
 Preview and bake
 ----------------
 
-- **Preview**: during playback, the audio reaching a preview sink (or the
-  tree's audio output) can be heard through the preview device.
+- **Preview**: during playback, the audio reaching a preview sink, a Viewer
+  node (or else the tree's audio output) can be heard through the preview device.
 - **Bake**: a file source can be analysed over the scene's frame range ahead
   of time; playback then reads the stored values.
 

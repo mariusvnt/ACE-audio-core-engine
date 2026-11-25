@@ -348,7 +348,10 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
     graph_nodes = []
     bound_roots: list[tuple[int, str]] = []
     all_roots: list[tuple[int, str]] = []
+    viewers = {node.id for node in abstract.nodes.values() if node.parameters.get("viewer")}
     for node in abstract.nodes.values():
+        if node.id in viewers:
+            continue
         node_id = _resolved(node.id)
         bl_node = bl_by_id.get(node_id)
         label = str((bl_node.label or bl_node.name) if bl_node is not None else (node.name or node_id))
@@ -363,6 +366,7 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
     links = [
         operator_tree.GraphLink(_resolved(l.source_node_id), int(l.source_socket_idx), _resolved(l.target_node_id))
         for l in abstract.links
+        if l.target_node_id not in viewers
     ]
     roots = [node_id for _order, node_id in sorted(bound_roots or all_roots)]
     return operator_tree.build_rows(graph_nodes, links, roots)

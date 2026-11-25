@@ -6,6 +6,7 @@ from bpy_extras.io_utils import ImportHelper                                    
 
 from ..core.id_management import ACEIdManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from ..nodes.split_freqs import sort_all_split_freqs, sort_split_freqs
 from ..nodes.modes import apply_node_mode
 from ..vars import node_modes
 from .. import utils
@@ -325,58 +326,47 @@ class ACE_OT_update_splitter_bands(bpy.types.Operator):
         new_cnt = min(current + 1, 8) if self.direction == 'UP' else max(current - 1, 2)
         if new_cnt != current:
             ACESplitterManager.apply_variant_to_node(node, new_cnt)
+            sort_split_freqs(node)  # the added socket's default may sit below a kept value
         return {'FINISHED'}
 
 
-class ACE_OT_sort_splitter_freqs(bpy.types.Operator):
-    """Sort splitter cut frequencies in ascending order."""
-    bl_idname = "ace.sort_splitter_freqs"
+# Releases that end an edit of a number field: drag, cancelled drag, typed value.
+_EDIT_END_EVENTS = {'LEFTMOUSE', 'RIGHTMOUSE', 'ESC', 'RET', 'NUMPAD_ENTER'}
+
+
+class ACE_OT_sort_split_freqs_on_release(bpy.types.Operator):
+    """Order the split frequencies once the field being edited is let go."""
+    bl_idname = "ace.sort_split_freqs_on_release"
     bl_label = "Sort Split Frequencies"
-    bl_options = {'INTERNAL', 'UNDO'}
+    bl_options = {'INTERNAL'}
 
-    def execute(self, context):
-        node, parsed = _resolve_panel_selected_node(context)
-        if not parsed or parsed.get("category") != "delta" or parsed.get("type") != "frequency_splitter":
-            return {'CANCELLED'}
+    def invoke(self, context, event):
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
 
-        split_sockets = []
-        for idx, sock in enumerate(getattr(node, "inputs", [])):
-            if idx == 0 or getattr(sock, "is_linked", False):
-                continue
-            try:
-                val = float(getattr(sock, "default_value", 0.0))
-            except Exception as exc:
-                utils.note_swallowed("n_panel_operators.ACE_OT_sort_splitter_freqs.execute", exc)
-                continue
-            split_sockets.append((sock, val))
-        if not split_sockets:
-            return {'CANCELLED'}
+    def modal(self, context, event):
+        if event.value != 'RELEASE' or event.type not in _EDIT_END_EVENTS:
+            return {'PASS_THROUGH'}
+        # The field applies its value on this same event, after us: sort once that is done.
+        bpy.app.timers.register(sort_all_split_freqs, first_interval=0.0, persistent=True)
+        return {'FINISHED', 'PASS_THROUGH'}
 
-        sorted_vals = sorted(v for _, v in split_sockets)
-        for (sock, _), val in zip(split_sockets, sorted_vals):
-            with utils.logged_errors("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#2"):
-                sock.default_value = float(val)
-        _refresh_node_instance(node)
 
-        try:
-            from .panel.helpers import _find_active_node_tree
-            from .panel.sync import _sync_ui_dummy_tree
-            tree = _find_active_node_tree(context)
-        except Exception as exc:
-            utils.note_swallowed("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#3", exc)
-            tree = None
-            _sync_ui_dummy_tree = None  # type: ignore
-        _queue_engine_recompile(context, tree=tree)
-        if _sync_ui_dummy_tree:
-            with utils.logged_errors("n_panel_operators.ACE_OT_sort_splitter_freqs.execute#4"):
-                _sync_ui_dummy_tree(context, force=False)
-        return {'FINISHED'}
+def sort_split_freqs_when_released() -> None:
+    """Called while a split frequency field is being edited; watches for the end of the edit."""
+    window = bpy.context.window
+    if window is None or bpy.app.background:  # no input events: nothing is being dragged
+        return
+    if any(op.bl_idname == "ACE_OT_sort_split_freqs_on_release" for op in window.modal_operators):
+        return
+    with utils.logged_errors("n_panel_operators.sort_split_freqs_when_released"):
+        bpy.ops.ace.sort_split_freqs_on_release('INVOKE_DEFAULT')
 
 
 class ACE_OT_even_splitter_freqs(bpy.types.Operator):
-    """Distribute splitter cuts evenly on a logarithmic frequency scale."""
+    """Space the split frequencies evenly across the strip (logarithmic frequency scale)."""
     bl_idname = "ace.even_splitter_freqs"
-    bl_label = "Even Log Distribution"
+    bl_label = "Distribute horizontally"
     bl_options = {'INTERNAL', 'UNDO'}
 
     def execute(self, context):
@@ -794,8 +784,8 @@ classes = (
     ACE_OT_add_audio_source,
     ACE_OT_remove_audio_source,
     ACE_OT_update_splitter_bands,
-    ACE_OT_sort_splitter_freqs,
     ACE_OT_even_splitter_freqs,
+    ACE_OT_sort_split_freqs_on_release,
     ACE_OT_update_audio_math_inputs,
     ACE_OT_set_audio_math_op,
     ACE_OT_set_node_mode,

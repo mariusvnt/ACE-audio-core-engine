@@ -245,21 +245,41 @@ def _draw_selected_operator(layout, context) -> None:
         _draw_selected_node_operator_settings(layout, context)
 
 
+_BAND_GAP_PX = 2.5  # width of the gap at each cut, before UI scale
+
+
 def _draw_band_strip(layout, context, widths: list[float], low_hz: float, high_hz: float) -> None:
-    """Bands as alternating black and white blocks, sized on the log-frequency axis."""
+    """Bands as grey blocks sized on the log-frequency axis, with a gap at each cut."""
     wm = context.window_manager
+    # The gap is a fixed number of pixels, so it stays visible in a narrow sidebar.
+    strip_px = max(context.region.width - 40, 100) if context.region else 300
+    gap = min(_BAND_GAP_PX * context.preferences.system.ui_scale / strip_px, 0.02)
+    band_share = max(1.0 - gap * max(len(widths) - 1, 0), 0.0)
+    pieces: list[tuple[bool, float]] = []  # (is a band, share of the strip)
+    for idx, width in enumerate(widths):
+        if idx:
+            pieces.append((False, gap))
+        pieces.append((True, width * band_share))
     strip = layout.row(align=True)
     strip.scale_y = 0.8
+    strip.enabled = False  # a colour swatch opens a picker unless disabled (drawn at half opacity)
     rest = strip
     remaining = 1.0
-    for idx, width in enumerate(widths):
-        prop = "ace_band_dark" if idx % 2 == 0 else "ace_band_light"
-        if idx == len(widths) - 1:
-            rest.prop(wm, prop, text="")
+
+    def _piece(slot, is_band: bool) -> None:
+        if is_band:
+            slot.prop(wm, "ace_band_fill", text="")
+        else:
+            slot.label(text="")
+
+    for idx, (is_band, width) in enumerate(pieces):
+        if idx == len(pieces) - 1:
+            _piece(rest, is_band)
             break
-        factor = min(max(width / remaining, 0.0), 1.0) if remaining > 1e-6 else 0.0
+        # Never 0: Blender reads a zero split factor as "share equally".
+        factor = min(max(width / remaining, 1e-4), 1.0) if remaining > 1e-6 else 1e-4
         split = rest.split(factor=factor, align=True)
-        split.prop(wm, prop, text="")
+        _piece(split, is_band)
         rest = split
         remaining -= width
     scale = layout.row()
@@ -306,33 +326,17 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         op = row.operator("ace.update_splitter_bands", text="", icon="ADD")
         op.direction = 'UP'
 
-        split_sockets = []
-        split_values = []
-        for i, sock in enumerate(getattr(node, "inputs", [])):
-            if i == 0:
-                continue
-            try:
-                val = float(getattr(sock, "default_value", 0.0))
-            except Exception as exc:
-                utils.note_swallowed("selection._draw_selected_node_operator_settings", exc)
-                continue
-            split_sockets.append(sock)
-            split_values.append(val)
-
-        if split_values:
+        split_sockets = list(node.inputs)[1:] if node else []
+        if split_sockets:
             _draw_band_strip(box, context, splitter_band_widths(node, context.scene), low_hz, high_hz)
-            tools = box.row(align=True)
-            tools.operator("ace.sort_splitter_freqs", text="Sort", icon="SORTALPHA")
-            tools.operator("ace.even_splitter_freqs", text="Even Log", icon="SNAP_MIDPOINT")
-            for idx, sock in enumerate(split_sockets, start=1):
+            box.operator("ace.even_splitter_freqs", text="Distribute horizontally", icon="SNAP_MIDPOINT")
+            for idx, sock in enumerate(split_sockets):
                 sub = box.row(align=True)
-                try:
-                    hz = float(getattr(sock, "default_value", 0.0))
-                except Exception as exc:
-                    utils.note_swallowed("selection._draw_selected_node_operator_settings#3", exc)
-                    hz = 0.0
-                sub.label(text=f"Cut {idx}")
-                sub.prop(sock, "default_value", text="Hz", slider=True)
+                sub.label(text=sock.name)
+                if sock.is_linked:
+                    sub.label(text="Linked", icon="LINKED")
+                else:
+                    sub.prop(node, f"ace_split_freq_{idx + 1}", text="Hz", slider=True)
 
     if parsed.get("category") == "utilities" and parsed.get("type") == "audio_math":
         drew_settings = True

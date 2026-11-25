@@ -31,13 +31,15 @@ def _refresh_loaded_node_groups():
 
 
 def _migrate_legacy_nodes():
-    """Turn the old per-method stream nodes of the open file into mode nodes."""
+    """Bring the open file's nodes up to date: old stream nodes become mode nodes, split frequencies get ordered."""
     from ...nodes.modes import migrate_legacy_stream_nodes
+    from ...nodes.split_freqs import sort_all_split_freqs
 
     try:
         migrate_legacy_stream_nodes()
+        sort_all_split_freqs()
     except Exception as exc:  # noqa: BLE001 boundary: a load must not fail on node migration
-        utils.log(f"ACE stream node migration failed: {exc}", "ERROR")
+        utils.log(f"ACE node migration failed: {exc}", "ERROR")
 
 
 def _migrate_after_register():

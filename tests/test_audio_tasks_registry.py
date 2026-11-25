@@ -179,6 +179,31 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertEqual(len(out), 3)
         self.assertTrue(all(c.spectrum_token == source.spectrum_token for c in out))
 
+    def test_frequency_splitter_keeps_an_empty_band_for_coinciding_cuts(self):
+        n, sr = 2048, 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        mono = (0.5 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32)
+        source = atr.AudioChunk(mono, np.stack([mono, mono]), sr, lineage=("src",), spectrum_token=("src", "frame"))
+
+        for cuts, empty in (((1000.0, 1000.0), 1), ((1000.0, 1000.4), 1), ((0.0, 10.0), 0), ((0.0, 10.0), 1)):
+            out = atr.FrequencySplitterTask("split", {}, block_size=n).process({0: source, 1: cuts[0], 2: cuts[1]})
+            self.assertEqual(len(out), 3, cuts)
+            band = out[empty]
+            self.assertFalse(np.any(band.mono), cuts)
+            self.assertFalse(np.any(band.stereo), cuts)
+            self.assertEqual(band.lineage[-1], f"split:{empty}")
+            for task_cls in (atr.RMSTask, atr.RMSLoudnessTask, atr.LUFSTask, atr.PeakTask):
+                self.assertEqual(float(task_cls("m", {}, block_size=n).process({0: band})), 0.0, task_cls.__name__)
+            heard = atr.PreviewSinkTask("p", {"preview_enabled": True}, block_size=n).process({0: band})
+            self.assertFalse(np.any(heard.mono), cuts)
+
+        # The bands around the empty one are unchanged, and Audio Math keeps the other band's range.
+        low, none, high = atr.FrequencySplitterTask("split", {}, block_size=n).process({0: source, 1: 1000.0, 2: 1000.0})
+        self.assertEqual((low.band_hz_bounds, high.band_hz_bounds), ((20.0, 1000.0), (1000.0, 20000.0)))
+        mixed = atr.AudioMathTask("mix", {"op": "add"}, block_size=n).process({0: none, 1: high})
+        self.assertEqual(mixed.band_hz_bounds, (1000.0, 20000.0))
+        np.testing.assert_allclose(mixed.mono, mono)
+
     def test_midside_splitter_emits_metadata_only_branches(self):
         n = 256
         sr = 48000

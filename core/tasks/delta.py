@@ -10,6 +10,10 @@ from .chunk import SAMPLE_RATE, _analysis_signal_for_chunk, _append_analysis_op,
 from .spectral import _resolve_chunk_fft_size, _resolve_effective_bin_indices
 
 
+# Split frequencies closer than this coincide: the band between them is empty.
+_EMPTY_BAND_HZ = 1.0
+
+
 class FrequencySplitterTask(ACEAudioTask):
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -74,12 +78,8 @@ class FrequencySplitterTask(ACEAudioTask):
         else:
             mapped = vals
 
-        eps = 1e-3
-        clipped = np.clip(mapped, low + eps, high - eps)
-        clipped = np.unique(clipped)
-        if clipped.size == 0:
-            return []
-        return [float(v) for v in clipped.tolist()]
+        # One value per cut, duplicates included: every output keeps its band.
+        return [float(v) for v in np.sort(np.clip(mapped, low, high)).tolist()]
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -142,8 +142,26 @@ class FrequencySplitterTask(ACEAudioTask):
         if self._cached_bounds is not None:
             for out_idx, bounds in enumerate(self._cached_bounds):
                 low_cut, high_cut = bounds
-                if high_cut <= low_cut:
-                    high_cut = low_cut + 1e-6
+                lineage = tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:{out_idx}",)
+                if high_cut - low_cut < _EMPTY_BAND_HZ:
+                    # Silence of its own: zero-width bounds read as "no limit" downstream, and the
+                    # source's shared spectrum would put the whole signal back.
+                    bands.append(
+                        _spawn_audio_chunk(
+                            chunk,
+                            mono=np.zeros_like(audio),
+                            stereo=(None if stereo is None else np.zeros_like(stereo)),
+                            analysis_mono=None,
+                            analysis_stereo=None,
+                            provider=None,
+                            band_hz_bounds=(low_cut, low_cut),
+                            lineage=lineage,
+                            spectrum_token=None,
+                            analysis_ops=(),
+                            latency_ms=latency_ms,
+                        )
+                    )
+                    continue
                 bands.append(
                     _spawn_audio_chunk(
                         chunk,
@@ -153,7 +171,7 @@ class FrequencySplitterTask(ACEAudioTask):
                         band_indices=chunk.band_indices,
                         band_index_fft_size=band_index_fft_size,
                         band_hz_bounds=(low_cut, high_cut),
-                        lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:{out_idx}",),
+                        lineage=lineage,
                         spectrum_token=shared_spec_token,
                         analysis_ops=analysis_ops,
                         latency_ms=latency_ms,

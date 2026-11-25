@@ -273,7 +273,8 @@ def _check_operator_list_follows_tree(addon_key, scene):
         old_ramp.nodes.new("ShaderNodeValToRGB")
         splitter_mod.remove_legacy_ramp_group()
         _assert(bpy.data.node_groups.get(splitter_mod._SPLITTER_RAMP_NODETREE_NAME) is None, "Old ramp group kept")
-        _assert(tuple(wm.ace_band_dark) == (0.0, 0.0, 0.0) and tuple(wm.ace_band_light) == (1.0, 1.0, 1.0), "Strip colours")
+        fill = tuple(wm.ace_band_fill)
+        _assert(fill[0] == fill[1] == fill[2] and 0.0 < fill[0] < 1.0, f"Strip colour {fill}")
 
         tree.links.remove(stereo.inputs["Audio"].links[0])
         # One band left: the splitter has no branch any more and folds into a single row.
@@ -281,6 +282,106 @@ def _check_operator_list_follows_tree(addon_key, scene):
     finally:
         sync._find_active_node_tree, selection._find_active_node_tree = originals
         settings.auto_compile = previous_auto
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
+def _check_viewer_previews_audio(addon_key, scene, engine):
+    """A Viewer node fed by an audio output compiles to the same preview as an Audio Preview node."""
+    sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Viewer")
+    original_tree = sync._find_active_node_tree
+    try:
+        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        tree.links.new(source.outputs["Audio"], split.inputs[0])
+        tree.links.new(split.outputs[1], loud.inputs["Audio"])
+        viewer = tree.nodes.new("GeometryNodeViewer")
+        viewer.viewer_items.new("BUNDLE", "Audio")  # what linking in the editor adds
+
+        def previews():
+            engine.compiler.compile_scene_frontends(scene)
+            nodes = engine.abstract_tree_ref.nodes
+            sinks = {n.id for n in nodes.values() if n.type == "preview_sink" and n.parameters.get("viewer")}
+            fed = [(l.source_node_id, l.source_socket_idx) for l in engine.abstract_tree_ref.links if l.target_node_id in sinks]
+            manual = {t for g in engine.graphs.values() for t in g.manual_preview_task_ids}
+            _assert(manual == sinks, f"Viewer sinks {sinks}, manual previews {manual}")
+            return fed
+
+        _assert(previews() == [], "An unconnected Viewer previews")
+        tree.links.new(split.outputs[0], viewer.inputs[0])
+        _assert(viewer.inputs[0].type == "BUNDLE", f"Viewer socket type: {viewer.inputs[0].type}")
+        _assert(previews() == [(split["ace_id"], 0)], f"Viewer on the low band: {previews()}")
+
+        sync._find_active_node_tree = lambda _context, **_kw: tree
+        sync._sync_ui_dummy_tree(bpy.context, force=True)
+        labels = [seg.label for row in sync.current_rows() for seg in row.segments]
+        _assert(viewer.name not in labels, f"Viewer listed as an operator: {labels}")
+
+        while viewer.inputs[0].is_linked:
+            tree.links.remove(viewer.inputs[0].links[0])
+        viewer.viewer_items.new("FLOAT", "Value")
+        tree.links.new(loud.outputs[0], viewer.inputs["Value"])  # a float, not audio
+        _assert(previews() == [], "A Viewer on a value previews")
+    finally:
+        sync._find_active_node_tree = original_tree
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
+def _check_splitter_sliders(addon_key, scene):
+    """Split frequency sliders write their own socket; the release sorts the sockets."""
+    splitter = importlib.import_module(f"{addon_key}.ui.panel.splitter")
+    split_freqs = importlib.import_module(f"{addon_key}.nodes.split_freqs")
+    dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
+    ops = importlib.import_module(f"{addon_key}.ui.n_panel_operators")
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Splitter")
+    original_selected = ops._resolve_panel_selected_node
+    try:
+        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        dynamic.ACESplitterManager.apply_variant_to_node(split, 4)
+
+        def sockets():
+            return [round(sock.default_value) for sock in list(split.inputs)[1:]]
+
+        def sliders():
+            return [round(getattr(split, f"ace_split_freq_{i + 1}")) for i in range(len(split.inputs) - 1)]
+
+        split.ace_split_freq_1, split.ace_split_freq_2, split.ace_split_freq_3 = 100.0, 500.0, 2000.0
+        _assert(sockets() == [100, 500, 2000], f"Slider writes: {sockets()}")
+        _assert(hasattr(bpy.types, "ACE_OT_sort_split_freqs_on_release"), "Release watcher not registered")
+
+        # While dragging, nothing moves: each slider stays on its socket until the release sorts.
+        for value in (600.0, 3000.0, 650.0):
+            split.ace_split_freq_1 = value
+            _assert(sockets() == [value, 500, 2000] and sliders() == sockets(), f"Drag to {value}: {sockets()}")
+        split_freqs.sort_all_split_freqs()  # what the release (and a file load) does
+        _assert(sockets() == [500, 650, 2000] and sliders() == sockets(), f"After release: {sockets()}")
+
+        split.ace_split_freq_3 = 99999.0
+        split.ace_split_freq_1 = -5.0
+        _assert(sockets() == [0, 650, 20000], f"Limits: {sockets()}")
+        _assert([s.name for s in list(split.inputs)[1:]] == ["Split Freq 1", "Split Freq 2", "Split Freq 3"], "Socket names")
+
+        # A linked split frequency is left where it is.
+        value_node = tree.nodes.new("ShaderNodeValue")
+        tree.links.new(value_node.outputs[0], split.inputs[2])
+        split.ace_split_freq_1 = 12000.0
+        split.ace_split_freq_3 = 9000.0
+        split_freqs.sort_split_freqs(split)
+        _assert([sockets()[0], sockets()[2]] == [9000, 12000], f"Sort around a link: {sockets()}")
+        tree.nodes.remove(value_node)
+
+        ops._resolve_panel_selected_node = lambda _context: (split, {"category": "delta", "type": "frequency_splitter"})
+        for direction, count in (("UP", 4), ("UP", 5), ("DOWN", 4)):
+            bpy.ops.ace.update_splitter_bands(direction=direction)
+            _assert(len(sockets()) == count and sockets() == sorted(sockets()), f"{direction}: {sockets()}")
+        bpy.ops.ace.even_splitter_freqs()
+        widths = splitter.splitter_band_widths(split, scene)
+        _assert(max(widths) - min(widths) < 0.01, f"Distribute horizontally: {widths}")
+    finally:
+        ops._resolve_panel_selected_node = original_selected
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
 
@@ -314,7 +415,9 @@ def _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine):
     try:
         source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
         loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
-        tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
+        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        tree.links.new(source.outputs["Audio"], split.inputs[0])
+        tree.links.new(split.outputs[0], loud.inputs["Audio"])
         window(2.5)
         counts = {"idle": window()}
         for name, edit in (
@@ -323,10 +426,11 @@ def _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine):
             ("rename", lambda: (setattr(loud, "label", "Kick"), setattr(loud, "name", "Kick"))),
             ("move", lambda: setattr(loud, "location", (240.0, 0.0))),
             ("mode", switch_mode),
+            ("split", lambda: setattr(split, "ace_split_freq_1", 300.0)),
         ):
             edit()
             counts[name] = window()
-        expected = {"idle": 0, "select": 0, "active": 0, "rename": 0, "move": 0, "mode": 1}
+        expected = {"idle": 0, "select": 0, "active": 0, "rename": 0, "move": 0, "mode": 1, "split": 1}
         _assert(counts == expected, f"Recompiles: {counts}")
     finally:
         engine.compiler.compile_scene_frontends = original
@@ -675,6 +779,8 @@ def main():
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="processes_dsp")
     _check_old_stream_nodes_migrate(addon_key, scene)
     _check_operator_list_follows_tree(addon_key, scene)
+    _check_splitter_sliders(addon_key, scene)
+    _check_viewer_previews_audio(addon_key, scene, engine)
     _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine)
     _check_instances_tree(addon_key, scene, engine)
     _check_group_rebuild_keeps_input_values(addon_key, scene)

@@ -1,5 +1,6 @@
 """Reads a Geometry Nodes frontend into an abstract graph."""
 
+import hashlib
 from collections import deque
 from typing import Optional, Any
 from ...vars import ACE_NODES, resolve_node_mode
@@ -237,6 +238,13 @@ class ACEDummyTreeReader(NodeIdentity):
                         )
                     )
 
+            if (
+                str(getattr(current_bl_node, "bl_idname", "")) == "GeometryNodeViewer"
+                and prev_ace_id
+                and incoming_socket is not None
+            ):
+                self._add_viewer_preview(current_bl_node, root_id, str(prev_ace_id), int(prev_output_idx), incoming_socket)
+
             # If we reached an ACE node after traversing non-ACE nodes, bridge the link.
             if current_ace_id and prev_ace_id and incoming_socket is not None and current_ace_id != prev_ace_id:
                 target_socket_idx = self._resolve_target_socket_idx(current_bl_node, incoming_socket)
@@ -269,6 +277,53 @@ class ACEDummyTreeReader(NodeIdentity):
                     if not target_node:
                         continue
                     queue.append((target_node, root_id, carry_ace_id, next_output_idx, getattr(link, "to_socket", None)))
+
+    def _add_viewer_preview(self, viewer, root_id: str, source_id: str, source_idx: int, to_socket) -> None:
+        """A Viewer node fed by an audio output behaves as an Audio Preview node.
+
+        With several audio inputs on one Viewer, the first one is heard.
+        """
+        heard = next((s for s in viewer.inputs if s.is_linked and str(getattr(s, "type", "")) == "BUNDLE"), None)
+        if heard is None or heard.identifier != getattr(to_socket, "identifier", None):
+            return
+        source = self.abstract_tree.nodes.get(source_id)
+        outputs = getattr(source, "outputs", []) or []
+        if not (0 <= source_idx < len(outputs)) or "Bundle" not in str(outputs[source_idx].data_type):
+            return
+
+        digest = hashlib.blake2b(f"{self.frontend_uid}:{viewer.name}".encode("utf-8"), digest_size=4).hexdigest()
+        sink_id = f"{ACEIdManager.PREFIX}utilities_preview_sink_viewer{digest}"
+        roots = {root_id} if root_id else set()
+        existing = self.abstract_tree.nodes.get(sink_id)
+        if existing is not None:
+            existing.root_sources.update(roots)
+        else:
+            self.abstract_tree.add_node(ACEAbstractNode(
+                id=sink_id,
+                name=viewer.name,
+                type="preview_sink",
+                category="utilities",
+                inputs=[ACEAbstractSocket(
+                    id=f"{sink_id}_in_0", name="Audio", socket_idx=0, is_output=False,
+                    data_type="NodeSocketBundle",
+                )],
+                outputs=[],
+                parameters={
+                    "preview_enabled": True,
+                    "frontend_node_index": int(self._node_order_by_ptr.get(self._node_pointer(viewer), 0)),
+                    "viewer": True,  # not an operator: left out of the Active Operators list
+                },
+                root_sources=roots,
+                frontend_uid=self.frontend_uid,
+                frontend_kind=self.frontend_kind,
+            ))
+        if not any(l.source_node_id == source_id and l.target_node_id == sink_id for l in self.abstract_tree.links):
+            self.abstract_tree.links.append(ACEAbstractLink(
+                source_node_id=source_id,
+                target_node_id=sink_id,
+                source_socket_idx=source_idx,
+                target_socket_idx=0,
+            ))
 
     @staticmethod
     def _socket_state_key(sock) -> str:

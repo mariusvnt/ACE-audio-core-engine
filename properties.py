@@ -579,7 +579,30 @@ def _set_rename_name(self, value):
     set_rename_box_name(self, value)
 
 
-# UI-only window-manager properties: the rename box and the band strip's two colours.
+def _split_freq_property(index: int):
+    def get(node):
+        from .nodes.split_freqs import get_split_freq
+        return get_split_freq(node, index)
+
+    def set_(node, value):
+        from .nodes.split_freqs import set_split_freq
+        if set_split_freq(node, index, value):
+            from .ui.n_panel_operators import sort_split_freqs_when_released
+            sort_split_freqs_when_released()
+
+    return bpy.props.FloatProperty(
+        name=f"Split Freq {index + 1}",
+        description="Frequency (Hz) where one band ends and the next begins. Sorted into ascending order when released",
+        min=0.0, max=20000.0, precision=0, get=get, set=set_,
+    )
+
+
+# UI-only node properties: the splitter's sliders, which read and write its sockets (7 = 8 bands).
+_NODE_PROPS = {f"ace_split_freq_{i + 1}": _split_freq_property(i) for i in range(7)}
+
+
+# UI-only window-manager properties: the rename box and the band strip's colour. The strip is
+# drawn disabled (half opacity over the panel), hence a colour brighter than it should look.
 _WM_PROPS = {
     "ace_rename_name": bpy.props.StringProperty(
         name="Name",
@@ -587,13 +610,9 @@ _WM_PROPS = {
         get=_get_rename_name,
         set=_set_rename_name,
     ),
-    "ace_band_dark": bpy.props.FloatVectorProperty(
+    "ace_band_fill": bpy.props.FloatVectorProperty(
         name="Band", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
-        get=lambda _self: (0.0, 0.0, 0.0), set=lambda _self, _value: None,
-    ),
-    "ace_band_light": bpy.props.FloatVectorProperty(
-        name="Band", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
-        get=lambda _self: (1.0, 1.0, 1.0), set=lambda _self, _value: None,
+        get=lambda _self: (0.55, 0.55, 0.55), set=lambda _self, _value: None,
     ),
 }
 
@@ -606,9 +625,14 @@ def register():
     bpy.types.Scene.audiocore = bpy.props.PointerProperty(type=ACEProjectSettings)
     for name, prop in _WM_PROPS.items():
         setattr(bpy.types.WindowManager, name, prop)
+    for name, prop in _NODE_PROPS.items():
+        setattr(bpy.types.Node, name, prop)
 
 
 def unregister():
+    for name in _NODE_PROPS:
+        if hasattr(bpy.types.Node, name):
+            delattr(bpy.types.Node, name)
     for name in _WM_PROPS:
         if hasattr(bpy.types.WindowManager, name):
             delattr(bpy.types.WindowManager, name)
