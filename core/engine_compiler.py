@@ -87,7 +87,7 @@ class GraphCompiler:
         self.engine.graphs.clear()
         self.engine._last_attr_sync_frame.clear()
         self.engine._attr_schema_dirty.clear()
-        self.engine._block_size_state.clear()
+        self.engine.frame._block_size_state.clear()
         self.engine.abstract_tree_ref = abstract_tree
 
         self.engine.writer = ACEProxyManager(abstract_tree)
@@ -104,8 +104,8 @@ class GraphCompiler:
             if base > 0:
                 fps = raw_fps / base
         engine_settings = getattr(getattr(blender_scene, "audiocore", None), "engine_settings", None)
-        scheduler_mode = self.engine._scheduler_mode(engine_settings)
-        timeslice_mode = self.engine._timeslice_mode(engine_settings)
+        scheduler_mode = self.engine.frame._scheduler_mode(engine_settings)
+        timeslice_mode = self.engine.frame._timeslice_mode(engine_settings)
         preview_block_size = self.engine.preview._preview_block_size(engine_settings)
         sources = list(getattr(getattr(blender_scene, "audiocore", None), "audio_sources", []) or [])
         single_source_mode = len(sources) <= 1
@@ -150,7 +150,7 @@ class GraphCompiler:
             self.engine.probes._probe_source_metadata(source, allow_io=False)
             source_sr = self._resolve_source_sample_rate(source, fallback_sr, engine_settings)
             source_type = str(getattr(source, "source_type", "") or "").upper()
-            block_size = self.engine._resolve_block_size(
+            block_size = self.engine.frame._resolve_block_size(
                 source_sr,
                 fps,
                 source_type=source_type,
@@ -228,11 +228,11 @@ class GraphCompiler:
                     task.undo_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
                     task.resolve_block_size_fn = (
                         lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self.engine:
-                        eng._resolve_block_size(
+                        eng.frame._resolve_block_size(
                             sr or src_sr,
                             fps_val,
                             source_type=src_type,
-                            timeslice_mode=getattr(g, "timeslice_mode", eng._timeslice_mode()),
+                            timeslice_mode=getattr(g, "timeslice_mode", eng.frame._timeslice_mode()),
                             delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
                         )
                     )
@@ -259,7 +259,7 @@ class GraphCompiler:
                         target_task=source_task,
                         target_output_idx=link.source_socket_idx
                     )
-            self.engine._rebuild_graph_execution_order(graph)
+            self.engine.frame._rebuild_graph_execution_order(graph)
 
             filtered_keys = []
             for k in self.engine.writer.output_defs.keys():
@@ -316,11 +316,11 @@ class GraphCompiler:
                     preview_task.engine_ref = self.engine
                     preview_task.resolve_block_size_fn = (
                         lambda sr=None, fps_val=fps, src_sr=source_sr, src_type=source_type, g=graph, eng=self.engine:
-                        eng._resolve_block_size(
+                        eng.frame._resolve_block_size(
                             sr or src_sr,
                             fps_val,
                             source_type=src_type,
-                            timeslice_mode=getattr(g, "timeslice_mode", eng._timeslice_mode()),
+                            timeslice_mode=getattr(g, "timeslice_mode", eng.frame._timeslice_mode()),
                             delta_frames=float(getattr(eng, "_current_delta_frames", 1.0) or 1.0),
                         )
                     )

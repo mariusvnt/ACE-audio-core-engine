@@ -957,9 +957,9 @@ class ParallelOffload:
         resolved: Dict[str, Any] = {}
         for attr_key in offload_keys:
             if attr_key in base:
-                resolved[attr_key] = self.engine._normalize_output_value(attr_key, base[attr_key])
+                resolved[attr_key] = self.engine.frame._normalize_output_value(attr_key, base[attr_key])
             else:
-                resolved[attr_key] = self.engine._zero_value_for_attr(attr_key)
+                resolved[attr_key] = self.engine.frame._zero_value_for_attr(attr_key)
         return resolved
 
     def _parallel_has_usable_values_for_graph_frame(self, graph_key: str, frame_index: int) -> bool:

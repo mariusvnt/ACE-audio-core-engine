@@ -18,6 +18,7 @@ _MODULE_PATHS = {
     "engine_frontends": ("core", ROOT / "core" / "engine_frontends.py"),
     "engine_sinks": ("core", ROOT / "core" / "engine_sinks.py"),
     "engine_compiler": ("core", ROOT / "core" / "engine_compiler.py"),
+    "engine_frame": ("core", ROOT / "core" / "engine_frame.py"),
     "engine_handlers": ("core", ROOT / "core" / "engine_handlers.py"),
     "audio_influx": ("core", ROOT / "core" / "audio_influx.py"),
     "audio_tasks_registry": ("core", ROOT / "core" / "audio_tasks_registry.py"),

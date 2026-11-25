@@ -1888,8 +1888,8 @@ class SourceTask(ACEAudioTask):
             return
         self._set_block_size_from_engine(int(new_size))
         engine = getattr(self, "engine_ref", None)
-        if engine and hasattr(engine, "adjust_graph_block_size_for_task"):
-            engine.adjust_graph_block_size_for_task(self, new_size)
+        if engine and hasattr(getattr(engine, "frame", None), "adjust_graph_block_size_for_task"):
+            engine.frame.adjust_graph_block_size_for_task(self, new_size)
 
     def _ensure_frontend_workspace(self, length: int):
         """Allocate/reuse working buffers for frontend filtering."""

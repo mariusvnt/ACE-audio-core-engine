@@ -337,10 +337,10 @@ class BakeManager:
             baked_values: Dict[str, List[Any]] = {k: [] for k in output_attr_keys}
             try:
                 for i, frame_idx in enumerate(range(frame_start, frame_end + 1)):
-                    frame_results = engine_ref.engine._collect_graph_results_for_frame(graph, frame_idx)
+                    frame_results = engine_ref.engine.frame._collect_graph_results_for_frame(graph, frame_idx)
                     for attr_key in output_attr_keys:
                         baked_values[attr_key].append(
-                            frame_results.get(attr_key, engine_ref.engine._zero_value_for_attr(attr_key))
+                            frame_results.get(attr_key, engine_ref.engine.frame._zero_value_for_attr(attr_key))
                         )
                     with utils.logged_errors("audio_engine.ACEAudioEngine.bake_source_to_cache._bake_worker#2"):
                         engine_ref._bake_result_queue.put_nowait(

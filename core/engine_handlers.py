@@ -78,7 +78,7 @@ def frame_change_handler(scene):
     if not engine.graphs:
         now = time.time()
         if now < getattr(engine, "_bootstrap_retry_at", 0.0):
-            engine.execute_next_frame(scene, force=is_rendering)
+            engine.frame.execute_next_frame(scene, force=is_rendering)
             return
         try:
             frontends = engine.frontends.discover_scene_frontends(scene)
@@ -93,7 +93,7 @@ def frame_change_handler(scene):
             engine._bootstrap_fail_count = fail_count
             engine._bootstrap_retry_at = now + min(2.0, 0.2 * (2 ** min(fail_count, 4)))
             utils.log_throttled("bootstrap_compile", f"Frame bootstrap compile failed: {e}", "ERROR", min_interval=2.0)
-    engine.execute_next_frame(scene, force=is_rendering)
+    engine.frame.execute_next_frame(scene, force=is_rendering)
 
 
 @persistent
@@ -148,7 +148,7 @@ def render_pre_handler(scene):
         except Exception as e:
             utils.log_throttled("render_pre_compile", f"Render pre compile failed: {e}", "ERROR", min_interval=1.5)
     try:
-        engine.execute_next_frame(scene, force=True)
+        engine.frame.execute_next_frame(scene, force=True)
     except Exception as e:
         utils.log_throttled("render_pre_execute", f"Render pre execute failed: {e}", "ERROR", min_interval=1.5)
     engine.diagnostics._mark_render_start(scene)
@@ -374,7 +374,7 @@ def auto_compile_timer():
                 return 0.25
             compiled = engine.frontends._maybe_compile_dirty(scene)
             if compiled:
-                engine.execute_next_frame(scene, force=True)
+                engine.frame.execute_next_frame(scene, force=True)
     return 0.25
 
 

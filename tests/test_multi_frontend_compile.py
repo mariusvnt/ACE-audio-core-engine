@@ -251,14 +251,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.probes._meta_cache_ttl = 30.0
         engine.compiler._last_tree_signature = None
         engine._last_attr_sync_frame = {}
-        engine._block_size_state = {}
+        engine.frame._block_size_state = {}
         engine._bootstrap_retry_at = 0.0
         engine._bootstrap_fail_count = 0
         engine.bake._bake_cache = {}
         engine.bake._bake_jobs = {}
         import queue as _queue
         engine.bake._bake_result_queue = _queue.Queue()
-        engine._source_specs_task_registry = {}
+        engine.frame._source_specs_task_registry = {}
         engine._current_delta_frames = 1.0
         engine.diagnostics._pending_geometry_events = []
         engine.parallel._parallel_future_meta = {}
@@ -279,9 +279,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.parallel._parallel_executor = None
         engine.parallel._parallel_pool_failed = False
         engine.parallel._parallel_last_submit_frame = -1
-        engine._preview_last_chunk = None
-        engine._preview_last_eval_frame = -1
-        engine._preview_next_eval_ts = 0.0
+        engine.frame._preview_last_chunk = None
+        engine.frame._preview_last_eval_frame = -1
+        engine.frame._preview_next_eval_ts = 0.0
         engine.preview._preview_worker_stop = False
         engine.preview._preview_worker_cond = threading.Condition()
         engine.preview._preview_worker_queue = []

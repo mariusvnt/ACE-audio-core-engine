@@ -289,7 +289,7 @@ def main():
     _assert(bool(getattr(eng_settings, "ace_perf_enabled", False)) is True, "Performance metrics must be enabled by default")
 
     engine = engine_mod.ACEAudioEngine.ensure_instance(scene)
-    engine.execute_next_frame(scene, force=True)
+    engine.frame.execute_next_frame(scene, force=True)
 
     before_count = len(ace.audio_sources)
     add_result = bpy.ops.audiocore.add_audio_source()

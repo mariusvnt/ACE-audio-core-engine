@@ -192,6 +192,7 @@ def _load_engine_stack():
         "core.engine_frontends",
         "core.engine_sinks",
         "core.engine_compiler",
+        "core.engine_frame",
         "core.engine_handlers",
         "core.audio_tasks_registry",
         "core.parallel_dsp",
@@ -420,7 +421,7 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     engine.abstract_tree_ref = abstract_tree
     engine.graphs = {source.stable_id: graph}
     engine._last_attr_sync_frame[source.stable_id] = -10_000_000
-    engine._rebuild_graph_execution_order(graph)
+    engine.frame._rebuild_graph_execution_order(graph)
     engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
     proxy_obj = object()
     graph.get_proxy_object = lambda: proxy_obj  # type: ignore[method-assign]
@@ -631,7 +632,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     engine.abstract_tree_ref = abstract_tree
     engine.graphs = {graph.source_uid: graph}
     engine._last_attr_sync_frame[graph.source_uid] = -10_000_000
-    engine._rebuild_graph_execution_order(graph)
+    engine.frame._rebuild_graph_execution_order(graph)
     engine.parallel._prepare_parallel_graph_ir(graph, abstract_tree)
     proxy_obj = object()
     graph.get_proxy_object = lambda: proxy_obj  # type: ignore[method-assign]
@@ -762,7 +763,7 @@ def _run_engine_benchmark(
         for _ in range(int(max(num_frames, 0))):
             frame_cursor += 1
             scene.frame_current = int(frame_cursor)
-            engine.execute_next_frame(scene, force=False)
+            engine.frame.execute_next_frame(scene, force=False)
             due = _maybe_pace(due)
         return due
 
