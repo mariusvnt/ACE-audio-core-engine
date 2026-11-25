@@ -328,6 +328,25 @@ long-lived analyzer objects are pooled/reused
 splitter/chroma/component tasks prioritize metadata propagation over full signal duplication
 optional Numba acceleration is gated by capability and user settings
 
+### 14.1 Threads vs worker processes (measured 2026-11-25)
+Worker-process DSP (`processes_dsp`) is kept. Blender 5.0, one 24 fps file
+source feeding N stream nodes, 240 frames at real-time pace, optional
+libraries installed (`tests/blender_perf.py`):
+
+| Nodes | p95 frame ms, threads | p95 frame ms, processes | Fresh worker values |
+| --- | --- | --- | --- |
+| 24 | 3.0 | 1.8 | 99.6% |
+| 36 | 3.7 | 2.1 | 99.6% |
+| 50 | 7.4 | 2.4 | 99.6% |
+
+The rule set before measuring was: keep processes only if their p95 frame
+time is at most 0.8x threads and at least 95% of frames get worker values.
+Both modes stay far under the 41.7 ms frame budget. Costs of processes:
+a 3.3-3.6 s cold start after the pool is created (local DSP covers it), and
+with two job shards per frame (a frequency splitter feeding a stream node)
+about half the jobs still miss the 66 ms stale-job budget; that cause is
+not identified yet.
+
 ## 15. Testing Architecture
 Test coverage includes:
 ID generation and parsing invariants
