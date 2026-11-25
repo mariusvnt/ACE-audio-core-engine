@@ -2208,7 +2208,7 @@ class ACE_PT_audio_sources(bpy.types.Panel):
         # _parallel_disabled_sources is keyed by source_uid (stable_id), with proxy_name
         # as a fallback when stable_id is absent, so check both.
         engine = ACEAudioEngine.get_instance(context.scene)
-        disabled_srcs = set(getattr(engine, "_parallel_disabled_sources", set()) or set())
+        disabled_srcs = set(getattr(getattr(engine, "parallel", None), "_parallel_disabled_sources", set()) or set())
         src_uid = getattr(active_source, "stable_id", "") or ""
         if engine is not None and (
             (proxy_name and proxy_name in disabled_srcs) or (src_uid and src_uid in disabled_srcs)

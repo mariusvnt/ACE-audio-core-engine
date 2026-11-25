@@ -182,7 +182,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         # Workers spawn on first use and take seconds to import; play until one answers.
         t_warm = time.monotonic()
         frame = 1
-        while int(engine._parallel_result_accepts) == 0 and time.monotonic() - t_warm < 60.0:
+        while int(engine.parallel._parallel_result_accepts) == 0 and time.monotonic() - t_warm < 60.0:
             scene.frame_set(1 + frame % 2)
             frame += 1
             time.sleep(1.0 / 24.0)
@@ -201,7 +201,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         time.sleep(max(0.0, target - time.monotonic()))
         scene.frame_set(frame)
         handlers_mod.auto_compile_timer()  # timers do not run in background mode
-        if first_accept_s is None and int(getattr(engine, "_parallel_result_accepts", 0) or 0) > 0:
+        if first_accept_s is None and int(getattr(getattr(engine, "parallel", None), "_parallel_result_accepts", 0) or 0) > 0:
             first_accept_s = time.monotonic() - t0
         if frame == 30:
             quiet = _proxy_values(engine)
@@ -211,8 +211,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     _assert(not compiles, f"Playback without edits recompiled the scene {len(compiles)} time(s)")
     if parallel_mode == "processes_dsp":
         print(f"[ACE smoke] processes_dsp: cold start {cold_start_s} s; first worker result after {first_accept_s} s, "
-              f"accepted={engine._parallel_result_accepts}, stale_job_drops={engine._parallel_stale_job_drops}, "
-              f"queue_pressure_drops={engine._parallel_queue_pressure_drops}")
+              f"accepted={engine.parallel._parallel_result_accepts}, stale_job_drops={engine.parallel._parallel_stale_job_drops}, "
+              f"queue_pressure_drops={engine.parallel._parallel_queue_pressure_drops}")
     if not loud:
         details = []
         for uid, graph in engine.graphs.items():
@@ -238,7 +238,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
             )
         }
         state["offload_keys"] = {uid: list(getattr(g, "parallel_offload_attr_keys", []) or []) for uid, g in engine.graphs.items()}
-        _assert(int(engine._parallel_result_accepts) > 0, f"No worker-process DSP result was accepted: {state}")
+        _assert(int(engine.parallel._parallel_result_accepts) > 0, f"No worker-process DSP result was accepted: {state}")
 
     _assert(engine.bake_source_to_cache(src, tree=tree, scene=scene), "Bake did not start")
     import time

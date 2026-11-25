@@ -241,8 +241,8 @@ class EngineDiagnostics:
 
     def get_runtime_diagnostics(self, reset: bool = False) -> Dict[str, float]:
         preview_diag = dict(self.engine.preview._preview_monitor.diagnostics_snapshot(reset=reset))
-        worker_target = self.engine._parallel_worker_count(None)
-        executor = self.engine._parallel_executor
+        worker_target = self.engine.parallel._parallel_worker_count(None)
+        executor = self.engine.parallel._parallel_executor
         active_workers = int(getattr(executor, "_max_workers", 0) or 0) if executor is not None else 0
         geometry_values = list(self._geometry_eval_history)
         render_values = list(self._render_history)
@@ -275,18 +275,18 @@ class EngineDiagnostics:
             render_mean_ms = 0.0
             render_p95_ms = 0.0
         report = {
-            "parallel_queue_pressure_drops": float(self.engine._parallel_queue_pressure_drops),
-            "parallel_job_timeouts": float(self.engine._parallel_job_timeouts),
-            "parallel_job_exceptions": float(self.engine._parallel_job_exceptions),
-            "parallel_pool_restarts": float(self.engine._parallel_restart_count),
-            "parallel_stale_job_drops": float(self.engine._parallel_stale_job_drops),
-            "parallel_stale_result_drops": float(self.engine._parallel_stale_result_drops),
-            "parallel_result_accepts": float(self.engine._parallel_result_accepts),
-            "parallel_disabled_sources": float(len(self.engine._parallel_disabled_sources)),
+            "parallel_queue_pressure_drops": float(self.engine.parallel._parallel_queue_pressure_drops),
+            "parallel_job_timeouts": float(self.engine.parallel._parallel_job_timeouts),
+            "parallel_job_exceptions": float(self.engine.parallel._parallel_job_exceptions),
+            "parallel_pool_restarts": float(self.engine.parallel._parallel_restart_count),
+            "parallel_stale_job_drops": float(self.engine.parallel._parallel_stale_job_drops),
+            "parallel_stale_result_drops": float(self.engine.parallel._parallel_stale_result_drops),
+            "parallel_result_accepts": float(self.engine.parallel._parallel_result_accepts),
+            "parallel_disabled_sources": float(len(self.engine.parallel._parallel_disabled_sources)),
             "parallel_worker_target": float(worker_target),
             "parallel_worker_active": float(active_workers),
-            "parallel_inflight_limit": float(self.engine._parallel_inflight_limit(None)),
-            "parallel_payload_slots": float(len(self.engine._parallel_payload_slots)),
+            "parallel_inflight_limit": float(self.engine.parallel._parallel_inflight_limit(None)),
+            "parallel_payload_slots": float(len(self.engine.parallel._parallel_payload_slots)),
             "source_prefetch_mean_ms": float(source_prefetch_mean_ms),
             "source_prefetch_p95_ms": float(source_prefetch_p95_ms),
             "blender_geometry_eval_mean_ms": float(geometry_mean_ms),
@@ -296,12 +296,12 @@ class EngineDiagnostics:
         }
         report.update(preview_diag)
         if reset:
-            self.engine._parallel_queue_pressure_drops = 0
-            self.engine._parallel_job_timeouts = 0
-            self.engine._parallel_job_exceptions = 0
-            self.engine._parallel_stale_job_drops = 0
-            self.engine._parallel_stale_result_drops = 0
-            self.engine._parallel_result_accepts = 0
+            self.engine.parallel._parallel_queue_pressure_drops = 0
+            self.engine.parallel._parallel_job_timeouts = 0
+            self.engine.parallel._parallel_job_exceptions = 0
+            self.engine.parallel._parallel_stale_job_drops = 0
+            self.engine.parallel._parallel_stale_result_drops = 0
+            self.engine.parallel._parallel_result_accepts = 0
             self._geometry_eval_history.clear()
             self._render_history.clear()
         return report

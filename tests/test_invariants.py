@@ -136,19 +136,19 @@ class TestEngineInvariants(unittest.TestCase):
         engine = self.Engine(0)
         engine.graphs = {f"src_{i}": object() for i in range(3)}
         with mock.patch.dict(os.environ, {"ACE_PARALLEL_WORKERS": ""}), mock.patch("os.cpu_count", return_value=16):
-            self.assertEqual(engine._parallel_worker_count(None), 16 - self.Engine._PARALLEL_WORKER_HEADROOM_CORES)
+            self.assertEqual(engine.parallel._parallel_worker_count(None), 16 - self.ae.ParallelOffload._PARALLEL_WORKER_HEADROOM_CORES)
         with mock.patch.dict(os.environ, {"ACE_PARALLEL_WORKERS": "4"}), mock.patch("os.cpu_count", return_value=16):
-            self.assertEqual(engine._parallel_worker_count(None), 4)
+            self.assertEqual(engine.parallel._parallel_worker_count(None), 4)
         with mock.patch.dict(os.environ, {"ACE_PARALLEL_WORKERS": ""}), mock.patch("os.cpu_count", return_value=1):
-            self.assertEqual(engine._parallel_worker_count(None), 1)
+            self.assertEqual(engine.parallel._parallel_worker_count(None), 1)
 
     def test_inflight_jobs_per_source_stay_within_two(self):
-        self.assertLessEqual(self.Engine._PARALLEL_MAX_INFLIGHT_PER_SOURCE, 2)
+        self.assertLessEqual(self.ae.ParallelOffload._PARALLEL_MAX_INFLIGHT_PER_SOURCE, 2)
         engine = self.Engine(0)
-        self.assertLessEqual(engine._parallel_inflight_limit(None), 2)
+        self.assertLessEqual(engine.parallel._parallel_inflight_limit(None), 2)
 
     def test_shards_split_by_source_group(self):
-        shard = self.Engine._parallel_shard_attr_keys
+        shard = self.ae.ParallelOffload._parallel_shard_attr_keys
         self.assertEqual(shard(["a", "b"]), [["a", "b"]])
         self.assertEqual(shard(["a", "b"], {"a": "s1", "b": "s1"}), [["a", "b"]])
         self.assertEqual(

@@ -396,13 +396,13 @@ def _shm_drain_timer():
     try:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
         engine = ACEAudioEngine.get_instance(scene) if scene is not None else None
-        if engine is not None and engine._parallel_future_meta:
+        if engine is not None and engine.parallel._parallel_future_meta:
             if engine._undo_recovery_active():
                 return 2.0
             # Only drain when the scene is NOT actively playing — during playback
             # execute_next_frame() handles all future draining every frame.
             if not engine._is_animation_playing():
-                engine._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
+                engine.parallel._parallel_poll_futures(scene, current_frame=int(getattr(engine, "current_frame", 0)))
     except Exception as _exc:
         with utils.logged_errors("audio_engine._shm_drain_timer"):
             utils.log(

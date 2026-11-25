@@ -27,10 +27,10 @@ class TestParallelOffloadPolicy(unittest.TestCase):
 
     def test_stream_accumulator_is_not_parallel_offload_candidate(self):
         node = self._node("utilities", "stream_accumulator")
-        allowed = self.ae.ACEAudioEngine._is_parallel_offload_attr_candidate(node)
+        allowed = self.ae.ParallelOffload._is_parallel_offload_attr_candidate(node)
         self.assertFalse(allowed)
 
     def test_rms_remains_parallel_offload_candidate(self):
         node = self._node("stream", "rms")
-        allowed = self.ae.ACEAudioEngine._is_parallel_offload_attr_candidate(node)
+        allowed = self.ae.ParallelOffload._is_parallel_offload_attr_candidate(node)
         self.assertTrue(allowed)
