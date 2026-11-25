@@ -5,23 +5,23 @@ import bpy
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set
-from .. import utils
-from ..nodes.dummy_tree import ACEDummyTreeReader
-from ..properties import ACEAudioSource
-from .abstract_tree import ACEAbstractNode, ACEAbstractTree
-from .audio_influx import build_live_flow_identifier
-from .tasks.base import ACEAudioTask
-from .tasks.chunk import SAMPLE_RATE
-from .tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
-from .tasks.graph import ACEAudioGraph
-from .tasks.preview import PreviewSinkTask
-from .tasks.source import SourceTask
-from .tasks.specs import SourceSpecsTask
-from .tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
-from .tasks.utility import AudioMathTask, RollingAvgTask, StreamAccumulatorTask
-from .id_management import ACEIdManager
-from .proxy_management import ACEProxyManager
-from .engine_common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, engine_settings
+from ... import utils
+from ...nodes.dummy_tree import ACEDummyTreeReader
+from ...properties import ACEAudioSource
+from ..abstract_tree import ACEAbstractNode, ACEAbstractTree
+from ..audio_influx import build_live_flow_identifier
+from ..tasks.base import ACEAudioTask
+from ..tasks.chunk import SAMPLE_RATE
+from ..tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
+from ..tasks.graph import ACEAudioGraph
+from ..tasks.preview import PreviewSinkTask
+from ..tasks.source import SourceTask
+from ..tasks.specs import SourceSpecsTask
+from ..tasks.stream import LUFSTask, OnsetTask, PeakTask, PitchTask, RMSTask, SpectralCentroidTask, SpectralFluxTask, StereoBalanceTask, StereoVectorTask, StereoWidthTask, ZeroCrossTask
+from ..tasks.utility import AudioMathTask, RollingAvgTask, StreamAccumulatorTask
+from ..id_management import ACEIdManager
+from ..proxy_management import ACEProxyManager
+from .common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, engine_settings
 
 
 @dataclass
@@ -565,7 +565,7 @@ class GraphCompiler:
 
             if frontend_kind == FRONTEND_KIND_GEOMETRY:
                 with utils.logged_errors("audio_engine.ACEAudioEngine.compile_scene_frontends#2"):
-                    from ..nodes.dummy_tree import ACEDummyNodeFactory
+                    from ...nodes.dummy_tree import ACEDummyNodeFactory
                     removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
                     if removed:
                         utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
@@ -574,7 +574,7 @@ class GraphCompiler:
                 ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
 
             if frontend_kind == FRONTEND_KIND_SHADER:
-                from ..nodes.shader_tree import ACEShaderTreeReader
+                from ...nodes.shader_tree import ACEShaderTreeReader
                 reader = ACEShaderTreeReader(
                     tree,
                     frontend_uid=frontend_uid,

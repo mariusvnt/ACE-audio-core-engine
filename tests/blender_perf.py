@@ -102,8 +102,8 @@ def _smoke_helpers():
 
 
 def _run(n_nodes, mode, frames, wav_path, profile=False):
-    engine_mod = importlib.import_module(f"{ADDON}.core.audio_engine")
-    handlers = importlib.import_module(f"{ADDON}.core.engine_handlers")
+    engine_mod = importlib.import_module(f"{ADDON}.core.engine.engine")
+    handlers = importlib.import_module(f"{ADDON}.core.engine.handlers")
     scene, _src = _build_scene(n_nodes, wav_path)
     scene.audiocore.engine_settings.ace_parallel_mode = mode
     scene.audiocore.engine_settings.auto_compile = True

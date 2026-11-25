@@ -3,14 +3,14 @@ Engine components reach each other through ``self.engine``, never by name string
 
 ``getattr(self, "name", default)`` on a name that lives on the engine or on
 another component does not fail: it silently returns the default. This test
-fails on any such access in core/engine_*.py.
+fails on any such access in core/engine/.
 """
 
 import ast
 import unittest
 from pathlib import Path
 
-CORE = Path(__file__).resolve().parents[1] / "core"
+ENGINE = Path(__file__).resolve().parents[1] / "core" / "engine"
 
 
 def _own_names(cls):
@@ -26,7 +26,7 @@ def _own_names(cls):
 class TestComponentBoundaries(unittest.TestCase):
     def test_components_do_not_read_foreign_names_by_string(self):
         offenders = []
-        for path in sorted(CORE.glob("engine_*.py")):
+        for path in sorted(ENGINE.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
                 own = _own_names(cls)
@@ -51,7 +51,7 @@ class TestComponentBoundaries(unittest.TestCase):
         # component storing itself there gives them an object without the
         # engine's runtime, and every lookup through it falls back silently.
         offenders = []
-        for path in sorted(CORE.glob("engine_*.py")):
+        for path in sorted(ENGINE.rglob("*.py")):
             for cls in (n for n in ast.parse(path.read_text(encoding="utf-8")).body if isinstance(n, ast.ClassDef)):
                 for n in ast.walk(cls):
                     if (
@@ -73,12 +73,15 @@ class TestComponentBoundaries(unittest.TestCase):
         # module-level imports between them would form import cycles. The
         # handlers module is not a component and loads after all of them.
         offenders = []
-        not_components = {"engine_common.py", "engine_handlers.py"}
-        for path in sorted(CORE.glob("engine_*.py")):
+        not_components = {"__init__.py", "common.py", "handlers.py", "engine.py"}
+        for path in sorted(ENGINE.glob("*.py")):
             if path.name in not_components:
                 continue
             for node in ast.parse(path.read_text(encoding="utf-8")).body:
-                if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("engine_") and node.module != "engine_common":
+                if not isinstance(node, ast.ImportFrom) or node.level != 1:
+                    continue
+                sibling = (node.module or "").split(".")[0]
+                if sibling and sibling not in ("common", path.stem) and (path.parent / f"{sibling}.py").exists():
                     offenders.append(f"{path.name}: from .{node.module} import ...")
         self.assertEqual(offenders, [])
 

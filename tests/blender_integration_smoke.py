@@ -163,8 +163,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     engine.compiler.compile_scene_frontends(scene)
     _assert(bool(engine.graphs), "No runtime graph compiled for the file source")
     import time
-    engine_mod = importlib.import_module(f"{addon_key}.core.audio_engine")
-    handlers_mod = importlib.import_module(f"{addon_key}.core.engine_handlers")
+    engine_mod = importlib.import_module(f"{addon_key}.core.engine.engine")
+    handlers_mod = importlib.import_module(f"{addon_key}.core.engine.handlers")
     # Let the one legitimate recompile happen first: the file's sample-rate
     # probe finishes in the background and asks for it.
     settle_compiles = []
@@ -272,8 +272,8 @@ def main():
     addon_keys = [k for k in bpy.context.preferences.addons.keys() if "AudioCore" in k]
     _assert(bool(addon_keys), "AudioCore add-on is not enabled in current Blender session")
     addon_key = addon_keys[0]
-    engine_mod = importlib.import_module(f"{addon_key}.core.audio_engine")
-    handlers_mod = importlib.import_module(f"{addon_key}.core.engine_handlers")
+    engine_mod = importlib.import_module(f"{addon_key}.core.engine.engine")
+    handlers_mod = importlib.import_module(f"{addon_key}.core.engine.handlers")
     _assert(
         handlers_mod.frame_change_handler in bpy.app.handlers.frame_change_pre,
         "frame_change_handler is not registered",

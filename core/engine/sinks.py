@@ -3,11 +3,11 @@
 import bpy
 import json
 from typing import Any, Dict, List, Optional
-from .. import utils
-from .abstract_tree import ACEAbstractNode, ACEAbstractTree
-from .tasks.graph import ACEAudioGraph, ACESinkBinding
-from .id_management import ACEIdManager
-from .engine_common import FRONTEND_KIND_SHADER
+from ... import utils
+from ..abstract_tree import ACEAbstractNode, ACEAbstractTree
+from ..tasks.graph import ACEAudioGraph, ACESinkBinding
+from ..id_management import ACEIdManager
+from .common import FRONTEND_KIND_SHADER
 
 
 class SinkResolver:
@@ -408,7 +408,7 @@ class SinkResolver:
         )
         shader_factory = None
         try:
-            from ..nodes.shader_tree import ACEShaderNodeFactory as _ACEShaderNodeFactory
+            from ...nodes.shader_tree import ACEShaderNodeFactory as _ACEShaderNodeFactory
             shader_factory = _ACEShaderNodeFactory
         except Exception as exc:
             utils.note_swallowed("audio_engine.ACEAudioEngine._sync_shader_output_ids", exc)

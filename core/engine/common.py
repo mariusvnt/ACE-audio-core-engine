@@ -16,7 +16,7 @@ try:
 except ImportError:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
-from .abstract_tree import ACEFrontendRef
+from ..abstract_tree import ACEFrontendRef
 try:
     from concurrent.futures.process import BrokenProcessPool
 except ImportError:  # pragma: no cover - platform/runtime dependent

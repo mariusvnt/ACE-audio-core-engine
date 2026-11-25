@@ -62,20 +62,26 @@ MODULE_NAMES = [
     "core.tasks.preview",
     "core.tasks.utility",
     "core.tasks.graph",
-    "core.parallel_dsp",             # 9.  Process-worker DSP helpers
+    "core.worker",
+    "core.worker.graph",
+    "core.worker.job",
     "core.proxy_management",         # 10. Bridge to Blender mesh attributes
-    "core.engine_common",
-    "core.engine_preview",
-    "core.engine_diagnostics",
-    "core.engine_probes",
-    "core.engine_bake",
-    "core.engine_parallel",
-    "core.engine_frontends",
-    "core.engine_sinks",
-    "core.engine_compiler",
-    "core.engine_frame",
-    "core.audio_engine",             # 11. Engine orchestration
-    "core.engine_handlers",          # Blender handlers and timers
+    "core.engine",
+    "core.engine.common",
+    "core.engine.preview",
+    "core.engine.preview.feeder",
+    "core.engine.preview.monitor",
+    "core.engine.preview.router",
+    "core.engine.diagnostics",
+    "core.engine.probes",
+    "core.engine.bake",
+    "core.engine.parallel",
+    "core.engine.frontends",
+    "core.engine.sinks",
+    "core.engine.compiler",
+    "core.engine.frame",
+    "core.engine.engine",
+    "core.engine.handlers",
     # ── nodes/ sub-package ──────────────────────────────────────────────────
     "nodes",                         # 12. Package marker (nodes/__init__.py)
     "nodes.dummy_tree",              # 13. GN node factory & tree reader
@@ -102,7 +108,7 @@ def _import_or_reload_submodule(module_name: str):
 def _remove_handlers_and_timers(log):
     """Remove ACE handlers and timers; safe to call when they were never added."""
     try:
-        from .core.engine_handlers import unregister_handlers
+        from .core.engine.handlers import unregister_handlers
         unregister_handlers()
     except Exception as exc:  # noqa: BLE001 boundary: teardown must reach the timer below
         log(f"Removing ACE handlers failed: {exc}", 'ERROR')
@@ -139,7 +145,7 @@ def register():
 
         # A failure here is a registration failure: without handlers the
         # engine never runs, so it goes to the rollback below.
-        from .core.engine_handlers import register_handlers
+        from .core.engine.handlers import register_handlers
         register_handlers()
         import bpy  # type: ignore
         from .properties import _live_device_cache_timer

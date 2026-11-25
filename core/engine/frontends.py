@@ -3,11 +3,11 @@
 import bpy
 import time
 from typing import Any, Dict, Optional
-from .. import utils
-from .abstract_tree import ACEAbstractTree, ACEFrontendRef
-from .id_management import ACEIdManager
-from .proxy_management import ACEProxyManager
-from .engine_common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, _ACEFrontendDiscovery
+from ... import utils
+from ..abstract_tree import ACEAbstractTree, ACEFrontendRef
+from ..id_management import ACEIdManager
+from ..proxy_management import ACEProxyManager
+from .common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, _ACEFrontendDiscovery
 
 
 class FrontendTracker:
@@ -145,8 +145,8 @@ class FrontendTracker:
 
     def discover_scene_frontends(self, scene) -> list[_ACEFrontendDiscovery]:
         """Discover managed ACE frontends used by the scene."""
-        from ..nodes.dummy_tree import ensure_frontend_uid as _ensure_frontend_uid
-        from ..nodes.shader_tree import ACEShaderTreeReader
+        from ...nodes.dummy_tree import ensure_frontend_uid as _ensure_frontend_uid
+        from ...nodes.shader_tree import ACEShaderTreeReader
 
         utils.assert_main_thread("discover_scene_frontends")
 

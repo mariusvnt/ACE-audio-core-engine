@@ -37,7 +37,7 @@ class TestWorkerIsBpyFree(unittest.TestCase):
             import sys
             sys.path.insert(0, {str(TESTS_DIR)!r})
             from module_loader import load_module
-            load_module("parallel_dsp")
+            load_module("core.worker.job")
             leaked = sorted(m for m in sys.modules if m == "bpy" or m.startswith("bpy."))
             print("LEAKED=" + ",".join(leaked))
             """
@@ -105,8 +105,8 @@ class TestEngineInvariants(unittest.TestCase):
         _purge_testpkg_modules()
         cls.bpy = fake_bpy.install()
         fake_bpy.reset(cls.bpy)
-        cls.ae = load_module("audio_engine")
-        cls.handlers_mod = load_module("engine_handlers")
+        cls.ae = load_module("core.engine.engine")
+        cls.handlers_mod = load_module("core.engine.handlers")
         cls.Engine = cls.ae.ACEAudioEngine
 
     def setUp(self):
@@ -176,7 +176,7 @@ class TestAmbiguousCompilePruning(unittest.TestCase):
         _purge_testpkg_modules()
         fake_bpy.install()
         cls.abs_mod = load_module("abstract_tree")
-        cls.ae = load_module("audio_engine")
+        cls.ae = load_module("core.engine.engine")
         cls.Engine = cls.ae.ACEAudioEngine
 
     def _tree(self):

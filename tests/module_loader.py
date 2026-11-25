@@ -15,22 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PKG_NAME = "ace_addon_testpkg"
 
 _MODULE_PATHS = {
-    "audio_engine": ("core", ROOT / "core" / "audio_engine.py"),
-    "engine_common": ("core", ROOT / "core" / "engine_common.py"),
-    "engine_preview": ("core", ROOT / "core" / "engine_preview.py"),
-    "engine_diagnostics": ("core", ROOT / "core" / "engine_diagnostics.py"),
-    "engine_probes": ("core", ROOT / "core" / "engine_probes.py"),
-    "engine_bake": ("core", ROOT / "core" / "engine_bake.py"),
-    "engine_parallel": ("core", ROOT / "core" / "engine_parallel.py"),
-    "engine_frontends": ("core", ROOT / "core" / "engine_frontends.py"),
-    "engine_sinks": ("core", ROOT / "core" / "engine_sinks.py"),
-    "engine_compiler": ("core", ROOT / "core" / "engine_compiler.py"),
-    "engine_frame": ("core", ROOT / "core" / "engine_frame.py"),
-    "engine_handlers": ("core", ROOT / "core" / "engine_handlers.py"),
     "audio_influx": ("core", ROOT / "core" / "audio_influx.py"),
     "abstract_tree": ("core", ROOT / "core" / "abstract_tree.py"),
     "id_management": ("core", ROOT / "core" / "id_management.py"),
-    "parallel_dsp": ("core", ROOT / "core" / "parallel_dsp.py"),
     "proxy_management": ("core", ROOT / "core" / "proxy_management.py"),
     "dummy_tree": ("nodes", ROOT / "nodes" / "dummy_tree.py"),
     "shader_tree": ("nodes", ROOT / "nodes" / "shader_tree.py"),

@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - Blender provides this at runtime
         return fn
 
 from ..core.id_management import ACEIdManager
-from ..core.audio_engine import ACEAudioEngine
+from ..core.engine.engine import ACEAudioEngine
 from ..nodes.dummy_tree import ACEDummyTreeReader
 from ..nodes.shader_tree import ACEShaderTreeReader
 from ..vars import ACE_NODES

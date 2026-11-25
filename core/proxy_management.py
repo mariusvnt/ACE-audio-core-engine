@@ -66,7 +66,7 @@ class ACEProxyManager:
     def _shader_tree_writes_are_unsafe(scene=None) -> bool:
         scene = ACEProxyManager._resolve_scene(scene)
         try:
-            from .audio_engine import ACEAudioEngine
+            from .engine.engine import ACEAudioEngine
         except Exception as exc:
             utils.note_swallowed("proxy_management.ACEProxyManager._shader_tree_writes_are_unsafe", exc)
             return False
@@ -89,7 +89,7 @@ class ACEProxyManager:
         with utils.logged_errors("proxy_management.ACEProxyManager._defer_shader_tree_sync"):
             ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, [])
         with utils.logged_errors("proxy_management.ACEProxyManager._defer_shader_tree_sync#2"):
-            from .audio_engine import ACEAudioEngine
+            from .engine.engine import ACEAudioEngine
             resolved_scene = ACEProxyManager._resolve_scene(scene)
             engine = ACEAudioEngine.get_instance(resolved_scene)
             if engine is None and resolved_scene is not None:

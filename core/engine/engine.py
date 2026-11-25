@@ -24,25 +24,25 @@ import bpy
 import queue
 import time
 from typing import Dict, Optional
-from .. import utils
-from ..properties import ACEAudioSource
-from .abstract_tree import ACEAbstractTree
-from .tasks.chunk import SAMPLE_RATE
-from .tasks.filters import reset_biquad_fallback_warned
-from .tasks.graph import ACEAudioGraph
-from .tasks.source import _clear_file_open_locks
-from .tasks.specs import SourceSpecsTask
-from .proxy_management import ACEProxyManager
-from .engine_common import FRONTEND_KIND_SHADER
-from .engine_bake import BakeManager
-from .engine_compiler import GraphCompiler
-from .engine_diagnostics import EngineDiagnostics
-from .engine_frame import FrameRunner
-from .engine_frontends import FrontendTracker
-from .engine_parallel import ParallelOffload
-from .engine_preview import PreviewRouter
-from .engine_probes import SourceProbes
-from .engine_sinks import SinkResolver
+from ... import utils
+from ...properties import ACEAudioSource
+from ..abstract_tree import ACEAbstractTree
+from ..tasks.chunk import SAMPLE_RATE
+from ..tasks.filters import reset_biquad_fallback_warned
+from ..tasks.graph import ACEAudioGraph
+from ..tasks.source import _clear_file_open_locks
+from ..tasks.specs import SourceSpecsTask
+from ..proxy_management import ACEProxyManager
+from .common import FRONTEND_KIND_SHADER
+from .bake import BakeManager
+from .compiler import GraphCompiler
+from .diagnostics import EngineDiagnostics
+from .frame import FrameRunner
+from .frontends import FrontendTracker
+from .parallel import ParallelOffload
+from .preview.router import PreviewRouter
+from .probes import SourceProbes
+from .sinks import SinkResolver
 
 
 class ACEAudioEngine:

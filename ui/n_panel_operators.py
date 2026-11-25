@@ -10,7 +10,7 @@ from bpy_extras.io_utils import ImportHelper                                    
 from ..core.id_management import ACEIdManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 from .. import utils
-from ..core.audio_engine import ACEAudioEngine
+from ..core.engine.engine import ACEAudioEngine
 from ..core.audio_influx import AudioReception, build_live_flow_identifier
 from ..core.proxy_management import ACEProxyManager
 def _supported_audio_filter_glob() -> str:

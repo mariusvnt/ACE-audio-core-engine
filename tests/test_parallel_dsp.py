@@ -38,8 +38,8 @@ class TestParallelDSP(unittest.TestCase):
             raise unittest.SkipTest("numpy unavailable in this environment")
         # Smoke tests may import registry modules with a fake NumPy module.
         # Force a clean import here so worker tests always use real NumPy.
-        forget_modules("parallel_dsp", "core.parallel_dsp", "core.tasks", "core.audio_influx", "audio_influx")
-        cls.pds = load_module("parallel_dsp")
+        forget_modules("core.worker", "core.tasks", "core.audio_influx", "audio_influx")
+        cls.pds = load_module("core.worker.job")
 
     def setUp(self):
         _clear_worker_state(self.pds)

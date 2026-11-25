@@ -216,8 +216,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         cls.tasks_mod = load_tasks()
         cls.dummy_tree = load_module("dummy_tree")
         cls.shader_tree_mod = load_module("shader_tree")
-        cls.engine_mod = load_module("audio_engine")
-        cls.handlers_mod = load_module("engine_handlers")
+        cls.engine_mod = load_module("core.engine.engine")
+        cls.handlers_mod = load_module("core.engine.handlers")
         cls.utils_mod = load_module("utils")
 
     def _engine_shell(self):
@@ -561,8 +561,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         tree_a = self.abs_mod.ACEAbstractTree(frontends={"frontend_a": frontend_a})
         tree_b = self.abs_mod.ACEAbstractTree(frontends={"frontend_a": frontend_b})
-        discovery_a = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_a)
-        discovery_b = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_b)
+        discovery_a = load_module("core.engine.common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_a)
+        discovery_b = load_module("core.engine.common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_b)
 
         tree_sig_a = self.engine_mod.FrontendTracker._compute_tree_signature(tree_a)
         tree_sig_b = self.engine_mod.FrontendTracker._compute_tree_signature(tree_b)
@@ -625,7 +625,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             tree_bl_idname="GeometryNodeTree",
             tree_ptr=11,
         )
-        discovery = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref)
+        discovery = load_module("core.engine.common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref)
         stable_sig = engine.frontends._frontend_membership_signature([discovery])
         engine.compiler._last_frontend_membership_signature = stable_sig
         engine.frontends._dirty_frontend_uids = set()
@@ -656,7 +656,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             material_name="ACE Mat",
             tree_ptr=22,
         )
-        discovery = load_module("engine_common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref, consumer_object_names=("Cube",))
+        discovery = load_module("core.engine.common")._ACEFrontendDiscovery(tree=None, frontend_ref=frontend_ref, consumer_object_names=("Cube",))
         stable_sig = engine.frontends._frontend_membership_signature([discovery])
         engine.compiler._last_frontend_membership_signature = stable_sig
         engine.frontends._dirty_frontend_uids = set()

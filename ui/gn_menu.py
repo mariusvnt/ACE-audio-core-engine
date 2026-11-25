@@ -417,7 +417,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         self._show_attr_id_socket_values(node)
         if tree_type == "ShaderNodeTree":
             with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#4"):
-                from ..core.audio_engine import ACEAudioEngine
+                from ..core.engine.engine import ACEAudioEngine
 
                 scene = getattr(context, "scene", None)
                 if not ACEAudioEngine._structural_tree_writes_allowed(

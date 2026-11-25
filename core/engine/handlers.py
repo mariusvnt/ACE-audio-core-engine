@@ -3,11 +3,11 @@
 import bpy
 import numpy as np
 import time
-from .. import utils
-from .engine_common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, persistent
-from .audio_engine import ACEAudioEngine
-from .engine_frontends import FrontendTracker
-from .engine_preview import PreviewRouter
+from ... import utils
+from .common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, persistent
+from .engine import ACEAudioEngine
+from .frontends import FrontendTracker
+from .preview.router import PreviewRouter
 
 
 @persistent
@@ -25,8 +25,8 @@ def _refresh_loaded_node_groups():
     but that hash only describes the groups of the data that was loaded when
     it was taken.
     """
-    from ..nodes.dummy_tree import ACEDummyNodeFactory
-    from ..nodes.shader_tree import ACEShaderNodeFactory
+    from ...nodes.dummy_tree import ACEDummyNodeFactory
+    from ...nodes.shader_tree import ACEShaderNodeFactory
 
     for factory in (ACEDummyNodeFactory, ACEShaderNodeFactory):
         factory._NODES_CONTENT_HASH = ""

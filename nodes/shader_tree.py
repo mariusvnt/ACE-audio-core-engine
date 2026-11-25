@@ -1242,7 +1242,7 @@ class ACEShaderNodeFactory:
                 utils.note_swallowed("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings", exc)
                 scene = None
         with utils.logged_errors("shader_tree.ACEShaderNodeFactory.sync_node_instance_group_bindings#2"):
-            from ..core.audio_engine import ACEAudioEngine
+            from ..core.engine.engine import ACEAudioEngine
             if not ACEAudioEngine._structural_tree_writes_allowed(
                 scene,
                 tree=getattr(node, "id_data", None),
