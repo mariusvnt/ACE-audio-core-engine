@@ -72,8 +72,11 @@ def _check_loaded_files_get_current_node_groups(addon_key):
     _assert(not _stale_ace_groups(addon_key), "ACE groups still stale after load")
 
 
-def _write_test_wav(path, seconds=3.0, sample_rate=48000):
-    """Write a mono 16-bit WAV: quiet 220 Hz for the first half, loud 440 Hz after."""
+def _write_test_wav(path, seconds=4.0, sample_rate=48000):
+    """Write a mono 16-bit WAV: quiet 220 Hz for the first half, loud 440 Hz after.
+
+    Played over frames 1-72 at 24 fps (3 s), so every sampled frame is inside the file.
+    """
     import array
     import math
     import wave
@@ -205,7 +208,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
             first_accept_s = time.monotonic() - t0
         if frame == 30:
             quiet = _proxy_values(engine)
-        if frame == 72:
+        if frame == 66:  # 2.75 s, in the loud half
             loud = _proxy_values(engine)
     engine.compile_scene_frontends = original_compile
     _assert(not compiles, f"Playback without edits recompiled the scene {len(compiles)} time(s)")
