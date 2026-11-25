@@ -1,0 +1,65 @@
+"""
+Engine components reach each other through ``self.engine``, never by name strings.
+
+``getattr(self, "name", default)`` on a name that lives on the engine or on
+another component does not fail: it silently returns the default. This test
+fails on any such access in core/engine_*.py.
+"""
+
+import ast
+import unittest
+from pathlib import Path
+
+CORE = Path(__file__).resolve().parents[1] / "core"
+
+
+def _own_names(cls):
+    names = {n.name for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    names |= {t.id for n in cls.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    names |= {n.target.id for n in cls.body if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)}
+    for n in ast.walk(cls):
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "self" and isinstance(n.ctx, ast.Store):
+            names.add(n.attr)
+    return names
+
+
+class TestComponentBoundaries(unittest.TestCase):
+    def test_components_do_not_read_foreign_names_by_string(self):
+        offenders = []
+        for path in sorted(CORE.glob("engine_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
+                own = _own_names(cls)
+                for n in ast.walk(cls):
+                    if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)):
+                        continue
+                    if n.func.id not in ("getattr", "hasattr", "setattr") or len(n.args) < 2:
+                        continue
+                    obj, name = n.args[0], n.args[1]
+                    if (
+                        isinstance(obj, ast.Name)
+                        and obj.id == "self"
+                        and isinstance(name, ast.Constant)
+                        and isinstance(name.value, str)
+                        and name.value not in own
+                    ):
+                        offenders.append(f"{path.name}:{n.lineno} {cls.name} {n.func.id}(self, {name.value!r})")
+        self.assertEqual(offenders, [])
+
+    def test_component_modules_do_not_import_each_other(self):
+        # Components are built by the engine and reach each other through it;
+        # module-level imports between them would form import cycles. The
+        # handlers module is not a component and loads after all of them.
+        offenders = []
+        not_components = {"engine_common.py", "engine_handlers.py"}
+        for path in sorted(CORE.glob("engine_*.py")):
+            if path.name in not_components:
+                continue
+            for node in ast.parse(path.read_text(encoding="utf-8")).body:
+                if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("engine_") and node.module != "engine_common":
+                    offenders.append(f"{path.name}: from .{node.module} import ...")
+        self.assertEqual(offenders, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
