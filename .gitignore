@@ -4,8 +4,9 @@ __pycache__/
 *.nbi
 *.nbc
 
-# Local tool settings
+# Local tool settings and notes
 .claude/
+AI_Code_Review.md
 
 # Generated test reports (machine-specific)
 tests/artifacts/
