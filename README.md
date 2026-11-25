@@ -27,7 +27,7 @@ An optional, lazily-evaluated preview playback system. When an audio preview sin
 
 2. **Authoring:** Users place ACE nodes in Geometry or Shader trees. `nodes/dummy_tree.py` and `nodes/shader_tree.py` parse these into an `ACEAbstractTree`.
 
-3. **Compilation (Stage A):** `core/audio_engine.py` (Main Thread) compiles the abstract tree into executable runtime audio graphs.
+3. **Compilation (Stage A):** `core/engine_compiler.py` (Main Thread) compiles the abstract tree into executable runtime audio graphs.
 
 4. **Ingestion:** `core/audio_influx.py` captures and routes file or live audio data.
 
@@ -42,7 +42,13 @@ An optional, lazily-evaluated preview playback system. When an audio preview sin
 
 ### Core Backend (`core/`)
 
-- **`audio_engine.py`**: Main orchestrator for compiling, frame execution, worker offload, and scene-scoped engine lifetime.
+- **`audio_engine.py`**: `ACEAudioEngine`, one per scene: the runtime state and the components below.
+
+- **`engine_compiler.py`, `engine_frame.py`, `engine_parallel.py`**: compiling (Stage A), per-frame execution (Stage C) and worker offload.
+
+- **`engine_frontends.py`, `engine_sinks.py`, `engine_preview.py`, `engine_bake.py`, `engine_probes.py`, `engine_diagnostics.py`**: frontend tracking, sink bindings, preview, bake, source probing and metrics.
+
+- **`engine_handlers.py`**: Blender handlers and timers.
 
 - **`abstract_tree.py`**: Defines the abstract IR used between frontend readers and the runtime compiler.
 

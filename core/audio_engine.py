@@ -1,19 +1,23 @@
 """
-Core orchestration layer for the AudioCore Engine Blender add-on.
+The ACE engine: one ``ACEAudioEngine`` per Blender scene.
 
-Responsibilities:
-  - ``ACEAudioEngine``: singleton-per-scene orchestrator that owns the
-    compile/execute lifecycle, the parallel DSP worker pool, all
-    ``ACEAudioGraph`` instances, and the shared preview monitor.
-  - Stage-A (main thread): discover all managed scene frontends, parse them,
-    merge them into one ``ACEAbstractTree``, and compile one runtime graph per
-    source.
-  - Stage-B (subprocess workers): bpy-free evaluation delegated via
-    ``evaluate_parallel_job`` from ``parallel_dsp``.
-  - Stage-C (main thread): ``ACEProxyManager`` commits Stage-B results to
-    Blender proxy attributes and object custom properties.
-  - Layer-3 preview: ``_ACEPreviewAudioMonitor`` / ``_ACEPreviewFeeder``
-    drive a real-time sounddevice output stream fed from the DSP pipeline.
+The engine owns the scene-scoped runtime (graphs, sink writer, frame clock,
+undo state) and builds one component per concern, each in its own module:
+
+  - ``engine.diagnostics`` (engine_diagnostics): perf counters and latency metrics.
+  - ``engine.probes`` (engine_probes): background source metadata and tempo detection.
+  - ``engine.preview`` (engine_preview): preview chunk routing and the monitor.
+  - ``engine.bake`` (engine_bake): offline bake cache.
+  - ``engine.parallel`` (engine_parallel): worker-process DSP offload (Stage B).
+  - ``engine.frontends`` (engine_frontends): frontend discovery and dirty tracking.
+  - ``engine.sinks`` (engine_sinks): sink bindings and auto attribute names.
+  - ``engine.compiler`` (engine_compiler): frontends to per-source graphs (Stage A).
+  - ``engine.frame`` (engine_frame): per-frame evaluation and sink commits (Stage C).
+
+Components reach the runtime and each other through ``self.engine``. Blender
+handlers and timers live in engine_handlers; shared imports and types in
+engine_common. The public methods the UI and handlers call stay on the
+engine as one-line delegates.
 """
 
 import bpy
@@ -38,35 +42,11 @@ from .engine_sinks import SinkResolver
 
 
 class ACEAudioEngine:
-    """Central orchestrator for the AudioCore Engine DSP pipeline.
+    """Scene-scoped ACE runtime and the owner of its components (see the module docstring).
 
-    One instance exists per Blender scene (keyed by ``scene.as_pointer()``).
-    It owns the compile/execute lifecycle, the parallel worker pool, all
-    ``ACEAudioGraph`` instances, and the shared ``_ACEPreviewAudioMonitor``.
-
-    Architecture overview:
-      - Stage A (main thread): ``compile_scene_frontends()`` discovers all
-        managed Geometry/Shader frontends in the scene, merges them into one
-        ``ACEAbstractTree``, builds per-source ``ACEAudioGraph`` objects, and
-        prepares a serialisable parallel IR for each graph.
-      - Stage B (worker processes): numeric DSP (RMS, pitch, centroid, etc.) is
-        offloaded via ``evaluate_parallel_job()`` in a
-        ``ProcessPoolExecutor``; results flow back through
-        ``_parallel_poll_futures()`` into ``_parallel_last_valid``.
-      - Stage C (main thread): ``execute_next_frame()`` merges Stage-B values
-        with any locally-evaluated outputs and writes them into Blender geometry
-        node proxy attributes via ``ACEProxyManager``.
-
-    Instance management:
-      ``ensure_instance(scene)`` returns or creates the engine for *scene*.
-      ``shutdown_all_instances()`` shuts everything down cleanly on addon
-      unregister or file load.
-
-    Parallel pool constants:
-      - ``_PARALLEL_MAX_INFLIGHT_PER_SOURCE``: max 2 concurrent jobs per source.
-      - ``_PARALLEL_STALE_REUSE_MS``: last-valid values reused within this window.
-      - ``_PARALLEL_RESTART_LIMIT``: maximum pool restart attempts per session.
-      - ``_PARALLEL_RESTART_BACKOFF_S``: per-attempt exponential backoff delays.
+    One instance exists per Blender scene, keyed by ``scene.as_pointer()``:
+    ``ensure_instance(scene)`` returns or creates it, ``shutdown_all_instances()``
+    shuts every instance down on unregister or file load.
     """
 
     _instances: Dict[int, "ACEAudioEngine"] = {}

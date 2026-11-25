@@ -109,8 +109,23 @@ preview routing and push
 bake cache generation and replay
 
 Primary modules:
-`audio_engine.py`
-`audio_tasks_registry.py`
+`audio_engine.py`: `ACEAudioEngine`, one per scene. It owns the runtime state
+(graphs, sink writer, frame clock, undo state) and one component per concern;
+the public methods the UI and handlers call are one-line delegates.
+`engine_compiler.py` (`engine.compiler`): Stage A, frontends to per-source graphs.
+`engine_frame.py` (`engine.frame`): Stage C, per-frame evaluation and sink commits.
+`engine_parallel.py` (`engine.parallel`): Stage B, worker-process DSP offload.
+`engine_frontends.py` (`engine.frontends`): frontend discovery and dirty tracking.
+`engine_sinks.py` (`engine.sinks`): sink bindings and auto attribute names.
+`engine_preview.py` (`engine.preview`): preview routing and the audio monitor.
+`engine_bake.py` (`engine.bake`), `engine_probes.py` (`engine.probes`),
+`engine_diagnostics.py` (`engine.diagnostics`).
+`engine_handlers.py`: Blender handlers and timers. `engine_common.py`: shared imports and types.
+`audio_tasks_registry.py`: the DSP tasks.
+
+Components reach the runtime and each other through `self.engine`, never by
+name strings, and never store themselves where the engine belongs
+(`tests/test_engine_structure.py`).
 
 ### 5.6 Audio Input Adapters
 Responsibilities:
