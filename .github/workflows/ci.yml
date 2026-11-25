@@ -18,10 +18,10 @@ jobs:
       ACE_PERF_GATE_STRICT: "0"
       ACE_ENGINE_PERF_GATE_STRICT: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           # Blender 5.x bundles Python 3.11.
           python-version: "3.11"
@@ -51,24 +51,21 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: pip install ruff
       - run: ruff check .
 
   perf:
-    # Reports the strict perf thresholds without blocking: worker-process
-    # mode is currently slower than threads, and whether to keep it is open.
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       ACE_PERF_GATE_STRICT: "1"
       ACE_ENGINE_PERF_GATE_STRICT: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: pip install numpy scipy soundfile numba audioflux
