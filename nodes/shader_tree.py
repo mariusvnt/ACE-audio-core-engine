@@ -70,12 +70,13 @@ class ACEShaderNodeFactory:
         needs_strict_type = any(token in mapped for token in ("String", "Bundle"))
         if (not needs_strict_type) and "NodeSocketFloat" not in candidates:
             candidates.append("NodeSocketFloat")
+        last_error = None
         for candidate in candidates:
             try:
                 return ng.interface.new_socket(sock_name, in_out=in_out, socket_type=candidate)
-            except Exception as exc:
-                utils.note_swallowed("shader_tree.ACEShaderNodeFactory._new_socket", exc)
-                continue
+            except TypeError as exc:  # this tree type rejects the socket type; try the next
+                last_error = exc
+        utils.note_swallowed("shader_tree.ACEShaderNodeFactory._new_socket", last_error or TypeError(sock_name))
         return None
 
     @staticmethod
@@ -496,7 +497,7 @@ class ACEShaderNodeFactory:
     def _build_group_content(cls, ng, node_def, category: str, node_type: str):
         base_inputs = list(node_def.get("inputs", []))
         base_outputs = list(node_def.get("outputs", []))
-        extra_inputs = list(cls._extra_inputs(category, node_type))
+        extra_inputs = [spec for spec in cls._extra_inputs(category, node_type) if cls._shader_interface_supports(spec[0])]
         helper_inputs = list(cls._helper_input_specs(node_def))
 
         for sock_type_str, sock_name in base_inputs:
@@ -515,8 +516,6 @@ class ACEShaderNodeFactory:
                     for attr_name, value in (
                         ("min_value", 0.05),
                         ("max_value", 3.0),
-                        ("soft_min", 0.05),
-                        ("soft_max", 3.0),
                     ):
                         with utils.logged_errors("shader_tree.ACEShaderNodeFactory._build_group_content#2"):
                             setattr(item, attr_name, value)
@@ -1007,7 +1006,6 @@ class ACEShaderNodeFactory:
         changed = False
         helper_nodes = cls._find_helper_attr_nodes(tree, ace_id)
         helper_node = helper_nodes.get(int(output_idx))
-        created = False
         if helper_node is None:
             try:
                 helper_node = tree.nodes.new("ShaderNodeAttribute")
@@ -1015,7 +1013,6 @@ class ACEShaderNodeFactory:
                 utils.note_swallowed("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node", exc)
                 return None, False
             changed = True
-            created = True
         with utils.logged_errors("shader_tree.ACEShaderNodeFactory._ensure_helper_attr_node#2"):
             if str(helper_node.get(cls._HELPER_NODE_OWNER_KEY, "") or "") != str(ace_id or ""):
                 helper_node[cls._HELPER_NODE_OWNER_KEY] = str(ace_id or "")

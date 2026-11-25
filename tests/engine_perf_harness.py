@@ -6,7 +6,7 @@ import sys
 import time
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 try:
     import numpy as np

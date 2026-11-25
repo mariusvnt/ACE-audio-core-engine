@@ -164,6 +164,10 @@ _LIVE_DEVICE_CACHE_TS: float = 0.0
 _LIVE_DEVICE_CACHE_INTERVAL: float = 2.0  # seconds between PortAudio rescans
 
 
+class _NoLiveBackend(Exception):
+    """sounddevice is unavailable; only the Auto entry is listed."""
+
+
 def _refresh_live_device_cache() -> None:
     """Enumerate live input devices and update the module-level cache."""
     global _LIVE_DEVICE_CACHE, _LIVE_DEVICE_CACHE_TS
@@ -172,6 +176,11 @@ def _refresh_live_device_cache() -> None:
     ]
     try:
         import sounddevice as sd  # type: ignore
+    except Exception:  # noqa: BLE001 boundary: not installed (or its PortAudio DLL fails) means no live devices
+        sd = None
+    try:
+        if sd is None:
+            raise _NoLiveBackend()
         devices = sd.query_devices()
         hostapis = sd.query_hostapis()
         for idx, dev in enumerate(devices):
@@ -213,7 +222,8 @@ def _refresh_live_device_cache() -> None:
                     label = f"{label} ({host_name})"
                 items.append((f"loopback:{idx}", label, f"WASAPI loopback — capture {out_ch} ch from this output"))
     except Exception as exc:
-        utils.note_swallowed("properties._refresh_live_device_cache", exc)
+        if not isinstance(exc, _NoLiveBackend):
+            utils.note_swallowed("properties._refresh_live_device_cache", exc)
         items.append(
             (
                 "__MISSING__",

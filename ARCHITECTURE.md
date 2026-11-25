@@ -293,6 +293,19 @@ render lock-interface safety guard for handler write operations
 rate-limited runtime logging to avoid console flooding
 graceful fallback paths for missing optional dependencies
 
+### 13.1 Error handling
+No error is absorbed silently.
+Boundaries keep one broad catch and log it, marked `# noqa: BLE001 boundary: <reason>`:
+Blender handlers and timers, panel `draw()`, operator `execute()`/`modal()`, thread loops,
+the worker job entry, registration rollback, and imports of optional native packages.
+Inside a boundary, a fallback that is the right outcome records the error:
+`with utils.logged_errors("module.function"):` to carry on, or
+`utils.note_swallowed("module.function", exc)` before a fallback value.
+Recorded errors are counted in `utils.swallowed_errors()` and printed (throttled) with debug logging on.
+Prefer a specific exception type, or `utils.as_int` / `utils.as_float` for value coercion, over a broad catch.
+`tests/test_error_handling.py` fails on any broad handler that neither records, logs nor re-raises,
+and the headless Blender run (`tests/run_in_blender.py`) fails if a normal session records any error.
+
 ## 14. Performance Design Notes
 proxy attributes are cached and only updated when needed
 task outputs are frame-cached per node

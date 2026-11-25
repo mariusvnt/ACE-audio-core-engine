@@ -25,6 +25,8 @@ import threading
 import time
 import multiprocessing
 import concurrent.futures
+import contextlib
+import sys
 from dataclasses import dataclass
 from collections import deque, OrderedDict
 from typing import Dict, List, Any, Optional
@@ -42,7 +44,7 @@ except ImportError:  # pragma: no cover - Blender provides this at runtime
     def persistent(fn):
         return fn
 
-from .abstract_tree import ACEAbstractTree, ACEAbstractNode, ACEFrontendRef, ACEConsumerIntent
+from .abstract_tree import ACEAbstractTree, ACEAbstractNode, ACEFrontendRef
 from .audio_influx import AudioReception, build_live_flow_identifier
 from ..nodes.dummy_tree import ACEDummyTreeReader
 from .id_management import ACEIdManager
@@ -1001,6 +1003,27 @@ class _ACEPreviewAudioMonitor:
 # ==============================================================================
 # ENGINE ORCHESTRATOR
 # ==============================================================================
+
+@contextlib.contextmanager
+def _main_script_hidden_from_spawn():
+    """Keep spawned DSP workers from re-running Blender's ``--python`` script.
+
+    ``spawn`` re-imports ``__main__`` from its file in each new worker; under
+    ``blender --python script.py`` that is the script, which imports bpy and
+    kills the worker. Workers start inside ``submit()``, so the file is hidden
+    only around it.
+    """
+    main_module = sys.modules.get("__main__")
+    main_file = getattr(main_module, "__file__", None)
+    if main_module is None or main_file is None:
+        yield
+        return
+    del main_module.__file__
+    try:
+        yield
+    finally:
+        main_module.__file__ = main_file
+
 
 class ACEAudioEngine:
     """Central orchestrator for the AudioCore Engine DSP pipeline.
@@ -2664,7 +2687,8 @@ class ACEAudioEngine:
             payload["graph_ir"] = dict(getattr(graph, "parallel_ir", {}) or {})
 
         try:
-            future_obj = self._parallel_executor.submit(evaluate_parallel_job, payload)
+            with _main_script_hidden_from_spawn():
+                future_obj = self._parallel_executor.submit(evaluate_parallel_job, payload)
         except Exception as e:
             for slot_key in payload_slot_keys:
                 self._parallel_release_payload_slot(slot_key)
@@ -5301,7 +5325,8 @@ class ACEAudioEngine:
             return
 
         frontends = self.discover_scene_frontends(scene)
-        self._last_frontend_membership_signature = self._frontend_membership_signature(frontends)
+        membership_signature = self._frontend_membership_signature(frontends)
+        self._last_frontend_membership_signature = membership_signature
         has_shader_frontends = any(
             str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
             for rec in (frontends or [])
@@ -5392,6 +5417,9 @@ class ACEAudioEngine:
             merged_tree.merge_from(partial_tree)
 
         self.compile(merged_tree, scene)
+        # compile() clears the runtime refs, this signature included; without it
+        # every auto-compile poll sees a membership change and rebuilds.
+        self._last_frontend_membership_signature = membership_signature
         self._compiled_frontend_refs.clear()
         self._compiled_frontend_snapshots = {
             rec.frontend_ref.uid: self._compiled_snapshot_from_discovery(rec)

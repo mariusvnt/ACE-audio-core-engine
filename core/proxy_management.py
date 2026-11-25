@@ -1061,10 +1061,7 @@ class ACEProxyManager:
         if material is None:
             return None
 
-        with utils.logged_errors("proxy_management.ACEProxyManager.ensure_sonar_shader_setup#3"):
-            if not bool(getattr(material, "use_nodes", False)):
-                material.use_nodes = True
-
+        # Blender 5 materials always have a node tree (Material.use_nodes is deprecated).
         tree = getattr(material, "node_tree", None)
         if tree is None:
             return None
@@ -1263,9 +1260,6 @@ class ACEProxyManager:
 
         with utils.logged_errors("proxy_management.ACEProxyManager._sync_sonar_tree"):
             ACEDummyNodeFactory.ensure_node_groups_exist()
-
-        base_group_name = ACEDummyNodeFactory.get_group_name('source_mngmt', 'src')
-        base_group = bpy.data.node_groups.get(base_group_name)
 
         # Ensure mandatory IO nodes exist
         input_node = next((n for n in tree.nodes if n.type == 'GROUP_INPUT'), None)

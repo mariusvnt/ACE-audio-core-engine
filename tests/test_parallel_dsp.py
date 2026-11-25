@@ -301,6 +301,27 @@ class TestParallelDSP(unittest.TestCase):
         self.assertTrue(np.isfinite(float(values["rms:0"])))
         self.assertGreater(float(values["rms:0"]), 0.0)
 
+    def _job_for(self, graph_ir, digest):
+        n = 512
+        mono = np.zeros(n, dtype=np.float32)
+        return {
+            "generation_id": 7, "graph_uid": "bad_graph", "frame_id": 1, "block_size": n,
+            "sample_rate": 48000, "graph_ir_digest": digest, "graph_ir": graph_ir,
+            "source_chunks": {"src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0}},
+        }
+
+    def test_worker_rejects_out_of_range_output_socket(self):
+        ir = self._specs_splitter_stream_graph_ir()
+        ir["links"][1] = ("specs", 3, "split", 0)  # Source Specs has outputs 0..2
+        with self.assertRaisesRegex(ValueError, "has 3 output"):
+            self.pds.evaluate_parallel_job(self._job_for(ir, "digest_bad_socket"))
+
+    def test_worker_rejects_link_to_unknown_node(self):
+        ir = self._specs_splitter_stream_graph_ir()
+        ir["links"].append(("ghost", 0, "rms", 0))
+        with self.assertRaisesRegex(ValueError, "unknown node 'ghost'"):
+            self.pds.evaluate_parallel_job(self._job_for(ir, "digest_unknown_node"))
+
     def test_worker_supports_lufs_stream_operator(self):
         n = 2048
         sr = 48000

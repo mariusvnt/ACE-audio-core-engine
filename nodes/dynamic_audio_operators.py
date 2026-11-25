@@ -119,9 +119,6 @@ class ACESplitterManager:
         # Store state in custom property so UI knows what to show
         node['ace_band_count'] = band_count
 
-        # Ensure instance sockets expose the intended Hz range in the GN editor.
-        ACESplitterManager._ensure_node_socket_limits(node)
-        
         # Force refresh
         node.update()
 
@@ -142,10 +139,6 @@ class ACESplitterManager:
         with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#2"):
             sock.max_value = 20000.0
         with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#3"):
-            sock.soft_min = 20.0
-        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#4"):
-            sock.soft_max = 20000.0
-        with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._set_interface_socket_limits#5"):
             sock.default_value = float(min(max(float(sock.default_value), 20.0), 20000.0))
 
     @staticmethod
@@ -157,20 +150,6 @@ class ACESplitterManager:
             except Exception as exc:
                 utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._ensure_split_socket_limits", exc)
                 continue
-
-    @staticmethod
-    def _ensure_node_socket_limits(node: bpy.types.Node):
-        for idx, sock in enumerate(getattr(node, "inputs", [])):
-            if idx == 0:
-                continue
-            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits"):
-                sock.min_value = 0.0
-            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits#2"):
-                sock.max_value = 20000.0
-            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits#3"):
-                sock.soft_min = 20.0
-            with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._ensure_node_socket_limits#4"):
-                sock.soft_max = 20000.0
 
     @staticmethod
     def _variant_has_current_internals(ng: bpy.types.NodeTree) -> bool:

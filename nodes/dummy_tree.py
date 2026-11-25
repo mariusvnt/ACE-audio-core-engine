@@ -408,8 +408,6 @@ class ACEDummyNodeFactory:
                     for attr_name, value in (
                         ("min_value", 0.05),
                         ("max_value", 3.0),
-                        ("soft_min", 0.05),
-                        ("soft_max", 3.0),
                     ):
                         with utils.logged_errors("dummy_tree.ACEDummyNodeFactory._build_group_content#2"):
                             setattr(item, attr_name, value)
@@ -1387,12 +1385,8 @@ class ACEDummyTreeReader:
 
     @staticmethod
     def _resolve_target_socket_idx(target_node, to_socket) -> Optional[int]:
-        target_socket_idx = None
-        try:
-            target_socket_idx = to_socket.index  # type: ignore[attr-defined]
-        except Exception as exc:
-            utils.note_swallowed("dummy_tree.ACEDummyTreeReader._resolve_target_socket_idx", exc)
-            target_socket_idx = None
+        # Not every socket type exposes .index (NodeSocketBundle does not).
+        target_socket_idx = getattr(to_socket, "index", None)
         if target_socket_idx is not None:
             return target_socket_idx
 

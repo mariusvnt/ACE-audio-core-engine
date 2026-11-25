@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - runtime/platform dependent
     _SHARED_MEMORY_AVAILABLE = False
 
 from .. import utils
+from ..vars import ACE_NODES
 from .audio_tasks_registry import (
     SAMPLE_RATE,
     AudioChunk,
@@ -460,6 +461,20 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
     return ACEAudioTask(node_id, params, bs)
 
 
+# Node types whose output count depends on the instance (splitter band count).
+_VARIABLE_OUTPUT_TYPES = {("delta", "frequency_splitter")}
+
+
+def _declared_output_count(category: str, node_type: str) -> Optional[int]:
+    """Output count from the node registry, or None when it is unknown or variable."""
+    if not category or (category, node_type) in _VARIABLE_OUTPUT_TYPES:
+        return None
+    node_def = ACE_NODES.get(category, {}).get("nodes", {}).get(node_type)
+    if node_def is None:
+        return None
+    return len(node_def.get("outputs", []))
+
+
 def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size: int) -> _CompiledWorkerGraph:
     """Build a _CompiledWorkerGraph from a serialised graph IR dict.
 
@@ -516,7 +531,7 @@ def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size
 
     for raw in links:
         if not isinstance(raw, (list, tuple)) or len(raw) < 4:
-            continue
+            raise ValueError(f"Malformed graph IR link: {raw!r}")
         src_id = str(raw[0] or "")
         src_sock = int(raw[1] or 0)
         dst_id = str(raw[2] or "")
@@ -524,7 +539,15 @@ def _compile_worker_graph(graph_ir: Dict[str, Any], sample_rate: int, block_size
         src_task = tasks.get(src_id)
         dst_task = tasks.get(dst_id)
         if src_task is None or dst_task is None:
-            continue
+            missing = src_id if src_task is None else dst_id
+            raise ValueError(f"Graph IR link {src_id}[{src_sock}] -> {dst_id}[{dst_sock}] references unknown node '{missing}'")
+        src_rec = dict(nodes.get(src_id, {}) or {})
+        declared = _declared_output_count(str(src_rec.get("category", "") or ""), str(src_rec.get("type", "") or ""))
+        if declared is not None and not 0 <= src_sock < declared:
+            raise ValueError(
+                f"Graph IR link {src_id}[{src_sock}] -> {dst_id}[{dst_sock}]: "
+                f"'{src_rec.get('type')}' has {declared} output(s)"
+            )
         connect_fn = getattr(dst_task, "connect_input", None)
         if callable(connect_fn):
             connect_fn(input_idx=dst_sock, target_task=src_task, target_output_idx=src_sock)

@@ -401,8 +401,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if self.node_type_key == 'frequency_splitter':
             node['ace_band_count'] = max(2, min(int(node.get('ace_band_count', splitter_bands)), 8))
             node.label = f"{node.label} ({int(node['ace_band_count'])} Bands)"
-            with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#3"):
-                ACESplitterManager._ensure_node_socket_limits(node)
         if self.node_type_key == 'audio_math':
             node["ace_input_count"] = max(2, min(int(node.get("ace_input_count", audio_math_inputs)), 8))
             node["ace_op"] = node.get("ace_op", "add")
