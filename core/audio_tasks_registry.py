@@ -119,7 +119,7 @@ def _clear_file_open_locks():
             _FILE_OPEN_LOCKS.pop(k, None)
 
 
-def _finite_copy(arr, dtype=np.float32):
+def _finite_copy(arr, dtype="float32"):
     """Copy of `arr` with NaN and infinities set to 0 (np.nan_to_num's result, ~4x cheaper).
 
     Always a new array, so callers may modify it in place. dtype=None keeps
