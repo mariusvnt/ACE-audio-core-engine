@@ -34,8 +34,8 @@ from blender_helpers import find_addon_key  # noqa: E402
 
 ADDON = find_addon_key()
 NODE_TYPES = (
-    ("loudness", "rms"), ("loudness", "peak"), ("loudness", "lufs"), ("spectral", "centroid"),
-    ("spectral", "flux"), ("spectral", "zcr"), ("onset", None), ("pitch", None),
+    ("loudness", "rms"), ("loudness", "peak"), ("loudness", "lufs"), ("brightness", None),
+    ("onset", None), ("pitch", None),
 )
 
 

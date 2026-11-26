@@ -7,7 +7,7 @@ from ... import utils
 from .base import ACEAudioTask
 from .block_size import _block_duration_ms
 from .chunk import SAMPLE_RATE, _analysis_signal_for_chunk, _append_analysis_op, _ensure_audio_chunk, _normalized_analysis_ops, _spawn_audio_chunk
-from .spectral import _resolve_chunk_fft_size, _resolve_effective_bin_indices
+from .spectral import _analysis_fft_size, _resolve_effective_bin_indices
 
 
 # Split frequencies closer than this coincide: the band between them is empty.
@@ -319,10 +319,7 @@ class ChromagramTask(ACEAudioTask):
         shared_spec_token = getattr(chunk, "spectrum_token", None)
         analysis_ops = _normalized_analysis_ops(chunk)
         base_latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
-        fft_size = _resolve_chunk_fft_size(
-            chunk,
-            fallback_size=max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 0), 1),
-        )
+        fft_size = _analysis_fft_size(max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 0), 1))
         # Chroma projection is spectral-domain constrained; account for an
         # approximate half-window analysis lag in branch latency tracking.
         latency_ms = base_latency_ms + (0.5 * _block_duration_ms(sr, fft_size))
@@ -383,10 +380,7 @@ class AutoComponentSplitterTask(ACEAudioTask):
         shared_spec_token = getattr(chunk, "spectrum_token", None)
         analysis_ops = _normalized_analysis_ops(chunk)
         base_latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
-        fft_size = _resolve_chunk_fft_size(
-            chunk,
-            fallback_size=max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 0), 1),
-        )
+        fft_size = _analysis_fft_size(max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 0), 1))
         # Auto-component separation uses inter-frame spectral deltas and keeps
         # one extra frame of historical context.
         latency_ms = base_latency_ms + _block_duration_ms(sr, fft_size)

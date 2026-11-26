@@ -7,10 +7,9 @@ from typing import Dict, Any, Optional, Tuple
 import numpy as np
 from ..input.reception import AudioReception, build_live_flow_identifier
 from ... import utils
-from .analyzer import AudioFluxAnalyzer
 from .base import ACEAudioTask
 from .block_size import _resolve_block_size_default
-from .chunk import AudioChunk, SAMPLE_RATE, _make_silence_chunk
+from .chunk import SAMPLE_RATE, _make_silence_chunk
 from .frontend import SourceFrontendProcessor
 from .source_clock import SourceClock
 from .source_frontend import SourceFrontendStage
@@ -45,7 +44,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self.reader_path: Optional[str] = None
         self.reader_channels = 1
         self.sample_rate = SAMPLE_RATE
-        self.analysis: Optional[AudioFluxAnalyzer] = None
         self._frontend_processor = SourceFrontendProcessor()
         self.initialized = False
         self._env_state = 0.0
@@ -223,15 +221,9 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         if size == int(self.block_size):
             self._adopt_workspace_for_size(size)
             return
-        if self.analysis:
-            AudioFluxAnalyzer.release(self.analysis)
         self.block_size = size
         self._adopt_workspace_for_size(size)
         self._frontend_processor.reset()
-        if self.source_ready:
-            self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, size)
-        else:
-            self.analysis = None
         self._reset_sample_clocks()
 
     def _reopen_for_config_change(self):
@@ -239,10 +231,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             with utils.logged_errors("source.SourceTask._reopen_for_config_change"):
                 self.reception.close()
         self.reception = None
-        if self.analysis is not None:
-            with utils.logged_errors("source.SourceTask._reopen_for_config_change#2"):
-                AudioFluxAnalyzer.release(self.analysis)
-        self.analysis = None
         self._reset_sample_clocks()
         self.cached_output = None
         self.last_frame_processed = -1
@@ -253,7 +241,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self.last_error = ""
 
     def _load_source(self):
-        """Load source audio into memory and prepare analyzers."""
+        """Load source audio into memory."""
         self.initialized = True
         ctx = self.source_context
 
@@ -345,12 +333,10 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
                     self._pending_ctx_writes["live_status"] = ""
 
         if not self.source_ready:
-            self.analysis = None
             self._last_config_signature = self._config_signature()
             self._last_live_retry_ts = time.time()
             return
 
-        self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
         self._last_config_signature = self._config_signature()
         self._hpf_state = {"x1": 0.0, "y1": 0.0}
         self._lpf_state = {"x1": 0.0, "y1": 0.0}
@@ -368,11 +354,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         if engine and hasattr(getattr(engine, "frame", None), "adjust_graph_block_size_for_task"):
             engine.frame.adjust_graph_block_size_for_task(self, new_size)
 
-    def compute_feature(self, name: str, chunk: AudioChunk):
-        if not self.analysis:
-            return None
-        return self.analysis.compute_feature(name, chunk)
-
     def close(self):
         # Stop prefetch thread before closing reception so it cannot call
         # reception.read_block() after the underlying resource is freed.
@@ -381,9 +362,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             with utils.logged_errors("source.SourceTask.close"):
                 self.reception.close()
             self.reception = None
-        if self.analysis:
-            AudioFluxAnalyzer.release(self.analysis)
-            self.analysis = None
         self._last_config_signature = None
         self._reset_sample_clocks()
         self.live_ready = True

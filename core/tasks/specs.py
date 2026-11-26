@@ -3,7 +3,6 @@
 import threading
 from queue import Queue
 from typing import Dict, Any, Optional, Tuple
-from ..input.reception import AudioReception
 from ... import utils
 from .base import ACEAudioTask
 from .chunk import SAMPLE_RATE, _ensure_audio_chunk
@@ -18,7 +17,6 @@ class SourceSpecsTask(TempoEstimation, LongTermAnalysis, ACEAudioTask):
     _GLOBAL_CACHE_TTL = 120.0  # seconds
     _GLOBAL_CACHE_MAX = 128
     _LONG_TERM_MAX_SECONDS = 15.0
-    _LONG_TERM_BLOCKS_PER_TICK = 3
     _LONG_TERM_TICK_INTERVAL_S = 0.05
     _GLOBAL_CACHE_LOCK = threading.Lock()
     _BG_QUEUE_MAX = 16
@@ -39,13 +37,6 @@ class SourceSpecsTask(TempoEstimation, LongTermAnalysis, ACEAudioTask):
         self._long_term_done: bool = False
         self._auto_bpm_key = "ace_bpm_auto"
         self._auto_meter_key = "ace_meter_auto"
-        self._analysis_rec: Optional[AudioReception] = None
-        self._analysis_analyzer = None
-        self._analysis_block: int = 0
-        self._analysis_sr: int = SAMPLE_RATE
-        self._analysis_flux_vals: list[float] = []
-        self._analysis_total_samples: int = 0
-        self._analysis_frame_idx: int = 0
         self._analysis_next_tick_ts: float = 0.0
 
     def process(self, inputs):

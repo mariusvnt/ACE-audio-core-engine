@@ -139,18 +139,12 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketVector', 'Stereo Vector')],
             },
-            "spectral": {
-            "label": "Spectral",
+            "brightness": {
+            "label": "Brightness",
             "icon": "SEQ_HISTOGRAM",
-            "description": "Timbre of the frame. Centroid: brightness in Hz. Flux: spectral change since the previous frame. Zero Crossing Rate: noisiness (0..1).",
+            "description": "Spectral centroid in Hz: where the energy of the frame sits, from dark to bright. Behind a Frequency Splitter, within the band.",
             "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Spectral')],
-            "modes": [
-                ("centroid", "Centroid", "Weighted mean frequency in Hz, from dark to bright."),
-                ("flux", "Flux", "Spectral change rate between the previous and current frame."),
-                ("zcr", "Zero Crossing", "Noisiness: 0 = no active frequency, 1 = every frequency is active."),
-            ],
-            "default_mode": "centroid",
+            "outputs": [('NodeSocketFloat', 'Brightness')],
             },
             "pitch": {
             "label": "Pitch",
@@ -228,9 +222,6 @@ LEGACY_STREAM_TYPES: dict[str, tuple[str, str]] = {
     "peak": ("loudness", "peak"),
     "stereo_width": ("stereo", "width"),
     "stereo_balance": ("stereo", "balance"),
-    "spectral_centroid": ("spectral", "centroid"),
-    "spectral_flux": ("spectral", "flux"),
-    "zero_crossing_rate": ("spectral", "zcr"),
 }
 
 # Silence floor of every Loudness method: 0 at this level and below. Not user-editable.

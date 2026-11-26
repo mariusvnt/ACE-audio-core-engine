@@ -1,7 +1,10 @@
 """Spectrum, masking and level helpers shared by tasks."""
 
 import math
-from typing import Optional, Tuple
+import threading
+import zlib
+from collections import OrderedDict
+from typing import Dict, Optional, Tuple
 import numpy as np
 from ... import utils
 from .base import _LAYER3_THREAD_LOCAL
@@ -94,40 +97,6 @@ def _safe_rms(signal: np.ndarray) -> float:
     if (not np.isfinite(mean_square)) or mean_square <= 0.0:
         return 0.0
     return float(math.sqrt(mean_square) * peak)
-
-
-def _zero_crossing_rate(mono: np.ndarray, epsilon: float = 1e-6) -> float:
-    signal = np.asarray(mono, dtype=np.float32).reshape(-1)
-    n = int(signal.shape[0] or 0)
-    if n < 2:
-        return 0.0
-
-    if signal.size > 0:
-        signal = _finite_copy(signal)
-    eps = float(max(epsilon, 0.0))
-    signs = np.zeros(n, dtype=np.int8)
-    if eps > 0.0:
-        signs[signal > eps] = 1
-        signs[signal < -eps] = -1
-    else:
-        signs[signal > 0.0] = 1
-        signs[signal < 0.0] = -1
-    zero_mask = signs == 0
-    if np.any(zero_mask):
-        nz = np.flatnonzero(~zero_mask)
-        if nz.size == 0:
-            return 0.0
-        first = int(nz[0])
-        # Forward-fill sign values entirely in NumPy (no Python loop).
-        fill_idx = np.zeros(n, dtype=np.intp)
-        fill_idx[nz] = nz
-        if first > 0:
-            fill_idx[:first] = first
-        np.maximum.accumulate(fill_idx, out=fill_idx)
-        signs = signs[fill_idx]
-
-    crossings = int(np.count_nonzero(signs[1:] != signs[:-1]))
-    return float(crossings / float(max(n - 1, 1)))
 
 
 def _chunk_has_mask_constraints(chunk: AudioChunk) -> bool:
@@ -403,6 +372,67 @@ def _band_stereo_levels(chunk: AudioChunk) -> Optional[Tuple[float, float, float
     return float(ms[0]), float(ms[1]), float(ms[2]), float(ms[3])
 
 
+# Spectra by what they are made of; the bands of one chunk share one transform.
+_SPECTRUM_CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_SPECTRUM_CACHE_MAX = 64
+_SPECTRUM_CACHE_LOCK = threading.Lock()
+_HANN: Dict[int, np.ndarray] = {}
+
+
+def clear_spectrum_cache() -> None:
+    with _SPECTRUM_CACHE_LOCK:
+        _SPECTRUM_CACHE.clear()
+
+
+def _frame_spectrum(chunk: AudioChunk, n: int) -> np.ndarray:
+    """Magnitude spectrum of the last *n* analysis samples under a periodic Hann window.
+
+    The key holds the samples (a CRC) besides the chunk's token and frame: the
+    token and frame stay the same when the file, sample rate or frame rate
+    changes, and another setup's spectrum must never come back.
+    """
+    frame = np.ascontiguousarray(_analysis_frame(chunk, n)[0], dtype=np.float32)
+    token = chunk.spectrum_token if chunk.spectrum_token is not None else tuple(chunk.lineage or ())
+    key = (token, _normalized_analysis_ops(chunk), int(chunk.frame_index), int(chunk.sample_rate), int(n), zlib.crc32(frame))
+    with _SPECTRUM_CACHE_LOCK:
+        mag = _SPECTRUM_CACHE.get(key)
+        if mag is not None:
+            _SPECTRUM_CACHE.move_to_end(key)
+            return mag
+    window = _HANN.get(n)
+    if window is None:
+        window = _HANN.setdefault(n, 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / n))
+    mag = np.abs(np.fft.rfft(frame * window))
+    with _SPECTRUM_CACHE_LOCK:
+        _SPECTRUM_CACHE[key] = mag
+        while len(_SPECTRUM_CACHE) > _SPECTRUM_CACHE_MAX:
+            _SPECTRUM_CACHE.popitem(last=False)
+    return mag
+
+
+def _band_centroid(chunk: AudioChunk) -> float:
+    """Spectral centroid in Hz of the chunk's band: sum(f * |X|) / sum(|X|) over the band's bins.
+
+    The frame is the FFT length ending with the block, so it starts in the
+    audio before it. A band that holds no bin of this FFT, or a silent frame, gives 0.
+    """
+    mono, _ = _analysis_signals_normalized(chunk)
+    block = int(mono.size)
+    if block == 0:
+        return 0.0
+    n = _analysis_fft_size(block)
+    inside = _band_bins(chunk, n, block)
+    if not inside.any():
+        return 0.0
+    mag = _frame_spectrum(chunk, n)[inside]
+    total = float(np.sum(mag))
+    if total <= 1e-9:
+        return 0.0
+    freqs = np.fft.rfftfreq(n, d=1.0 / float(max(chunk.sample_rate, 1)))[inside]
+    value = float(np.dot(freqs, mag) / total)
+    return value if math.isfinite(value) else 0.0
+
+
 def _remap_indices_fft_domain(
     indices: np.ndarray,
     src_fft_size: int,
@@ -437,14 +467,9 @@ def _remap_indices_fft_domain(
     return np.unique(mapped)
 
 
-def _resolve_chunk_fft_size(chunk: AudioChunk, fallback_size: int) -> int:
-    provider = getattr(chunk, "provider", None)
-    analyzer = getattr(provider, "analysis", None) if provider is not None else None
-    fft_len = getattr(analyzer, "fft_length", None)
-    if fft_len:
-        with utils.logged_errors("spectral._resolve_chunk_fft_size"):
-            return max(int(fft_len), 1)
-    return max(int(fallback_size), 1)
+def _analysis_fft_size(block: int) -> int:
+    """FFT length of the spectral measurements: the next power of two of the block, at least 64."""
+    return 1 << max(6, int(math.ceil(math.log2(max(int(block), 1)))))
 
 
 def _resolve_effective_bin_indices(chunk: AudioChunk, fft_size: int) -> Optional[np.ndarray]:

@@ -347,10 +347,8 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     stream_types = (
         ("rms", atr.RMSTask),
         ("pitch", atr.PitchTask),
-        ("spectral_centroid", atr.SpectralCentroidTask),
-        ("spectral_flux", atr.SpectralFluxTask),
+        ("brightness", atr.BrightnessTask),
         ("onset", atr.OnsetTask),
-        ("zero_crossing_rate", atr.ZeroCrossTask),
         ("stereo_width", atr.StereoWidthTask),
         ("stereo_balance", atr.StereoBalanceTask),
     )

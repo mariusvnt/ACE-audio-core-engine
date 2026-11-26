@@ -113,7 +113,7 @@ def check_tempo_matches_music(fps):
 
 def check_centroid_tracks_sweep(fps):
     """On a pure sweep the centroid is the sweep frequency."""
-    curve = _golden("sine_sweep", fps)["stream.spectral.centroid/Spectral"]
+    curve = _golden("sine_sweep", fps)["stream.brightness/Brightness"]
     f = _sweep_frequency(_frame_centres(len(curve), fps))
     band = (f > 200.0) & (f < 8000.0)
     octaves = np.abs(np.log2(np.maximum(curve[band], 1e-9) / f[band]))
@@ -122,21 +122,12 @@ def check_centroid_tracks_sweep(fps):
 
 
 def check_centroid_matches_librosa(fps):
-    curve = _golden("music_synth", fps)["stream.spectral.centroid/Spectral"]
+    curve = _golden("music_synth", fps)["stream.brightness/Brightness"]
     y, sr = fixtures.render("music_synth")
     mags, times = _ace_stft(y.mean(axis=1), sr, fps)
     ref = librosa.feature.spectral_centroid(S=mags, sr=sr)[0]
     r = _pearson(np.interp(_frame_centres(len(curve), fps), times, ref), curve)
     return r >= 0.9, f"Pearson r {r:.3f}"
-
-
-def check_flux_matches_librosa(fps):
-    curve = _golden("music_synth", fps)["stream.spectral.flux/Spectral"]
-    y, sr = fixtures.render("music_synth")
-    mags, times = _ace_stft(y.mean(axis=1), sr, fps)
-    ref = np.r_[0.0, np.sum(np.maximum(np.diff(mags, axis=1), 0.0), axis=0)]
-    r = _pearson(np.interp(_frame_centres(len(curve), fps), times, ref), curve)
-    return r >= 0.8, f"Pearson r {r:.3f}"
 
 
 def check_pitch_tracks_sweep(fps):

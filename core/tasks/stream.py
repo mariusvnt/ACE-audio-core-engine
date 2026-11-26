@@ -9,7 +9,7 @@ from ...vars import LEGACY_STREAM_TYPES, LOUDNESS_FLOOR_DB, resolve_node_mode
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk
 from .filters import _biquad_filter_block
-from .spectral import _analysis_signals_normalized, _band_rms, _band_stereo_levels, _chunk_has_mask_constraints, _chunk_pitch, _masked_mono_signal, _masked_spectrum, _safe_rms, _zero_crossing_rate
+from .spectral import _analysis_signals_normalized, _band_centroid, _band_rms, _band_stereo_levels, _chunk_has_mask_constraints, _chunk_pitch, _masked_mono_signal, _masked_spectrum, _safe_rms
 
 
 def _loudness_db_to_unit(db_value: float) -> float:
@@ -331,75 +331,12 @@ class PitchTask(ACEAudioTask):
         return chunk.get_feature("pitch", lambda: _chunk_pitch(chunk))
 
 
-class SpectralCentroidTask(ACEAudioTask):
-    """Compute the spectral centroid (brightness) of the audio chunk."""
+class BrightnessTask(ACEAudioTask):
+    """Spectral centroid in Hz: where the energy of the frame (or of its band) sits, from dark to bright."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        val = None
-        if isinstance(chunk, AudioChunk) and chunk.provider:
-            val = chunk.get_feature("centroid", lambda: chunk.provider.compute_feature("centroid", chunk))
-        if val is not None:
-            with utils.logged_errors("stream.SpectralCentroidTask.process"):
-                resolved = float(val)
-                if np.isfinite(resolved):
-                    return resolved
-
-        mag, freqs = _masked_spectrum(chunk)
-        denom = float(np.sum(mag, dtype=np.float64))
-        if denom <= 1e-9:
-            return 0.0
-        centroid = float(np.sum(mag.astype(np.float64) * freqs.astype(np.float64), dtype=np.float64) / denom)
-        return float(centroid if np.isfinite(centroid) else 0.0)
-
-
-class SpectralFluxTask(ACEAudioTask):
-    """Measure frame-to-frame change in the power spectrum (spectral flux)."""
-
-    def __init__(self, node_id, params, block_size):
-        super().__init__(node_id, params, block_size)
-        self._prev_mag: Optional[np.ndarray] = None
-        self._prev_sr: int = 0
-
-    def _fallback_flux(self, chunk: AudioChunk) -> float:
-        mag, _ = _masked_spectrum(chunk)
-        sr = int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
-        if mag.size <= 0:
-            self._prev_mag = None
-            self._prev_sr = sr
-            return 0.0
-        if (
-            self._prev_mag is None
-            or self._prev_mag.shape != mag.shape
-            or int(self._prev_sr) != int(sr)
-        ):
-            self._prev_mag = mag.copy()
-            self._prev_sr = int(sr)
-            return 0.0
-        prev = self._prev_mag.astype(np.float64, copy=False)
-        curr = mag.astype(np.float64, copy=False)
-        diff = curr - prev
-        flux = float(np.sum(np.maximum(diff, 0.0), dtype=np.float64))
-        denom = float(np.sum(prev, dtype=np.float64)) + 1e-9
-        self._prev_mag = mag.copy()
-        self._prev_sr = int(sr)
-        val = flux / denom
-        if not np.isfinite(val):
-            return 0.0
-        return float(np.clip(val, 0.0, 10.0))
-
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        val = None
-        if isinstance(chunk, AudioChunk) and chunk.provider:
-            val = chunk.get_feature("flux", lambda: chunk.provider.compute_feature("flux", chunk))
-        if val is not None:
-            with utils.logged_errors("stream.SpectralFluxTask.process"):
-                resolved = float(val)
-                if np.isfinite(resolved):
-                    return resolved
-
-        return self._fallback_flux(chunk)
+        return chunk.get_feature("brightness", lambda: _band_centroid(chunk))
 
 
 class OnsetTask(ACEAudioTask):
@@ -445,33 +382,7 @@ class OnsetTask(ACEAudioTask):
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        val = None
-        if isinstance(chunk, AudioChunk) and chunk.provider:
-            val = chunk.get_feature("onset", lambda: chunk.provider.compute_feature("onset", chunk))
-        if val is not None:
-            with utils.logged_errors("stream.OnsetTask.process"):
-                resolved = float(val)
-                if np.isfinite(resolved):
-                    return resolved
-
         return self._fallback_onset(chunk)
-
-
-class ZeroCrossTask(ACEAudioTask):
-    """Measure the Zero-Crossing Rate (ZCR) of the audio chunk."""
-
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        val = None
-        if isinstance(chunk, AudioChunk) and chunk.provider:
-            val = chunk.get_feature("zcr", lambda: chunk.provider.compute_feature("zcr", chunk))
-        if val is not None:
-            with utils.logged_errors("stream.ZeroCrossTask.process"):
-                resolved = float(val)
-                if np.isfinite(resolved):
-                    return resolved
-        analysis_mono, _ = _analysis_signals_normalized(chunk)
-        return _zero_crossing_rate(analysis_mono)
 
 
 def _chunk_band_stereo_levels(chunk: AudioChunk) -> Optional[Tuple[float, float, float, float]]:
@@ -571,7 +482,7 @@ class StereoVectorTask(ACEAudioTask):
 _STREAM_TASKS: Dict[str, Dict[str, type]] = {
     "loudness": {"rms": RMSLoudnessTask, "lufs": LUFSTask, "peak": PeakTask},
     "stereo": {"width": StereoWidthTask, "balance": StereoBalanceTask},
-    "spectral": {"centroid": SpectralCentroidTask, "flux": SpectralFluxTask, "zcr": ZeroCrossTask},
+    "brightness": {"": BrightnessTask},
     "stereo_vector": {"": StereoVectorTask},
     "pitch": {"": PitchTask},
     "onset": {"": OnsetTask},

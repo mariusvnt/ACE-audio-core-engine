@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         # minimal: NumPy only, the fallbacks ACE uses when no optional library loads.
-        # bundled: the Linux wheels the extension ships (tools/wheels.txt, AudioFlux trimmed).
+        # bundled: the Linux wheels the extension ships (tools/wheels.txt).
         deps: [minimal, bundled]
     # Perf gates are skipped here (no ACE_PERF); they run in the perf job below.
     steps:

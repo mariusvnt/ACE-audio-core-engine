@@ -29,7 +29,6 @@ MODULE_NAMES = [
     "core.tasks.block_size",
     "core.tasks.base",
     "core.tasks.spectral",
-    "core.tasks.analyzer",
     "core.tasks.source_frontend",
     "core.tasks.source_clock",
     "core.tasks.source",

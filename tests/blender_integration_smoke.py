@@ -1143,7 +1143,7 @@ def _check_panels_draw(addon_key, scene):
 def _check_manual_engine_reset(addon_key, scene):
     """Manual Engine Reset replaces the engine, empties the shared caches and compiles again."""
     engine_cls = importlib.import_module(f"{addon_key}.core.engine.engine").ACEAudioEngine
-    analyzer = importlib.import_module(f"{addon_key}.core.tasks.analyzer").AudioFluxAnalyzer
+    spectral = importlib.import_module(f"{addon_key}.core.tasks.spectral")
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Reset")
     try:
         source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
@@ -1151,12 +1151,12 @@ def _check_manual_engine_reset(addon_key, scene):
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         before = engine_cls.ensure_instance(scene)
         before.compiler.compile_scene_frontends(scene)
-        analyzer._GLOBAL_SPECTRUM_CACHE["stale"] = None
+        spectral._SPECTRUM_CACHE["stale"] = None
         _assert(bpy.ops.audiocore.reset_engine() == {'FINISHED'}, "Reset failed")
         after = engine_cls.get_instance(scene)
         _assert(after is not None and after is not before, "Reset kept the old engine")
         _assert(not before.graphs and after.graphs, "Reset did not rebuild the graphs")
-        _assert("stale" not in analyzer._GLOBAL_SPECTRUM_CACHE, "Reset kept a stale cache")
+        _assert("stale" not in spectral._SPECTRUM_CACHE, "Reset kept a stale cache")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)

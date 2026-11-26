@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from ... import utils
 from ...vars import ACE_NODES
-from ..tasks.analyzer import AudioFluxAnalyzer
 from ..tasks.base import ACEAudioTask
 from ..tasks.chunk import AudioChunk, SAMPLE_RATE
 from ..tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
@@ -54,36 +53,18 @@ class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
 
 
 class _WorkerSourceProvider:
-    """Light provider shim exposing `compute_feature` for stream tasks."""
+    """The source's audio parameters, as the chunks of a worker graph carry them."""
 
     def __init__(self, sample_rate: int, block_size: int):
         self.sample_rate = max(int(sample_rate), 1)
         self.block_size = max(int(block_size), 1)
-        self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
 
     def ensure_context(self, sample_rate: int, block_size: int):
-        """Re-borrow the analyzer when audio parameters change."""
-        sr = max(int(sample_rate), 1)
-        bs = max(int(block_size), 1)
-        if sr == self.sample_rate and bs == self.block_size and self.analysis is not None:
-            return
-        if self.analysis is not None:
-            AudioFluxAnalyzer.release(self.analysis)
-        self.sample_rate = sr
-        self.block_size = bs
-        self.analysis = AudioFluxAnalyzer.borrow(self.sample_rate, self.block_size)
-
-    def compute_feature(self, name: str, chunk: AudioChunk):
-        """Delegate feature computation to the underlying analyzer."""
-        if self.analysis is None:
-            return None
-        return self.analysis.compute_feature(name, chunk)
+        self.sample_rate = max(int(sample_rate), 1)
+        self.block_size = max(int(block_size), 1)
 
     def close(self):
-        """Release the borrowed analyzer back to the pool."""
-        if self.analysis is not None:
-            AudioFluxAnalyzer.release(self.analysis)
-            self.analysis = None
+        pass
 
 
 class _WorkerSourceBridgeTask:

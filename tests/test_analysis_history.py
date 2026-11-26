@@ -119,6 +119,29 @@ class AnalysisHistoryTests(unittest.TestCase):
         self.assertAlmostEqual(self.stream.StereoWidthTask("w", {}, BLOCK).process({0: centred}), 0.0, places=6)
         self.assertAlmostEqual(self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: centred}), 0.0, places=6)
 
+    def test_brightness_of_the_full_band_is_the_hann_centroid_of_the_frame(self):
+        signal = _tone(300.0, 8000) + 0.5 * _tone(4000.0, 8000)
+        value = self.stream.BrightnessTask("c", {}, BLOCK).process({0: self._chunk(signal, 8000)})
+        frame = signal[8000 - 1024:8000].astype(np.float64)  # the 1024-point FFT ends with the block
+        mag = np.abs(np.fft.rfft(frame * (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(1024) / 1024))))
+        freqs = np.fft.rfftfreq(1024, d=1.0 / SR)
+        self.assertAlmostEqual(value, float(np.sum(freqs * mag) / np.sum(mag)), delta=1e-3)
+
+    def test_brightness_stays_inside_the_band(self):
+        signal = _tone(300.0, 8000) + _tone(4000.0, 8000)
+        for bounds in ((20.0, 1000.0), (1000.0, 20000.0), (2000.0, 8000.0)):
+            chunk = self._chunk(signal, 8000, band_hz_bounds=bounds)
+            value = self.stream.BrightnessTask("c", {}, BLOCK).process({0: chunk})
+            self.assertGreaterEqual(value, bounds[0], bounds)
+            self.assertLess(value, bounds[1], bounds)
+
+    def test_brightness_of_a_band_without_a_bin_is_zero_not_the_full_band(self):
+        # A 1024-point FFT at 48 kHz has bins every 46.9 Hz: none lies in 100..120 Hz.
+        chunk = self._chunk(_tone(110.0, 8000) + _tone(3000.0, 8000), 8000, band_hz_bounds=(100.0, 120.0))
+        self.assertEqual(self.stream.BrightnessTask("c", {}, BLOCK).process({0: chunk}), 0.0)
+        silent = self._chunk(np.zeros(8000, dtype=np.float32), 8000)
+        self.assertEqual(self.stream.BrightnessTask("c", {}, BLOCK).process({0: silent}), 0.0)
+
     def test_worker_gets_the_same_history_as_the_main_process(self):
         signal = _tone(55.0, 8000) + _tone(2000.0, 8000)
         local = self._chunk(signal, 8000)

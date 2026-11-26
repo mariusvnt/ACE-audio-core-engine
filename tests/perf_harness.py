@@ -87,8 +87,7 @@ def _scenario_benchmark(atr, operator_count: int, frames: int = 180) -> Dict[str
     op_count = int(max(operator_count, 1))
     stream_factories = (
         lambda idx: atr.RMSTask(f"rms_node_{idx}", {}, block_size=block_size),
-        lambda idx: atr.ZeroCrossTask(f"zcr_node_{idx}", {}, block_size=block_size),
-        lambda idx: atr.SpectralCentroidTask(f"centroid_node_{idx}", {}, block_size=block_size),
+        lambda idx: atr.BrightnessTask(f"brightness_node_{idx}", {}, block_size=block_size),
         lambda idx: atr.StereoWidthTask(f"width_node_{idx}", {}, block_size=block_size),
         lambda idx: atr.StereoBalanceTask(f"balance_node_{idx}", {}, block_size=block_size),
     )

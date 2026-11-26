@@ -5,7 +5,7 @@ from ...core.id_management import ACEIdManager
 from ...core.engine.engine import ACEAudioEngine
 from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...vars import ACE_NODES
-from ... import deps, utils
+from ... import utils
 
 
 _ui_label_icon_ids: set[str] | None = None
@@ -28,8 +28,6 @@ def _deal_breakers():
     except Exception as exc:
         utils.note_swallowed("helpers._deal_breakers", exc)
         issues.append("Unable to read Blender version.")
-    if not deps.available("audioflux"):
-        issues.append("AudioFlux, which ships with the extension, failed to load; the add-on preferences show why.")
     return issues
 
 

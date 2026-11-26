@@ -1,4 +1,4 @@
-"""Mode nodes (Loudness, Stereo, Spectral): task choice, old type names and the Loudness scale."""
+"""Mode nodes (Loudness, Stereo): task choice, old type names and the Loudness scale."""
 
 import unittest
 
@@ -31,9 +31,6 @@ class TestStreamModes(unittest.TestCase):
             ("loudness", "peak"): stream.PeakTask,
             ("stereo", "width"): stream.StereoWidthTask,
             ("stereo", "balance"): stream.StereoBalanceTask,
-            ("spectral", "centroid"): stream.SpectralCentroidTask,
-            ("spectral", "flux"): stream.SpectralFluxTask,
-            ("spectral", "zcr"): stream.ZeroCrossTask,
         }
         for (node_type, mode), task_cls in cases.items():
             task = stream.create_stream_task("n", node_type, {"mode": mode}, 256)
@@ -51,7 +48,7 @@ class TestStreamModes(unittest.TestCase):
             self.assertIs(type(old), type(new), old_type)
 
     def test_every_mode_node_is_declared_with_its_default(self):
-        for node_type in ("loudness", "stereo", "spectral"):
+        for node_type in ("loudness", "stereo"):
             modes = [m[0] for m in ace_vars.node_modes("stream", node_type)]
             self.assertTrue(modes, node_type)
             self.assertIn(ace_vars.resolve_node_mode("stream", node_type, None), modes)

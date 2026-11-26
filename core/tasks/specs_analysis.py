@@ -6,35 +6,12 @@ import threading
 import time
 from queue import Empty, Full
 from typing import Dict, Any, Optional, Tuple
-import numpy as np
-from ..input.reception import AudioReception
 from ... import utils
-from .analyzer import AudioFluxAnalyzer
-from .block_size import _resolve_block_size_default
-from .chunk import AudioChunk, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE, SAMPLE_RATE
-from .source import _get_file_open_lock
 
 
 class LongTermAnalysis:
     def _reset_long_term_analysis_state(self, clear_target: bool = False):
         self._release_global_analysis_slot(self._long_term_target)
-        rec = self._analysis_rec
-        if rec is not None:
-            with utils.logged_errors("specs_analysis.LongTermAnalysis._reset_long_term_analysis_state"):
-                rec.close()
-        self._analysis_rec = None
-
-        analyzer = self._analysis_analyzer
-        if analyzer is not None:
-            with utils.logged_errors("specs_analysis.LongTermAnalysis._reset_long_term_analysis_state#2"):
-                AudioFluxAnalyzer.release(analyzer)
-        self._analysis_analyzer = None
-
-        self._analysis_block = 0
-        self._analysis_sr = SAMPLE_RATE
-        self._analysis_flux_vals = []
-        self._analysis_total_samples = 0
-        self._analysis_frame_idx = 0
         self._analysis_next_tick_ts = 0.0
         if clear_target:
             self._long_term_target = None
@@ -260,89 +237,6 @@ class LongTermAnalysis:
                     cls._BG_QUEUED.discard(target)
                 with utils.logged_errors("specs_analysis.LongTermAnalysis._background_worker_loop#2"):
                     cls._BG_TASK_QUEUE.task_done()
-
-    def _start_long_term_analysis(self, target: Tuple[str, float]) -> bool:
-        filepath, _ = target
-        rec = AudioReception("FILE", filepath=filepath)
-        with _get_file_open_lock(filepath):
-            opened = rec.open()
-        if not opened:
-            return False
-        sr = int(getattr(rec, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
-        block = _resolve_block_size_default(sr, getattr(self, "scene_fps", 24.0))
-        block = int(max(MIN_BLOCK_SIZE, min(block, MAX_BLOCK_SIZE)))
-        try:
-            analyzer = AudioFluxAnalyzer(sr, block)
-        except Exception as exc:
-            utils.note_swallowed("specs_analysis.LongTermAnalysis._start_long_term_analysis", exc)
-            with utils.logged_errors("specs_analysis.LongTermAnalysis._start_long_term_analysis#2"):
-                rec.close()
-            return False
-
-        self._analysis_rec = rec
-        self._analysis_analyzer = analyzer
-        self._analysis_block = block
-        self._analysis_sr = sr
-        self._analysis_flux_vals = []
-        self._analysis_total_samples = 0
-        self._analysis_frame_idx = 0
-        return True
-
-    def _finalize_long_term_analysis(self, ctx: Optional[Any]):
-        flux_vals = list(self._analysis_flux_vals)
-        sr = max(float(self._analysis_sr), 1.0)
-        block = max(int(self._analysis_block), 1)
-        detected = self._estimate_tempo_from_flux(flux_vals, block, sr)
-        if detected:
-            target = self._long_term_target
-            if target is not None:
-                self._store_global_analysis_result(
-                    target,
-                    float(detected["bpm"]),
-                    int(detected["beats_per_bar"]),
-                )
-            self._apply_detected_tempo(
-                ctx,
-                float(detected["bpm"]),
-                int(detected["beats_per_bar"]),
-            )
-        else:
-            self._long_term_done = True
-        self._reset_long_term_analysis_state(clear_target=False)
-
-    def _step_long_term_analysis(self, ctx: Optional[Any]):
-        rec = self._analysis_rec
-        analyzer = self._analysis_analyzer
-        if rec is None or analyzer is None:
-            self._long_term_done = True
-            return
-
-        max_samples = int(max(float(self._analysis_sr), 1.0) * self._LONG_TERM_MAX_SECONDS)
-        reached_end = False
-        for _ in range(max(int(self._LONG_TERM_BLOCKS_PER_TICK), 1)):
-            if self._analysis_total_samples >= max_samples:
-                reached_end = True
-                break
-            chunk = rec.read_block(self._analysis_block)
-            if chunk is None:
-                reached_end = True
-                break
-            mono, stereo, sr_val = chunk
-            self._analysis_total_samples += int(np.asarray(mono).shape[-1])
-            temp_chunk = AudioChunk(
-                mono,
-                stereo,
-                sr_val,
-                frame_index=self._analysis_frame_idx,
-                lineage=("long_term",),
-            )
-            flux = analyzer.compute_feature("flux", temp_chunk)
-            if flux is not None:
-                self._analysis_flux_vals.append(float(flux))
-            self._analysis_frame_idx += 1
-
-        if reached_end or self._analysis_total_samples >= max_samples:
-            self._finalize_long_term_analysis(ctx)
 
     def _maybe_run_long_term_analysis(self, ctx: Optional[Any]):
         target = self.resolve_analysis_target(ctx)

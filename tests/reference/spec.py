@@ -32,7 +32,9 @@ SPLITTER_BANDS = 2
 DEFAULT_TOLERANCE = {"abs": 1e-5, "rel": 1e-4}
 TOLERANCES: Dict[str, Dict[str, float]] = {
     "stream.pitch": {"abs": 1e-3, "rel": 1e-4},             # Hz
-    "stream.spectral.centroid": {"abs": 1e-2, "rel": 1e-4},  # Hz
+    "stream.brightness": {"abs": 1e-2, "rel": 1e-4},         # Hz
+    "delta.frequency_splitter.out00.brightness": {"abs": 1e-2, "rel": 1e-4},
+    "delta.frequency_splitter.out01.brightness": {"abs": 1e-2, "rel": 1e-4},
     "utilities.src_specs": {"abs": 1e-3, "rel": 1e-4},       # frames per beat
     "utilities.stream_accumulator": {"abs": 1e-4, "rel": 1e-4},  # a running sum
 }
@@ -83,7 +85,7 @@ def cases() -> List[dict]:
             })
 
     # Measurements that must stay inside a band: one case per band and measurement.
-    banded = [("stereo", mode) for mode in ("width", "balance")] + [("stereo_vector", None)]
+    banded = [("stereo", mode) for mode in ("width", "balance")] + [("stereo_vector", None), ("brightness", None)]
     for idx in range(SPLITTER_BANDS):
         for node_type, mode in banded:
             if node_type not in stream:

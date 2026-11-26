@@ -6,7 +6,7 @@ import numpy as np
 from ... import utils
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk, _finite_copy
-from .spectral import _aligned_signal_length, _analysis_history, _analysis_signals_normalized, _resolve_chunk_fft_size, _resolve_effective_bin_indices
+from .spectral import _aligned_signal_length, _analysis_history, _analysis_signals_normalized, _analysis_fft_size, _resolve_effective_bin_indices
 
 
 class RollingAvgTask(ACEAudioTask):
@@ -395,10 +395,7 @@ class AudioMathTask(ACEAudioTask):
             merged_band_bounds = None
         else:
             fft_size_candidates = [
-                _resolve_chunk_fft_size(
-                    c,
-                    fallback_size=max(int(getattr(c, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 1), 1),
-                )
+                _analysis_fft_size(max(int(getattr(c, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 1), 1))
                 for c in chunks
             ]
             merged_fft_size = max([max(int(analysis_len or 1), 1)] + fft_size_candidates)

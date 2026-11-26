@@ -1,4 +1,4 @@
-"""Mode nodes (Loudness, Stereo, Spectral): applying a mode, and migrating the old per-method nodes."""
+"""Mode nodes (Loudness, Stereo): applying a mode, and migrating the old per-method nodes."""
 
 import bpy  # type: ignore
 from ..core.id_management import ACEIdManager
@@ -18,9 +18,6 @@ _LEGACY_LABELS = {
     "peak": "Peak",
     "stereo_width": "Stereo Width",
     "stereo_balance": "Stereo Balance",
-    "spectral_centroid": "Spectral Centroid",
-    "spectral_flux": "Spectral Flux",
-    "zero_crossing_rate": "Zero Crossing Rate",
 }
 
 
@@ -152,5 +149,5 @@ def migrate_legacy_stream_nodes() -> int:
                 if _migrate_node(tree, node, *parsed):
                     migrated += 1
     if migrated:
-        utils.log(f"ACE: migrated {migrated} stream node(s) to Loudness / Stereo / Spectral.", "INFO")
+        utils.log(f"ACE: migrated {migrated} stream node(s) to Loudness / Stereo.", "INFO")
     return migrated

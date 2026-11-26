@@ -3,8 +3,7 @@
 
 For every platform in the manifest (or those given with --platform), downloads
 each pinned wheel of tools/wheels.txt built for Blender's Python into
-./wheels/, repackages AudioFlux for that platform (tools/trim_audioflux.py),
-and rewrites the manifest's ``wheels = [...]`` list. Fails when a wheel is
+./wheels/, and rewrites the manifest's ``wheels = [...]`` list. Fails when a wheel is
 missing for a platform, or when a wheel would bring NumPy.
 
 Then: blender --command extension build --split-platforms
@@ -15,6 +14,8 @@ Usage: python tools/fetch_wheels.py [--platform windows-x64 ...] [--no-manifest]
 """
 
 import argparse
+import base64
+import hashlib
 import os
 import re
 import shutil
@@ -30,9 +31,6 @@ WHEELS_DIR = os.path.join(ROOT, "wheels")
 MANIFEST = os.path.join(ROOT, "blender_manifest.toml")
 PYTHON_VERSION = "3.13"  # Blender 5.2
 
-sys.path.insert(0, TOOLS)
-import trim_audioflux  # noqa: E402
-
 # Blender platform -> pip --platform tags, newest first (pip accepts any of them).
 PIP_PLATFORMS = {
     "windows-x64": ["win_amd64"],
@@ -40,7 +38,12 @@ PIP_PLATFORMS = {
     "macos-arm64": ["macosx_11_0_arm64", "macosx_12_0_arm64", "macosx_13_0_arm64", "macosx_14_0_arm64"],
     "linux-x64": ["manylinux_2_28_x86_64", "manylinux_2_27_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64"],
 }
-TRIMMED = "audioflux"
+
+
+def _record_line(path, data):
+    """A wheel RECORD line: path, urlsafe base64 SHA-256 and size."""
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+    return f"{path},sha256={digest},{len(data)}"
 
 
 def _requirements():
@@ -104,7 +107,7 @@ def _retag(src, tag, dest_dir):
                 continue
             data = wheel_text.encode("utf-8") if item.filename == wheel_name else zin.read(item.filename)
             zout.writestr(item, data)
-            records.append(trim_audioflux._record_line(item.filename, data))
+            records.append(_record_line(item.filename, data))
         records.append(f"{record_name},,")
         zout.writestr(record_name, "\n".join(records) + "\n")
     return out_path
@@ -129,15 +132,13 @@ def fetch(platforms):
     for tmp in downloads.values():
         for name in os.listdir(tmp):
             per_project.setdefault(project(name), set()).add(name)
-    mixed = {p for p, names in per_project.items() if len(names) > 1 and p != TRIMMED}
+    mixed = {p for p, names in per_project.items() if len(names) > 1}
     produced = []
     for platform, tmp in downloads.items():
         try:
             for name in sorted(os.listdir(tmp)):
                 src = os.path.join(tmp, name)
-                if project(name) == TRIMMED:
-                    path = trim_audioflux.trim(src, platform, WHEELS_DIR)
-                elif project(name) in mixed and name.endswith("-py3-none-any.whl"):
+                if project(name) in mixed and name.endswith("-py3-none-any.whl"):
                     path = _retag(src, PIP_PLATFORMS[platform][0], WHEELS_DIR)
                 else:
                     path = os.path.join(WHEELS_DIR, name)

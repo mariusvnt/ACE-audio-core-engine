@@ -42,7 +42,7 @@ from blender_helpers import _add_ace_node, _new_gn_tree, find_addon_key  # noqa:
 
 GOLDEN_DIR = os.path.join(HERE, "curves")
 META_PATH = os.path.join(GOLDEN_DIR, "meta.json")
-LIBRARIES = ("numpy", "scipy", "audioflux", "numba", "llvmlite", "soundfile", "sounddevice")
+LIBRARIES = ("numpy", "scipy", "numba", "llvmlite", "soundfile", "sounddevice")
 
 
 def _parse_args():
@@ -138,12 +138,8 @@ def _specs_busy(addon_key, scene) -> str:
 
 
 def _clear_spectrum_cache(addon_key) -> None:
-    """Drop cached spectra. The cache is keyed by node lineage and frame index only, not by
-    file, sample rate or block size: after a switch it hands out the previous fixture's
-    spectra, and with another FFT size the band masks index past their end (IndexError).
-    Manual Engine Reset clears it too."""
-    analyzer_cls = importlib.import_module(f"{addon_key}.core.tasks.analyzer").AudioFluxAnalyzer
-    analyzer_cls._GLOBAL_SPECTRUM_CACHE.clear()
+    """Drop cached spectra, so every fixture starts as a fresh session does (Manual Engine Reset clears it too)."""
+    importlib.import_module(f"{addon_key}.core.tasks.spectral").clear_spectrum_cache()
 
 
 def reset_tempo(source) -> None:
@@ -311,7 +307,6 @@ def _active_features(addon_key) -> dict:
         except ImportError:
             return None
     return {
-        "audioflux": flag("core.tasks.analyzer", "AUDIOFLUX_AVAILABLE"),
         "numba": flag("core.tasks.filters", "NUMBA_AVAILABLE"),
         "scipy": flag("core.tasks.filters", "SCIPY_AVAILABLE"),
     }

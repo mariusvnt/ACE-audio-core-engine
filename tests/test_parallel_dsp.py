@@ -75,11 +75,11 @@ class TestParallelDSP(unittest.TestCase):
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
                 "rms": {"category": "stream", "type": "rms", "parameters": {}},
-                "zcr": {"category": "stream", "type": "zero_crossing_rate", "parameters": {}},
+                "bright": {"category": "stream", "type": "brightness", "parameters": {}},
             },
             "links": [
                 ("src_a", 0, "rms", 0),
-                ("src_a", 0, "zcr", 0),
+                ("src_a", 0, "bright", 0),
             ],
             "source_node_ids": ["src_a"],
             "source_ir": {
@@ -87,7 +87,7 @@ class TestParallelDSP(unittest.TestCase):
             },
             "output_specs": {
                 "rms:0": {"node_id": "rms", "socket_idx": 0, "attr_type": "FLOAT"},
-                "zcr:0": {"node_id": "zcr", "socket_idx": 0, "attr_type": "FLOAT"},
+                "bright:0": {"node_id": "bright", "socket_idx": 0, "attr_type": "FLOAT"},
             },
         }
 
@@ -267,7 +267,7 @@ class TestParallelDSP(unittest.TestCase):
             "sample_rate": 48000,
             "graph_ir_digest": "digest_subset",
             "graph_ir": self._dual_stream_graph_ir(),
-            "output_keys": ["zcr:0"],
+            "output_keys": ["bright:0"],
             "source_chunks": {
                 "src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0},
             },
@@ -275,7 +275,7 @@ class TestParallelDSP(unittest.TestCase):
 
         out = self.pds.evaluate_parallel_job(job)
         values = dict(out.get("values", {}) or {})
-        self.assertIn("zcr:0", values)
+        self.assertIn("bright:0", values)
         self.assertNotIn("rms:0", values)
 
     def test_worker_supports_specs_splitter_stream_chain(self):

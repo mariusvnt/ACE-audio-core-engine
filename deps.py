@@ -37,11 +37,6 @@ LIBRARIES: Dict[str, dict] = {
         "version_label": "Blender",
         "missing_note": "Only WAV files can be read",
     },
-    "audioflux": {
-        "name": "AudioFlux",
-        "desc": "Spectrum, pitch and spectral features",
-        "switch": None,
-    },
     "numba": {
         "name": "Numba",
         "desc": "Compiled filters and envelopes",

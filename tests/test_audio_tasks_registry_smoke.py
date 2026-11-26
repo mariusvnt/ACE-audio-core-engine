@@ -15,7 +15,7 @@ def _load_tasks_registry_with_fake_numpy():
 
     # Without NumPy the optional DSP packages that need it are unavailable too;
     # None in sys.modules makes their import raise ImportError.
-    hidden = ("numpy", "audioflux", "numba", "scipy", "scipy.signal", "soundfile")
+    hidden = ("numpy", "numba", "scipy", "scipy.signal", "soundfile")
     originals = {name: sys.modules.get(name, _MISSING) for name in hidden}
     for name in hidden:
         sys.modules[name] = None  # type: ignore[assignment]
