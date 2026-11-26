@@ -310,6 +310,9 @@ class EngineDiagnostics:
         with self._source_prefetch_lock:
             source_prefetch_ms = float(self._source_prefetch_history[-1] * 1000.0) if self._source_prefetch_history else 0.0
         geometry_ms = 0.0
+        # A pending evaluation that never completes (playback stopped) expires here;
+        # otherwise its age would be reported as a latency that grows forever.
+        self._prune_pending_geometry_events(now_ts)
         if self._pending_geometry_events:
             latest_pending_ts = max(
                 float(event.get("start_ts", 0.0) or 0.0)

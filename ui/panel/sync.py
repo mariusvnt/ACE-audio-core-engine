@@ -762,7 +762,8 @@ def _engine_latency_metrics(context) -> dict[str, float | bool]:
     }
     if active_source is not None and getattr(active_source, "source_type", "") == 'LIVE':
         metrics["live_target_ms"] = float(int(getattr(active_source, "live_latency_ms", 0) or 0))
-    if engine is None:
+    # Latency describes playback: with the timeline stopped (and no render) there is none.
+    if engine is None or not (engine._is_animation_playing() or engine._is_rendering_job()):
         _ui_latency_cache = {
             "scene_key": scene_key,
             "source_uid": source_uid,

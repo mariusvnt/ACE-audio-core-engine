@@ -6,7 +6,7 @@ import bpy  # type: ignore
 import textwrap
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
-from .helpers import _deal_breakers, _source_display_sample_rate, _source_list_icon, _ui_is_blocked
+from .helpers import _deal_breakers, _source_display_sample_rate, _source_list_icon, _ui_is_blocked, property_column
 from .selection import _draw_bake_controls, _draw_selected_node_description, _draw_selected_operator, _selected_node_description
 from . import operator_tree
 from . import sync
@@ -256,7 +256,9 @@ class ACE_PT_unsatisfactory_config(bpy.types.Panel):
 
 
 def _averaged_latency(metrics, key: str) -> float:
-    """The recent average of latency *key*; the current value before any was recorded."""
+    """The recent average of latency *key*; the current value before any was recorded, and 0 while stopped."""
+    if not metrics.get("has_data"):
+        return 0.0
     average = usage.average(key)
     return float(metrics[key]) if average is None else average
 
@@ -342,11 +344,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
         if eng_settings is None:
             return
         layout = self.layout
-        sample_rate_row = layout.row(align=True)
-        sample_rate_row.label(text="Sample Rate")
-        sample_rate_buttons = sample_rate_row.row(align=True)
-        for option in ("22050", "44100", "48000", "96000"):
-            sample_rate_buttons.prop_enum(eng_settings, "ace_file_working_sample_rate", option)
+        property_column(layout).prop(eng_settings, "ace_file_working_sample_rate", text="Sample Rate", expand=True)
         layout.operator("audiocore.reset_engine", icon="FILE_REFRESH")
 
 
@@ -382,30 +380,21 @@ class ACE_PT_audio_sources(bpy.types.Panel):
         col.operator("audiocore.remove_audio_source", icon='REMOVE', text="")
 
 
-        row = layout.row()
         _, active_source = _get_active_source(context)
         if active_source:
-            layout.prop(active_source, "source_type", text="Type")
-            row = layout.row()
+            col = property_column(layout)
+            col.prop(active_source, "source_type", text="Type")
             if active_source.source_type == 'FILE':
-                row.prop(active_source, "filepath", text="File")
+                col.prop(active_source, "filepath", text="File")
             else:
-                col = layout.column(align=True)
                 col.prop(active_source, "live_transport", text="Input Method")
                 if str(getattr(active_source, "live_transport", "SOUNDDEVICE") or "SOUNDDEVICE") == "UDP":
                     col.prop(active_source, "live_udp_port", text="UDP Port")
-                    split_udp = col.split(factor=0.5, align=True)
-                    split_udp.prop(active_source, "live_udp_channels", text="Channels")
-                    split_udp.prop(active_source, "live_udp_sample_rate", text="Sample Rate")
+                    col.prop(active_source, "live_udp_channels", text="Channels")
+                    col.prop(active_source, "live_udp_sample_rate", text="Sample Rate")
                 else:
                     col.prop(active_source, "live_device_selector", text="Audio Input")
-                buffer = layout.split(factor=0.4)
-                buffer.label(text="Buffer Latency")
-                field = buffer.row(align=True)
-                field.alignment = 'LEFT'
-                value = field.row(align=True)
-                value.ui_units_x = 5.0
-                value.prop(active_source, "ace_buffer_latency", text="")
+                col.prop(active_source, "ace_buffer_latency", text="Buffer Latency")
                 live_status = getattr(active_source, "live_status", "")
                 if live_status:
                     warn = layout.row()

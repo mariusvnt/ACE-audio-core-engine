@@ -748,13 +748,28 @@ def _check_status_and_inputs(addon_key, scene):
     finally:
         usage._cpu_load, usage._gpu_load = reads
 
-    seen: list = []
-    context = types.SimpleNamespace(scene=scene)
-    panels.ACE_PT_project_settings.draw(types.SimpleNamespace(layout=_CheckedLayout(seen)), context)
-    labels = [value for kind, value in seen if kind == "label"]
-    _assert(labels == ["Latency", "CPU", "GPU"], f"Engine status rows: {labels}")
-    bars = [value for kind, value in seen if kind == "progress"]
-    _assert(len(bars) == 3 and bars[0] == "6.00 ms", f"Engine status bars: {bars}")
+    def status_bars(metrics=None):
+        seen: list = []
+        context = types.SimpleNamespace(scene=scene)
+        original = panels._engine_latency_metrics
+        if metrics is not None:
+            panels._engine_latency_metrics = lambda _context: dict(metrics)
+        try:
+            panels.ACE_PT_project_settings.draw(types.SimpleNamespace(layout=_CheckedLayout(seen)), context)
+        finally:
+            panels._engine_latency_metrics = original
+        labels = [value for kind, value in seen if kind == "label"]
+        _assert(labels == ["Latency", "CPU", "GPU"], f"Engine status rows: {labels}")
+        return [value for kind, value in seen if kind == "progress"]
+
+    # The timeline is stopped (background mode plays nothing): no latency, whatever was averaged before.
+    bars = status_bars()
+    _assert(len(bars) == 3 and bars[0] == "0.00 ms", f"Engine status bars while stopped: {bars}")
+    _assert(sync._engine_latency_metrics(types.SimpleNamespace(scene=scene))["total_latency_ms"] == 0.0,
+            "Latency measured while the timeline is stopped")
+    # During playback the meter shows the recent average.
+    bars = status_bars({"has_data": True, "total_latency_ms": 1.0})
+    _assert(len(bars) == 3 and bars[0] == "6.00 ms", f"Engine status bars during playback: {bars}")
     _assert(bpy.app.timers.is_registered(sync._ui_click_timer), "Click timer not registered")
     _assert(sync._UI_CLICK_INTERVAL <= 0.1, "Click timer too slow")
     count = len(scene.audiocore.audio_sources)

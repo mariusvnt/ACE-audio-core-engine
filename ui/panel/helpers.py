@@ -37,6 +37,28 @@ def _ui_is_blocked(context):
     return len(_deal_breakers()) > 0
 
 
+# Blender's property split: the label right-aligned in the left 40%, the control filling the rest.
+_PROPERTY_SPLIT_FACTOR = 0.4
+
+
+def property_column(layout):
+    """A column whose props each take one row in Blender's property-split layout."""
+    col = layout.column()
+    col.use_property_split = True
+    col.use_property_decorate = False
+    return col
+
+
+def property_split_row(layout, label: str):
+    """A row shaped like a property-split prop for a control that is not a prop (a menu, a value
+    label); returns the right-hand part to draw it in."""
+    split = layout.split(factor=_PROPERTY_SPLIT_FACTOR, align=True)
+    left = split.row()
+    left.alignment = 'RIGHT'
+    left.label(text=label)
+    return split.row(align=True)
+
+
 def _iter_visible_node_editor_trees(context):
     """Yield unique supported trees from visible Node Editor areas."""
     seen_tree_ptrs: set[int] = set()

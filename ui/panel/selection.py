@@ -7,7 +7,7 @@ from ... import utils
 from ...vars import ACE_NODES, node_modes, resolve_node_mode
 from .splitter import _splitter_display_bounds, splitter_band_widths
 from ...nodes.split_freqs import split_freq_states
-from .helpers import _describe_node, _find_active_node_tree, _find_tree_node_by_ace_id
+from .helpers import _describe_node, _find_active_node_tree, _find_tree_node_by_ace_id, property_column, property_split_row
 from .sync import _resolve_ui_list_selected_node, is_setting_active_row, note_editor_active, reveal_operator, is_setting_source_row, source_for_row
 from ...nodes.modes import automatic_node_label
 
@@ -332,7 +332,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         box.label(text="Audio Source", icon="SOUND")
         current = str(node.get("ace_source_id", "") or "")
         name = next((s.name for s in _source_choices() if s.stable_id == current), "Choose a source")
-        box.operator_menu_enum("ace.set_node_source", "source", text=name)
+        property_split_row(box, "Input").operator_menu_enum("ace.set_node_source", "source", text=name)
 
     modes = node_modes(category, node_type)
     if modes:
@@ -347,7 +347,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             op.mode = mode_id
         for sock in getattr(node, "inputs", []):
             if sock.name == "Window (s)" and not sock.hide and not sock.is_linked:
-                box.prop(sock, "default_value", text=sock.name)
+                property_column(box).prop(sock, "default_value", text=sock.name)
 
     if parsed.get("category") == "delta" and parsed.get("type") == "frequency_splitter":
         drew_settings = True
@@ -367,16 +367,14 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             _draw_band_strip(box, context, splitter_band_widths(node, context.scene), low_hz, high_hz)
             box.operator("ace.even_splitter_freqs", text="Distribute horizontally", icon="SNAP_MIDPOINT")
             for idx, (sock, value, state) in enumerate(split_freq_states(node, context.scene)):
-                split = box.split(factor=0.28)
-                split.label(text=sock.name)
+                field = property_split_row(box, sock.name)
                 if state == "own":
                     # The frequency unit writes "Hz" after the value, unless the scene has no units.
                     unitless = context.scene.unit_settings.system == "NONE"
-                    split.prop(node, f"ace_split_freq_{idx + 1}", text="Hz" if unitless else "", slider=True)
+                    field.prop(node, f"ace_split_freq_{idx + 1}", text="Hz" if unitless else "", slider=True)
                     continue
-                linked = split.row(align=True)
-                linked.label(text="" if value is None else f"{value:.0f} Hz")
-                linked.label(text="Linked", icon="LINKED")
+                field.label(text="" if value is None else f"{value:.0f} Hz")
+                field.label(text="Linked", icon="LINKED")
 
     if parsed.get("category") == "utilities" and parsed.get("type") == "audio_math":
         drew_settings = True
@@ -413,7 +411,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         if not ACEAudioEngine.preview_monitor_available():
             warn = box.row()
             warn.alert = True
-            warn.label(text="Install SoundDevice in Preferences to enable preview audio.", icon="ERROR")
+            warn.label(text="SoundDevice is off or failed to load: see the add-on preferences.", icon="ERROR")
         else:
             err_count = ACEAudioEngine.preview_monitor_consecutive_errors()
             if err_count >= 5:
@@ -433,8 +431,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             None,
         )
         if frames_sock is not None:
-            row = box.row(align=True)
-            row.prop(frames_sock, "default_value", text="Window")
+            property_column(box).prop(frames_sock, "default_value", text="Window")
         else:
             box.label(text="Window input is unavailable.", icon="INFO")
 
