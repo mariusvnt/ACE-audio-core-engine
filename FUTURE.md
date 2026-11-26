@@ -2,7 +2,7 @@
 
 Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
-1. [Stereo fix and removals](#1-stereo-fix-and-removals)
+1. [Fixes and removals](#1-fixes-and-removals)
 2. [Instance model](#2-instance-model-definitions-instances-signals): definitions, instances, signals
 3. [Time model: render, bake, live](#3-time-model-render-bake-live)
 4. [Core operator set](#4-core-operator-set): the node set, motion and event nodes
@@ -11,7 +11,7 @@ Planned changes that aren't built yet, in the order they should be done. Nothing
 
 The extension packaging and the reference-curve tests are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13 and §10). The sections below rewrite the compiler and the sinks: the reference curves of the nodes that remain must stay unchanged through that work.
 
-## 1. Stereo fix and removals
+## 1. Fixes and removals
 
 These are first because they fix or delete what exists, ahead of any rewrite. The node set they lead to is described in section 4.
 
@@ -20,6 +20,20 @@ Old .blend files don't need to keep working: nothing is migrated, and the migrat
 ### Stereo band fix
 
 Stereo and Stereo Vector ignore a Frequency Splitter: Width, Balance and the left and right levels of every band are those of the whole signal. A split only tags a frequency range, and the stereo measurements don't apply it. They must measure inside the band of their input. It is fixed first, on the nodes as they are today. Without a splitter the values don't change.
+
+### Spectral band fix
+
+Behind a Frequency Splitter, Spectral doesn't measure inside the band:
+
+- **Centroid of a band that holds no FFT bin** (narrower than the bin spacing, about 23 Hz at 24 fps) is that of the whole signal.
+- **Centroid on Windows:** AudioFlux can't select a band there, because its wrapper looks up `calloc` in a library that doesn't export it. Every band centroid logs an error and falls back to an unwindowed NumPy spectrum of the block, so its values aren't computed like the full-band ones.
+- **Flux** ignores the band and reports the whole signal's. It is removed below, so it needs no fix.
+
+The centroid of a band should come from the same spectrum as the full-band one, be 0 for a band with no bin, and get a reference curve behind a splitter.
+
+### Beats per Bar estimate
+
+The tempo analysis rarely finds the bar length. On synthetic loops with an accent every three or every four beats, at 90, 120 and 140 BPM, it was right in one case of six, and answered 2 for all four at 120 and 140 BPM. It scores every onset peak, off-beats included, and favours short bars. The Downbeat estimate of section 4 depends on the bar length.
 
 ### Removals and renames
 
