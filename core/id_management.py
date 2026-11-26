@@ -146,9 +146,6 @@ class ACEIdManager:
             "stereowidth": "width",
             "stereobalance": "bal",
             "stereovector": "svec",
-            "bpf": "bpf",
-            "timesignature": "tsig",
-            "beatphase": "beat",
         }
         if clean in aliases:
             return aliases[clean]

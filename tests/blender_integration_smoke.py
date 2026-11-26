@@ -720,6 +720,58 @@ def _check_source_nodes(addon_key, scene, engine):
         ace.active_audio_source_index = first_index
 
 
+def _check_source_node_outputs_tempo(addon_key, scene, engine):
+    """The GN Source node's BPM and Beats per Bar are its source's, as Blender evaluates them."""
+    ace = scene.audiocore
+    count, first_index = len(ace.audio_sources), ace.active_audio_source_index
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_SourceTempo")
+    try:
+        obj.data.from_pydata([(0.0, 0.0, 0.0)], [], [])
+        bpy.ops.audiocore.add_audio_source()
+        source = ace.audio_sources[count]
+        ace.active_audio_source_index = count
+        tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+        tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        group_in, group_out = tree.nodes.new("NodeGroupInput"), tree.nodes.new("NodeGroupOutput")
+        node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        tree.links.new(node.outputs["Audio"], loud.inputs["Audio"])
+        geometry = group_in.outputs["Geometry"]
+        for output, data_type, name in (("BPM", "FLOAT", "bpm_probe"), ("Beats per Bar", "INT", "meter_probe")):
+            store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+            store.data_type = data_type
+            store.inputs["Name"].default_value = name
+            tree.links.new(geometry, store.inputs["Geometry"])
+            tree.links.new(node.outputs[output], store.inputs["Value"])
+            geometry = store.outputs["Geometry"]
+        tree.links.new(geometry, group_out.inputs["Geometry"])
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(bpy.data.objects.get(source.proxy_object_name) is not None, "The read input has no proxy")
+
+        def evaluated():
+            engine.probes.flush_source_tempo_detection_updates(list(ace.audio_sources))
+            obj.update_tag()
+            attrs = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.attributes
+            return attrs["bpm_probe"].data[0].value, attrs["meter_probe"].data[0].value
+
+        source.bpm, source.beats_per_bar = 97.5, 7
+        _assert(evaluated() == (97.5, 7), f"Source node tempo: {evaluated()}")
+        source.bpm, source.beats_per_bar = 140.0, 3
+        _assert(evaluated() == (140.0, 3), f"Source node tempo after a change: {evaluated()}")
+        # The sink layout keeps the tempo attributes: they belong to no sink.
+        engine.execute_next_frame(scene, force=True)
+        proxy_attrs = bpy.data.objects[source.proxy_object_name].data.attributes
+        _assert(proxy_attrs.get("ACE_bpm") is not None and proxy_attrs.get("ACE_beats_per_bar") is not None,
+                f"Tempo attributes pruned: {[a.name for a in proxy_attrs]}")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+
+
 def _check_status_and_inputs(addon_key, scene):
     """Engine Status meters, the click timer and the live buffer default."""
     panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
@@ -1470,6 +1522,7 @@ def main():
     _check_status_and_inputs(addon_key, scene)
     _check_titles_units_and_info(addon_key, scene)
     _check_source_nodes(addon_key, engine=engine, scene=scene)
+    _check_source_node_outputs_tempo(addon_key, scene, engine)
     _check_manual_engine_reset(addon_key, scene)
 
     remove_result = bpy.ops.audiocore.remove_audio_source()

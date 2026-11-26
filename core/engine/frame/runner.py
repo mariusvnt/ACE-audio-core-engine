@@ -132,11 +132,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         return float(fps), float(delta_frames)
 
     def _sync_runtime_inputs(self, scene) -> bool:
-        """Refresh BPM in worker IRs, flush probe results, run a pending compile."""
-        # Tempo and fps reach the workers without a recompile.
-        with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs"):
-            self.engine.parallel.refresh_specs_params()
-
+        """Refresh driven split frequencies, flush probe results, run a pending compile."""
         with utils.logged_errors("runner.FrameRunner._sync_runtime_inputs#driven"):
             from ....nodes.split_freqs import refresh_driven_splits
             refresh_driven_splits(self.engine.graphs.values(), scene)
@@ -334,7 +330,6 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                         continue
                     is_output_node = (
                         node.category == 'stream'
-                        or (node.type == 'src_specs' and node.category == 'utilities')
                         or (node.type == 'util_rolling_avg' and node.category == 'utilities')
                         or (node.type == 'stream_accumulator' and node.category == 'utilities')
                         or (node.category == 'utilities' and node.type == 'preview_sink')

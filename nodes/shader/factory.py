@@ -223,6 +223,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
 
     @classmethod
     def _build_group_content(cls, ng, node_def, category: str, node_type: str):
+        node_def = cls._shader_node_def(category, node_type, node_def)
         base_inputs = list(node_def.get("inputs", []))
         base_outputs = list(node_def.get("outputs", []))
         extra_inputs = [spec for spec in cls._extra_inputs(category, node_type) if cls._shader_interface_supports(spec[0])]
@@ -416,11 +417,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             return mapping
         if cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator"}:
             return {"Attribute ID": 0}
-        if cat == "utilities" and typ == "src_specs":
-            return {
-                "Frames per Beat Attribute ID": 0,
-                "Beat Phase Attribute ID": 1,
-            }
         return {}
 
     @classmethod

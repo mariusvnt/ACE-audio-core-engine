@@ -80,12 +80,6 @@ class ShaderGroupInterface:
             return tuple(specs)
         if category == "source_mngmt" and node_type == "src":
             return (("NodeSocketString", "Proxy Object", ""),)
-        if category == "utilities" and node_type == "src_specs":
-            return (
-                ("NodeSocketString", "Frames per Beat Attribute ID", "ACE_undefined_frames_per_beat"),
-                ("NodeSocketString", "Beat Phase Attribute ID", "ACE_undefined_beatphase"),
-                ("NodeSocketString", "Proxy Object", ""),
-            )
         if category == "utilities" and node_type == "util_rolling_avg":
             return (
                 ("NodeSocketString", "Attribute ID", "ACE_undefined"),
@@ -113,7 +107,7 @@ class ShaderGroupInterface:
         typ = str(node_type or "")
         return bool(
             cat == "stream"
-            or (cat == "utilities" and typ in {"src_specs", "util_rolling_avg", "stream_accumulator"})
+            or (cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator"})
         )
 
     @staticmethod
@@ -206,8 +200,20 @@ class ShaderGroupInterface:
             return ("int" in act) or ("float" in act) or ("value" in act)
         return exp == act
 
+    @staticmethod
+    def _shader_node_def(category: str, node_type: str, node_def):
+        """The definition a shader group is built from: the Source node keeps only its Audio output.
+
+        Its BPM and Beats per Bar come to shaders with the View Layer values (FUTURE 2.1).
+        """
+        if (category, node_type) != ("source_mngmt", "src"):
+            return node_def
+        outputs = [spec for spec in node_def.get("outputs", []) if "Bundle" in str(spec[0])]
+        return dict(node_def, outputs=outputs)
+
     @classmethod
     def _node_group_needs_refresh(cls, ng, node_def, category: str, node_type: str) -> bool:
+        node_def = cls._shader_node_def(category, node_type, node_def)
         expected_inputs, expected_outputs = cls._expected_interface_names(node_def, category, node_type)
         expected_input_types, expected_output_types = cls._expected_interface_types(node_def, category, node_type)
         try:

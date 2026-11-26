@@ -9,7 +9,6 @@ from ...tasks.delta import FrequencySplitterTask
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
-from ...tasks.specs import SourceSpecsTask
 from ...tasks.stream import create_stream_task
 from ...tasks.utility import RollingAvgTask, StreamAccumulatorTask
 
@@ -79,7 +78,7 @@ class GraphBuild:
                 task.engine_ref = self.engine
                 task.undo_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
                 task.resolve_block_size_fn = self._block_size_resolver(fps, source_sr, source_type, graph)
-                if isinstance(task, (SourceTask, SourceSpecsTask)):
+                if isinstance(task, SourceTask):
                     node_ctx = self._resolve_source_context_for_node(
                         node,
                         source_context_lookup,
@@ -253,8 +252,6 @@ class GraphBuild:
             if typ == 'src':
                 return SourceTask(node.id, node.parameters, block_size)
         elif cat == 'utilities':
-            if typ == 'src_specs':
-                return SourceSpecsTask(node.id, node.parameters, block_size)
             if typ == 'preview_sink':
                 return PreviewSinkTask(node.id, node.parameters, block_size)
             if typ == 'util_rolling_avg':

@@ -90,6 +90,18 @@ def read_node_outputs(engine) -> dict:
     return out
 
 
+def read_source_tempo(source_node) -> dict:
+    """The Source node's BPM and Beats per Bar: the attributes its group reads from the proxy."""
+    proxy = source_node.inputs["Proxy Object"].default_value
+    attrs = getattr(getattr(proxy, "data", None), "attributes", None)
+    out = {}
+    for name, attr_name in (("BPM", "ACE_bpm"), ("Beats per Bar", "ACE_beats_per_bar")):
+        attr = attrs.get(attr_name) if attrs is not None else None
+        if attr is not None and len(attr.data):
+            out[name] = float(attr.data[0].value)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Scene setup
 # ---------------------------------------------------------------------------
@@ -249,7 +261,8 @@ def record(addon_key, scene, last_nodes, n_frames) -> dict:
                 dirty_since.setdefault(uid, scene.frame_current)
             values = read_node_outputs(engine)
             for case_id, node in last_nodes.items():
-                for name, value in values.get(str(node.get("ace_id", "")), {}).items():
+                found = read_source_tempo(node) if case_id == spec.SOURCE_CASE else values.get(str(node.get("ace_id", "")), {})
+                for name, value in found.items():
                     rows.setdefault(f"{case_id}/{name}", []).append(value)
     finally:
         engine.compiler.compile_scene_frontends = original

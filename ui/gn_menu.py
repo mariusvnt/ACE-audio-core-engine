@@ -138,12 +138,11 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if not parsed:
             return
         is_stream = parsed.get("category") == "stream"
-        is_specs = parsed.get("category") == "utilities" and parsed.get("type") == "src_specs"
         is_rolling_avg = parsed.get("category") == "utilities" and parsed.get("type") == "util_rolling_avg"
         is_stream_accumulator = (
             parsed.get("category") == "utilities" and parsed.get("type") == "stream_accumulator"
         )
-        if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator):
+        if not (is_stream or is_rolling_avg or is_stream_accumulator):
             return
 
         proxy_name = ACE_OT_add_node_group._resolve_active_proxy_name(context)
@@ -164,24 +163,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                     out_idx,
                 )
                 socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
-                attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == socket_name), None)
-                if attr_sock:
-                    ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
-
-        if is_specs:
-            socket_map = (
-                ("Frames per Beat Attribute ID", 0),
-                ("Beat Phase Attribute ID", 1),
-            )
-            for socket_name, out_idx in socket_map:
-                if out_idx >= len(node.outputs):
-                    continue
-                auto_name = ACE_OT_add_node_group._default_attr_name(
-                    proxy_name,
-                    node["ace_id"],
-                    node.outputs[out_idx].name,
-                    out_idx,
-                )
                 attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == socket_name), None)
                 if attr_sock:
                     ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
@@ -208,7 +189,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             if attr_sock:
                 ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
 
-        if (is_specs or is_rolling_avg) and proxy_obj:
+        if is_rolling_avg and proxy_obj:
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
             if proxy_sock:
                 try:
@@ -257,11 +238,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
 
     @staticmethod
     def _show_attr_id_socket_values(node):
-        attr_socket_names = {
-            "Attribute ID",
-            "Frames per Beat Attribute ID",
-            "Beat Phase Attribute ID",
-        }
+        attr_socket_names = {"Attribute ID"}
         with utils.logged_errors("gn_menu.ACE_OT_add_node_group._show_attr_id_socket_values"):
             node_tree = getattr(node, "node_tree", None)
             if node_tree is not None:

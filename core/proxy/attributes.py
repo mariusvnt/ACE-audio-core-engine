@@ -8,6 +8,33 @@ from ..abstract_tree import ACEAbstractTree
 from ... import utils
 
 
+# A source's tempo, on its proxy mesh for the GN Source node's BPM and Beats per Bar outputs.
+SOURCE_TEMPO_ATTRS = {"ACE_bpm": "FLOAT", "ACE_beats_per_bar": "INT"}
+
+
+def write_source_tempo(proxy, bpm: float, beats_per_bar: int) -> bool:
+    """Write a source's tempo on its proxy mesh; True when a value changed."""
+    utils.assert_main_thread("write_source_tempo")
+    mesh = getattr(proxy, "data", None)
+    attributes = getattr(mesh, "attributes", None)
+    if attributes is None or not len(getattr(mesh, "vertices", ())):
+        return False
+    changed = False
+    for name, value in (("ACE_bpm", float(bpm)), ("ACE_beats_per_bar", int(beats_per_bar))):
+        attr = attributes.get(name)
+        if attr is not None and (attr.data_type != SOURCE_TEMPO_ATTRS[name] or attr.domain != "POINT"):
+            attributes.remove(attr)
+            attr = None
+        if attr is None:
+            attr = attributes.new(name=name, type=SOURCE_TEMPO_ATTRS[name], domain="POINT")
+        elif all(item.value == value for item in attr.data):
+            continue
+        for item in attr.data:
+            item.value = value
+        changed = True
+    return changed
+
+
 class AttributeSinks:
     def _cache_output_defs(self):
         """Precompute attribute slugs and Blender data types for all writeable outputs."""
@@ -16,14 +43,13 @@ class AttributeSinks:
 
         for node in self.abstract_tree.nodes.values():
             is_stream = node.category == 'stream'
-            is_source_specs = node.type == 'src_specs' and node.category == 'utilities'
             is_rolling_avg = node.type == 'util_rolling_avg' and node.category == 'utilities'
             is_stream_accumulator = node.type == 'stream_accumulator' and node.category == 'utilities'
-            if not (is_stream or is_source_specs or is_rolling_avg or is_stream_accumulator):
+            if not (is_stream or is_rolling_avg or is_stream_accumulator):
                 continue
 
             for sock in node.outputs:
-                # Skip bundle passthroughs on source specs to avoid creating useless attributes
+                # Audio passthroughs have no value to write.
                 if getattr(sock, "data_type", "") in ("NodeSocketBundle", "BUNDLE", "BUNDLE_SOCKET"):
                     continue
                 # Key is unique per node instance and socket index
@@ -93,7 +119,7 @@ class AttributeSinks:
         if active_keys is not None and len(active_keys) == 0:
             if prune_existing:
                 for attr in list(mesh.attributes):
-                    if attr.name.startswith(ACEIdManager.PREFIX):
+                    if attr.name.startswith(ACEIdManager.PREFIX) and attr.name not in SOURCE_TEMPO_ATTRS:
                         mesh.attributes.remove(attr)
                         attrs_changed = True
             if attrs_changed:
@@ -122,7 +148,7 @@ class AttributeSinks:
         # Full syncs always prune, and compile-time scoped syncs may opt-in.
         if active_keys is None or prune_existing:
             for attr in list(mesh.attributes):
-                if attr.name.startswith(ACEIdManager.PREFIX) and attr.name not in required:
+                if attr.name.startswith(ACEIdManager.PREFIX) and attr.name not in required and attr.name not in SOURCE_TEMPO_ATTRS:
                     mesh.attributes.remove(attr)
                     attrs_changed = True
 

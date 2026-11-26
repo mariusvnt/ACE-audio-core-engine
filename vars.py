@@ -41,9 +41,9 @@ ACE_NODES: dict[str, Category] = {
             "src": {
             "label": "Source",
             "icon": "",
-            "description": "Reference to an audio source.",
+            "description": "Reference to an audio source, with its tempo.",
             "inputs": [],
-            "outputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'BPM'), ('NodeSocketInt', 'Beats per Bar')],
             },
         },
     },
@@ -142,17 +142,6 @@ ACE_NODES: dict[str, Category] = {
             "description": "Helper nodes for graph monitoring and utility operations."
         },
         "nodes": {
-            "src_specs": {
-            "label": "Source Specs",
-            "icon": "",
-            "description": "Long-term specs and passing through the audio.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [
-                ('NodeSocketFloat', 'Frames per Beat'),
-                ('NodeSocketFloat', 'Beat Phase'),
-                ('NodeSocketBundle', 'Audio')
-            ],
-            },
             "preview_sink": {
             "label": "Audio Preview",
             "icon": "PLAY_SOUND",

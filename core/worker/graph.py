@@ -35,23 +35,6 @@ def _coerce_worker_audio_chunk(data: Any, block_size: int, sample_rate: int = SA
     return AudioChunk(mono, None, sr, frame_index=-1, lineage=())
 
 
-class _WorkerSourceSpecsPassthroughTask(ACEAudioTask):
-    """Worker-safe replacement for SourceSpecsTask."""
-
-    def process(self, inputs):
-        chunk_in = _coerce_worker_audio_chunk(inputs.get(0), self.block_size)
-        # Defaults for an IR without tempo values.
-        bpm           = float(self.parameters.get("scene_bpm", 120.0) or 120.0)
-        beats_per_bar = float(self.parameters.get("scene_beats_per_bar", 4.0) or 4.0)
-        fps           = float(self.parameters.get("scene_fps", 24.0) or 24.0)
-        beats_per_frame = float(bpm / max(60.0 * fps, 1e-6))
-        frames_per_beat = float(1.0 / beats_per_frame) if beats_per_frame > 1e-6 else 0.0
-        frame_idx = int(getattr(chunk_in, "frame_index", 0) or 0)
-        pos_in_measure = (float(frame_idx) * beats_per_frame) % beats_per_bar
-        beat_phase = float(pos_in_measure / beats_per_bar) if beats_per_bar > 0.0 else 0.0
-        return (float(frames_per_beat), float(beat_phase), chunk_in)
-
-
 class _WorkerSourceProvider:
     """The source's audio parameters, as the chunks of a worker graph carry them."""
 
@@ -273,8 +256,6 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
     bs = max(int(block_size), 1)
 
     if cat == "utilities":
-        if typ == "src_specs":
-            return _WorkerSourceSpecsPassthroughTask(node_id, params, bs)
         if typ == "stream_accumulator":
             return StreamAccumulatorTask(node_id, params, bs)
 

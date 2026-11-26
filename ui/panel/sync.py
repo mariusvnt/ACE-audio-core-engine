@@ -94,11 +94,7 @@ def _ui_tree_topology_signature(tree) -> str:
     if tree is None:
         return ""
 
-    attr_socket_names = {
-        "Attribute ID",
-        "Frames per Beat Attribute ID",
-        "Beat Phase Attribute ID",
-    }
+    attr_socket_names = {"Attribute ID"}
     node_tokens = []
     for node in getattr(tree, "nodes", []):
         ptr = _tree_pointer(node)

@@ -16,12 +16,8 @@ from ...tasks.source import SourceTask
 def is_offload_candidate(node: Optional[ACEAbstractNode]) -> bool:
     if node is None:
         return False
-    category = str(getattr(node, "category", "") or "")
-    node_type = str(getattr(node, "type", "") or "")
-    if category == "utilities":
-        # A running sum must not jump when execution moves between worker and main thread.
-        return node_type == "src_specs"
-    return category == "stream"
+    # Utilities stay on the main thread: a running sum must not jump when execution moves.
+    return str(getattr(node, "category", "") or "") == "stream"
 
 
 def sanitize(value: Any):
@@ -77,15 +73,6 @@ def ir_digest(parallel_ir: Dict[str, Any]) -> str:
     return hashlib.blake2b(payload, digest_size=8).hexdigest()
 
 
-def _specs_params(graph: ACEAudioGraph, fps: float) -> Dict[str, float]:
-    ctx = getattr(graph, "source_context", None)
-    return {
-        "scene_bpm": float(getattr(ctx, "bpm", 120.0) or 120.0),
-        "scene_fps": float(fps or 24.0),
-        "scene_beats_per_bar": float(getattr(ctx, "beats_per_bar", 4.0) or 4.0),
-    }
-
-
 def _offload_outputs(graph: ACEAudioGraph, abstract_tree: ACEAbstractTree) -> List[str]:
     keys = []
     for attr_key in list(getattr(graph, "output_attr_keys", []) or []):
@@ -126,8 +113,6 @@ def _nodes_ir(graph, abstract_tree, node_ids, fps):
         if node is None:
             continue
         params = {str(k): sanitize(v) for k, v in dict(getattr(node, "parameters", {}) or {}).items()}
-        if node.category == "utilities" and node.type == "src_specs":
-            params.update(_specs_params(graph, fps))
         nodes_ir[node_id] = {
             "category": str(getattr(node, "category", "") or ""),
             "type": str(getattr(node, "type", "") or ""),
@@ -221,24 +206,3 @@ def build_graph_ir(graph: ACEAudioGraph, abstract_tree: Optional[ACEAbstractTree
     graph.parallel_local_attr_keys = [k for k in graph.parallel_local_attr_keys if k not in offloaded]
     graph.parallel_ir_digest = ir_digest(graph.parallel_ir)
     return True
-
-
-def refresh_specs_params(graph: ACEAudioGraph, fps: float) -> bool:
-    """Update tempo and fps in the graph's specs nodes; True when the IR changed."""
-    parallel_ir = getattr(graph, "parallel_ir", None)
-    if not parallel_ir or getattr(graph, "source_context", None) is None:
-        return False
-    wanted = _specs_params(graph, fps)
-    changed = False
-    for node_info in parallel_ir.get("nodes", {}).values():
-        if node_info.get("category") != "utilities" or node_info.get("type") != "src_specs":
-            continue
-        params = node_info.get("parameters")
-        if not isinstance(params, dict):
-            continue
-        if any(abs(float(params.get(k, 0.0) or 0.0) - v) > 1e-6 for k, v in wanted.items()):
-            params.update(wanted)
-            changed = True
-    if changed:
-        graph.parallel_ir_digest = ir_digest(parallel_ir)
-    return changed

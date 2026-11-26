@@ -157,15 +157,6 @@ class ParallelOffload:
         if ir.build_graph_ir(graph, tree, output_defs, self.engine._current_scene_fps):
             self.require_ir(graph.parallel_graph_uid)
 
-    def refresh_specs_params(self):
-        """Keep tempo and fps in each graph's IR current without a recompile."""
-        fps = float(getattr(self.engine, "_current_scene_fps", 24.0) or 24.0)
-        for graph in self.engine.graphs.values():
-            if ir.refresh_specs_params(graph, fps):
-                graph_key = str(getattr(graph, "parallel_graph_uid", "") or "")
-                if graph_key:
-                    self.require_ir(graph_key)
-
     def require_ir(self, graph_key: str):
         self.ir_required.add(graph_key)
         self.ir_acks[graph_key] = set()

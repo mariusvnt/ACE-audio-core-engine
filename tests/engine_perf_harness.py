@@ -87,7 +87,7 @@ def engine_perf_contract() -> Dict[str, Any]:
             "pass_total_latency_p95_ms": float(ENGINE_PERF_SLA_PASS_TOTAL_LATENCY_MS),
             "ideal_total_latency_p95_ms": float(ENGINE_PERF_SLA_IDEAL_TOTAL_LATENCY_MS),
             "topology": (
-                "3 sources -> specs -> 5-band splitters -> stream terminals; "
+                "3 sources -> 5-band splitters -> stream terminals; "
                 "band 0 of the first source to preview"
             ),
             "machine_profile": dict(ENGINE_PERF_SLA_MACHINE_PROFILE),
@@ -447,7 +447,6 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     output_defs: Dict[str, Dict[str, Any]] = {}
     source_task_ids: List[str] = []
     file_source_task_ids: List[str] = []
-    specs_task_ids: List[str] = []
     split_freqs = (180.0, 420.0, 1200.0, 3600.0)
 
     for idx, source in enumerate(sources):
@@ -468,27 +467,10 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
             )
         )
 
-        specs_id = f"specs_{idx}"
-        specs_task = atr.SourceSpecsTask(specs_id, {}, block_size=graph.block_size)
-        specs_task.source_context = source
-        specs_task.connect_input(0, src_task, 0)
-        graph.tasks[specs_id] = specs_task
-        specs_task_ids.append(specs_id)
-        abstract_tree.add_node(
-            abs_mod.ACEAbstractNode(
-                id=specs_id,
-                name=specs_id,
-                category="utilities",
-                type="src_specs",
-                parameters={},
-            )
-        )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(src_node_id, specs_id, 0, 0))
-
         split_id = f"split_{idx}"
         split_params = {f"in_{i + 1}": float(freq) for i, freq in enumerate(split_freqs)}
         split_task = atr.FrequencySplitterTask(split_id, split_params, block_size=graph.block_size)
-        split_task.connect_input(0, specs_task, 3)
+        split_task.connect_input(0, src_task, 0)
         graph.tasks[split_id] = split_task
         abstract_tree.add_node(
             abs_mod.ACEAbstractNode(
@@ -499,7 +481,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
                 parameters=split_params,
             )
         )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, split_id, 3, 0))
+        abstract_tree.add_link(abs_mod.ACEAbstractLink(src_node_id, split_id, 0, 0))
 
         for band_idx in range(5):
             stream_id = f"src{idx}_band{band_idx}_rms"

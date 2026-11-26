@@ -163,6 +163,15 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             return _make_silence_chunk(self.block_size, self.sample_rate)
         return self.silence_buffer
 
+    def _extract_result(self, socket_idx):
+        """Output 0 is the audio; 1 and 2 are the source's BPM and Beats per Bar (ACE_NODES order)."""
+        if socket_idx in (1, 2):
+            ctx = self.source_context
+            if socket_idx == 1:
+                return float(getattr(ctx, "bpm", 120.0) or 120.0) if ctx else 120.0
+            return int(getattr(ctx, "beats_per_bar", 4) or 4) if ctx else 4
+        return super()._extract_result(socket_idx)
+
     def _flush_pending_ctx_writes(self) -> None:
         """Apply deferred PropertyGroup writes."""
         if not self._pending_ctx_writes:

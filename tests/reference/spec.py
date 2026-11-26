@@ -6,7 +6,8 @@ so a new node fails the coverage test until it gets a golden.
 
 A case is a chain of nodes hanging off one Source node. Each step names the
 node and which output of the previous step feeds it; the values recorded are
-every numeric output of the chain's last node.
+every numeric output of the chain's last node. The empty chain of SOURCE_CASE
+records the Source node's own outputs: the tempo detected for the file.
 """
 
 import ast
@@ -18,9 +19,12 @@ FRAME_START = 1
 
 # Node types with no reference curve, and why.
 EXCLUDED: Dict[Tuple[str, str], str] = {
-    ("source_mngmt", "src"): "the root of every case",
+    ("source_mngmt", "src"): "the root of every case; its tempo is SOURCE_CASE",
     ("utilities", "preview_sink"): "an audio monitor: it outputs no values",
 }
+
+# The Source node itself: BPM and Beats per Bar.
+SOURCE_CASE = "source_mngmt.src"
 
 # How many outputs a delta node has once placed (the frequency splitter's
 # runtime variant is built with this many bands).
@@ -34,7 +38,7 @@ TOLERANCES: Dict[str, Dict[str, float]] = {
     "stream.brightness": {"abs": 1e-2, "rel": 1e-4},         # Hz
     "delta.frequency_splitter.out00.brightness": {"abs": 1e-2, "rel": 1e-4},
     "delta.frequency_splitter.out01.brightness": {"abs": 1e-2, "rel": 1e-4},
-    "utilities.src_specs": {"abs": 1e-3, "rel": 1e-4},       # frames per beat
+    SOURCE_CASE: {"abs": 1e-3, "rel": 1e-4},                 # BPM
     "utilities.stream_accumulator": {"abs": 1e-4, "rel": 1e-4},  # a running sum
 }
 
@@ -96,8 +100,6 @@ def cases() -> List[dict]:
             })
 
     utilities = nodes["utilities"]["nodes"]
-    if "src_specs" in utilities:
-        out.append({"id": "utilities.src_specs", "chain": [_step("utilities", "src_specs")]})
     if "util_rolling_avg" in utilities:
         out.append({
             "id": "utilities.util_rolling_avg",
@@ -108,6 +110,7 @@ def cases() -> List[dict]:
             "id": "utilities.stream_accumulator",
             "chain": [_step("stream", "onset"), _step("utilities", "stream_accumulator")],
         })
+    out.append({"id": SOURCE_CASE, "chain": []})
     return out
 
 

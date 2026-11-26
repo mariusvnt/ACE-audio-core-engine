@@ -1,3 +1,4 @@
+import types
 import unittest
 import warnings
 
@@ -218,28 +219,14 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertIsNone(chunk)
         self.assertEqual(task.source_context.live_status, task.last_error)
 
-    def test_source_specs_outputs_frames_per_beat(self):
-        class DummyCtx:
-            source_type = "FILE"
-            filepath = ""
-            bpm = 120.0
-            beats_per_bar = 4
-            sample_rate = 48000
-            duration = 10.0
-
-        class DummyEngine:
-            current_frame = 12
-
-        task = atr.SourceSpecsTask("specs_node", {}, block_size=256)
-        task.source_context = DummyCtx()
-        task.scene_fps = 24.0
-        task.engine_ref = DummyEngine()
-
-        chunk = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
-        frames_per_beat, beat_phase, _ = task.process({0: chunk})
-
-        self.assertAlmostEqual(float(frames_per_beat), (60.0 * 24.0) / 120.0, places=6)
-        self.assertAlmostEqual(float(beat_phase), 0.25, places=6)
+    def test_source_outputs_its_tempo_after_the_audio(self):
+        """Outputs 1 and 2 of a Source node are BPM and Beats per Bar, for links into value nodes."""
+        task = atr.SourceTask("src", {}, 256)
+        task.source_context = types.SimpleNamespace(bpm=128.0, beats_per_bar=3)
+        self.assertEqual(task._extract_result(1), 128.0)
+        self.assertEqual(task._extract_result(2), 3)
+        task.source_context = None
+        self.assertEqual((task._extract_result(1), task._extract_result(2)), (120.0, 4))
 
     def test_rolling_average_covers_a_time_window(self):
         task = atr.RollingAvgTask("rolling_node", {"in_1": 0.3}, block_size=128)  # 3 frames at 10 fps

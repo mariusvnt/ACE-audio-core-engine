@@ -22,16 +22,16 @@ class RequiredNodes:
 
     @staticmethod
     def _is_output_node(node: ACEAbstractNode) -> bool:
-        is_specs = bool(
+        is_value_utility = bool(
             node
-            and node.type in {'src_specs', 'util_rolling_avg', 'stream_accumulator'}
+            and node.type in {'util_rolling_avg', 'stream_accumulator'}
             and node.category == 'utilities'
         )
         return bool(
             node
             and (
                 node.category == 'stream'
-                or is_specs
+                or is_value_utility
                 or (node.category == 'utilities' and node.type == 'preview_sink')
             )
         )

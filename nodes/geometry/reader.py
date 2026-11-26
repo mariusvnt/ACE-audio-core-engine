@@ -99,10 +99,6 @@ class ACEDummyTreeReader(NodeIdentity):
         if node is None:
             return False
         is_stream = str(getattr(node, "category", "")) == "stream"
-        is_specs = (
-            str(getattr(node, "category", "")) == "utilities"
-            and str(getattr(node, "type", "")) == "src_specs"
-        )
         is_rolling_avg = (
             str(getattr(node, "category", "")) == "utilities"
             and str(getattr(node, "type", "")) == "util_rolling_avg"
@@ -111,7 +107,7 @@ class ACEDummyTreeReader(NodeIdentity):
             str(getattr(node, "category", "")) == "utilities"
             and str(getattr(node, "type", "")) == "stream_accumulator"
         )
-        return bool(is_stream or is_specs or is_rolling_avg or is_stream_accumulator)
+        return bool(is_stream or is_rolling_avg or is_stream_accumulator)
 
     def _emit_consumer_intents(self):
         sink_kind = (
@@ -422,11 +418,7 @@ class ACEDummyTreeReader(NodeIdentity):
                 idx = int(suffix) - 1
                 if idx >= 0:
                     return int(idx)
-        mapping = {
-            "Frames per Beat Attribute ID": 0,
-            "Beat Phase Attribute ID": 1,
-        }
-        return mapping.get(name)
+        return None
 
     def _parse_node(self, bl_node, root_id: str) -> Optional[ACEAbstractNode]:
         ace_id = self._ensure_ace_id(bl_node, root_id=root_id)

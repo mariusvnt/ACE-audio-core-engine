@@ -131,17 +131,15 @@ class TestParallelDSP(unittest.TestCase):
             },
         }
 
-    def _specs_splitter_stream_graph_ir(self):
+    def _splitter_stream_graph_ir(self):
         return {
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "specs": {"category": "utilities", "type": "src_specs", "parameters": {}},
                 "split": {"category": "delta", "type": "frequency_splitter", "parameters": {}},
                 "rms": {"category": "stream", "type": "rms", "parameters": {}},
             },
             "links": [
-                ("src_a", 0, "specs", 0),
-                ("specs", 2, "split", 0),
+                ("src_a", 0, "split", 0),
                 ("split", 0, "rms", 0),
             ],
             "source_node_ids": ["src_a"],
@@ -246,18 +244,18 @@ class TestParallelDSP(unittest.TestCase):
         self.assertIn("bright:0", values)
         self.assertNotIn("rms:0", values)
 
-    def test_worker_supports_specs_splitter_stream_chain(self):
+    def test_worker_supports_splitter_stream_chain(self):
         n = 512
         t = np.arange(n, dtype=np.float32) / 48000.0
         mono = np.sin((2.0 * np.pi * 440.0 * t)).astype(np.float32, copy=False)
         job = {
             "generation_id": 1004,
-            "graph_uid": "specs_splitter_graph",
+            "graph_uid": "splitter_graph",
             "frame_id": 9,
             "block_size": n,
             "sample_rate": 48000,
-            "graph_ir_digest": "digest_specs_splitter",
-            "graph_ir": self._specs_splitter_stream_graph_ir(),
+            "graph_ir_digest": "digest_splitter",
+            "graph_ir": self._splitter_stream_graph_ir(),
             "source_chunks": {
                 "src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0},
             },
@@ -272,7 +270,7 @@ class TestParallelDSP(unittest.TestCase):
         n = 2048
         t = np.arange(n, dtype=np.float32) / 48000.0
         mono = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
-        ir = self._specs_splitter_stream_graph_ir()
+        ir = self._splitter_stream_graph_ir()
         ir["nodes"]["split"]["parameters"] = {"in_1": 100.0}
         job = {
             "generation_id": 1099, "graph_uid": "driven_split_graph", "frame_id": 1, "block_size": n,
@@ -298,13 +296,13 @@ class TestParallelDSP(unittest.TestCase):
         }
 
     def test_worker_rejects_out_of_range_output_socket(self):
-        ir = self._specs_splitter_stream_graph_ir()
-        ir["links"][1] = ("specs", 3, "split", 0)  # Source Specs has outputs 0..2
+        ir = self._splitter_stream_graph_ir()
+        ir["links"][0] = ("src_a", 3, "split", 0)  # Source has outputs 0..2
         with self.assertRaisesRegex(ValueError, "has 3 output"):
             self.pds.evaluate_parallel_job(self._job_for(ir, "digest_bad_socket"))
 
     def test_worker_rejects_link_to_unknown_node(self):
-        ir = self._specs_splitter_stream_graph_ir()
+        ir = self._splitter_stream_graph_ir()
         ir["links"].append(("ghost", 0, "rms", 0))
         with self.assertRaisesRegex(ValueError, "unknown node 'ghost'"):
             self.pds.evaluate_parallel_job(self._job_for(ir, "digest_unknown_node"))
@@ -438,60 +436,6 @@ class TestParallelDSP(unittest.TestCase):
             except Exception:
                 pass
 
-
-    def test_worker_specs_uses_injected_bpm_fps(self):
-        """Gap 1 runtime check: worker SourceSpecs computes correct beat-phase from injected params."""
-        n = 512
-        mono = np.zeros(n, dtype=np.float32)
-        # 180 BPM, 3/4 time, 30 FPS → frames_per_beat = (60 * 30) / 180 = 10
-        # At frame 5: pos_in_measure = (5 * 0.1) % 3.0 = 0.5; beat_phase = 0.5 / 3.0 ≈ 0.1667
-        expected_frames_per_beat = (60.0 * 30.0) / 180.0
-        expected_phase = ((5 * (1.0 / expected_frames_per_beat)) % 3.0) / 3.0
-
-        graph_ir = {
-            "nodes": {
-                "src_a":  {"category": "source_mngmt", "type": "src",       "parameters": {}},
-                "specs":  {"category": "utilities",    "type": "src_specs",  "parameters": {
-                    "scene_bpm":           180.0,
-                    "scene_fps":           30.0,
-                    "scene_beats_per_bar": 3.0,
-                }},
-                "rms":    {"category": "stream",       "type": "rms",        "parameters": {}},
-            },
-            "links": [
-                ("src_a", 0, "specs", 0),
-                ("specs", 2, "rms",   0),   # socket 2 = audio passthrough
-            ],
-            "source_node_ids": ["src_a"],
-            "source_ir": {
-                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
-            },
-            "output_specs": {
-                "specs:0": {"node_id": "specs", "socket_idx": 0, "attr_type": "FLOAT"},
-            },
-        }
-
-        job = {
-            "generation_id":  2001,
-            "graph_uid":      "injected_bpm_graph",
-            "job_key":        "injected_bpm_graph:f5:j1",
-            "frame_id":       5,
-            "block_size":     n,
-            "sample_rate":    48000,
-            "graph_ir_digest": "digest_injected_bpm",
-            "graph_ir":       graph_ir,
-            "source_chunks": {
-                "src_a": {"mono": mono, "sample_rate": 48000, "latency_ms": 0.0},
-            },
-        }
-
-        out = self.pds.evaluate_parallel_job(job)
-        values = dict(out.get("values", {}) or {})
-        self.assertIn("specs:0", values)
-        # Output socket 0 = frames_per_beat
-        frames_per_beat_val = float(values["specs:0"])
-        self.assertAlmostEqual(frames_per_beat_val, expected_frames_per_beat, places=5,
-                               msg="frames_per_beat should reflect injected BPM+FPS, not hardcoded defaults")
 
 
 if __name__ == "__main__":

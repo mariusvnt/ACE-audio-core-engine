@@ -225,9 +225,8 @@ class SinkResolver:
                 continue
 
             is_stream = abs_node.category == "stream"
-            is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
             is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
-            if not (is_stream or is_specs or is_stream_accumulator):
+            if not (is_stream or is_stream_accumulator):
                 continue
 
             proxy_name = self._resolve_proxy_name_for_output_node(abs_node, source_lookup, unique_proxies)
@@ -250,22 +249,6 @@ class SinkResolver:
                         topology_sig=topology_sig,
                     )
                     socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
-                    socket_map[socket_name] = str(out_idx)
-            elif is_specs:
-                specs_socket_map = (
-                    ("Frames per Beat Attribute ID", 0),
-                    ("Beat Phase Attribute ID", 1),
-                )
-                for socket_name, out_idx in specs_socket_map:
-                    if out_idx >= len(abs_node.outputs):
-                        continue
-                    desired_map[str(out_idx)] = self._build_auto_attr_name(
-                        proxy_name,
-                        abs_node.id,
-                        abs_node.outputs[out_idx].name,
-                        out_idx,
-                        topology_sig=topology_sig,
-                    )
                     socket_map[socket_name] = str(out_idx)
             elif is_stream_accumulator and len(abs_node.outputs) > 0:
                 desired_map["0"] = self._build_auto_attr_name(
@@ -329,11 +312,7 @@ class SinkResolver:
                 idx = int(suffix) - 1
                 if idx >= 0:
                     return int(idx)
-        mapping = {
-            "Frames per Beat Attribute ID": 0,
-            "Beat Phase Attribute ID": 1,
-        }
-        return mapping.get(name)
+        return None
 
     def _refresh_abstract_attr_params_from_tree(
         self,
@@ -444,10 +423,9 @@ class SinkResolver:
             if abs_node is None:
                 continue
             is_stream = abs_node.category == "stream"
-            is_specs = abs_node.type == "src_specs" and abs_node.category == "utilities"
             is_rolling_avg = abs_node.type == "util_rolling_avg" and abs_node.category == "utilities"
             is_stream_accumulator = abs_node.type == "stream_accumulator" and abs_node.category == "utilities"
-            if not (is_stream or is_specs or is_rolling_avg or is_stream_accumulator):
+            if not (is_stream or is_rolling_avg or is_stream_accumulator):
                 continue
 
             root_sig = json.dumps(sorted(set(getattr(abs_node, "root_sources", set()) or set())))
@@ -469,22 +447,6 @@ class SinkResolver:
                             topology_sig="",
                         )
                         socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
-                        socket_map[socket_name] = str(out_idx)
-                elif is_specs:
-                    specs_socket_map = (
-                        ("Frames per Beat Attribute ID", 0),
-                        ("Beat Phase Attribute ID", 1),
-                    )
-                    for socket_name, out_idx in specs_socket_map:
-                        if out_idx >= len(abs_node.outputs):
-                            continue
-                        desired_map[str(out_idx)] = self._build_auto_attr_name(
-                            proxy_name,
-                            abs_node.id,
-                            abs_node.outputs[out_idx].name,
-                            out_idx,
-                            topology_sig="",
-                        )
                         socket_map[socket_name] = str(out_idx)
                 elif is_rolling_avg and len(abs_node.outputs) > 0:
                     desired_map["0"] = self._build_auto_attr_name(

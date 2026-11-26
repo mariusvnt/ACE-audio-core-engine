@@ -132,16 +132,7 @@ class ACEDummyNodeFactory:
 
         if node_type == "src":
             required_inputs = {"Proxy Object"}
-            required_outputs = {"Audio"}
-            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
-        if node_type == "src_specs":
-            required_inputs = {
-                "Audio",
-                "Frames per Beat Attribute ID",
-                "Beat Phase Attribute ID",
-                "Proxy Object",
-            }
-            required_outputs = {"Frames per Beat", "Beat Phase", "Audio"}
+            required_outputs = {"Audio", "BPM", "Beats per Bar"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
         if node_type == "preview_sink":
             # Sink: one Audio input, no outputs required.
@@ -208,8 +199,6 @@ class ACEDummyNodeFactory:
             for idx in range(1, int(value_output_count)):
                 names.append(f"Attribute ID {int(idx + 1)}")
             return tuple(names)
-        if category == "utilities" and node_type == "src_specs":
-            return ("Frames per Beat Attribute ID", "Beat Phase Attribute ID")
         if category == "utilities" and node_type == "util_rolling_avg":
             return ("Attribute ID",)
         if category == "utilities" and node_type == "stream_accumulator":
@@ -279,6 +268,21 @@ class ACEDummyNodeFactory:
 
                 ng.links.new(obj_info.outputs['Geometry'], bundle_node.inputs["Proxy Geometry"])
                 ng.links.new(bundle_node.outputs[0], output_node.inputs[0])
+
+                # BPM and Beats per Bar: what the source writes on point 0 of its proxy.
+                from ...core.proxy.attributes import SOURCE_TEMPO_ATTRS
+                for out_idx, (attr_name, data_type) in enumerate(SOURCE_TEMPO_ATTRS.items(), start=1):
+                    named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                    named_attr.data_type = data_type
+                    named_attr.inputs['Name'].default_value = attr_name
+                    named_attr.location = (-200, -200 * out_idx)
+                    sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                    sample_idx.data_type = data_type
+                    sample_idx.domain = 'POINT'
+                    sample_idx.location = (200, -200 * out_idx)
+                    ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                    ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
         # CASE B: DELTA (Audio -> Audio)
         elif category == 'delta':
@@ -389,53 +393,7 @@ class ACEDummyNodeFactory:
         # CASE D: UTILITIES
         elif category == 'utilities':
 
-            if node_type == 'src_specs':
-                attr_inputs = (
-                    ("Frames per Beat Attribute ID", "ACE_undefined_frames_per_beat"),
-                    ("Beat Phase Attribute ID", "ACE_undefined_beatphase"),
-                )
-                for sock_name, default_name in attr_inputs:
-                    if not any(s.name == sock_name for s in ng.interface.items_tree):
-                        ng.interface.new_socket(sock_name, in_out='INPUT', socket_type='NodeSocketString')
-                        ng.interface.items_tree[sock_name].default_value = default_name
-                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
-                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
-
-                attr_id_start_idx = len(inputs_def)
-                proxy_obj_idx = attr_id_start_idx + len(attr_inputs)
-
-                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
-                obj_info.transform_space = 'ORIGINAL'
-                obj_info.location = (-320, 0)
-                if 'As Instance' in obj_info.inputs:
-                    obj_info.inputs['As Instance'].default_value = False
-
-                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
-
-                sampler_specs = (
-                    ('FLOAT', 0, (-120, 220), (140, 220)),
-                    ('FLOAT', 1, (-120, -20), (140, -20)),
-                )
-                for offset, (data_type, out_idx, attr_loc, sample_loc) in enumerate(sampler_specs):
-                    named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
-                    named_attr.data_type = data_type
-                    named_attr.location = attr_loc
-
-                    sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
-                    sample_idx.data_type = data_type
-                    sample_idx.domain = 'POINT'
-                    sample_idx.location = sample_loc
-
-                    ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
-                    ng.links.new(input_node.outputs[attr_id_start_idx + offset], named_attr.inputs['Name'])
-                    ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                    if out_idx < len(output_node.inputs):
-                        ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
-
-                if len(inputs_def) > 0 and len(outputs_def) > 0:
-                    ng.links.new(input_node.outputs[0], output_node.inputs[len(outputs_def) - 1])
-
-            elif node_type == 'preview_sink':
+            if node_type == 'preview_sink':
                 # Pure sink: one bundle input, no outputs.
                 pass
 

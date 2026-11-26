@@ -1,10 +1,13 @@
 """Background probing of source metadata and tempo detection."""
 
 import threading
+
+import bpy  # type: ignore
 from typing import Any, Dict, Optional
 from ... import utils
 from ...properties import ACEAudioSource
 from ..input import decode
+from ..proxy.attributes import write_source_tempo
 from ..tasks.chunk import SAMPLE_RATE
 from ..tasks.tempo import TempoService
 
@@ -291,4 +294,20 @@ class SourceProbes:
             if found:
                 self._take_result(source, found)
                 any_updated = True
+        self._write_source_tempos(sources)
         return any_updated
+
+    @staticmethod
+    def _write_source_tempos(sources) -> None:
+        """Every source's BPM and Beats per Bar on its proxy mesh, for the Source node's outputs."""
+        objects = getattr(getattr(bpy, "data", None), "objects", None)
+        if objects is None:
+            return
+        for source in (sources or []):
+            proxy_name = str(getattr(source, "proxy_object_name", "") or "")
+            proxy = objects.get(proxy_name) if proxy_name else None
+            if proxy is None:
+                continue
+            with utils.logged_errors("probes.SourceProbes._write_source_tempos"):
+                write_source_tempo(proxy, float(getattr(source, "bpm", 120.0) or 120.0),
+                                   int(getattr(source, "beats_per_bar", 4) or 4))

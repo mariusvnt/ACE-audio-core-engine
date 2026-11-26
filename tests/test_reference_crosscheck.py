@@ -98,17 +98,21 @@ def check_onsets_match_clicks(fps):
 
 
 def check_tempo_matches_click_track(fps):
-    values = _golden("click_track", fps)["utilities.src_specs/Frames per Beat"]
-    truth = fps * 60.0 / fixtures.BPM
-    worst = float(np.max(np.abs(values - truth)) / truth)
-    return worst <= 0.02, f"frames per beat {np.unique(values)} for {truth}"
+    values = _golden("click_track", fps)["source_mngmt.src/BPM"]
+    worst = float(np.max(np.abs(values - fixtures.BPM)) / fixtures.BPM)
+    return worst <= 0.02, f"BPM {np.unique(values)} for {fixtures.BPM}"
 
 
 def check_tempo_matches_music(fps):
-    values = _golden("music_synth", fps)["utilities.src_specs/Frames per Beat"]
-    truth = fps * 60.0 / fixtures.BPM
-    worst = float(np.max(np.abs(values - truth)) / truth)
-    return worst <= 0.02, f"frames per beat {np.unique(values)} for {truth}"
+    values = _golden("music_synth", fps)["source_mngmt.src/BPM"]
+    worst = float(np.max(np.abs(values - fixtures.BPM)) / fixtures.BPM)
+    return worst <= 0.02, f"BPM {np.unique(values)} for {fixtures.BPM}"
+
+
+def check_meter_of_music(fps):
+    """music_synth is two bars of 4/4."""
+    values = _golden("music_synth", fps)["source_mngmt.src/Beats per Bar"]
+    return bool(np.all(values == 4)), f"beats per bar {np.unique(values)}"
 
 
 def check_centroid_tracks_sweep(fps):
