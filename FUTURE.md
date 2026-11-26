@@ -1,14 +1,14 @@
 # ACE: Future Work
 
-Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
+Planned changes that aren't built yet, in the order they should be done, except that section 3 starts early: its Stereo band fix comes first of all, then its removals. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
 1. [Instance model](#1-instance-model-definitions-instances-signals): definitions, instances, signals
 2. [Time model: render, bake, live](#2-time-model-render-bake-live)
-3. [Motion and event nodes](#3-motion-and-event-nodes)
+3. [Core operator set](#3-core-operator-set): the Stereo band fix and the removals first, then motion and event nodes
 4. [Live output window](#4-live-output-window)
 5. [Presets as assets](#5-presets-as-assets)
 
-The extension packaging and the reference-curve tests are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13 and §10). The sections below rewrite the compiler and the sinks: the reference curves must stay unchanged through that work.
+The extension packaging and the reference-curve tests are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13 and §10). The sections below rewrite the compiler and the sinks: the reference curves of the nodes that remain must stay unchanged through that work.
 
 ## 1. Instance model: definitions, instances, signals
 
@@ -114,13 +114,13 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 
 `core/clock.py` owns this table and is the only place that decides how a value is obtained. The render handlers stop calling the playback frame path and ask the clock layer for "value at this frame".
 
-**Stateful nodes** (Smooth, Running Total, Gate and Envelope, section 3) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
+**Stateful nodes** (Envelope, Running Total and Gate, section 3) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
 
 ### 2.2 Random access for file sources
 
 - File sources gain `read_at(t, window)` next to `read_block`.
 - The block for frame f is the same one streaming would use: samples `[f·N, (f+1)·N)` with `N = sample_rate / fps`, plus the history the analyser needs (an FFT window longer than a block reads samples before it).
-- **Stateful filters:** source preprocessing (high-pass and low-pass biquads, attack/release smoothing) uses IIR filters, which carry state. Random access runs a pre-roll before `t`, long enough for them to settle, so the result matches streaming within a tolerance set by the reference curves (ARCHITECTURE.md §10). Where the tolerance is too loose, use the checkpoints instead.
+- **Analyser state:** Loudness in LUFS and Peak modes runs K-weighting filters (LUFS also averages over its Window), and Transient compares each frame with the previous spectrum and a running average. Random access runs a pre-roll before `t`, long enough for that state to settle, so the result matches streaming within a tolerance set by the reference curves (ARCHITECTURE.md §10). Where the tolerance is too loose, use the checkpoints instead.
 - **Contract, checked by the tests:** random access = stream within tolerance, and bake = random access = render, value for value.
 
 ### 2.3 Baking into Blender data
@@ -179,7 +179,7 @@ Keyframed animation past its last key behaves as its F-curves say (hold, or cycl
 A **take** is a recorded live session:
 
 - the input audio saved as WAV;
-- the MIDI and OSC events (section 3) logged with timestamps;
+- the MIDI and OSC events, once ACE reads them, logged with timestamps;
 - the take's first tick mapped to its scene frame. Since live frames are consecutive, tick n is frame `start + n`, exactly.
 
 A take is a file source, so the rule table applies: it can be scrubbed, baked and rendered exactly. The use: perform live with an Eevee look, then render the same performance in Cycles at full quality.
@@ -200,19 +200,79 @@ Recording writes WAV and the event log off the main thread. `core/takes.py` owns
 
 The live output window of section 4 needs the live clock.
 
-## 3. Motion and event nodes
+## 3. Core operator set
 
-### Why motion and event nodes
+### Why a core set
 
-ACE measures audio well (level, spectrum, pitch, onset), but every measurement describes the current frame, so whatever it drives moves in short twitches. Two things are left to the user in Geometry Nodes: giving that motion weight, and turning it into "something happens on each kick". They need smoothing, thresholds, holds, decays and counters built from math nodes. That is hard to get right per frame, and impossible to get right across a scrub, because the state lives nowhere.
+ACE has 17 nodes. Several measure the same thing, some don't do what their name says, and none of them gives motion weight or turns a measurement into an event. The goal is a small set where each node answers a question the others can't:
 
-**Today:**
+| Node | Outputs |
+| --- | --- |
+| **Source** | Audio, BPM, Beats per Bar, Downbeat |
+| **Frequency Splitter** | one Audio per band |
+| **Loudness** | level, 0..1: RMS (default), LUFS or Peak |
+| **Pitch** | 0..1 |
+| **Brightness** (today's Spectral centroid) | 0..1 |
+| **Transient** (today's Onset) | sharpness of the transient, 0..1 |
+| **Stereo** | Balance (-1..1), Width (0..1) |
+| **Envelope** | the input, smoothed |
+| **Running Total** | the input summed over time |
+| **Gate** | Open, Hit, Count |
+| **Audio Preview** | none: plays a branch, in Geometry Nodes and shaders |
 
-- Two utilities keep state:
-  - **Rolling Average** is a symmetric box window. It lags on the way up as much as it blurs on the way down.
-  - **Stream Accumulator** adds its input once per frame, so the same scene moves twice as far at 48 fps as at 24 fps.
-- **Source Specs** outputs Frames per Beat and Beat Phase. Beat Phase is really the position in the bar, and it assumes the music starts on a downbeat at the first frame.
-- Each of these nodes is special-cased by name in the reader, the sinks, the proxy attributes, the compiler, the offload policy, both factories and the UI.
+Old .blend files don't need to keep working: nothing is migrated, and the migration of the older per-method stream types goes too.
+
+### Stereo band fix (top priority)
+
+Stereo and Stereo Vector ignore a Frequency Splitter: Width, Balance and the left and right levels of every band are those of the whole signal. A split only tags a frequency range, and the stereo measurements don't apply it. They must measure inside the band of their input. This comes before everything else, on the nodes as they are today. Without a splitter the values don't change.
+
+### Removals (second priority)
+
+These come before section 1, so that its rewrite of the compiler and the sinks has less to carry. The curves of the nodes that remain stay unchanged.
+
+- **Audio Math.** A split only tags a frequency range, so the node combines the unfiltered audio: adding two bands doubles the whole signal, and subtracting them gives silence.
+- **Attack/Release Splitter.** It gates single samples by the slope of the waveform, not by the loudness envelope.
+- **Automatic Component Splitter.** Its split doesn't hold: stationary noise comes out partly percussive.
+- **Mid/Side Splitter.** The Width of a stereo signal covers its main use.
+- **Chromagram.** Using it takes one Loudness node per note. It can come back as a single node if harmony is missed.
+- **Source Specs.** BPM and Beats per Bar are already source settings: the Source node outputs them, and the tempo estimate moves with them. Frames per Beat and Beat Phase are dropped.
+- **Loudness** keeps its three methods and Window, and its default changes from LUFS to RMS.
+- **Spectral** becomes Brightness and keeps the centroid only: flux and zero-crossing rate go.
+- **Source preprocessing:** the per-source high-pass, low-pass and attack/release settings. Frequency Splitter and Envelope do these jobs.
+- **Onset** is renamed Transient.
+
+Rolling Average and Stream Accumulator stay until Envelope and Running Total replace them. Stereo and Stereo Vector stay until they are merged into one Stereo node.
+
+### Outputs on 0..1
+
+Every measurement is a float between 0 and 1, so outputs can be swapped and a Gate's Threshold is always set on the same range. Balance is the exception: it keeps its range of -1 (left) to 1 (right), with 0 at the centre.
+
+| Output | 0 | 1 | Scale |
+| --- | --- | --- | --- |
+| Loudness | -70 dB and below | 0 dB | linear in dB, as today |
+| Pitch | 20 Hz, or no pitch | 5000 Hz | logarithmic, so equal musical intervals are equal steps |
+| Brightness | 20 Hz and below | 20000 Hz | logarithmic |
+| Transient | smooth | sharp | as today |
+| Width | mono | side only | as today |
+
+The ranges are fixed, also behind a Frequency Splitter, so values from different bands compare. Envelope keeps the scale of its input.
+
+These are quantities rather than measurements, and keep their units: BPM, Beats per Bar and Downbeat, Running Total, and Gate's Count.
+
+Pitch and Brightness get new reference curves.
+
+### Stereo
+
+Stereo and Stereo Vector become one node without modes, with two outputs: **Balance** and **Width**. Both are ratios that say where the sound is, whatever its volume. Levels are Loudness's job, so the left and right levels of Stereo Vector go.
+
+### Motion and event nodes
+
+ACE measures audio, but every measurement describes the current frame, so whatever it drives moves in short twitches. Giving that motion weight, and turning it into "something happens on each kick", takes smoothing, thresholds, holds and counters built from math nodes. That is hard to get right per frame, and impossible to get right across a scrub, because the state lives nowhere.
+
+**Today:** two utilities keep state:
+
+- **Rolling Average** is a symmetric box window. It lags on the way up as much as it blurs on the way down.
+- **Stream Accumulator** adds its input once per frame, so the same scene moves twice as far at 48 fps as at 24 fps.
 
 ### Design rules
 
@@ -225,75 +285,61 @@ ACE measures audio well (level, spectrum, pitch, onset), but every measurement d
 - **Each stateful task is a pure step**: `(state, input, dt) → (state, output)`. This is what makes replay possible (see State and timeline).
 - Booleans are Bool sockets in Geometry Nodes and 0/1 floats in shaders.
 
-### Motion nodes
+### Envelope, Running Total and Gate
 
-**Smooth** replaces Rolling Average. It smooths a value over time, in three modes, with Follow as the default:
+**Envelope** replaces Rolling Average, in two modes, with Follow as the default:
 
-- **Average:** a box window over Window, the current Rolling Average.
-- **Follow:** rises with Attack and falls with Release. Hold keeps the value at its peak for Hold seconds before it starts to fall. With Attack at 0, this is a peak hold: it keeps the maximum for a time, then falls. The fall is set by Release, a time, like every other time in these nodes, rather than by a rate in units per second.
+- **Follow:** rises with Attack and falls with Release. Hold keeps the value at its peak for Hold seconds before it starts to fall. With Attack at 0, this is a peak hold, and fed a Gate's Hit it gives a hit-then-decay shape.
 - **Spring:** the output follows the input like a weight on a spring. It speeds up toward the input, overshoots and settles. Speed (Hz) sets how fast it follows. Bounce sets how much it overshoots: 0 means not at all, 1 means it barely stops. This gives motion weight and follow-through.
 
-Inputs used by one mode only are hidden in the others, as Loudness already does for Window.
+Inputs used by one mode only are hidden in the other.
 
 **Running Total** replaces Stream Accumulator. Its input is a rate and its output is the total over time (value × seconds), for a scalar or a vector:
 
-- **Keep:** sums from the start of the timeline.
-- **Leak:** the total drifts back toward 0 over Leak Time when the input goes quiet. Energy pushes it forward, and silence lets it return.
-- **Count:** adds the input once per frame instead of value × seconds. Fed a Gate's Hit, it counts kicks: a Hit lasts one frame at any fps, so the count doesn't depend on fps. Modulo needs no state, so a Floored Modulo math node does it in Geometry Nodes: "change colour every 4 kicks", stepping through instances.
-- **Reset**, a Boolean input, for example from another Gate's Hit. Today's accumulator reads a hidden reset from input 1, which is where Leak Time goes, so Reset gets its own socket.
+- **Leak Time:** the total drifts back toward 0 when the input goes quiet. Energy pushes it forward, and silence lets it return. At 0 it never leaks, and sums from the start of the timeline.
+- **Reset**, a Boolean input, for example from a Gate's Hit.
 
-### Event nodes
+**Gate:** float in, three outputs:
 
-- **Gate:** float in, two Boolean outputs:
-  - **Open:** true from the moment the input crosses Threshold until it falls below Re-arm Level (the hysteresis).
-  - **Hit:** true only on the frame it opens.
-  - The **Min Interval** input prevents a new Hit sooner than this, so one kick gives one pulse.
+- **Open:** true from the moment the input crosses Threshold until it falls below Re-arm Level (the hysteresis).
+- **Hit:** true only on the frame it opens.
+- **Count:** the number of hits so far, set back to 0 by the **Reset** input. A Floored Modulo math node turns it into "change colour every 4 kicks".
 
-A pulse is any Boolean or 0/1 input, usually a Gate's Hit.
+The **Min Interval** input prevents a new Hit sooner than this, so one kick gives one pulse.
 
-- **Envelope:** pulse in → attack / decay / sustain / release curve, with times in seconds or in beats. Smooth's Follow tracks a value; Envelope plays a shape on each pulse.
-- **Beat Quantize:** snaps pulses to the beat grid given by the source's BPM and Downbeat.
+### Musical time: the Source node
 
-Counting pulses is Running Total in Count mode.
-
-### Musical time: Source Specs
-
-Source Specs exposes only what musical time depends on: **BPM, Beats per Bar and Downbeat**. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so the node outputs no phase.
+The Source node outputs only what musical time depends on: **BPM, Beats per Bar and Downbeat**. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so no node outputs a phase.
 
 - **Downbeat estimate:** found together with the tempo, as the position in the bar with the strongest mean spectral flux. It is a source property the user can override, like BPM and meter.
-- **Tasks that work in beats** (Envelope, Beat Quantize) read BPM and Downbeat from the source, not through sockets.
 - **Phases in Geometry Nodes** come from a **Beat Clock** preset (section 5). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
-- **Old files:** links from Frames per Beat and Beat Phase are dropped on load, with one log line per node.
-
-### Migration
-
-- Rolling Average becomes Smooth in Average mode, and Stream Accumulator becomes Running Total in Keep mode. This uses the legacy-type map that already turns old stream nodes into mode nodes (`nodes/modes.py`), so links and values move by socket name.
-- Running Total now adds per second, so a migrated scene moves at a different speed. The load log says so.
 
 ### State and timeline
 
 - **Rule:** a stateful node gives the same value on a frame whether that frame is reached by playing or by jumping.
 - **File sources replay.**
-  - Smooth and Gate forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (2.2) for the measurements upstream.
-  - Running Total and Envelope remember indefinitely. They need checkpoints saved every N frames, or the bake (2.3).
+  - Envelope and Gate's Open forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (2.2) for the measurements upstream.
+  - Running Total and Gate's Count remember indefinitely. They need checkpoints saved every N frames, or the bake (2.3).
 - **Until section 2 exists**, state resets on a rewind or a jump, and the panel says so.
 - **Live sources** can't be replayed, so their state simply carries on.
 - **Recompiles:** the task diff of section 1 keeps this state. Today's per-task export and import covers only the accumulator.
 
-### Event order
+### Core set order
 
-1. Registry-driven value nodes and the `stateful` flag.
-2. Smooth and Running Total, with migration.
-3. Source Specs: the Downbeat estimate and the reduced outputs.
-4. Gate, then Envelope and Beat Quantize.
-5. Replay on jump, once random access (2.2) exists.
+1. Stereo band fix.
+2. Removals and renames, before section 1.
+3. Registry-driven value nodes and the `stateful` flag, then the merged Stereo node and the 0..1 outputs.
+4. Envelope and Running Total.
+5. The Downbeat estimate.
+6. Gate.
+7. Replay on jump, once random access (2.2) exists.
 
 Each new node gets reference curves (ARCHITECTURE.md §10), which also check that 24 and 48 fps give the same curve.
 
-### Event open questions
+### Core set open questions
 
-- Should Envelope and Running Total outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
-- Should Smooth and Envelope also take times in beats, or only Envelope?
+- Envelope's Spring overshoots, so on an input near either end of its range it leaves it. Proposed: let it, since clamping would flatten the bounce.
+- Should Running Total and Gate outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
 - Should Gate's Re-arm Level be a free level, or a fraction of Threshold?
 
 ## 4. Live output window
