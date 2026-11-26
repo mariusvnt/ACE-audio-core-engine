@@ -72,6 +72,24 @@ class ACEAbstractLink:
     source_socket_idx: int
     target_socket_idx: int
 
+def audio_links(abstract_tree):
+    """The links the DSP wires between tasks.
+
+    A splitter's split frequencies are not among them: they are values computed from the link on
+    the main side, so even one fed by the splitter's own band cannot make a task depend on itself.
+    """
+    nodes = getattr(abstract_tree, "nodes", {}) or {}
+    for link in getattr(abstract_tree, "links", []) or []:
+        target = nodes.get(link.target_node_id)
+        if (
+            int(link.target_socket_idx) > 0
+            and getattr(target, "category", "") == "delta"
+            and getattr(target, "type", "") == "frequency_splitter"
+        ):
+            continue
+        yield link
+
+
 @dataclass
 class ACEAbstractOutputLink:
     """Represents an ACE output socket that is connected to the GN Group Output."""

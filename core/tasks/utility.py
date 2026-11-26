@@ -12,10 +12,12 @@ from .spectral import _aligned_signal_length, _analysis_signals_normalized, _res
 class RollingAvgTask(ACEAudioTask):
     """Computes a rolling (moving) average of a scalar attribute stream."""
 
+    _DEFAULT_WINDOW_S = 0.25
+
     def __init__(self, node_id: str, parameters: Dict[str, Any], block_size: int):
         super().__init__(node_id, parameters, block_size)
-        self._buffer: deque = deque(maxlen=1)
-        self._buffer_maxlen: int = 1
+        self._samples: deque = deque()  # (frame, value)
+        self._current_frame_request: Optional[int] = None
 
     def process(self, inputs):
         raw_value = inputs.get(0)
@@ -26,23 +28,28 @@ class RollingAvgTask(ACEAudioTask):
         except (TypeError, ValueError):
             value = 0.0
 
-        raw_frame_count = inputs.get(1)
-        if raw_frame_count is None:
-            raw_frame_count = self.parameters.get("in_1", 1)
+        raw_window = inputs.get(1)
+        if raw_window is None:
+            raw_window = self.parameters.get("in_1", self._DEFAULT_WINDOW_S)
         try:
-            frame_count = max(1, int(round(float(raw_frame_count))))
+            window_s = max(float(raw_window), 0.0)
         except (TypeError, ValueError):
-            frame_count = 1
-
-        new_maxlen = max(1, int(frame_count))
-        if new_maxlen != self._buffer_maxlen:
-            # Preserve as many recent samples as fit in the new capacity.
-            existing = list(self._buffer)
-            self._buffer = deque(existing[-new_maxlen:], maxlen=new_maxlen)
-            self._buffer_maxlen = new_maxlen
-
-        self._buffer.append(value)
-        return float(np.mean(self._buffer))
+            window_s = self._DEFAULT_WINDOW_S
+        fps = max(float(getattr(self.engine_ref, "_current_scene_fps", 0.0) or self.scene_fps or 24.0), 1.0)
+        last = self._samples[-1][0] if self._samples else None
+        frame = self._current_frame_request
+        if frame is None:
+            frame = 0 if last is None else last + 1
+        if last is not None and frame <= last:
+            if frame < last:
+                self._samples.clear()  # the timeline was rewound
+            else:
+                self._samples.pop()  # the same frame again
+        self._samples.append((frame, value))
+        # Samples younger than the window; the current one always counts.
+        while len(self._samples) > 1 and (frame - self._samples[0][0]) / fps >= window_s - 1e-6:
+            self._samples.popleft()
+        return float(np.mean([sample for _frame, sample in self._samples]))
 
 
 class StreamAccumulatorTask(ACEAudioTask):

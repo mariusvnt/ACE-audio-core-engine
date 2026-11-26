@@ -197,7 +197,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         source_type = str(getattr(ctx, "source_type", "") or "").strip().upper() if ctx else ""
         filepath = str(getattr(ctx, "filepath", "") or "") if ctx else ""
         flow_id = build_live_flow_identifier(ctx) if ctx else ""
-        live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx else 10
+        live_latency_ms = int(getattr(ctx, "live_latency_ms", 5) or 5) if ctx else 5
         requested_sr = int(getattr(ctx, "live_udp_sample_rate", 0) or 0) if ctx else 0
         live_transport = str(getattr(ctx, "live_transport", "") or "").strip().upper() if ctx else ""
         live_device = str(getattr(ctx, "live_device_selector", "") or "") if ctx else ""
@@ -259,7 +259,7 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         flow_id = build_live_flow_identifier(ctx) if ctx else ""
         if ctx is not None:
             self._pending_ctx_writes["flow_identifier"] = flow_id
-        live_latency_ms = int(getattr(ctx, "live_latency_ms", 10) or 10) if ctx else 10
+        live_latency_ms = int(getattr(ctx, "live_latency_ms", 5) or 5) if ctx else 5
         target_sample_rate = None
         engine = getattr(self, "engine_ref", None)
         target_sr_resolver = getattr(getattr(engine, "compiler", None), "_source_task_target_sample_rate", None)

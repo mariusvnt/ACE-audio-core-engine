@@ -11,6 +11,7 @@ from ...abstract_tree import ACEAbstractTree
 from ...tasks.utility import StreamAccumulatorTask
 from ...id_management import ACEIdManager
 from ...proxy.manager import ACEProxyManager
+from ....nodes.source_nodes import refresh_source_nodes
 from ..common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot
 from .graph_build import GraphBuild
 from .required_nodes import RequiredNodes
@@ -122,8 +123,6 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         if self.engine.writer is not None and sink_writes_allowed:
             self._prune_stale_consumer_properties()
 
-        with utils.logged_errors("compiler.GraphCompiler.compile"):
-            ACEProxyManager.ensure_sonar_setup(blender_scene, getattr(blender_scene.audiocore, "audio_sources", []))
         self._last_compile_time = time.time()
 
     def _export_stream_accumulator_state(self):
@@ -160,12 +159,8 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         source_context_lookup: Dict[str, ACEAudioSource] = {}
 
         for source in sources:
-            # Ensure a proxy exists and resolve the stable proxy name for filtering
-            try:
-                proxy_obj = ACEProxyManager.ensure_proxy_for_source(source, scene=blender_scene)
-            except Exception as exc:
-                utils.note_swallowed("compiler.GraphCompiler._resolve_sources", exc)
-                proxy_obj = None
+            # Only a source some node reads has a proxy; the others keep a name for filtering.
+            proxy_obj = bpy.data.objects.get(str(getattr(source, "proxy_object_name", "") or ""))
             src_uid = ACEIdManager.ensure_source_uid(source, existing_ids=existing_ids)
             if src_uid and src_uid not in existing_ids:
                 existing_ids.append(src_uid)
@@ -175,8 +170,6 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                     getattr(source, "name", "") or src_uid or "Source",
                     stable_seed=src_uid or getattr(source, "name", "") or "source",
                 )
-                with utils.logged_errors("compiler.GraphCompiler._resolve_sources#2"):
-                    source.proxy_object_name = src_proxy_name
 
             if src_uid:
                 source_context_lookup[src_uid] = source
@@ -287,12 +280,10 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 min_interval=5.0,
             )
             return
-        sources = list(getattr(getattr(scene, "audiocore", None), "audio_sources", []) or [])
-        # Shader driver bindings need concrete proxy object names before the
-        # frontend sync stage; ensure proxies are materialized up-front.
-        for source in sources:
-            with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends"):
-                ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
+        # The sources the user's Source nodes read get a proxy object before the frontends are
+        # read (shader driver bindings need its name); the others get nothing.
+        with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends"):
+            refresh_source_nodes([record.tree for record in frontends if record.tree], scene)
         reserved_node_ids: set[str] = set()
         merged_tree = ACEAbstractTree()
 
@@ -309,9 +300,6 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                     removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
                     if removed:
                         utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
-
-            with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#3"):
-                ACEProxyManager.sync_managed_source_tree(tree, sources, scene=scene)
 
             if frontend_kind == FRONTEND_KIND_SHADER:
                 from ....nodes.shader.reader import ACEShaderTreeReader

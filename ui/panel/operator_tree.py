@@ -13,6 +13,9 @@ from typing import Iterable, Optional
 SEGMENT_NODE = "node"
 SEGMENT_BAND = "band"
 SEGMENT_REF = "ref"
+SEGMENT_SPLIT = "split"  # a band that stands for its splitter, which has no name of its own
+# Kinds that are the node itself (selecting the node selects them).
+NODE_KINDS = (SEGMENT_NODE, SEGMENT_SPLIT)
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,8 @@ class GraphNode:
     # Output names of a node that splits audio into bands (splitter, mid/side, ...);
     # empty for single-output nodes.
     band_names: tuple[str, ...] = ()
+    # Set for the frequency splitter: its connected bands replace it, as "<prefix> <band>".
+    band_prefix: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,33 +87,43 @@ class _Builder:
         self.placed.add(node_id)
         return Segment(node_id, node.label, SEGMENT_NODE, node_id)
 
+    def _bands(self, node_id: str) -> list[Segment]:
+        """One segment per connected output of a band node."""
+        node = self.nodes[node_id]
+        segments = []
+        for sock in sorted({int(l.source_socket) for l in self.out_links.get(node_id, [])}):
+            name = node.band_names[sock] if sock < len(node.band_names) else f"Band {sock + 1}"
+            if node.band_prefix:
+                label = f"{node.band_prefix} {name.removeprefix('Band ')}"
+                segments.append(Segment(node_id, label, SEGMENT_SPLIT, band_key(node_id, sock)))
+            else:
+                segments.append(Segment(node_id, name, SEGMENT_BAND, band_key(node_id, sock)))
+        return segments
+
+    def _entries(self, node_id: str) -> list[Segment]:
+        """How a node appears under its parent: its name, or its bands for a prefixed splitter."""
+        if self.nodes[node_id].band_prefix and self.out_links.get(node_id) and node_id not in self.placed:
+            self.placed.add(node_id)
+            return self._bands(node_id)
+        return [self._node_segment(node_id)]
+
     def _children(self, seg: Segment) -> list[Segment]:
         """Segments directly below *seg*; a node is placed the first time it is met."""
         if seg.kind == SEGMENT_REF:
             return []
-        node = self.nodes[seg.node_id]
         links = self.out_links.get(seg.node_id, [])
-        if seg.kind == SEGMENT_BAND:
+        if seg.kind in (SEGMENT_BAND, SEGMENT_SPLIT):
             sock = int(seg.key.rsplit(":", 1)[1])
-            return [self._node_segment(l.target_id) for l in links if int(l.source_socket) == sock]
-        if node.band_names:
-            used = sorted({int(l.source_socket) for l in links})
-            return [
-                Segment(
-                    seg.node_id,
-                    node.band_names[s] if s < len(node.band_names) else f"Band {s + 1}",
-                    SEGMENT_BAND,
-                    band_key(seg.node_id, s),
-                )
-                for s in used
-            ]
+            links = [l for l in links if int(l.source_socket) == sock]
+        elif self.nodes[seg.node_id].band_names:
+            return self._bands(seg.node_id)
         children: list[Segment] = []
         listed: set[str] = set()
         for link in links:
             if link.target_id in listed:
                 continue
             listed.add(link.target_id)
-            children.append(self._node_segment(link.target_id))
+            children.extend(self._entries(link.target_id))
         return children
 
     def emit(self, first: Segment, depth: int, parent: int) -> None:
@@ -129,6 +144,37 @@ class _Builder:
         )
         for kid in kids:
             self.emit(kid, depth + 1, row_idx)
+
+
+def column_widths(rows, available: float, separator: float = 1.0, min_middle: float = 3.0,
+                  min_first: float = 5.0) -> list[float]:
+    """Width of each segment column, so that the separators of every row line up.
+
+    *rows* is [(indent, [natural width per segment])], in UI units; column 0 includes the indent.
+    A column is as wide as its widest cell that has another after it (a row's last cell takes
+    whatever is left). When a row is longer than *available*, the middle columns shrink first,
+    then the first one, so the first and last names keep their room.
+    """
+    columns = [0.0] * max((len(widths) - 1 for _indent, widths in rows), default=0)
+    for indent, widths in rows:
+        for k, width in enumerate(widths[:-1]):
+            columns[k] = max(columns[k], width + (indent if k == 0 else 0.0))
+
+    def excess(indent: float, widths: list[float]) -> float:
+        before_last = len(widths) - 1
+        used = sum(columns[:before_last]) + separator * before_last + widths[-1]
+        return used + (indent if before_last == 0 else 0.0) - available
+
+    for indent, widths in sorted(rows, key=lambda row: -excess(*row)):
+        before_last = len(widths) - 1
+        for shrinkable, floor in ((range(1, before_last), min_middle), (range(0, min(before_last, 1)), min_first)):
+            while excess(indent, widths) > 1e-6:
+                wide = [k for k in shrinkable if columns[k] > floor + 1e-6]
+                if not wide:
+                    break
+                k = max(wide, key=columns.__getitem__)
+                columns[k] -= min(excess(indent, widths), columns[k] - floor, 0.5)
+    return columns
 
 
 def build_rows(nodes: Iterable[GraphNode], links: Iterable[GraphLink], roots: Iterable[str]) -> list[Row]:
@@ -170,7 +216,7 @@ def row_of_node(rows: list[Row], node_id: str) -> int:
     """Row holding the placed (non-reference) segment of *node_id*, or -1."""
     for idx, row in enumerate(rows):
         for seg in row.segments:
-            if seg.node_id == node_id and seg.kind == SEGMENT_NODE:
+            if seg.node_id == node_id and seg.kind in NODE_KINDS:
                 return idx
     return -1
 
@@ -189,4 +235,4 @@ def find_segment(rows: list[Row], node_id: str) -> Optional[Segment]:
     idx = row_of_node(rows, node_id)
     if idx < 0:
         return None
-    return next(seg for seg in rows[idx].segments if seg.node_id == node_id and seg.kind == SEGMENT_NODE)
+    return next(seg for seg in rows[idx].segments if seg.node_id == node_id and seg.kind in NODE_KINDS)

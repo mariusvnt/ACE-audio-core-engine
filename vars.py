@@ -233,8 +233,8 @@ ACE_NODES: dict[str, Category] = {
             "util_rolling_avg": {
             "label": "Rolling Average",
             "icon": "",
-            "description": "Smooths a scalar attribute stream over a fixed number of scene frames.",
-            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
+            "description": "Smooths a scalar attribute stream over a time window.",
+            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Window')],
             "outputs": [('NodeSocketFloat', 'Rolling Avg')],
             },
             "stream_accumulator": {
@@ -302,12 +302,26 @@ SOCKET_RANGES: dict[tuple[str, str], dict[str, tuple[float, float, float]]] = {
     ("stream", "loudness"): {
         "Window (s)": (0.4, 0.05, 3.0),
     },
+    ("utilities", "util_rolling_avg"): {
+        "Window": (0.25, 0.001, 60.0),
+    },
+}
+
+# Sockets whose field shows a unit: a time in seconds reads "250 ms".
+SOCKET_SUBTYPES: dict[tuple[str, str], dict[str, str]] = {
+    ("utilities", "util_rolling_avg"): {"Window": "TIME_ABSOLUTE"},
 }
 
 
 def apply_socket_ranges(ng, category: str, node_type: str) -> None:
     """Set defaults and ranges on a group interface from SOCKET_RANGES."""
-    ranges = SOCKET_RANGES.get((str(category or ""), str(node_type or "")))
+    key = (str(category or ""), str(node_type or ""))
+    subtypes = SOCKET_SUBTYPES.get(key, {})
+    for item in list(getattr(getattr(ng, "interface", None), "items_tree", [])):
+        wanted = subtypes.get(str(getattr(item, "name", "") or ""))
+        if wanted and getattr(item, "in_out", None) == "INPUT" and getattr(item, "subtype", wanted) != wanted:
+            item.subtype = wanted
+    ranges = SOCKET_RANGES.get(key)
     if not ranges:
         return
     for item in getattr(getattr(ng, "interface", None), "items_tree", []):

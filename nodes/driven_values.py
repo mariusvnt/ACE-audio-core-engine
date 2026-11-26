@@ -1,8 +1,9 @@
 """Values that reach an operator's input through a link.
 
 Blender gives Python no access to the value travelling through a link, so it is computed here
-from the nodes feeding it: Value, Integer, Math, Clamp, Map Range, Scene Time, reroutes and the
-modifier's own inputs. Anything else is unknown.
+from the nodes feeding it: audio operator outputs (their latest value), Value, Integer, Math,
+Clamp, Map Range, Mix, Switch, Float Curve, Float to Integer, Scene Time, reroutes, node groups,
+muted nodes and the modifier's own inputs. Anything else is unknown.
 """
 
 import math
@@ -16,31 +17,24 @@ class _Unknown(Exception):
     """The chain holds something that cannot be computed here."""
 
 
+class _Walk:
+    """Where the computation is: the scene, and the node groups entered on the way up."""
+
+    def __init__(self, scene):
+        self.scene = scene
+        self.groups: list = []
+
+
 def linked_value(socket, scene=None) -> float | None:
     """The value reaching input *socket* (its own value when unlinked), or None if it cannot be computed."""
     try:
-        value = _input_value(socket, scene, 0)
+        value = _input_value(socket, _Walk(scene), 0)
     except _Unknown:
         return None
     except Exception as exc:  # noqa: BLE001 boundary: a node layout we do not know is just unknown
         utils.note_swallowed("driven_values.linked_value", exc)
         return None
     return value if math.isfinite(value) else None
-
-
-def fed_by_audio(socket) -> bool:
-    """True when an ACE node is somewhere upstream of *socket*."""
-    pending, seen = [socket], set()
-    while pending:
-        for link in pending.pop().links:
-            node = link.from_node
-            if node.as_pointer() in seen:
-                continue
-            seen.add(node.as_pointer())
-            if node.get("ace_id"):
-                return True
-            pending.extend(sock for sock in node.inputs if sock.is_linked)
-    return False
 
 
 def node_ref(node) -> tuple[str, str, str] | None:
@@ -66,22 +60,35 @@ def node_from_ref(ref):
     return tree.nodes.get(node_name) if tree is not None else None
 
 
-def _input_value(socket, scene, depth: int) -> float:
+def _input_value(socket, walk: _Walk, depth: int) -> float:
     if depth > _MAX_DEPTH:
         raise _Unknown
     link = next((link for link in socket.links if not link.is_muted), None)
     if link is None:
         return float(socket.default_value)
-    return _output_value(link.from_node, link.from_socket, scene, depth + 1)
+    return _output_value(link.from_node, link.from_socket, walk, depth + 1)
 
 
-def _output_value(node, output, scene, depth: int) -> float:
-    if node.mute:
+def _socket(sockets, identifier: str):
+    found = next((s for s in sockets if s.identifier == identifier), None)
+    if found is None:
         raise _Unknown
+    return found
+
+
+def _output_value(node, output, walk: _Walk, depth: int) -> float:
+    if node.get("ace_id"):
+        return _audio_value(node, output, walk.scene)
+    if node.mute:
+        through = next((l for l in node.internal_links if l.to_socket == output), None)
+        if through is None:
+            raise _Unknown
+        return _input_value(through.from_socket, walk, depth)
     kind = node.bl_idname
 
-    def arg(index: int) -> float:
-        return _input_value(node.inputs[index], scene, depth)
+    def arg(which) -> float:
+        socket = node.inputs[which] if isinstance(which, int) else _socket(node.inputs, which)
+        return _input_value(socket, walk, depth)
 
     if kind == "NodeReroute":
         if not node.inputs[0].is_linked:
@@ -102,15 +109,71 @@ def _output_value(node, output, scene, depth: int) -> float:
         return min(max(value, low), high)
     if kind == "ShaderNodeMapRange":
         return _map_range(node, arg)
+    if kind == "ShaderNodeMix":
+        if node.data_type != "FLOAT":
+            raise _Unknown
+        factor = arg("Factor_Float")
+        if node.clamp_factor:
+            factor = min(max(factor, 0.0), 1.0)
+        a = arg("A_Float")
+        return a + factor * (arg("B_Float") - a)
+    if kind == "GeometryNodeSwitch":
+        if node.input_type not in {"FLOAT", "INT"}:
+            raise _Unknown
+        return arg("True" if arg("Switch") else "False")
+    if kind == "ShaderNodeFloatCurve":
+        factor, value = arg("Factor"), arg("Value")
+        mapping = node.mapping
+        mapping.initialize()
+        curved = mapping.evaluate(mapping.curves[0], value)
+        if mapping.use_clip:
+            curved = min(max(curved, mapping.clip_min_y), mapping.clip_max_y)
+        return value + factor * (curved - value)
+    if kind == "FunctionNodeFloatToInt":
+        value = arg(0)
+        rounding = {
+            "ROUND": lambda v: math.floor(abs(v) + 0.5) * (1.0 if v >= 0.0 else -1.0),
+            "FLOOR": math.floor, "CEILING": math.ceil, "TRUNCATE": math.trunc,
+        }
+        return float(rounding[node.rounding_mode](value))
     if kind == "GeometryNodeInputSceneTime":
-        scene = scene or bpy.context.scene
+        scene = walk.scene or bpy.context.scene
         frame = scene.frame_current + scene.frame_subframe
         if output.identifier == "Frame":
             return float(frame)
         return float(frame / (scene.render.fps / scene.render.fps_base))
+    if kind in {"GeometryNodeGroup", "ShaderNodeGroup"}:
+        inner = node.node_tree
+        outputs = [n for n in inner.nodes if n.bl_idname == "NodeGroupOutput"] if inner else []
+        if not outputs:
+            raise _Unknown
+        group_output = next((n for n in outputs if n.is_active_output), outputs[0])
+        walk.groups.append(node)
+        try:
+            return _input_value(_socket(group_output.inputs, output.identifier), walk, depth)
+        finally:
+            walk.groups.pop()
     if kind == "NodeGroupInput":
-        return _modifier_input(node.id_data, output.identifier, scene)
+        if not walk.groups:
+            return _modifier_input(node.id_data, output.identifier, walk.scene)
+        outer = walk.groups.pop()  # the value comes from outside the group entered above
+        try:
+            return _input_value(_socket(outer.inputs, output.identifier), walk, depth)
+        finally:
+            walk.groups.append(outer)
     raise _Unknown
+
+
+def _audio_value(node, output, scene) -> float:
+    """The latest value an audio operator produced on *output*."""
+    from ..core.engine.engine import ACEAudioEngine
+
+    engine = ACEAudioEngine.get_instance(scene or bpy.context.scene)
+    index = next((i for i, s in enumerate(node.outputs) if s.identifier == output.identifier), -1)
+    value = getattr(engine, "latest_values", {}).get(f"{node.get('ace_id')}:{index}")
+    if value is None:
+        raise _Unknown  # not computed yet
+    return float(value)
 
 
 def _modifier_input(tree, identifier: str, scene) -> float:

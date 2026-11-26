@@ -1,1 +1,1 @@
-# AudioCore Engine — ui sub-package
+# Audio Core Engine — ui sub-package

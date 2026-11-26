@@ -5,7 +5,7 @@ from .. import utils
 from .geometry.factory import ACEDummyNodeFactory
 
 
-def _is_automatic_count_label(label: str, bases: tuple[str, ...], unit: str) -> bool:
+def is_automatic_count_label(label: str, bases: tuple[str, ...], unit: str) -> bool:
     """True for an empty label or one like "Splitter (3 Bands)" that the add-on wrote."""
     label = str(label or "")
     if not label or label in bases:
@@ -112,7 +112,7 @@ class ACESplitterManager:
             node.node_tree = variant_group
         
         # Automatic labels follow the band count; a name the user gave is kept.
-        if _is_automatic_count_label(node.label, ("Splitter", "Frequency Splitter"), "Bands"):
+        if is_automatic_count_label(node.label, ("Splitter", "Frequency Splitter"), "Bands"):
             node.label = f"Splitter ({band_count} Bands)"
         
         # Store state in custom property so UI knows what to show
@@ -364,8 +364,8 @@ class ACEAudioMathManager:
         if node.node_tree != variant_group:
             node.node_tree = variant_group
 
-        if _is_automatic_count_label(node.label, ("Audio Math",), "Inputs"):
-            node.label = f"Audio Math ({count} Inputs)"
+        if is_automatic_count_label(node.label, ("Audio Math",), "Inputs"):
+            node.label = "Audio Math"
         node['ace_input_count'] = count
         node.update()
 
@@ -464,3 +464,18 @@ class ACEAudioMathManager:
             sink_tap.parent = marker
             ng.links.new(outputs[i], sink_tap.inputs[0])
     
+
+
+def drop_input_counts_from_math_titles() -> None:
+    """Files from earlier versions title Audio Math nodes "Audio Math (3 Inputs)"."""
+    trees = list(bpy.data.node_groups) + [m.node_tree for m in bpy.data.materials if m.node_tree is not None]
+    for tree in trees:
+        if tree.library is not None:
+            continue
+        for node in tree.nodes:
+            label = node.label
+            if (str(node.get("ace_id", "")).startswith("ACE_utilities_audio_math_") and label != "Audio Math"
+                    and is_automatic_count_label(label, ("Audio Math",), "Inputs") and label):
+                if node.name == label:
+                    node.name = "Audio Math"
+                node.label = "Audio Math"

@@ -264,9 +264,7 @@ def _source_display_name(source_prop, source_node) -> str:
 def _source_list_icon(source_prop) -> str:
     if source_prop is None:
         return "SPEAKER"
-    proxy_name = str(getattr(source_prop, "proxy_object_name", "") or "")
-    proxy = bpy.data.objects.get(proxy_name) if proxy_name else None
-    if not proxy:
+    if str(getattr(source_prop, "ace_source_error", "") or ""):
         return "ERROR"
     source_type = str(getattr(source_prop, "source_type", "") or "").strip().upper()
     if source_type == "FILE":

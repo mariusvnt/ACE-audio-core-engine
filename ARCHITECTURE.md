@@ -1,4 +1,4 @@
-# AudioCore Engine Architecture
+# Audio Core Engine Architecture
 
 How ACE is built, and why. The code says *what* each part does; this document
 keeps the decisions that span modules.
@@ -37,7 +37,7 @@ costs metadata, not a copy of the audio.
 | `core/engine/preview` | Preview routing, mixing and playback |
 | `core/worker` | Graph evaluation inside worker processes (no `bpy`) |
 | `core/input` | File, sound-device and UDP input |
-| `core/proxy` | Proxy objects, attribute and property sinks, ACE_Sonar |
+| `core/proxy` | Proxy objects (only for sources a node reads), attribute and property sinks |
 | `nodes/geometry`, `nodes/shader` | Node-group factories and tree readers |
 | `ui` | N-panel, add menu, operators and preferences |
 

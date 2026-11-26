@@ -5,22 +5,17 @@ import numpy as np
 from typing import Dict, Set, Any
 from ..id_management import ACEIdManager
 from ..abstract_tree import ACEAbstractTree
-from ...nodes.frontend import FRONTEND_KIND_SHADER, ensure_frontend_uid
 from ... import utils
 from .attributes import AttributeSinks
 from .objects import ObjectPropertySinks
-from .sonar import Sonar
 
 
-class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
+class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
     """Manage concrete Stage-C sinks for compiled ACE outputs."""
 
     # "Pro" name for the invisible collection
     COLLECTION_NAME = "ACE_Internals"
-    SONAR_OBJECT_NAME = "ACE_Sonar"
-    SONAR_MODIFIER_NAME = "ACE_Sonar_Mod"
-    SONAR_TREE_NAME = "ACE_Sonar_Tree"
-    SONAR_SHADER_MATERIAL_NAME = "ACE_Sonar_Material"
+    SONAR_OBJECT_NAME = "ACE_Sonar"  # made by earlier versions; still read as a frontend
     _MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA = False
 
     def __init__(self, abstract_tree: ACEAbstractTree | None = None):
@@ -44,41 +39,6 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks, Sonar):
             return active_scene
         scenes = list(getattr(bpy.data, "scenes", []) or [])
         return scenes[0] if scenes else None
-
-    @classmethod
-    def _shader_tree_writes_are_unsafe(cls, scene=None) -> bool:
-        scene = cls._resolve_scene(scene)
-        try:
-            from ..engine.engine import ACEAudioEngine
-        except Exception as exc:
-            utils.note_swallowed("manager.ACEProxyManager._shader_tree_writes_are_unsafe", exc)
-            return False
-        try:
-            return not bool(
-                ACEAudioEngine._structural_tree_writes_allowed(
-                    scene,
-                    frontend_kind=FRONTEND_KIND_SHADER,
-                    tree_bl_idname="ShaderNodeTree",
-                )
-            )
-        except Exception as exc:
-            utils.note_swallowed("manager.ACEProxyManager._shader_tree_writes_are_unsafe#2", exc)
-            return False
-
-    @classmethod
-    def _defer_shader_tree_sync(cls, tree, scene=None) -> None:
-        if tree is None:
-            return
-        with utils.logged_errors("manager.ACEProxyManager._defer_shader_tree_sync"):
-            ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, [])
-        with utils.logged_errors("manager.ACEProxyManager._defer_shader_tree_sync#2"):
-            from ..engine.engine import ACEAudioEngine
-            resolved_scene = cls._resolve_scene(scene)
-            engine = ACEAudioEngine.get_instance(resolved_scene)
-            if engine is None and resolved_scene is not None:
-                engine = ACEAudioEngine.ensure_instance(resolved_scene)
-            if engine is not None:
-                engine.request_recompile(tree)
 
     @classmethod
     def _ensure_internal_collection(cls, scene=None) -> bpy.types.Collection:

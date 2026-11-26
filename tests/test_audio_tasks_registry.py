@@ -204,6 +204,16 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertEqual(mixed.band_hz_bounds, (1000.0, 20000.0))
         np.testing.assert_allclose(mixed.mono, mono)
 
+    def test_frequency_splitter_leaves_an_uncomputable_link_as_an_empty_band(self):
+        source = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
+        task = atr.FrequencySplitterTask("split", {"unknown_inputs": [1]}, block_size=256)
+        low, none, high = task.process({0: source, 2: 4000.0})
+        self.assertEqual((low.band_hz_bounds, high.band_hz_bounds), ((20.0, 4000.0), (4000.0, 20000.0)))
+        self.assertFalse(np.any(none.mono))
+        # An audio value arriving through the link is used.
+        low, mid, _high = task.process({0: source, 1: 500.0, 2: 4000.0})
+        self.assertEqual((low.band_hz_bounds, mid.band_hz_bounds), ((20.0, 500.0), (500.0, 4000.0)))
+
     def test_midside_splitter_emits_metadata_only_branches(self):
         n = 256
         sr = 48000
@@ -450,14 +460,23 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertAlmostEqual(float(frames_per_beat), (60.0 * 24.0) / 120.0, places=6)
         self.assertAlmostEqual(float(beat_phase), 0.25, places=6)
 
-    def test_rolling_average_uses_fixed_frame_count(self):
-        task = atr.RollingAvgTask("rolling_node", {"in_1": 3}, block_size=128)
+    def test_rolling_average_covers_a_time_window(self):
+        task = atr.RollingAvgTask("rolling_node", {"in_1": 0.3}, block_size=128)  # 3 frames at 10 fps
+        task.scene_fps = 10.0
 
-        self.assertAlmostEqual(float(task.process({0: 1.0})), 1.0, places=6)
-        self.assertAlmostEqual(float(task.process({0: 2.0})), 1.5, places=6)
-        self.assertAlmostEqual(float(task.process({0: 3.0})), 2.0, places=6)
-        self.assertAlmostEqual(float(task.process({0: 9.0})), (2.0 + 3.0 + 9.0) / 3.0, places=6)
-        self.assertAlmostEqual(float(task.process({0: 5.0, 1: 2})), 7.0, places=6)
+        def at(frame, value, window=None):
+            task._current_frame_request = frame
+            inputs = {0: value} if window is None else {0: value, 1: window}
+            return float(task.process(inputs))
+
+        self.assertAlmostEqual(at(1, 1.0), 1.0)
+        self.assertAlmostEqual(at(2, 2.0), 1.5)
+        self.assertAlmostEqual(at(3, 3.0), 2.0)
+        self.assertAlmostEqual(at(4, 9.0), (2.0 + 3.0 + 9.0) / 3.0)
+        self.assertAlmostEqual(at(4, 12.0), (2.0 + 3.0 + 12.0) / 3.0)  # the same frame again
+        self.assertAlmostEqual(at(6, 6.0), (12.0 + 6.0) / 2.0)  # a skipped frame: time still counts
+        self.assertAlmostEqual(at(7, 5.0, window=0.05), 5.0)  # shorter than a frame: this one only
+        self.assertAlmostEqual(at(2, 4.0), 4.0)  # rewound
 
     def test_stream_accumulator_persists_and_resets_on_timeline_rewind(self):
         task = atr.StreamAccumulatorTask("accum_node", {}, block_size=128)

@@ -132,3 +132,39 @@ def _restore_group_inputs():
 
 
 _restore_group_inputs.attempts = 0
+
+
+def convert_rolling_average_groups() -> None:
+    """Convert the open file's Rolling Average groups (also needed when no file load follows)."""
+    import bpy  # type: ignore
+
+    for ng in list(bpy.data.node_groups):
+        if "util_rolling_avg" in ng.name and ng.library is None:
+            with utils.logged_errors("frontend.convert_rolling_average_groups"):
+                rolling_frames_to_window(ng)
+
+
+def rolling_frames_to_window(ng) -> None:
+    """Rolling Average counted frames; it now takes a time. Done in place, so links survive."""
+    import bpy  # type: ignore
+
+    def frames_item():
+        return next((i for i in ng.interface.items_tree
+                     if getattr(i, "in_out", "") == "INPUT" and i.name == "Number of Frames"), None)
+
+    item = frames_item()
+    if item is None:
+        return
+    scene = getattr(bpy.context, "scene", None)
+    fps = scene.render.fps / scene.render.fps_base if scene is not None else 24.0
+    kept = [(node, node.inputs["Number of Frames"].default_value)
+            for _kind, _owner, node in _group_users(ng) if "Number of Frames" in node.inputs]
+    item.name = "Window"
+    item.socket_type = "NodeSocketFloat"
+    window = next(i for i in ng.interface.items_tree if getattr(i, "in_out", "") == "INPUT" and i.name == "Window")
+    window.subtype = "TIME_ABSOLUTE"
+    window.min_value, window.max_value, window.default_value = 0.001, 60.0, 0.25
+    for node, frames in kept:
+        socket = node.inputs.get("Window")
+        if socket is not None:
+            socket.default_value = max(float(frames), 1.0) / fps

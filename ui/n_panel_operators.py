@@ -7,6 +7,7 @@ from bpy_extras.io_utils import ImportHelper                                    
 from ..core.id_management import ACEIdManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
 from ..nodes.split_freqs import sort_all_split_freqs, sort_split_freqs
+from ..nodes.source_nodes import bind_node
 from ..nodes.modes import apply_node_mode
 from ..vars import node_modes
 from .. import utils
@@ -199,20 +200,9 @@ class ACE_OT_add_audio_sources_from_files(bpy.types.Operator, ImportHelper):
                 engine = ACEAudioEngine.ensure_instance(context.scene)
                 engine.probes._probe_source_metadata(new_source)
             
-            # Create Proxy
-            self._create_proxy(context, new_source)
-            
         ace.active_audio_source_index = len(ace.audio_sources) - 1
-        sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
-        if sonar_obj and not getattr(ace, "gn_target_object", None):
-            with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_sources_from_files.execute#2"):
-                ace.gn_target_object = sonar_obj
         _refresh_source_list(context.scene)
         return {'FINISHED'}
-
-    def _create_proxy(self, context, source):
-        # Delegate to proxy manager so proxies land in the hidden/internal collection
-        ACEProxyManager.ensure_proxy_for_source(source, scene=context.scene)
 
 
 class ACE_OT_add_audio_source(bpy.types.Operator):
@@ -244,13 +234,6 @@ class ACE_OT_add_audio_source(bpy.types.Operator):
             with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_source.execute"):
                 new_source.flow_identifier = build_live_flow_identifier(new_source)
         
-        # Create Proxy (hidden + locked transforms)
-        ACEProxyManager.ensure_proxy_for_source(new_source, scene=context.scene)
-        sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
-        if sonar_obj and not getattr(ace, "gn_target_object", None):
-            with utils.logged_errors("n_panel_operators.ACE_OT_add_audio_source.execute#2"):
-                ace.gn_target_object = sonar_obj
-            
         ace.active_audio_source_index = len(ace.audio_sources) - 1
         _refresh_source_list(context.scene)
         return {'FINISHED'}
@@ -283,13 +266,6 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
         if ace.active_audio_source_index >= len(ace.audio_sources):
             ace.active_audio_source_index = max(0, len(ace.audio_sources) - 1)
 
-        sonar_obj = ACEProxyManager.ensure_sonar_setup(context.scene, ace.audio_sources)
-        if not ace.audio_sources and getattr(ace, "gn_target_object", None) and getattr(ace.gn_target_object, "name", "") == ACEProxyManager.SONAR_OBJECT_NAME:
-            with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute"):
-                ace.gn_target_object = None
-        elif sonar_obj and not getattr(ace, "gn_target_object", None):
-            with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute#2"):
-                ace.gn_target_object = sonar_obj
         engine = ACEAudioEngine.get_instance(context.scene)
         if engine:
             # Free this source's bake cache now instead of at the next compile.
@@ -483,6 +459,7 @@ class ACE_OT_select_operator(bpy.types.Operator):
     bl_label = "Select Operator"
     bl_options = {'INTERNAL', 'UNDO'}
     node_id: bpy.props.StringProperty(options={'HIDDEN', 'SKIP_SAVE'})                                                          # type: ignore
+    row: bpy.props.IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})                                                      # type: ignore
 
     # (node_id, time) of the last click, to tell a double-click on the same name.
     _last_click: tuple[str, float] = ("", 0.0)
@@ -499,6 +476,7 @@ class ACE_OT_select_operator(bpy.types.Operator):
         rename = bool(event.ctrl or is_double)
         if not focus_operator(context, self.node_id, frame=not rename):
             return {'CANCELLED'}
+        self._keep_row(context)
         if rename:
             start_rename(self.node_id)
             bpy.ops.wm.call_panel(name="ACE_PT_rename_operator", keep_open=False)
@@ -506,7 +484,17 @@ class ACE_OT_select_operator(bpy.types.Operator):
 
     def execute(self, context):
         from .panel.selection import focus_operator
-        return {'FINISHED'} if focus_operator(context, self.node_id) else {'CANCELLED'}
+        if not focus_operator(context, self.node_id):
+            return {'CANCELLED'}
+        self._keep_row(context)
+        return {'FINISHED'}
+
+    def _keep_row(self, context) -> None:
+        """A splitter shows on one row per band: highlight the clicked one."""
+        from .panel.sync import set_active_row
+        _, source = utils._get_active_source(context)
+        if source is not None and 0 <= self.row < len(source.ui_nodes):
+            set_active_row(source, self.row)
 
 
 class ACE_OT_toggle_operator_branch(bpy.types.Operator):
@@ -571,54 +559,43 @@ class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class ACE_OT_set_target_object(bpy.types.Operator):
-    """Assign the GN target object used for ACE processing."""
-    bl_idname = "audiocore.set_target_object"
-    bl_label = "Set Target Object"
-    bl_options = {'REGISTER', 'UNDO'}
+_source_items: list = []  # Blender needs the strings of a dynamic enum kept alive
 
-    target: bpy.props.EnumProperty(  # type: ignore
-        name="Target",
-        items=[
-            ('ACTIVE', "Active Object", "Use the current active object"),
-            ('SONAR', "ACE Sonar", "Use the ACE_Sonar object"),
-        ],
-        default='ACTIVE',
-    )
 
-    @classmethod
-    def poll(cls, context):
-        scene = getattr(context, "scene", None)
-        ace = getattr(scene, "audiocore", None)
-        if not ace:
-            return False
-        if getattr(context, "active_object", None) is not None:
-            return True
-        if bpy.data.objects.get(ACEProxyManager.SONAR_OBJECT_NAME) is not None:
-            return True
-        return bool(getattr(ace, "audio_sources", None))
+def _node_source_items(_self, context):
+    global _source_items
+    project = getattr(getattr(context, "scene", None), "audiocore", None)
+    _source_items = [(s.stable_id, s.name, "") for s in getattr(project, "audio_sources", []) if s.stable_id]
+    return _source_items
+
+
+class ACE_OT_set_node_source(bpy.types.Operator):
+    """Choose the audio source this Source node reads"""
+    bl_idname = "ace.set_node_source"
+    bl_label = "Audio Source"
+    bl_options = {'INTERNAL', 'UNDO'}
+    source: bpy.props.EnumProperty(name="Source", items=_node_source_items)                                                          # type: ignore
 
     def execute(self, context):
-        ace = getattr(context.scene, "audiocore", None)
-        if not ace:
-            self.report({'ERROR'}, "AudioCore settings unavailable.")
+        node, parsed = _resolve_panel_selected_node(context)
+        if not parsed or parsed.get("category") != "source_mngmt" or parsed.get("type") != "src":
             return {'CANCELLED'}
-
-        target_obj = None
-        if self.target == 'ACTIVE':
-            target_obj = getattr(context, "active_object", None)
+        project = context.scene.audiocore
+        for index, source in enumerate(project.audio_sources):
+            if source.stable_id == self.source:
+                break
         else:
-            target_obj = ACEProxyManager.ensure_sonar_setup(context.scene, getattr(ace, "audio_sources", []))
-
-        if not target_obj:
-            self.report({'ERROR'}, "No suitable target object.")
             return {'CANCELLED'}
-
-        try:
-            ace.gn_target_object = target_obj
-        except Exception:
-            self.report({'ERROR'}, "Could not assign target object.")
-            return {'CANCELLED'}
+        node_id = str(node.get("ace_id", "") or "")
+        tree = node.id_data
+        bind_node(node, source, context.scene)
+        # The list shows one source's graph: follow the node to its new source.
+        project.active_audio_source_index = index
+        from .panel.sync import _sync_ui_dummy_tree
+        _sync_ui_dummy_tree(context, force=True)
+        project.audio_sources[index].active_ui_node_id = node_id
+        _sync_ui_dummy_tree(context, force=True)
+        _queue_engine_recompile(context, tree=tree)
         return {'FINISHED'}
 
 
@@ -739,7 +716,7 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
     def execute(self, context):
         ace = getattr(context.scene, "audiocore", None)
         if not ace:
-            self.report({'ERROR'}, "AudioCore settings unavailable.")
+            self.report({'ERROR'}, "Audio Core settings unavailable.")
             return {'CANCELLED'}
 
         from ..utils import _get_active_source
@@ -785,7 +762,7 @@ classes = (
     ACE_OT_select_operator,
     ACE_OT_toggle_operator_branch,
     ACE_OT_detect_source_tempo_meter,
-    ACE_OT_set_target_object,
+    ACE_OT_set_node_source,
     ACE_OT_toggle_preview_sink,
     ACE_OT_bake_active_source,
 )

@@ -13,8 +13,11 @@ from ...core.engine.engine import ACEAudioEngine
 from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...nodes.shader.reader import ACEShaderTreeReader
 from ... import utils
+from ...vars import ACE_NODES
 from . import operator_tree
+from . import usage
 from ...nodes.split_freqs import split_freq_states
+from ...nodes.dynamic_audio_operators import is_automatic_count_label
 from .helpers import _build_ui_node_lookup_ids, _find_active_node_tree, _find_tree_node_by_ace_id, _tree_pointer, _ui_is_blocked
 
 
@@ -320,7 +323,7 @@ def _empty_tree_cache(now: float = 0.0) -> dict:
 
 
 def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: str) -> list[operator_tree.Row]:
-    """Folded rows of the operators under the active source's placeholder(s) in *tree*."""
+    """Folded rows of the operators under the active source's Source node(s) in *tree*."""
     bl_by_id = {}
     for bl_node in getattr(tree, "nodes", []) or []:
         ace_id = str(bl_node.get("ace_id", "") or "")
@@ -332,7 +335,6 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
 
     graph_nodes = []
     bound_roots: list[tuple[int, str]] = []
-    all_roots: list[tuple[int, str]] = []
     viewers = {node.id for node in abstract.nodes.values() if node.parameters.get("viewer")}
     for node in abstract.nodes.values():
         if node.id in viewers:
@@ -343,9 +345,15 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
         outputs = list(getattr(node, "outputs", []) or [])
         band_names = tuple(str(o.name) for o in outputs) if node.category == "delta" and len(outputs) > 1 else ()
         order = utils.as_int(node.parameters.get("frontend_node_index"), 0)
-        graph_nodes.append(operator_tree.GraphNode(node_id, label, order, band_names))
+        prefix = ""
+        if band_names:
+            # "Split Low", "Split Side", "Split 2"...; a name the user gave replaces "Split".
+            custom = str(getattr(bl_node, "label", "") or "")
+            type_label = ACE_NODES["delta"]["nodes"].get(node.type, {}).get("label", "")
+            automatic = custom == type_label or is_automatic_count_label(custom, ("Splitter", "Frequency Splitter"), "Bands")
+            prefix = "Split" if automatic else custom
+        graph_nodes.append(operator_tree.GraphNode(node_id, label, order, band_names, prefix))
         if node.category == "source_mngmt" and node.type == "src":
-            all_roots.append((order, node_id))
             if source_uid and str(getattr(node, "source_binding_id", "") or "") == source_uid:
                 bound_roots.append((order, node_id))
     links = [
@@ -353,7 +361,7 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
         for l in abstract.links
         if l.target_node_id not in viewers
     ]
-    roots = [node_id for _order, node_id in sorted(bound_roots or all_roots)]
+    roots = [node_id for _order, node_id in sorted(bound_roots)]  # none: an empty list
     return operator_tree.build_rows(graph_nodes, links, roots)
 
 
@@ -476,6 +484,8 @@ def _sync_editor_active(tree, active_source) -> None:
     _last_editor_active = key
     if not node_id:
         return
+    # The click may land before the periodic sync has read a tree or node that just appeared.
+    _sync_ui_dummy_tree(bpy.context)
     switched = _activate_source_of(node_id) if clicked else None
     if switched is not None:
         active_source = switched
@@ -506,7 +516,11 @@ def _activate_source_of(node_id: str):
 def _align_selection(active_source) -> None:
     """Keep the list's active row and the selected operator on the same row."""
     rows = current_rows()
-    if not rows or len(rows) != len(active_source.ui_nodes):
+    if not len(active_source.ui_nodes):
+        if active_source.active_ui_node_id:
+            active_source.active_ui_node_id = ""  # an empty list selects nothing
+        return
+    if len(rows) != len(active_source.ui_nodes):
         return
     selected = str(active_source.active_ui_node_id or "")
     current = min(max(int(active_source.active_ui_node_index), 0), len(rows) - 1)
@@ -517,7 +531,7 @@ def _align_selection(active_source) -> None:
         return
     # The selected operator is not in this source's graph: select what the active row shows.
     set_active_row(active_source, current)
-    nodes = [seg for seg in rows[current].segments if seg.kind == "node"]
+    nodes = [seg for seg in rows[current].segments if seg.kind in operator_tree.NODE_KINDS]
     active_source.active_ui_node_id = nodes[-1].node_id if nodes else ""
 
 
@@ -859,6 +873,41 @@ def _redraw_on_driven_split_change(context) -> None:
                 area.tag_redraw()
 
 
+# How often the Node Editor's active node is checked: short, so a click shows up at once.
+_UI_CLICK_INTERVAL = 0.1
+
+
+_LATENCY_KEYS = ("total_latency_ms", "input_total_ms", "engine_total_ms", "blender_total_ms")
+
+
+def _redraw_sidebars(context) -> None:
+    for window in getattr(context.window_manager, "windows", []) or []:
+        for area in window.screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for region in area.regions:
+                if region.type == "UI":
+                    region.tag_redraw()
+
+
+@persistent
+def _ui_click_timer():
+    """Persistent timer: follow node clicks quickly (the full sync runs less often)."""
+    with utils.logged_errors("sync._ui_click_timer"):
+        context = bpy.context
+        scene = getattr(context, "scene", None)
+        if scene is None or _ui_is_blocked(context):
+            return _UI_SYNC_TIMER_INTERVAL_IDLE
+        tree = _find_active_node_tree(context, editor_context_only=True)
+        _, active_source = utils._get_active_source(context)
+        if tree is not None and active_source is not None:
+            before = _last_editor_active
+            _sync_editor_active(tree, active_source)
+            if _last_editor_active != before:
+                _redraw_sidebars(context)
+    return _UI_CLICK_INTERVAL
+
+
 def _ui_sync_timer():
     """Blender persistent timer callback: drive background UI sync."""
     global _ui_timer_last_quick_key, _ui_timer_last_sync_ts
@@ -894,10 +943,13 @@ def _ui_sync_timer():
         _sync_ui_dummy_tree(context, force=key_changed)
         _, active_source = utils._get_active_source(context)
         if tree is not None and active_source is not None:
-            _sync_editor_active(tree, active_source)
             with utils.logged_errors("sync._ui_sync_timer#ramp"):
                 from .splitter import remove_legacy_ramp_group
                 remove_legacy_ramp_group()
+        with utils.logged_errors("sync._ui_sync_timer#usage"):
+            latencies = _engine_latency_metrics(context)
+            if usage.sample(extra={key: float(latencies[key]) for key in _LATENCY_KEYS}):
+                _redraw_sidebars(context)
         with utils.logged_errors("sync._ui_sync_timer#driven"):
             _redraw_on_driven_split_change(context)
         with utils.logged_errors("sync._ui_sync_timer#sources"):

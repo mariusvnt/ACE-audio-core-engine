@@ -1,4 +1,4 @@
-"""Blender property-group definitions for the AudioCore Engine add-on."""
+"""Blender property-group definitions for the Audio Core Engine add-on."""
 import bpy                                                                                                                          # type: ignore
 import os
 import re
@@ -357,9 +357,17 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         description="Original detected sample rate in Hz before any engine working-rate cap"
     )
     
+    # The same value in seconds, so the field itself shows its unit ("5 ms").
+    ace_buffer_latency: bpy.props.FloatProperty(                                                                                    # type: ignore
+        name="Buffer Latency",
+        description="Desired latency buffer for live capture",
+        unit='TIME_ABSOLUTE', min=0.001, max=1.0, precision=3,
+        get=lambda self: self.live_latency_ms / 1000.0,
+        set=lambda self, value: setattr(self, "live_latency_ms", int(round(value * 1000.0))),
+    )
     live_latency_ms: bpy.props.IntProperty(                                                                                         # type: ignore
-        name="Live Latency",
-        default=10,
+        name="Buffer Latency",
+        default=5,
         min=1, max=1000,
         description="Desired latency buffer for live capture (ms)"
     )
@@ -595,30 +603,13 @@ def _split_freq_property(index: int):
 
     return bpy.props.FloatProperty(
         name=f"Split Freq {index + 1}",
-        description="Frequency (Hz) where one band ends and the next begins. Sorted into ascending order when released",
-        min=0.0, max=20000.0, precision=0, step=100, get=get, set=set_,
+        description="Frequency where one band ends and the next begins. Sorted into ascending order when released",
+        min=0.0, max=20000.0, precision=0, step=100, unit='FREQUENCY', get=get, set=set_,
     )
 
 
-def _split_position_property(index: int):
-    def get(node):
-        from .nodes.split_freqs import freq_to_position, get_split_freq
-        return freq_to_position(get_split_freq(node, index))
-
-    def set_(node, value):
-        from .nodes.split_freqs import position_to_freq
-        _write_split_freq(node, index, position_to_freq(value))
-
-    return bpy.props.FloatProperty(
-        name=f"Split Freq {index + 1}",
-        description="Logarithmic slider from 20 Hz (0) to 20 kHz (1)",
-        min=0.0, max=1.0, precision=2, get=get, set=set_,
-    )
-
-
-# UI-only node properties: each splitter socket's slider and Hz field (7 sockets = 8 bands).
+# UI-only node properties: each splitter socket's slider (7 sockets = 8 bands).
 _NODE_PROPS = {f"ace_split_freq_{i + 1}": _split_freq_property(i) for i in range(7)}
-_NODE_PROPS.update({f"ace_split_pos_{i + 1}": _split_position_property(i) for i in range(7)})
 
 
 def _get_band_fill(_self):

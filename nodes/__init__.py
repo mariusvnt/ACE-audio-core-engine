@@ -1,1 +1,1 @@
-# AudioCore Engine — nodes sub-package
+# Audio Core Engine — nodes sub-package

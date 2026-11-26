@@ -5,7 +5,7 @@ import hashlib
 import json
 from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
-from ..frontend import remember_group_inputs
+from ..frontend import remember_group_inputs, rolling_frames_to_window
 
 
 class ACEDummyNodeFactory:
@@ -46,6 +46,8 @@ class ACEDummyNodeFactory:
                 ng = bpy.data.node_groups.get(group_name)
 
                 if ng:
+                    if type_key == "util_rolling_avg":
+                        rolling_frames_to_window(ng)
                     if ACEDummyNodeFactory._node_group_needs_refresh(ng, type_key):
                         remember_group_inputs(ng)
                         ng.nodes.clear()
@@ -151,7 +153,7 @@ class ACEDummyNodeFactory:
             has_audio_out = any(n == "Audio" or n.startswith("Audio ") for n in outputs)
             return not has_audio_in or not has_audio_out
         if node_type == "util_rolling_avg":
-            required_inputs = {"Value", "Number of Frames", "Attribute ID", "Proxy Object"}
+            required_inputs = {"Value", "Window", "Attribute ID", "Proxy Object"}
             required_outputs = {"Rolling Avg"}
             return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
         if node_type == "stream_accumulator":

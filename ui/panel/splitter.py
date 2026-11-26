@@ -43,7 +43,7 @@ def _splitter_display_bounds(scene) -> tuple[float, float]:
 def splitter_band_widths(node, scene) -> list[float]:
     """Width of each band on the log-frequency axis (sums to 1), from the cut frequencies.
 
-    A cut driven by an audio value is left out: it is not known here.
+    A cut whose link cannot be computed is left out.
     """
     low_hz, high_hz = _splitter_display_bounds(scene)
     cuts = [

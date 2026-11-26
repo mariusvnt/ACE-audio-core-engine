@@ -34,6 +34,8 @@ class ACEAudioEngine:
         self.scene_key = int(scene_key)
         self.scene_name: str = ""
         self.graphs: Dict[str, ACEAudioGraph] = {}
+        # Latest value of every operator output, by 'node_id:socket' (linked split frequencies read it).
+        self.latest_values: dict = {}
         self.current_frame = 0
         self.last_scene_frame = -1
         self.writer: Optional[ACEProxyManager] = None

@@ -93,12 +93,22 @@ class FrequencySplitterTask(ACEAudioTask):
         
         split_values = []
         i = 1
+        unknown = set(self.parameters.get("unknown_inputs", ()) or ())
+        # A linked split frequency is what travels through its link: computed on the main side
+        # (audio maths included), it wins over the raw value of an upstream operator.
+        driven = set(self.parameters.get("driven_inputs", ()) or ())
         while True:
-            val = inputs.get(i)
+            val = None if i in driven else inputs.get(i)
             if val is None: val = self.parameters.get(f"in_{i}")
-            if val is None: break
-            split_values.append(float(val))
+            if val is None and i not in unknown and i not in driven: break
+            split_values.append(None if val is None else float(val))
             i += 1
+        # A linked split frequency nobody can compute joins the next one up: its band is empty.
+        above = 20000.0
+        for index in range(len(split_values) - 1, -1, -1):
+            if split_values[index] is None:
+                split_values[index] = above
+            above = split_values[index]
 
         parent_bounds = getattr(chunk, "band_hz_bounds", None)
         low_band, high_band = self._resolve_band_limits(sample_rate, parent_bounds)

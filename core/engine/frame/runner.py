@@ -417,6 +417,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         if baked_results is not None:
             try:
                 t0 = time.perf_counter()
+                self.engine.latest_values.update(baked_results)
                 touched = self.engine.writer.commit_results(graph, baked_results, active_keys=set(graph.output_attr_keys))
                 self.engine.diagnostics._perf_add("proxy_write", time.perf_counter() - t0)
                 if isinstance(touched, set):
@@ -615,6 +616,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         try:
             # Stage C (main thread only): commit numeric results into resolved sinks.
             t0 = time.perf_counter()
+            self.engine.latest_values.update(results)
             touched = self.engine.writer.commit_results(graph, results, active_keys=set(graph.output_attr_keys))
             self.engine.diagnostics._perf_add("proxy_write", time.perf_counter() - t0)
             if isinstance(touched, set):

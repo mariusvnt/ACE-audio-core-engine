@@ -3,7 +3,7 @@
 from collections import OrderedDict
 from typing import List, Optional
 from .... import utils
-from ...abstract_tree import ACEAbstractNode
+from ...abstract_tree import ACEAbstractNode, audio_links
 from ...tasks.base import ACEAudioTask
 from ...tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
 from ...tasks.graph import ACEAudioGraph
@@ -94,7 +94,7 @@ class GraphBuild:
     def _wire_graph_links(self, ctx, graph, required_node_ids):
         """Connect the tasks along the abstract tree links."""
         abstract_tree = ctx.abstract_tree
-        for link in abstract_tree.links:
+        for link in audio_links(abstract_tree):
             if link.source_node_id not in required_node_ids or link.target_node_id not in required_node_ids:
                 continue
             source_task = graph.tasks.get(link.source_node_id)

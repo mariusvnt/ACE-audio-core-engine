@@ -123,7 +123,7 @@ def select_row_operator(active_source, _context) -> None:
         item = active_source.ui_nodes[idx]
         selected = str(active_source.active_ui_node_id or "")
         # A click on the selected name (drawn as a text field) lands on the row: keep it selected.
-        if any(seg.kind == "node" and seg.node_id == selected for seg in item.segments):
+        if any(seg.kind in ("node", "split") and seg.node_id == selected for seg in item.segments):
             return
         if item.segments:
             focus_operator(bpy_context(), item.segments[-1].node_id, frame=False)
@@ -206,10 +206,17 @@ def focus_operator(context, node_id: str, frame: bool = True) -> bool:
     return True
 
 
+def _source_choices() -> list:
+    project = getattr(getattr(bpy_context(), "scene", None), "audiocore", None)
+    return list(getattr(project, "audio_sources", []) or [])
+
+
 def _parsed_node_has_operator_settings(parsed) -> bool:
     if not parsed:
         return False
     key = (str(parsed.get("category", "") or ""), str(parsed.get("type", "") or ""))
+    if key == ("source_mngmt", "src"):
+        return len(_source_choices()) > 1
     if node_modes(*key):
         return True
     return key in {
@@ -319,6 +326,14 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
 
     category = str(parsed.get("category", "") or "")
     node_type = str(parsed.get("type", "") or "")
+    if (category, node_type) == ("source_mngmt", "src"):
+        drew_settings = True
+        box = layout.box()
+        box.label(text="Audio Source", icon="SOUND")
+        current = str(node.get("ace_source_id", "") or "")
+        name = next((s.name for s in _source_choices() if s.stable_id == current), "Choose a source")
+        box.operator_menu_enum("ace.set_node_source", "source", text=name)
+
     modes = node_modes(category, node_type)
     if modes:
         drew_settings = True
@@ -354,17 +369,14 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             for idx, (sock, value, state) in enumerate(split_freq_states(node, context.scene)):
                 split = box.split(factor=0.28)
                 split.label(text=sock.name)
-                if state != "own":
-                    text = {
-                        "linked": f"Linked: {value:.0f} Hz" if value is not None else "",
-                        "unreadable": f"Link not readable, uses {value:.0f} Hz" if value is not None else "",
-                        "audio": "Linked to audio",
-                    }[state]
-                    split.label(text=text, icon="LINKED")
+                if state == "own":
+                    # The frequency unit writes "Hz" after the value, unless the scene has no units.
+                    unitless = context.scene.unit_settings.system == "NONE"
+                    split.prop(node, f"ace_split_freq_{idx + 1}", text="Hz" if unitless else "", slider=True)
                     continue
-                fields = split.split(factor=0.65, align=True)
-                fields.prop(node, f"ace_split_pos_{idx + 1}", text="", slider=True)
-                fields.prop(node, f"ace_split_freq_{idx + 1}", text="Hz")
+                linked = split.row(align=True)
+                linked.label(text="" if value is None else f"{value:.0f} Hz")
+                linked.label(text="Linked", icon="LINKED")
 
     if parsed.get("category") == "utilities" and parsed.get("type") == "audio_math":
         drew_settings = True
@@ -417,14 +429,14 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         box = layout.box()
         box.label(text="Rolling Average", icon="DRIVER")
         frames_sock = next(
-            (sock for sock in getattr(node, "inputs", []) if getattr(sock, "name", "") == "Number of Frames"),
+            (sock for sock in getattr(node, "inputs", []) if getattr(sock, "name", "") == "Window"),
             None,
         )
         if frames_sock is not None:
             row = box.row(align=True)
-            row.prop(frames_sock, "default_value", text="Number of Frames")
+            row.prop(frames_sock, "default_value", text="Window")
         else:
-            box.label(text="Number of Frames input is unavailable.", icon="INFO")
+            box.label(text="Window input is unavailable.", icon="INFO")
 
     return drew_settings
 

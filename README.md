@@ -1,7 +1,7 @@
-AudioCore Engine (ACE)
-======================
+Audio Core Engine (ACE)
+=======================
 
-AudioCore Engine is a Blender add-on that turns audio into per-frame values for
+Audio Core Engine is a Blender add-on that turns audio into per-frame values for
 Geometry Nodes and shader materials. A sound file or a live input is analysed as
 the timeline plays, and the results (loudness, pitch, spectral features, stereo
 image, beat phase and more) drive procedural animation without keyframes.
@@ -23,16 +23,18 @@ Installation
 ------------
 
 1. In Blender, open *Edit > Preferences > Add-ons* and install the add-on folder or zip.
-2. Enable *AudioCore Engine*.
+2. Enable *Audio Core Engine*.
 3. In the add-on preferences, install the optional libraries you want.
 
 Quick start
 -----------
 
-1. In the 3D View sidebar, open the *AudioCore Engine* tab and add an audio
-   source: a file, or a live input (sound device or UDP stream).
-2. In a Geometry Nodes tree, open *Add > AudioCore Engine* and add the *Source*
-   node, then the analysis nodes you need.
+1. In the 3D View sidebar, open the *Audio Core Engine* tab and, under *Audio
+   Inputs*, add an input: a file, or a live input (sound device or UDP stream).
+   Adding an input creates no object and no node tree.
+2. In a Geometry Nodes tree, open *Add > Audio Core Engine* and add the *Source*
+   node, then the analysis nodes you need. The Source node reads the active
+   input; with several, choose another in the node's settings.
 3. Connect them. Each output appears as a value the tree can use, refreshed
    every frame during playback.
 4. To drive a material, add the same nodes to an object's shader tree.
@@ -44,15 +46,17 @@ Nodes
 - **Delta** nodes split the audio before analysis: frequency bands, mid/side,
   attack/release, the 12 notes of the chromagram, and percussive/harmonic
   components.
-  A split frequency can be driven by other nodes: Value, Integer, Math, Clamp,
-  Map Range, Scene Time and modifier inputs are followed.
+  A split frequency can be driven by other nodes, audio operator outputs
+  included: Value, Integer, Math, Clamp, Map Range, Mix, Switch, Float Curve,
+  Float to Integer, Scene Time, node groups and modifier inputs are followed.
 - **Stream** nodes measure the audio each frame: Loudness (RMS, LUFS or Peak,
   0..1 between -70 dB and 0 dB), Stereo (width or balance), Spectral
   (centroid, flux or zero-crossing rate), a stereo vector, onset and pitch. The
-  method of a node is switched in the sidebar's *Active Operators* panel; files
+  method of a node is switched in the sidebar's *Operators* panel; files
   made with the former one-method nodes are converted when opened.
 - **Utilities**: source specs (frames per beat, beat phase), audio math, a
-  rolling average, an accumulator and a preview sink for listening to a branch.
+  rolling average over a time window, an accumulator and a preview sink for
+  listening to a branch.
 
 Preview and bake
 ----------------

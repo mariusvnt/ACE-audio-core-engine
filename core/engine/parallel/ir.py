@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .... import utils
-from ...abstract_tree import ACEAbstractNode, ACEAbstractTree
+from ...abstract_tree import ACEAbstractNode, ACEAbstractTree, audio_links
 from ...tasks.chunk import SAMPLE_RATE
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.source import SourceTask
@@ -140,7 +140,7 @@ def _nodes_ir(graph, abstract_tree, node_ids, fps):
 
 def _links_ir(abstract_tree, nodes_ir):
     links = []
-    for link in getattr(abstract_tree, "links", []) or []:
+    for link in audio_links(abstract_tree):
         src_id = str(getattr(link, "source_node_id", "") or "")
         dst_id = str(getattr(link, "target_node_id", "") or "")
         if src_id in nodes_ir and dst_id in nodes_ir:
@@ -185,7 +185,7 @@ def build_graph_ir(graph: ACEAudioGraph, abstract_tree: Optional[ACEAbstractTree
         return False
 
     reverse_adj: Dict[str, set] = {}
-    for link in getattr(abstract_tree, "links", []) or []:
+    for link in audio_links(abstract_tree):
         reverse_adj.setdefault(str(link.target_node_id), set()).add(str(link.source_node_id))
     required = _upstream_nodes(
         {k.partition(":")[0] for k in offload_keys}, reverse_adj, set(getattr(graph, "tasks", {}).keys())

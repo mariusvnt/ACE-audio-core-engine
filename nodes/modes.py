@@ -39,7 +39,7 @@ def automatic_node_label(node, category: str, node_type: str) -> str:
     if (category, node_type) == ("delta", "frequency_splitter"):
         return f"{base} ({int(node.get('ace_band_count', max(2, len(node.outputs))))} Bands)"
     if (category, node_type) == ("utilities", "audio_math"):
-        return f"{base} ({int(node.get('ace_input_count', max(2, len(node.inputs))))} Inputs)"
+        return base
     return base
 
 

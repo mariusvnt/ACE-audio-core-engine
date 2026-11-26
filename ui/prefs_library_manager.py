@@ -132,7 +132,7 @@ class ACE_OT_install_missing_libraries(bpy.types.Operator):
 
     bl_idname = "audiocore.install_missing_libraries"
     bl_label = "Install Missing Libraries"
-    bl_description = "Install all missing AudioCore dependencies using Blender's pip"
+    bl_description = "Install all missing Audio Core dependencies using Blender's pip"
     bl_options = {'REGISTER', 'INTERNAL'}
 
     def execute(self, context):
@@ -196,7 +196,7 @@ class ACE_OT_uninstall_library(bpy.types.Operator):
     library_name: bpy.props.StringProperty(name="Library Name") # type: ignore
 
     def execute(self, context):
-        """Remove a Python library from AudioCore's local vendor directory."""
+        """Remove a Python library from Audio Core's local vendor directory."""
         lib_name = self.library_name
         target_dir = _dependency_target_dir(create=True)
 
@@ -210,7 +210,7 @@ class ACE_OT_uninstall_library(bpy.types.Operator):
                     self.report(
                         {'WARNING'},
                         f"{lib_name} is installed in Blender's Python environment but was "
-                        f"not installed via AudioCore's installer — it cannot be managed here. "
+                        f"not installed via Audio Core's installer — it cannot be managed here. "
                         f"Use 'pip uninstall {lib_name}' in Blender's Python to remove it.",
                     )
                 else:

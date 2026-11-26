@@ -111,5 +111,51 @@ class TestOperatorTree(unittest.TestCase):
         self.assertEqual(_render(rows), ["Source"])
 
 
+class TestSplitBands(unittest.TestCase):
+    def _rows(self, prefix="Split"):
+        nodes = [
+            N("src", "Source", 0),
+            N("split", "Splitter (4 Bands)", 1, band_names=("Low", "Band 2", "Band 3", "High"), band_prefix=prefix),
+            N("a", "A", 2),
+            N("b", "B", 3),
+        ]
+        links = [L("src", 0, "split"), L("split", 0, "a"), L("split", 1, "b")]
+        return ot.build_rows(nodes, links, ["src"])
+
+    def test_the_bands_stand_for_the_splitter(self):
+        rows = self._rows()
+        self.assertEqual([[seg.label for seg in row.segments] for row in rows],
+                         [["Source"], ["Split Low", "A"], ["Split 2", "B"]])
+        self.assertEqual([row.depth for row in rows], [0, 1, 1])
+        self.assertEqual(ot.row_of_node(rows, "split"), 1)
+        self.assertEqual({seg.kind for row in rows[1:] for seg in row.segments[:1]}, {ot.SEGMENT_SPLIT})
+
+    def test_a_given_name_replaces_split(self):
+        self.assertEqual(self._rows("Drums")[1].segments[0].label, "Drums Low")
+
+    def test_an_unconnected_splitter_keeps_its_own_name(self):
+        nodes = [N("src", "Source", 0), N("split", "Splitter (2 Bands)", 1, ("Low", "High"), "Split")]
+        rows = ot.build_rows(nodes, [L("src", 0, "split")], ["src"])
+        self.assertEqual([seg.label for seg in rows[0].segments], ["Source", "Splitter (2 Bands)"])
+
+
+class TestColumnWidths(unittest.TestCase):
+    def test_columns_fit_the_widest_cell_that_has_another_after_it(self):
+        widths = ot.column_widths([(1.0, [4.0, 6.0, 9.0]), (2.0, [3.0, 20.0])], available=60.0)
+        self.assertEqual(widths, [5.0, 6.0])  # the first column includes the indent
+
+    def test_middle_names_shrink_before_the_first_one(self):
+        row = [(1.0, [5.0, 10.0, 10.0, 8.0])]
+        slightly = ot.column_widths(row, available=32.0)
+        self.assertEqual(slightly[0], 6.0)
+        self.assertAlmostEqual(sum(slightly), 32.0 - 3.0 - 8.0)
+        self.assertAlmostEqual(slightly[1], slightly[2], delta=0.5)
+        tight = ot.column_widths(row, available=10.0)
+        self.assertEqual(tight, [5.0, 3.0, 3.0])  # floors; the last name takes what is left
+
+    def test_single_names_need_no_columns(self):
+        self.assertEqual(ot.column_widths([(1.0, [4.0])], available=10.0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

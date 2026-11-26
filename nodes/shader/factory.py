@@ -5,7 +5,7 @@ import json
 import bpy  # type: ignore
 from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
-from ..frontend import remember_group_inputs
+from ..frontend import remember_group_inputs, rolling_frames_to_window
 from ...core.id_management import ACEIdManager
 from .helpers import HelperAttributeNodes
 from .interface import ShaderGroupInterface
@@ -515,6 +515,8 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                         ng = None
                     else:
                         ng = None
+                if type_key == "util_rolling_avg" and ng is not None:
+                    rolling_frames_to_window(ng)
                 if ng is None:
                     ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
                 elif cls._node_group_needs_refresh(ng, node_def, cat_key, type_key):

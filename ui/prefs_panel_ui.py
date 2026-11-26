@@ -24,9 +24,9 @@ class ACE_DependencyItem(bpy.types.PropertyGroup):
 
 
 class ACE_UL_dependencies(bpy.types.UIList):
-    """Displays the list of AudioCore Engine dependencies."""
+    """Displays the list of Audio Core Engine dependencies."""
 
-    bl_description = "List of AudioCore Engine dependencies"
+    bl_description = "List of Audio Core Engine dependencies"
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         """Render each dependency with its install state and actions."""
@@ -56,7 +56,7 @@ class ACE_UL_dependencies(bpy.types.UIList):
 
 
 class ACE_preferences(bpy.types.AddonPreferences):
-    """Preferences panel for AudioCore Engine."""
+    """Preferences panel for Audio Core Engine."""
 
     bl_idname = _addon_module_name()
 
@@ -96,7 +96,7 @@ class ACE_preferences(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
 
-        layout.label(text="AudioCore Engine relies on external open-source libraries to run. Please install any missing dependencies below.")
+        layout.label(text="Audio Core Engine relies on external open-source libraries to run. Please install any missing dependencies below.")
 
         missing_count = sum(1 for item in self.dependencies if not utils.is_module_installed(item.library_id))
         row = layout.row()

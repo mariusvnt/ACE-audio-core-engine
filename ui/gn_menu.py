@@ -7,6 +7,7 @@ from ..nodes.shader.factory import ACEShaderNodeFactory
 from ..core.id_management import ACEIdManager
 from ..core.proxy.manager import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from ..nodes.source_nodes import bind_node
 from .. import utils
 
 _ALLOWED_CATEGORIES_BY_TREE_TYPE = {
@@ -89,37 +90,9 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             for src in getattr(getattr(context.scene, "audiocore", None), "audio_sources", [])
             if getattr(src, "stable_id", "")
         ]
-        source_uid = ACEIdManager.ensure_source_uid(active_source, existing_ids=existing_ids)
-        source_name = str(getattr(active_source, "name", "") or "Source")
+        ACEIdManager.ensure_source_uid(active_source, existing_ids=existing_ids)
         with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding"):
-            node["ace_source_id"] = str(source_uid or "")
-        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding#2"):
-            node["ace_source_name"] = source_name
-        node.label = source_name
-        node.name = source_name
-
-        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding#3"):
-            ACEProxyManager.ensure_proxy_for_source(active_source, scene=getattr(context, "scene", None))
-
-        proxy_name = str(getattr(active_source, "proxy_object_name", "") or "")
-        proxy_sock = next((s for s in getattr(node, "inputs", []) if getattr(s, "name", "") == "Proxy Object"), None)
-        if proxy_sock is not None:
-            proxy_obj = None
-            if proxy_name:
-                try:
-                    proxy_obj = bpy.data.objects.get(proxy_name)
-                except Exception as exc:
-                    utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_source_binding#4", exc)
-                    proxy_obj = None
-            try:
-                if proxy_obj is not None:
-                    proxy_sock.default_value = proxy_obj
-                elif proxy_name:
-                    ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
-            except Exception as exc:
-                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_source_binding#5", exc)
-                if proxy_name:
-                    ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
+            bind_node(node, active_source, getattr(context, "scene", None))
 
     @staticmethod
     def _collect_scene_frontend_uids(scene) -> list[str]:
@@ -396,7 +369,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if self.node_type_key == 'audio_math':
             node["ace_input_count"] = max(2, min(int(node.get("ace_input_count", audio_math_inputs)), 8))
             node["ace_op"] = node.get("ace_op", "add")
-            node.label = f"{node.label} ({int(node['ace_input_count'])} Inputs)"
         if self.node_type_key == 'preview_sink':
             node["ace_preview_enabled"] = bool(node.get("ace_preview_enabled", True))
         if node_modes(self.category_key, self.node_type_key):
@@ -508,7 +480,7 @@ class ACE_MT_utilities(ACE_MT_add_node_menu_base):
 
 class ACE_MT_add_node_menu(bpy.types.Menu):
     bl_idname = "ACE_MT_add_node_menu"
-    bl_label = "AudioCore Engine"
+    bl_label = "Audio Core Engine"
 
     def draw(self, context):
         layout = self.layout

@@ -102,7 +102,10 @@ def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
     if (category, node_type) == ("delta", "frequency_splitter"):
         group = dynamic.ACESplitterManager.get_or_create_variant(2, tree)
     else:
-        group = bpy.data.node_groups[dummy_tree.ACEDummyNodeFactory.get_group_name(category, node_type)]
+        factory = dummy_tree.ACEDummyNodeFactory
+        if factory.get_group_name(category, node_type) not in bpy.data.node_groups:
+            factory.rebuild_node_group(category, node_type)  # built on first use, as by the menu
+        group = bpy.data.node_groups[factory.get_group_name(category, node_type)]
     node = tree.nodes.new("GeometryNodeGroup")
     node.node_tree = group
     existing = [n.get("ace_id") for n in tree.nodes if n.get("ace_id")]
@@ -210,9 +213,8 @@ def _check_operator_list_follows_tree(addon_key, scene):
         expected = [
             root,
             "  Loudness (LUFS)",
-            "  Splitter",
-            f"    {low}{sep}Loudness (RMS)",
-            f"    {high}{sep}Stereo (Width)",
+            f"  Split {low}{sep}Loudness (RMS)",
+            f"  Split {high}{sep}Stereo (Width)",
         ]
         _assert(rows() == expected, f"Folded tree: {rows()}")
 
@@ -220,17 +222,20 @@ def _check_operator_list_follows_tree(addon_key, scene):
         _assert("FINISHED" in bpy.ops.ace.select_operator(node_id=stereo["ace_id"]), "select_operator failed")
         _assert(tree.nodes.active == stereo and stereo.select and not loud.select, "List click did not select the node")
         _assert(src.active_ui_node_id == stereo["ace_id"], "List click did not select the operator")
-        _assert(src.active_ui_node_index == 4, f"Active row: {src.active_ui_node_index}")
+        _assert(src.active_ui_node_index == 3, f"Active row: {src.active_ui_node_index}")
+        _assert("FINISHED" in bpy.ops.ace.select_operator(node_id=split["ace_id"], row=3), "band click")
+        _assert(tree.nodes.active == split and src.active_ui_node_index == 3, "A band click moved the row")
+        bpy.ops.ace.select_operator(node_id=stereo["ace_id"])
 
         # Editor -> list, unfolding a folded branch.
-        sync.toggle_branch(split["ace_id"])
+        sync.toggle_branch(source["ace_id"])
         shown = operator_tree.visible_rows(sync.current_rows(), sync.collapsed_keys())
-        _assert(sum(shown) == 3, f"Folding the splitter left {sum(shown)} rows")
+        _assert(sum(shown) == 1, f"Folding the source left {sum(shown)} rows")
         tree.nodes.active = rms
         sync._sync_editor_active(tree, src)
         _assert(src.active_ui_node_id == rms["ace_id"], "Editor selection did not reach the list")
-        _assert(split["ace_id"] not in sync.collapsed_keys(), "Selecting a folded operator did not unfold it")
-        _assert(src.active_ui_node_index == 3, f"Active row: {src.active_ui_node_index}")
+        _assert(source["ace_id"] not in sync.collapsed_keys(), "Selecting a folded operator did not unfold it")
+        _assert(src.active_ui_node_index == 2, f"Active row: {src.active_ui_node_index}")
 
         # Rename box (double-click): list and node title follow; a custom name survives a mode switch;
         # an empty name restores the automatic one.
@@ -244,7 +249,10 @@ def _check_operator_list_follows_tree(addon_key, scene):
         _assert(wm.ace_rename_name == rms.label, f"Rename box shows {wm.ace_rename_name!r}")
         rename_rms("Kick Level")
         _assert(rms.label == "Kick Level" and rms.name == "Kick Level", f"Rename: {rms.label!r} / {rms.name!r}")
-        _assert(f"    {low}{sep}Kick Level" in rows(), f"Renamed row: {rows()}")
+        _assert(f"  Split {low}{sep}Kick Level" in rows(), f"Renamed row: {rows()}")
+        split.label = "Drums"
+        _assert(f"  Drums {low}{sep}Kick Level" in rows(), f"Named splitter: {rows()}")
+        split.label = "Splitter (2 Bands)"
         modes.apply_node_mode(rms, "stream", "loudness", "peak")
         _assert(rms.label == "Kick Level", "A mode switch replaced the custom name")
         rename_rms("")
@@ -280,12 +288,40 @@ def _check_operator_list_follows_tree(addon_key, scene):
         _assert(all(abs(a - b) < 0.01 for a, b in zip(seen, socket_color)), f"Strip looks {seen}, sockets {socket_color}")
 
         tree.links.remove(stereo.inputs["Audio"].links[0])
-        # One band left: the splitter has no branch any more and folds into a single row.
-        _assert(rows()[-1] == f"  Splitter{sep}{low}{sep}Bass", f"After disconnecting: {rows()}")
+        _assert(rows()[-1] == f"  Split {low}{sep}Bass", f"After disconnecting: {rows()}")
     finally:
         sync._find_active_node_tree, selection._find_active_node_tree = originals
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
+
+
+def _check_every_splitter_lists_its_bands(addon_key, scene):
+    """Every band splitter shows as "Split <band>"; a name the user gave replaces "Split"."""
+    sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
+    nodes = importlib.import_module(f"{addon_key}.vars").ACE_NODES["delta"]["nodes"]
+    original_tree = sync._find_active_node_tree
+    for node_type, definition in nodes.items():
+        if node_type == "frequency_splitter":
+            continue  # covered with the folded tree
+        obj, tree = _new_gn_tree(scene, "ACE_Smoke_Split")
+        try:
+            source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+            split = _add_ace_node(addon_key, tree, "delta", node_type, definition["label"])
+            tree.links.new(source.outputs["Audio"], split.inputs[0])
+            for output in list(split.outputs)[:2]:
+                loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+                tree.links.new(output, loud.inputs["Audio"])
+            sync._find_active_node_tree = lambda _context, **_kw: tree
+            first, second = split.outputs[0].name, split.outputs[1].name
+            for prefix, title in (("Split", definition["label"]), ("Drums", "Drums")):
+                split.label = title
+                sync._sync_ui_dummy_tree(bpy.context, force=True)
+                heads = [row.segments[0].label for row in sync.current_rows()[1:]]
+                _assert(heads == [f"{prefix} {first}", f"{prefix} {second}"], f"{node_type} rows: {heads}")
+        finally:
+            sync._find_active_node_tree = original_tree
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.node_groups.remove(tree)
 
 
 def _check_viewer_previews_audio(addon_key, scene, engine):
@@ -421,6 +457,72 @@ def _check_computed_link_values(addon_key, scene):
             tree.links.new(clock.outputs[output], target)
             check(f"scene time {output}")
 
+        mix = tree.nodes.new("ShaderNodeMix")
+        mix.data_type = "FLOAT"
+        mix_a, mix_b, factor = (next(i for i in mix.inputs if i.identifier == n) for n in ("A_Float", "B_Float", "Factor_Float"))
+        tree.links.new(value.outputs[0], factor)
+        tree.links.new(next(o for o in mix.outputs if o.identifier == "Result_Float"), target)
+        mix_a.default_value, mix_b.default_value = 100.0, 900.0
+        for clamp in (True, False):
+            mix.clamp_factor = clamp
+            for a in (0.25, 1.5):
+                value.outputs[0].default_value = a
+                check(f"mix clamp={clamp} {a}")
+
+        switch = tree.nodes.new("GeometryNodeSwitch")
+        switch.input_type = "FLOAT"
+        flag = tree.nodes.new("FunctionNodeInputBool")
+        tree.links.new(flag.outputs[0], switch.inputs["Switch"])
+        switch.inputs["False"].default_value, switch.inputs["True"].default_value = 11.0, 22.0
+        tree.links.new(switch.outputs[0], target)
+        _assert(driven.linked_value(target, scene) is None, "A boolean input node is not followed")
+        tree.links.remove(switch.inputs["Switch"].links[0])
+        for state in (False, True):
+            switch.inputs["Switch"].default_value = state
+            check(f"switch {state}")
+
+        curve = tree.nodes.new("ShaderNodeFloatCurve")
+        curve.mapping.curves[0].points.new(0.5, 0.9)
+        curve.mapping.update()
+        tree.links.new(value.outputs[0], curve.inputs["Value"])
+        tree.links.new(curve.outputs[0], target)
+        for a in (0.1, 0.5, 0.8):
+            value.outputs[0].default_value = a
+            check(f"float curve {a}")
+
+        to_int = tree.nodes.new("FunctionNodeFloatToInt")
+        tree.links.new(value.outputs[0], to_int.inputs[0])
+        tree.links.new(to_int.outputs[0], target)
+        for mode in ("ROUND", "FLOOR", "CEILING", "TRUNCATE"):
+            to_int.rounding_mode = mode
+            for a in (2.5, -2.5, 3.2):
+                value.outputs[0].default_value = a
+                check(f"to int {mode} {a}")
+
+        # A user's node group, with its input fed from outside; and a muted node.
+        inner = bpy.data.node_groups.new("ACE_Smoke_Inner", "GeometryNodeTree")
+        inner.interface.new_socket("In", in_out="INPUT", socket_type="NodeSocketFloat")
+        inner.interface.new_socket("Out", in_out="OUTPUT", socket_type="NodeSocketFloat")
+        inner_in, inner_out = inner.nodes.new("NodeGroupInput"), inner.nodes.new("NodeGroupOutput")
+        double = inner.nodes.new("ShaderNodeMath")
+        double.operation = "MULTIPLY"
+        double.inputs[1].default_value = 2.0
+        inner.links.new(inner_in.outputs[0], double.inputs[0])
+        inner.links.new(double.outputs[0], inner_out.inputs[0])
+        group = tree.nodes.new("GeometryNodeGroup")
+        group.node_tree = inner
+        tree.links.new(value.outputs[0], group.inputs[0])
+        tree.links.new(group.outputs[0], target)
+        value.outputs[0].default_value = 21.0
+        check("node group")
+        muted = tree.nodes.new("ShaderNodeMath")
+        tree.links.new(group.outputs[0], muted.inputs[0])
+        tree.links.new(muted.outputs[0], target)
+        muted.mute = True
+        check("muted node")
+        group.node_tree = None
+        bpy.data.node_groups.remove(inner)
+
         noise = tree.nodes.new("ShaderNodeTexNoise")
         tree.links.new(noise.outputs[0], target)
         _assert(driven.linked_value(target, scene) is None, "A noise texture was computed")
@@ -475,12 +577,26 @@ def _check_driven_splits(addon_key, scene, engine):
 
         noise = tree.nodes.new("ShaderNodeTexNoise")
         tree.links.new(noise.outputs[0], split.inputs[1])
-        _assert(states()[0] == (200, "unreadable"), f"Unreadable link: {states()}")
+        _assert(states()[0] == (None, "unreadable"), f"Unreadable link: {states()}")
         engine.compiler.compile_scene_frontends(scene)
-        _assert(task_params().get("in_1") == 200.0, f"Unreadable link left the cut out: {task_params()}")
-        tree.links.new(loud.outputs[0], split.inputs[2])
-        _assert(states()[1] == (None, "audio"), f"Audio-driven link: {states()}")
-        _assert(len(splitter.splitter_band_widths(split, scene)) == 2, "An unknown cut was drawn")
+        _assert("in_1" not in task_params() and task_params().get("unknown_inputs") == [1],
+                f"The socket's own value overrode the link: {task_params()}")
+        engine.frame.execute_next_frame(scene, force=True)
+        # An audio value through maths: the noodle's value wins over the operator's raw value.
+        scale = tree.nodes.new("ShaderNodeMath")
+        scale.operation = "MULTIPLY"
+        scale.inputs[1].default_value = 4000.0
+        tree.links.new(times.outputs[0], split.inputs[1])
+        tree.links.new(loud.outputs[0], scale.inputs[0])
+        tree.links.new(scale.outputs[0], split.inputs[2])
+        engine.compiler.compile_scene_frontends(scene)
+        engine.latest_values[f"{loud['ace_id']}:0"] = 0.5
+        _assert(states()[1] == (2000, "linked"), f"Audio-driven link: {states()}")
+        split_freqs.refresh_driven_splits(engine.graphs.values(), scene)
+        _assert(task_params().get("in_2") == 2000.0, f"Engine audio-driven value: {task_params()}")
+        engine.latest_values.clear()
+        engine.frame.execute_next_frame(scene, force=True)
+        _assert(f"{loud['ace_id']}:0" in engine.latest_values, "The frame did not record operator values")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
@@ -534,6 +650,10 @@ def _check_selection_follows_sources(addon_key, scene):
             ace.active_audio_source_index = source_index
             consistent(f"after switching to {source_index}")
         _assert(operator_tree.row_of_node(sync.current_rows(), pairs[0][1]["ace_id"]) >= 0, "Rows not rebuilt on switch")
+
+        bpy.ops.audiocore.add_audio_source()  # no Source node reads this one
+        _assert(not len(active().ui_nodes) and not active().active_ui_node_id,
+                f"Unused input lists: {[r.name for r in active().ui_nodes]}")
     finally:
         sync._find_active_node_tree = original_tree
         while len(ace.audio_sources) > count:
@@ -607,6 +727,177 @@ def _check_new_source_takes_input_name(addon_key, scene):
         bpy.data.node_groups.remove(tree)
 
 
+def _check_source_nodes(addon_key, scene, engine):
+    """Source nodes are the user's: none is added or removed by a compile; each picks its source."""
+    ops = importlib.import_module(f"{addon_key}.ui.n_panel_operators")
+    selection = importlib.import_module(f"{addon_key}.ui.panel.selection")
+    ace = scene.audiocore
+    count, first_index = len(ace.audio_sources), ace.active_audio_source_index
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_SourceNodes")
+    original_selected = ops._resolve_panel_selected_node
+    try:
+        bpy.ops.audiocore.add_audio_source()
+        bpy.ops.audiocore.add_audio_source()
+        first, second = ace.audio_sources[count], ace.audio_sources[count + 1]
+        ace.active_audio_source_index = count
+        _assert(not first.proxy_object_name and not second.proxy_object_name, "An unused input has a proxy")
+
+        node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        tree.links.new(node.outputs["Audio"], loud.inputs["Audio"])
+        _assert(node["ace_source_id"] == first.stable_id and node.label == first.name,
+                f"A new Source node does not read the active input: {node.label!r}")
+        node_count = len(tree.nodes)
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(len(tree.nodes) == node_count, f"A compile added or removed nodes: {[n.name for n in tree.nodes]}")
+        _assert(bpy.data.objects.get(first.proxy_object_name) is not None, "The read input has no proxy")
+        _assert(not second.proxy_object_name, "The unread input got a proxy")
+
+        # Two Source nodes may read the same input; their identities stay put across compiles.
+        twin = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        engine.compiler.compile_scene_frontends(scene)
+        ids = (node["ace_id"], twin["ace_id"])
+        engine.compiler.compile_scene_frontends(scene)
+        _assert((node["ace_id"], twin["ace_id"]) == ids and ids[0] != ids[1], f"Source node ids moved: {ids}")
+        tree.nodes.remove(twin)
+
+        parsed = {"category": "source_mngmt", "type": "src"}
+        _assert(selection._parsed_node_has_operator_settings(parsed), "No source menu with several inputs")
+        ops._resolve_panel_selected_node = lambda _context: (node, parsed)
+        _assert(bpy.ops.ace.set_node_source(source=second.stable_id) == {'FINISHED'}, "Choosing a source failed")
+        _assert(node["ace_source_id"] == second.stable_id and node.label == second.name, "The node did not switch")
+        _assert(ace.active_audio_source_index == count + 1, "The list did not follow the node")
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(any(loud["ace_id"] in graph.tasks and graph.source_uid == second.stable_id
+                    for graph in engine.graphs.values()), "The branch is not computed for the chosen input")
+    finally:
+        ops._resolve_panel_selected_node = original_selected
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+
+
+def _check_status_and_inputs(addon_key, scene):
+    """Engine Status meters, the click timer and the live buffer default."""
+    panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
+    sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
+    usage = importlib.import_module(f"{addon_key}.ui.panel.usage")
+    import sys
+    import time
+    usage._history.clear()
+    usage.sample(1000.0)
+    time.sleep(0.3)
+    usage.sample(1000.5)
+    if sys.platform == "win32":
+        _assert(usage.average("cpu") is not None and 0.0 <= usage.average("cpu") <= 1.0, f"CPU: {usage.average('cpu')}")
+    _assert(usage.average("gpu") is None or 0.0 <= usage.average("gpu") <= 1.0, f"GPU: {usage.average('gpu')}")
+    reads = (usage._cpu_load, usage._gpu_load)
+    try:
+        usage._history.clear()
+        values = iter((0.2, 0.4, 0.9))
+        usage._cpu_load, usage._gpu_load = lambda: next(values), lambda: None
+        usage.sample(2000.0, extra={"total_latency_ms": 2.0})
+        usage.sample(2000.5, extra={"total_latency_ms": 4.0})
+        _assert(abs(usage.average("cpu") - 0.3) < 1e-9 and usage.average("total_latency_ms") == 3.0, "Not averaged")
+        _assert(usage.average("gpu") is None, "An unmeasured GPU has a value")
+        usage.sample(2010.0, extra={"total_latency_ms": 6.0})  # the older measures have aged out
+        _assert(abs(usage.average("cpu") - 0.9) < 1e-9 and usage.average("total_latency_ms") == 6.0, "Window not applied")
+    finally:
+        usage._cpu_load, usage._gpu_load = reads
+
+    seen: list = []
+    context = types.SimpleNamespace(scene=scene)
+    panels.ACE_PT_project_settings.draw(types.SimpleNamespace(layout=_CheckedLayout(seen)), context)
+    labels = [value for kind, value in seen if kind == "label"]
+    _assert(labels == ["Latency", "CPU", "GPU"], f"Engine status rows: {labels}")
+    bars = [value for kind, value in seen if kind == "progress"]
+    _assert(len(bars) == 3 and bars[0] == "6.00 ms", f"Engine status bars: {bars}")
+    _assert(bpy.app.timers.is_registered(sync._ui_click_timer), "Click timer not registered")
+    _assert(sync._UI_CLICK_INTERVAL <= 0.1, "Click timer too slow")
+    count = len(scene.audiocore.audio_sources)
+    bpy.ops.audiocore.add_audio_source()
+    _assert(scene.audiocore.audio_sources[-1].live_latency_ms == 5, "Live buffer default is not 5 ms")
+    bpy.ops.audiocore.remove_audio_source()
+    _assert(len(scene.audiocore.audio_sources) == count, "Input not removed")
+    names = (panels.ACE_PT_audio_sources.bl_label, panels.ACE_PT_information_streams.bl_label,
+             panels.ACE_PT_project_settings.bl_category)
+    _assert(names == ("Audio Inputs", "Operators", "Audio Core Engine"), f"Panel names: {names}")
+
+
+def _check_titles_units_and_info(addon_key, scene):
+    """Audio Math titles, the buffer field's unit, the Info panel and the Rolling Average window."""
+    panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
+    dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
+    factory = importlib.import_module(f"{addon_key}.nodes.geometry.factory").ACEDummyNodeFactory
+    frontend = importlib.import_module(f"{addon_key}.nodes.frontend")
+    ace = scene.audiocore
+    count, first_index = len(ace.audio_sources), ace.active_audio_source_index
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Titles")
+    try:
+        group = dynamic.ACEAudioMathManager.get_or_create_variant(3, tree)
+        math_node = tree.nodes.new("GeometryNodeGroup")
+        math_node.node_tree = group
+        math_node["ace_id"] = "ACE_utilities_audio_math_abc123"
+        math_node.label = "Audio Math (3 Inputs)"
+        dynamic.drop_input_counts_from_math_titles()
+        _assert(math_node.label == "Audio Math", f"Audio Math title: {math_node.label!r}")
+        math_node.label = "Mix bus"
+        dynamic.drop_input_counts_from_math_titles()
+        dynamic.ACEAudioMathManager.apply_variant_to_node(math_node, 4)
+        _assert(math_node.label == "Mix bus", f"A given title was replaced: {math_node.label!r}")
+
+        bpy.ops.audiocore.add_audio_source()
+        source = ace.audio_sources[-1]
+        _assert(abs(source.ace_buffer_latency - 0.005) < 1e-9, f"Buffer field: {source.ace_buffer_latency}")
+        source.ace_buffer_latency = 0.02
+        _assert(source.live_latency_ms == 20, f"Buffer latency: {source.live_latency_ms}")
+        unit = type(source).bl_rna.properties["ace_buffer_latency"].unit
+        _assert(unit == "TIME_ABSOLUTE", f"Buffer unit: {unit}")
+
+        source.source_type = "LIVE"
+        source.live_transport = "UDP"
+        source.duration = 125.4
+        render = scene.render
+        fps = render.fps / render.fps_base
+        seen: list = []
+        context = types.SimpleNamespace(scene=scene)
+        panels.ACE_PT_sub_source_info.draw(types.SimpleNamespace(layout=_CheckedLayout(seen)), context)
+        labels = [value for kind, value in seen if kind == "label"]
+        frames = int(-(-125.4 * fps // 1))
+        span = f"Frame Span: {scene.frame_start} - {scene.frame_start + frames - 1} ({frames} frames)"
+        _assert("Duration: 2 min 5 s" in labels and span in labels, f"Info: {labels}")
+
+        # An old frame-counting Rolling Average group is converted in place: links and value survive.
+        node = _add_ace_node(addon_key, tree, "utilities", "util_rolling_avg", "Rolling")
+        ng = node.node_tree
+        item = next(i for i in ng.interface.items_tree if i.name == "Window")
+        _assert(abs(node.inputs["Window"].default_value - 0.25) < 1e-6 and item.subtype == "TIME_ABSOLUTE",
+                f"New Rolling Average window: {node.inputs['Window'].default_value}")
+        item.socket_type = "NodeSocketInt"
+        next(i for i in ng.interface.items_tree if i.name == "Window").name = "Number of Frames"
+        node.inputs["Number of Frames"].default_value = 6
+        value = tree.nodes.new("ShaderNodeValue")
+        sink = tree.nodes.new("ShaderNodeMath")
+        tree.links.new(value.outputs[0], node.inputs["Value"])
+        tree.links.new(node.outputs[0], sink.inputs[0])
+        frontend.convert_rolling_average_groups()  # what registration and a file load run
+        factory._NODES_CONTENT_HASH = ""
+        factory.ensure_node_groups_exist()
+        _assert("Window" in node.inputs and "Number of Frames" not in node.inputs, f"{[s.name for s in node.inputs]}")
+        _assert(abs(node.inputs["Window"].default_value - 6.0 / fps) < 1e-6, f"Window: {node.inputs['Window'].default_value}")
+        _assert(node.inputs["Value"].is_linked and node.outputs[0].is_linked, "Converting lost the links")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+
+
 def _check_splitter_sliders(addon_key, scene):
     """Split frequency sliders write their own socket; the release sorts the sockets."""
     splitter = importlib.import_module(f"{addon_key}.ui.panel.splitter")
@@ -623,40 +914,39 @@ def _check_splitter_sliders(addon_key, scene):
             return [round(sock.default_value) for sock in list(split.inputs)[1:]]
 
         def sliders():
-            return [round(getattr(split, f"ace_split_freq_{i + 1}")) for i in range(len(split.inputs) - 1)]
+            return [round(split_freqs.get_split_freq(split, i)) for i in range(len(split.inputs) - 1)]
 
-        split.ace_split_freq_1, split.ace_split_freq_2, split.ace_split_freq_3 = 100.0, 500.0, 2000.0
+        def put(number, hz):
+            split_freqs.set_split_freq(split, number - 1, hz)
+
+        for number, hz in ((1, 100.0), (2, 500.0), (3, 2000.0)):
+            put(number, hz)
         _assert(sockets() == [100, 500, 2000], f"Slider writes: {sockets()}")
         _assert(hasattr(bpy.types, "ACE_OT_sort_split_freqs_on_release"), "Release watcher not registered")
 
         # While dragging, nothing moves: each slider stays on its socket until the release sorts.
         for value in (600.0, 3000.0, 650.0):
-            split.ace_split_freq_1 = value
+            put(1, value)
             _assert(sockets() == [value, 500, 2000] and sliders() == sockets(), f"Drag to {value}: {sockets()}")
         split_freqs.sort_all_split_freqs()  # what the release (and a file load) does
         _assert(sockets() == [500, 650, 2000] and sliders() == sockets(), f"After release: {sockets()}")
 
-        # The slider is logarithmic from 20 Hz to 20 kHz; the Hz field and the slider share a socket.
-        split.ace_split_pos_1 = 0.5
-        _assert(abs(split.inputs[1].default_value - 632.46) < 0.1, f"Mid slider: {split.inputs[1].default_value}")
-        _assert(abs(split.ace_split_pos_1 - 0.5) < 1e-4, f"Slider reads back {split.ace_split_pos_1}")
-        for position, hz in ((0.0, 20.0), (1.0, 20000.0)):
-            split.ace_split_pos_1 = position
-            _assert(abs(split.inputs[1].default_value - hz) < 0.01, f"Slider {position}: {split.inputs[1].default_value}")
+        slider = bpy.types.Node.bl_rna.properties["ace_split_freq_1"]
+        _assert(slider.unit == "FREQUENCY", f"Slider unit: {slider.unit}")
         split.ace_split_freq_1 = 200.0
-        _assert(abs(split.ace_split_pos_1 - 1.0 / 3.0) < 1e-4, f"200 Hz sits at {split.ace_split_pos_1}")
-        split.ace_split_freq_1 = 650.0
+        _assert(abs(split.inputs[1].default_value - 200.0) < 1e-3 and split.ace_split_freq_1 == 200.0, "Hz slider")
+        put(1, 650.0)
 
-        split.ace_split_freq_3 = 99999.0
-        split.ace_split_freq_1 = -5.0
+        put(3, 99999.0)
+        put(1, -5.0)
         _assert(sockets() == [0, 650, 20000], f"Limits: {sockets()}")
         _assert([s.name for s in list(split.inputs)[1:]] == ["Split Freq 1", "Split Freq 2", "Split Freq 3"], "Socket names")
 
         # A linked split frequency is left where it is.
         value_node = tree.nodes.new("ShaderNodeValue")
         tree.links.new(value_node.outputs[0], split.inputs[2])
-        split.ace_split_freq_1 = 12000.0
-        split.ace_split_freq_3 = 9000.0
+        put(1, 12000.0)
+        put(3, 9000.0)
         split_freqs.sort_split_freqs(split)
         _assert([sockets()[0], sockets()[2]] == [9000, 12000], f"Sort around a link: {sockets()}")
         tree.nodes.remove(value_node)
@@ -829,6 +1119,13 @@ class _CheckedLayout:
     def separator(self, **_kw):
         pass
 
+    def progress(self, text="", factor=0.0, **_kw):
+        _assert(0.0 <= factor <= 1.0, f"Progress factor {factor}")
+        self.seen.append(("progress", text))
+
+    def operator_menu_enum(self, idname, prop, text="", **_kw):
+        self.operator(idname)
+
     template_icon = separator
 
 
@@ -875,7 +1172,7 @@ def _check_panels_draw(addon_key, scene):
                 f"Envelope panel: {props('ACE_PT_sub_envelope')}")
         _assert({"bpm", "beats_per_bar"} <= props("ACE_PT_sub_tempo_meter"), "Tempo panel")
         _assert(("operator", "audiocore.reset_engine") in drawn["ACE_PT_sub_engine_settings"], "No reset button")
-        _assert({"ace_split_pos_1", "ace_split_freq_1", "ace_band_fill"} <= props("ACE_PT_information_streams"),
+        _assert({"ace_split_freq_1", "ace_band_fill"} <= props("ACE_PT_information_streams"),
                 f"Splitter settings: {props('ACE_PT_information_streams')}")
         for name in ("ACE_PT_sub_source_info", "ACE_PT_sub_tempo_meter", "ACE_PT_sub_envelope"):
             _assert("DEFAULT_CLOSED" in getattr(panels, name).bl_options, f"{name} is not closed by default")
@@ -1119,39 +1416,22 @@ def main():
     engine.frame.execute_next_frame(scene, force=True)
 
     before_count = len(ace.audio_sources)
+
+    def datablocks():
+        return (len(bpy.data.objects), len(bpy.data.node_groups), len(bpy.data.materials), len(bpy.data.meshes))
+
+    made = datablocks()
     add_result = bpy.ops.audiocore.add_audio_source()
     _assert('FINISHED' in add_result, "audiocore.add_audio_source failed")
     _assert(len(ace.audio_sources) == before_count + 1, "Audio source count did not increase")
+    _assert(datablocks() == made, f"Adding an input created data: {made} -> {datablocks()}")
 
     active_idx = int(getattr(ace, "active_audio_source_index", -1))
     _assert(0 <= active_idx < len(ace.audio_sources), "Active source index invalid after add")
     src = ace.audio_sources[active_idx]
     _assert(bool(getattr(src, "stable_id", "")), "Added source has no stable_id")
-    proxy_name = getattr(src, "proxy_object_name", "")
-    _assert(bool(proxy_name), "Added source has no proxy object name")
-    _assert(bpy.data.objects.get(proxy_name) is not None, "Proxy object was not created")
-
-    sonar = bpy.data.objects.get("ACE_Sonar")
-    _assert(sonar is not None, "ACE_Sonar object was not created")
-    nodes_mod = next((m for m in sonar.modifiers if m.type == 'NODES'), None)
-    _assert(nodes_mod is not None, "ACE_Sonar has no Geometry Nodes modifier")
-    _assert(nodes_mod.node_group is not None, "ACE_Sonar modifier has no node tree")
-    _assert(bool(getattr(nodes_mod.node_group, "is_modifier", False)), "ACE_Sonar node tree is not marked as modifier")
-    source_nodes = [
-        n for n in nodes_mod.node_group.nodes
-        if getattr(n, "type", "") == 'GROUP' and getattr(n, "get", lambda *_: "")("ace_source_id", "") == src.stable_id
-    ]
-    _assert(bool(source_nodes), "No managed source placeholder found in ACE_Sonar tree")
-    sonar_mat = bpy.data.materials.get("ACE_Sonar_Material")
-    _assert(sonar_mat is not None, "ACE_Sonar shader material was not created")
-    _assert(sonar.active_material == sonar_mat, "ACE_Sonar shader material is not assigned")
-    sonar_shader_tree = getattr(sonar_mat, "node_tree", None)
-    _assert(sonar_shader_tree is not None, "ACE_Sonar shader material has no node tree")
-    shader_source_nodes = [
-        n for n in sonar_shader_tree.nodes
-        if getattr(n, "type", "") == 'GROUP' and getattr(n, "get", lambda *_: "")("ace_source_id", "") == src.stable_id
-    ]
-    _assert(bool(shader_source_nodes), "No managed source placeholder found in ACE_Sonar shader tree")
+    engine.compiler.compile_scene_frontends(scene)
+    _assert(datablocks() == made, f"Compiling an unused input created data: {made} -> {datablocks()}")
 
     frontend_obj = None
     frontend_mesh = None
@@ -1209,6 +1489,7 @@ def main():
     _check_old_stream_nodes_migrate(addon_key, scene)
     _check_operator_list_follows_tree(addon_key, scene)
     _check_splitter_sliders(addon_key, scene)
+    _check_every_splitter_lists_its_bands(addon_key, scene)
     _check_computed_link_values(addon_key, scene)
     _check_driven_splits(addon_key, scene, engine)
     _check_selection_follows_sources(addon_key, scene)
@@ -1218,6 +1499,9 @@ def main():
     _check_source_list_instances(addon_key, scene, engine)
     _check_group_rebuild_keeps_input_values(addon_key, scene)
     _check_panels_draw(addon_key, scene)
+    _check_status_and_inputs(addon_key, scene)
+    _check_titles_units_and_info(addon_key, scene)
+    _check_source_nodes(addon_key, engine=engine, scene=scene)
     _check_manual_engine_reset(addon_key, scene)
 
     remove_result = bpy.ops.audiocore.remove_audio_source()

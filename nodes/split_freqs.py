@@ -1,6 +1,5 @@
 """Frequency splitter split frequencies: edited by the panel's sliders, kept in ascending order."""
 
-import math
 import bpy  # type: ignore
 from ..core.id_management import ACEIdManager
 from .. import utils
@@ -9,19 +8,7 @@ from . import driven_values
 
 _SPLITTER_ID_PREFIX = f"{ACEIdManager.PREFIX}delta_frequency_splitter_"
 
-# Range of the logarithmic sliders (the band strip's axis). The Hz fields accept 0 to MAX_HZ.
-_SLIDER_LOW_HZ = 20.0
 MAX_HZ = 20000.0
-
-
-def position_to_freq(position: float) -> float:
-    """Slider position (0..1) to Hz, logarithmically."""
-    return _SLIDER_LOW_HZ * (MAX_HZ / _SLIDER_LOW_HZ) ** min(max(float(position), 0.0), 1.0)
-
-
-def freq_to_position(hz: float) -> float:
-    hz = min(max(float(hz), _SLIDER_LOW_HZ), MAX_HZ)
-    return math.log(hz / _SLIDER_LOW_HZ) / math.log(MAX_HZ / _SLIDER_LOW_HZ)
 
 
 def _split_freq_sockets(node) -> list:
@@ -48,20 +35,15 @@ def set_split_freq(node, index: int, value: float) -> bool:
 def split_freq_states(node, scene=None) -> list[tuple]:
     """(socket, Hz or None, state) per split frequency, as the engine will use it.
 
-    state: "own" (unlinked), "linked" (computed from the link), "unreadable" (the link cannot be
-    computed: the socket's own value is used) or "audio" (driven by an ACE output: not known here).
+    state: "own" (unlinked), "linked" (computed from the link) or "unreadable" (it cannot be
+    computed, so there is no value; the link still wins over the socket's own value).
     """
     states = []
     for sock in _split_freq_sockets(node):
         value, state = float(sock.default_value), "own"
         if sock.is_linked:
-            driven = driven_values.linked_value(sock, scene)
-            if driven is not None:
-                value, state = driven, "linked"
-            elif driven_values.fed_by_audio(sock):
-                value, state = None, "audio"
-            else:
-                state = "unreadable"
+            value = driven_values.linked_value(sock, scene)
+            state = "linked" if value is not None else "unreadable"
         states.append((sock, value, state))
     return states
 
@@ -71,10 +53,17 @@ def capture_driven_splits(node, params: dict) -> None:
     linked = [i for i, sock in enumerate(node.inputs) if i and sock.is_linked]
     if not linked:
         return
+    unknown = []
     for i in linked:
         value = driven_values.linked_value(node.inputs[i], bpy.context.scene)
-        # An ACE output reaches the engine through its own link, which takes precedence.
-        params[f"in_{i}"] = float(node.inputs[i].default_value) if value is None else value
+        # The link wins over the socket's own value, even when it cannot be computed here (an
+        # ACE output reaches the engine through its own link).
+        params.pop(f"in_{i}", None)
+        if value is None:
+            unknown.append(i)
+        else:
+            params[f"in_{i}"] = value
+    params["unknown_inputs"] = unknown
     params["driven_inputs"] = linked
     params["driven_node"] = driven_values.node_ref(node)
 
