@@ -36,10 +36,12 @@ costs metadata, not a copy of the audio.
 | `core/engine/frame` | Stage C: per-frame evaluation and sink commits |
 | `core/engine/preview` | Preview routing, mixing and playback |
 | `core/worker` | Graph evaluation inside worker processes (no `bpy`) |
-| `core/input` | File, sound-device and UDP input |
+| `core/input` | File decoding (Blender's `aud`), sound-device and UDP input |
 | `core/proxy` | Proxy objects (only for sources a node reads), attribute and property sinks |
 | `nodes/geometry`, `nodes/shader` | Node-group factories and tree readers |
 | `ui` | N-panel, add menu, operators and preferences |
+| `deps.py` | Optional libraries: which load, and the user's switches (§13) |
+| `tools` | Wheel fetching and AudioFlux trimming for the extension build (§13) |
 
 ## 3. Frame pipeline
 
@@ -107,9 +109,14 @@ A spawned worker imports the DSP stack (~4 s) before it can run a job. So:
 - a crashed pool restarts at most three times, with backoff, then the affected
   sources stay local.
 
-`spawn` re-runs `__main__` from its file in each child. Under
-`blender --python script.py` that is a `bpy` script, so the file is hidden
-from `__main__` while workers start.
+`spawn` re-runs the parent's `__main__` file in each child before it
+unpickles the job, and the job imports ACE by its full name. Installed as an
+extension that name is `bl_ext.<repository>.audio_core_engine`, and Blender
+creates `bl_ext` and `bl_ext.<repository>` in memory only, so a plain
+interpreter cannot import them; under `blender --python script.py`,
+`__main__` is also a `bpy` script. While workers start, `__main__` therefore
+points at `core/worker/spawn_main.py` (`common._spawn_bootstrap_main`), which
+registers those parent packages with a real `__path__` and runs nothing else.
 
 Without these rules every compile restarted the pool, the pool grew to
 `cpu_count - 1` cold processes, and every job submitted in those ~4 s missed
@@ -146,8 +153,18 @@ covered by local DSP.
   is paused; during playback the frame handler drains them, and an extra drain
   would add pipe reads to the frame.
 
-## 8. Preview and bake
+## 8. File input, preview and bake
 
+- **File input.** A file is decoded whole into memory by Blender's `aud`
+  module (Blender's FFmpeg), so every format Blender reads works with nothing
+  to install (`core/input/decode.py`). Decoded files are shared: the source,
+  the tempo analysis and the bake read one read-only array, each with its own
+  cursor, from a cache capped by size and keyed by path, size, modification
+  time and target rate. Files above the working sample rate are resampled
+  there, in memory. Metadata probes read the header only. Without `aud` (it
+  fails to import when another extension shadows Blender's NumPy) only WAV
+  files are read, through the `wave` module; the preferences say so. `aud`
+  maps 16-bit PCM by 1/32767, `wave` decoding here by 1/32768.
 - **Preview.** Audio comes from manual preview sinks, or from links to the
   tree's audio output when there is none. Branches are mixed, limited and
   played only while the timeline plays. A feeder thread paces delivery at the
@@ -177,12 +194,38 @@ records an error.
 
 Tests outside Blender load the add-on against one shared fake `bpy`
 (`tests/fake_bpy.py`) and check behaviour, never source text. Every test file
-also passes when run on its own. `tests/run_in_blender.py` runs a headless
-Blender session (`--extra-path` adds the optional libraries), and
-`tests/blender_perf.py` compares threads and worker processes at real-time pace.
-The perf gates (`test_perf_gate`, `test_engine_perf_gate`) are slow and
-machine-dependent, so they run only with `ACE_PERF=1`; CI runs them in a
-separate job.
+also passes when run on its own. The perf gates (`test_perf_gate`,
+`test_engine_perf_gate`) are slow and machine-dependent, so they run only with
+`ACE_PERF=1`; CI runs them in a separate job.
+
+`tests/run_in_blender.py` runs a script in headless Blender with ACE enabled
+as an extension, in temporary user folders, so nothing else installed on the
+machine takes part (installed extensions share one site-packages). By default
+it links the checkout into the extensions folder (`--extra-path` adds
+libraries); `--package` builds the zip for this platform and installs it as a
+user does, wheels included. `tests/blender_perf.py` compares threads and
+worker processes at real-time pace.
+
+**Reference curves** pin the numbers every node outputs
+(`tests/reference/`). Generated signals (sweeps, clicks, pink noise, a stereo
+pan, a music loop, 44.1 and 96 kHz files) play at 24, 30 and 60 fps through
+one tree holding every node and mode, and each output is compared frame by
+frame with the goldens in `tests/reference/curves`, within a tolerance per
+node (`spec.py`). Each pass starts from a fresh engine, as after a file load,
+because a seek keeps analyzer history; it runs twice and must repeat exactly,
+and the I/O-thread mode must match. A new node type fails
+`test_reference_goldens` until it has curves or an exclusion reason.
+`-- --update` records the goldens; `tests/reference/report.py` plots drifting
+curves. `test_reference_crosscheck` compares the goldens with librosa,
+pyloudnorm and the signals' known content; checks ACE fails today are listed
+in `KNOWN_FAILURES` as expected failures. Linux and Windows give the same
+curves.
+
+CI (`.github/workflows/ci.yml`) runs on Python 3.13 with Blender's NumPy: unit
+tests with NumPy only and with the bundled wheels, ruff, the perf gates, the
+installed extension in headless Blender 5.2 (smoke test and reference curves,
+after checking that the manifest lists the pinned wheels), and the
+cross-checks.
 
 ## 11. Adding a node type
 
@@ -200,5 +243,40 @@ separate job.
 
 - Processing is frame-block based: tuned for reactivity, not offline fidelity.
 - The bake cache is in memory only.
-- Some spectral features need AudioFlux for full fidelity.
-- Live input quality depends on the transport and its optional library.
+- AudioFlux ships with the extension. If it fails to load, the N-panel shows
+  that problem instead of its controls (spectral features have NumPy
+  fallbacks, but they are less faithful).
+- Files are decoded into memory: a 5-minute stereo file at 48 kHz takes about
+  115 MB.
+- Live input quality depends on the transport. On Linux, SoundDevice needs
+  PortAudio from the system.
+
+## 13. Packaging and optional libraries
+
+ACE is a Blender extension (`blender_manifest.toml`, Blender 5.2 or later).
+Its libraries ship as wheels inside the platform zip, and Blender installs
+them with it: nothing is installed at runtime, and an install behaves the same
+on every machine. NumPy is never bundled; Blender ships its own.
+
+- **Wheels.** `tools/wheels.txt` pins them: AudioFlux, Numba with llvmlite,
+  SoundDevice with cffi and pycparser. `tools/fetch_wheels.py` downloads them
+  for Blender's Python (3.13) and every platform in the manifest, and rewrites
+  the manifest's `wheels` list; `blender --command extension build
+  --split-platforms` then gives one zip per platform. A pure-Python wheel
+  needed by only some platforms is tagged for them, so no zip holds two copies
+  of one package (SoundDevice bundles PortAudio on Windows and macOS only).
+- **AudioFlux** is repackaged per platform (`tools/trim_audioflux.py`): the
+  PyPI wheel carries every OS's native library (200 MB of MKL for Linux) and
+  imports SciPy, SoundFile and matplotlib for file and plot helpers ACE never
+  uses. The trimmed wheel keeps one platform's libraries and loads those
+  helpers lazily, so it needs NumPy only.
+- **Switches.** `deps.py` decides whether ACE uses an optional library: it
+  imports, and its switch is on. The switches (Numba; SoundDevice for live
+  input and the preview) live in `settings.json` in the extension's user folder,
+  not in the preferences datablock, so they are read before any class
+  registers, and reach worker processes through environment variables. Numba's
+  applies at the next start, since kernels compile at import; SoundDevice's the
+  next time a live source or the preview opens. Numba caches its kernels in the
+  same user folder.
+- **Preferences** only report: one row per library (Blender's `aud` included)
+  with its version or why it is missing, plus the two switches.

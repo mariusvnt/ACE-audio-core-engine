@@ -2,7 +2,7 @@
 
 Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
-1. [Infrastructure](#1-infrastructure): extension packaging, presets as assets, reference-curve tests
+1. [Infrastructure](#1-infrastructure): presets as assets
 2. [Instance model](#2-instance-model-definitions-instances-signals): definitions, instances, signals
 3. [Time model: render, bake, live](#3-time-model-render-bake-live)
 4. [Motion and event nodes](#4-motion-and-event-nodes)
@@ -10,25 +10,9 @@ Planned changes that aren't built yet, in the order they should be done. Nothing
 
 ## 1. Infrastructure
 
-This comes first because the later sections rewrite the compiler and the sinks. They need tests that pin down the DSP numbers and an install that behaves the same on every machine.
+The extension packaging and the reference-curve tests are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13 and §10). They come before the rest because the later sections rewrite the compiler and the sinks: the reference curves must stay unchanged through that work.
 
-### 1.1 Standard extension packaging
-
-**Today:** ACE is a legacy add-on (`bl_info` in `__init__.py`). Its optional libraries (AudioFlux, Numba, SoundFile, SoundDevice) are installed at runtime by `ui/prefs_library_manager.py`, which runs `pip install --target` into a folder of its own. On top of that there is a `_vendor` folder. Installing needs a network connection, can fail midway, and gives different results from one machine to another.
-
-**Target:** a Blender extension (`blender_manifest.toml`, Blender ≥ 5.0):
-
-- Each dependency ships as a wheel listed in the manifest, built per platform (`blender --command extension build --split-platforms`). NumPy is never bundled, since Blender ships its own.
-- No install step at runtime: the preferences panel only reports what was found and has switches for the optional parts (Numba, live input), the way the Use SciPy switch works in the Print Eval extension.
-- Each platform's wheel set has to be checked:
-  - Numba brings llvmlite.
-  - SoundDevice needs PortAudio. Its Windows and macOS wheels include it; on Linux it is a system library, so live input there stays optional.
-- **SoundFile is dropped.** Blender's own `aud` module decodes audio files through Blender's FFmpeg: `aud.Sound.file(path).data()` returns the samples as a NumPy array. So every format Blender can read works, with nothing to install.
-- **SoundDevice stays, as the optional live-input switch.** `aud` has no audio input, and it only plays finished sounds with no streaming callback. Live capture and the low-latency preview monitor still need SoundDevice.
-- `prefs_library_manager.py`, `_vendor` and the dependency path setup in `utils.py` go away.
-- This also allows listing on extensions.blender.org and installing offline.
-
-### 1.2 Presets as assets
+### 1.1 Presets as assets
 
 Ship ready-made setups as an asset library that a user drags in from the Asset Browser:
 
@@ -36,17 +20,6 @@ Ship ready-made setups as an asset library that a user drags in from the Asset B
 - Materials: emission on level, hue on pitch.
 
 Each preset is an ordinary user tree built from ACE nodes, so presets also serve as test scenes for section 2 (nesting, reuse across objects). The asset library ships inside the extension and is registered when the extension loads.
-
-### 1.3 Reference-curve tests
-
-**Today:** the tests check task behaviour against a fake `bpy`, and `tests/run_in_blender.py` runs a smoke test in headless Blender. Nothing pins down the actual numbers that each node outputs.
-
-**Target:**
-
-- A small set of reference audio files (sine sweep, click track, pink noise, a stereo-panned mix, a short music excerpt) with expected output curves stored per node and per frame rate.
-- Cross-checks against independent tools where possible: librosa for spectral centroid, flux, onset and pitch, and pyloudnorm for LUFS. These tools run only on the test machine and are never shipped.
-- Tolerances per node, and a report that plots any curve that drifts.
-- Runs in CI inside headless Blender (extending `run_in_blender.py`). The instance-model rewrite and the bake must leave every curve unchanged.
 
 ## 2. Instance model: definitions, instances, signals
 
@@ -158,7 +131,7 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 
 - File sources gain `read_at(t, window)` next to `read_block`.
 - The block for frame f is the same one streaming would use: samples `[f·N, (f+1)·N)` with `N = sample_rate / fps`, plus the history the analyser needs (an FFT window longer than a block reads samples before it).
-- **Stateful filters:** source preprocessing (high-pass and low-pass biquads, attack/release smoothing) uses IIR filters, which carry state. Random access runs a pre-roll before `t`, long enough for them to settle, so the result matches streaming within a tolerance set by the reference tests (1.3). Where the tolerance is too loose, use the checkpoints instead.
+- **Stateful filters:** source preprocessing (high-pass and low-pass biquads, attack/release smoothing) uses IIR filters, which carry state. Random access runs a pre-roll before `t`, long enough for them to settle, so the result matches streaming within a tolerance set by the reference curves (ARCHITECTURE.md §10). Where the tolerance is too loose, use the checkpoints instead.
 - **Contract, checked by the tests:** random access = stream within tolerance, and bake = random access = render, value for value.
 
 ### 3.3 Baking into Blender data
@@ -300,7 +273,7 @@ Source Specs exposes only what musical time depends on: **BPM, Beats per Bar and
 
 - **Downbeat estimate:** found together with the tempo, as the position in the bar with the strongest mean spectral flux. It is a source property the user can override, like BPM and meter.
 - **Tasks that work in beats** (Envelope, Beat Quantize) read BPM and Downbeat from the source, not through sockets.
-- **Phases in Geometry Nodes** come from a **Beat Clock** preset (1.2). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
+- **Phases in Geometry Nodes** come from a **Beat Clock** preset (1.1). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
 - **Old files:** links from Frames per Beat and Beat Phase are dropped on load, with one log line per node.
 
 ### Migration
@@ -326,7 +299,7 @@ Source Specs exposes only what musical time depends on: **BPM, Beats per Bar and
 4. Gate, then Envelope and Beat Quantize.
 5. Replay on jump, once random access (3.2) exists.
 
-Each new node gets reference curves (1.3), which also check that 24 and 48 fps give the same curve.
+Each new node gets reference curves (ARCHITECTURE.md §10), which also check that 24 and 48 fps give the same curve.
 
 ### Event open questions
 

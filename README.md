@@ -1,7 +1,7 @@
 Audio Core Engine (ACE)
 =======================
 
-Audio Core Engine is a Blender add-on that turns audio into per-frame values for
+Audio Core Engine is a Blender extension that turns audio into per-frame values for
 Geometry Nodes and shader materials. A sound file or a live input is analysed as
 the timeline plays, and the results (loudness, pitch, spectral features, stereo
 image, beat phase and more) drive procedural animation without keyframes.
@@ -9,22 +9,28 @@ image, beat phase and more) drive procedural animation without keyframes.
 Requirements
 ------------
 
-- Blender 5.0 or later.
-- Optional Python libraries, installed from the add-on preferences:
-  - AudioFlux: spectral analysis (spectrum, pitch, onset).
-  - SoundFile: reading WAV, FLAC and other file formats.
-  - SoundDevice: live capture and preview playback.
+- Blender 5.2 or later, on Windows (x64), macOS (Apple silicon, macOS 12 or
+  later) or Linux (x64).
+- Nothing else to install. The libraries ACE uses ship inside the extension:
+  - AudioFlux: spectral analysis (spectrum, pitch, spectral features).
   - Numba: faster filters and envelopes.
+  - SoundDevice: live capture and preview playback. On Linux it needs the
+    PortAudio system library (`libportaudio2` on Debian and Ubuntu).
 
-  NumPy ships with Blender. Without the optional libraries, ACE uses simpler
-  built-in fallbacks.
+  Audio files are read by Blender itself, so every format Blender opens works:
+  WAV, MP3, FLAC, Ogg, AAC, AIFF and more.
 
 Installation
 ------------
 
-1. In Blender, open *Edit > Preferences > Add-ons* and install the add-on folder or zip.
-2. Enable *Audio Core Engine*.
-3. In the add-on preferences, install the optional libraries you want.
+1. Download the zip for your platform, for example
+   `audio_core_engine-0.5.0-windows_x64.zip`.
+2. In Blender, open *Edit > Preferences > Get Extensions*, open the menu at the
+   top right and choose *Install from Disk*, then pick the zip. Installing
+   needs no network connection.
+3. The extension's preferences list each library and whether it loaded. Two
+   switches turn off Numba (applies after restarting Blender) and SoundDevice
+   (live input and preview) if either causes trouble on your machine.
 
 Quick start
 -----------
@@ -69,7 +75,15 @@ Preview and bake
 Development
 -----------
 
-`ARCHITECTURE.md` describes how the add-on is built. Tests run with
-`python -m unittest discover -s tests`; `tests/run_in_blender.py` runs the
-Blender-side checks headless. The perf gates are skipped unless `ACE_PERF=1`
-is set.
+`ARCHITECTURE.md` describes how the extension is built, `FUTURE.md` what is
+planned.
+
+- Build: `python tools/fetch_wheels.py` downloads the pinned wheels
+  (`tools/wheels.txt`) and lists them in `blender_manifest.toml`; then
+  `blender --command extension build --split-platforms --output-dir dist`.
+- Unit tests: `python -m unittest discover -s tests`. The perf gates are skipped
+  unless `ACE_PERF=1` is set.
+- In Blender, headless: `python tests/run_in_blender.py --package` builds and
+  installs the zip for this platform and runs the smoke test. With
+  `--script tests/reference/blender_reference.py` it compares every node's
+  output with the reference curves.
