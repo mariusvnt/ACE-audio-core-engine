@@ -31,21 +31,6 @@ def _clear_worker_state(mod):
         mod._WORKER_LAST_GENERATION = None
 
 
-def _audioflux_importable() -> bool:
-    try:
-        import audioflux  # noqa: F401  # type: ignore
-        return True
-    except ImportError:
-        return False
-
-
-# Known bug: with AudioFlux, a band's loudness comes from the windowed spectrum
-# without compensating the Hann window's power (-4.26 dB). A tone wholly inside
-# the band reads 0.896 instead of ~0.957 (measured 2026-11-26). Without
-# AudioFlux the time-domain path is used and the test passes.
-_KNOWN_BAND_RMS_WINDOW_LOSS = unittest.expectedFailure if _audioflux_importable() else (lambda fn: fn)
-
-
 class TestParallelDSP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -315,7 +300,6 @@ class TestParallelDSP(unittest.TestCase):
         self.assertTrue(np.isfinite(float(values["rms:0"])))
         self.assertGreater(float(values["rms:0"]), 0.0)
 
-    @_KNOWN_BAND_RMS_WINDOW_LOSS
     def test_worker_applies_per_frame_parameter_overrides(self):
         n = 2048
         t = np.arange(n, dtype=np.float32) / 48000.0

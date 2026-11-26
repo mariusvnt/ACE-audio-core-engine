@@ -18,6 +18,10 @@ MIN_BLOCK_SIZE = 512
 MAX_BLOCK_SIZE = 4096
 
 
+# Samples before a block that a source hands out with it, for analysis windows longer than the block.
+HISTORY_SAMPLES = 4096
+
+
 def _finite_copy(arr, dtype="float32"):
     out = np.array(arr, dtype=dtype, copy=True)
     bad = ~np.isfinite(out)
@@ -53,6 +57,8 @@ class AudioChunk:
         "lineage",
         "spectrum_token",
         "analysis_ops",
+        "history_mono",
+        "history_stereo",
     )
 
     def __init__(self, mono: np.ndarray, stereo: Optional[np.ndarray], sample_rate: int,
@@ -66,7 +72,13 @@ class AudioChunk:
                  lineage: Optional[Tuple[str, ...]] = None,
                  spectrum_token: Optional[Any] = None,
                  analysis_ops: Optional[Tuple[Tuple[str, str], ...]] = None,
-                 latency_ms: float = 0.0):
+                 latency_ms: float = 0.0,
+                 history_mono: Optional[np.ndarray] = None,
+                 history_stereo: Optional[np.ndarray] = None):
+        # The audio just before this block (zeros before the start of a file), in the domain of
+        # analysis_mono before frontend processing. None when nothing is known about it.
+        self.history_mono = history_mono
+        self.history_stereo = history_stereo
         self.mono = mono.astype(np.float32, copy=False)
         self.stereo = stereo.astype(np.float32, copy=False) if stereo is not None else None
         self.analysis_mono = analysis_mono.astype(np.float32, copy=False) if isinstance(analysis_mono, np.ndarray) else None
@@ -134,6 +146,8 @@ def _spawn_audio_chunk(
     spectrum_token: Any = _KEEP,
     analysis_ops: Any = _KEEP,
     latency_ms: Any = _KEEP,
+    history_mono: Any = _KEEP,
+    history_stereo: Any = _KEEP,
 ) -> AudioChunk:
     """Create a new AudioChunk by overriding selected fields from *source*."""
     return AudioChunk(
@@ -152,6 +166,8 @@ def _spawn_audio_chunk(
         spectrum_token=(source.spectrum_token if spectrum_token is _KEEP else spectrum_token),
         analysis_ops=(source.analysis_ops if analysis_ops is _KEEP else analysis_ops),
         latency_ms=(source.latency_ms if latency_ms is _KEEP else latency_ms),
+        history_mono=(source.history_mono if history_mono is _KEEP else history_mono),
+        history_stereo=(source.history_stereo if history_stereo is _KEEP else history_stereo),
     )
 
 
@@ -213,8 +229,18 @@ def _signal_for_chunk(
         mono_cached, stereo_cached = cached
         return mono_cached, stereo_cached
 
-    mono = mono_arr.astype(np.float32, copy=True)
-    stereo_src = stereo_base
+    mono, stereo = _apply_analysis_ops(mono_arr, stereo_base, ops)
+    chunk.features[cache_key] = (mono, stereo)
+    return mono, stereo
+
+
+def _apply_analysis_ops(
+    mono_arr: np.ndarray,
+    stereo_src: Optional[np.ndarray],
+    ops: Tuple[Tuple[str, str], ...],
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Run the Mid/Side and Attack/Release operations of a chunk on a signal."""
+    mono = np.asarray(mono_arr, dtype=np.float32).reshape(-1).astype(np.float32, copy=True)
     stereo: Optional[np.ndarray] = None
     if isinstance(stereo_src, np.ndarray) and stereo_src.ndim == 2 and stereo_src.shape[1] == mono.shape[0]:
         stereo = np.asarray(stereo_src, dtype=np.float32).astype(np.float32, copy=True)
@@ -251,7 +277,6 @@ def _signal_for_chunk(
                 stereo = (stereo * gate[np.newaxis, :]).astype(np.float32, copy=False)
             continue
 
-    chunk.features[cache_key] = (mono, stereo)
     return mono, stereo
 
 

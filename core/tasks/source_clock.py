@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 import numpy as np
 from ... import utils
 from .block_size import _resolve_block_size_default
-from .chunk import AudioChunk, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE
+from .chunk import AudioChunk, HISTORY_SAMPLES, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE
 
 
 class SourceClock:
@@ -17,6 +17,27 @@ class SourceClock:
         self._live_clock_anchor_sample = None
         self._live_clock_last_target_sample = None
         self._live_block_buffer.clear()
+        self._live_history_block = None
+        self._live_history_tail = None
+        self._live_history_before = None
+
+    def _live_history(self, mono: np.ndarray, stereo: Optional[np.ndarray]):
+        """(mono, stereo) heard before this live block, from the blocks played before it."""
+        # The same samples again mean no new audio arrived: their history is unchanged.
+        if self._live_history_block is None or not np.array_equal(mono, self._live_history_block):
+            tail = self._live_history_tail
+            if tail is None or (tail[1] is None) != (stereo is None) or (stereo is not None and tail[1].shape[0] != stereo.shape[0]):
+                tail = (
+                    np.zeros(HISTORY_SAMPLES, dtype=np.float32),
+                    None if stereo is None else np.zeros((stereo.shape[0], HISTORY_SAMPLES), dtype=np.float32),
+                )
+            self._live_history_block = mono
+            self._live_history_before = tail
+            self._live_history_tail = (
+                np.concatenate((tail[0], np.asarray(mono, dtype=np.float32).reshape(-1)))[-HISTORY_SAMPLES:],
+                None if stereo is None else np.concatenate((tail[1], stereo), axis=1)[:, -HISTORY_SAMPLES:],
+            )
+        return self._live_history_before
 
     def _requested_frame(self) -> int:
         try:
@@ -246,6 +267,7 @@ class SourceClock:
 
             mono = None
             stereo = None
+            history = None
             frame_request = self._requested_frame()
 
             if source_type == "LIVE" and self._last_frame_request is not None:
@@ -276,6 +298,7 @@ class SourceClock:
                         selected = self._select_live_block_for_target(live_target)
                         if selected is not None:
                             mono, stereo, sr = selected
+                            history = self._live_history(mono, self._coerce_stereo_block(stereo, mono.shape[0]))
                             self.sample_rate = int(sr)
                             self.read_cursor = int(live_target)
                             self.live_ready = True
@@ -291,6 +314,9 @@ class SourceClock:
                         if frame_jump <= 0 or frame_jump > 3:
                             file_force_seek = True
                     self._sync_reader_cursor(desired_sample, force=file_force_seek)
+                    history_fn = getattr(self.reception, "history_before", None)
+                    if callable(history_fn):
+                        history = history_fn(HISTORY_SAMPLES)
                     block = self.reception.read_block(self.block_size)
                     if block is not None:
                         mono, stereo, sr = block
@@ -341,6 +367,8 @@ class SourceClock:
                 frontend_config=frontend_config,
                 lineage=(self.node_id,),
                 latency_ms=total_latency_ms,
+                history_mono=None if history is None else history[0],
+                history_stereo=None if history is None else history[1],
             )
         finally:
             engine = getattr(self, "engine_ref", None)

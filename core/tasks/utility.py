@@ -6,7 +6,7 @@ import numpy as np
 from ... import utils
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk, _finite_copy
-from .spectral import _aligned_signal_length, _analysis_signals_normalized, _resolve_chunk_fft_size, _resolve_effective_bin_indices
+from .spectral import _aligned_signal_length, _analysis_history, _analysis_signals_normalized, _resolve_chunk_fft_size, _resolve_effective_bin_indices
 
 
 class RollingAvgTask(ACEAudioTask):
@@ -405,6 +405,25 @@ class AudioMathTask(ACEAudioTask):
             merged_band_indices = self._merge_band_indices(chunks, merged_fft_size)
             merged_band_bounds = self._merge_band_hz_bounds(chunks)
 
+        # The mix of what came before the inputs, so analysis of the result has its history too.
+        history_mono = history_stereo = None
+        histories = [_analysis_history(c) for c in chunks]
+        if any(h is not None for h in histories):
+            # The same duration of every input, so rates that differ stay aligned.
+            seconds = min(
+                (h.size / float(rate) for h, rate in zip(histories, sample_rates) if h is not None),
+                default=0.0,
+            )
+            history_pairs = []
+            for history, rate in zip(histories, sample_rates):
+                n = int(round(seconds * rate))
+                aligned = np.zeros(n, dtype=np.float32)
+                if history is not None and n:
+                    tail = history[-n:]
+                    aligned[n - tail.size:] = tail
+                history_pairs.append((aligned, None))
+            history_mono = _mix_signal_pairs(history_pairs)[0]
+
         src = chunks[0]
         output_provider = getattr(src, "provider", None) if len(chunks) == 1 else None
         return AudioChunk(
@@ -422,4 +441,6 @@ class AudioMathTask(ACEAudioTask):
             lineage=tuple(getattr(src, "lineage", ())) + (f"{self.node_id}:0",),
             analysis_ops=(),
             latency_ms=latency_ms,
+            history_mono=history_mono,
+            history_stereo=history_stereo,
         )

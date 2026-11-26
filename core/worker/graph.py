@@ -130,6 +130,11 @@ class _WorkerSourceBridgeTask:
         self.provider.ensure_context(sample_rate=sr, block_size=self.block_size)
 
         mono = np.asarray(payload.get("mono", ()), dtype=np.float32).reshape(-1)
+        history_len = min(max(int(payload.get("history_len", 0) or 0), 0), mono.shape[0])
+        # Copied: the arrays may view shared memory, which the next frame overwrites.
+        history_mono = np.array(mono[:history_len], dtype=np.float32) if history_len else None
+        history_stereo = None
+        mono = mono[history_len:]
         if mono.shape[0] < self.block_size:
             padded = np.zeros(self.block_size, dtype=np.float32)
             if mono.shape[0] > 0:
@@ -142,6 +147,9 @@ class _WorkerSourceBridgeTask:
         stereo = None
         if stereo_raw is not None:
             arr = np.asarray(stereo_raw, dtype=np.float32)
+            if history_len and arr.ndim == 2 and arr.shape[1] > history_len:
+                history_stereo = np.array(arr[:, :history_len], dtype=np.float32)
+                arr = arr[:, history_len:]
             if arr.ndim == 2 and arr.shape[1] == mono.shape[0]:
                 stereo = arr.astype(np.float32, copy=False)
             elif arr.ndim == 2 and arr.shape[0] == mono.shape[0]:
@@ -226,6 +234,8 @@ class _WorkerSourceBridgeTask:
             spectrum_token=self.default_spectrum_token,
             analysis_ops=analysis_ops if analysis_ops else (),
             latency_ms=float(payload.get("latency_ms", 0.0) or 0.0),
+            history_mono=history_mono,
+            history_stereo=history_stereo,
         )
         self._current_chunk = chunk
         self._current_frame = int(frame_id)

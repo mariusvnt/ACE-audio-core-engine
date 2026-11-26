@@ -153,7 +153,7 @@ covered by local DSP.
   is paused; during playback the frame handler drains them, and an extra drain
   would add pipe reads to the frame.
 
-## 8. File input, preview and bake
+## 8. File input, analysis, preview and bake
 
 - **File input.** A file is decoded whole into memory by Blender's `aud`
   module (Blender's FFmpeg), so every format Blender reads works with nothing
@@ -165,6 +165,25 @@ covered by local DSP.
   fails to import when another extension shadows Blender's NumPy) only WAV
   files are read, through the `wave` module; the preferences say so. `aud`
   maps 16-bit PCM by 1/32767, `wave` decoding here by 1/32768.
+- **Analysis frames.** A source hands out each block with the 4096 samples
+  before it: read from the decoded file (zeros before its start, so a seek
+  gives the same values), or kept from the blocks already played for live
+  input. Splitters, mixes and worker payloads carry them along. Analysis that
+  needs more than one block takes a frame that ends with the block
+  (`_analysis_frame`), never a block padded with zeros; source preprocessing
+  runs over the history with a fresh filter.
+  - **Centroid and flux:** a Hann window of the next power of two of the block.
+  - **Band loudness** (splitter bands, chroma, components): the block plus a
+    5 ms fade at each end. The squares of the fades add up to 1 across
+    consecutive blocks, so every sample counts once and a band level is on the
+    same scale as the full level.
+  - **Pitch:** YIN in NumPy over 4096 samples, comparing the newest 1024, down
+    to 20 Hz and inside the chunk's band; 0 when there is no pitch.
+- **Tempo.** A background thread reads the first 15 s of a file, builds an
+  onset envelope (10 ms steps, log-compressed spectral flux) and takes the
+  beat period from its autocorrelation, between 40 and 240 BPM with a
+  preference around 120 that settles half and double tempo. A file without a
+  steady pulse gets no tempo, and the source keeps its BPM.
 - **Preview.** Audio comes from manual preview sinks, or from links to the
   tree's audio output when there is none. Branches are mixed, limited and
   played only while the timeline plays. A feeder thread paces delivery at the

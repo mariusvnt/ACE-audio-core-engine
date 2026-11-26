@@ -66,6 +66,25 @@ class FileInput:
         self._eof = False
         return True
 
+    def history_before(self, length: int):
+        """(mono, channels [ch, n] or None): the *length* samples before the next block.
+
+        Zeros stand for what comes before the start of the file. None without an open file.
+        """
+        if self.kind != "memory" or self.reader is None:
+            return None
+        end = int(self._cursor_sample)
+        frames = self.reader[max(end - int(length), 0):end]
+        mono = np.zeros(int(length), dtype=np.float32)
+        stereo = None
+        if frames.shape[1] >= 2:
+            stereo = np.zeros((frames.shape[1], int(length)), dtype=np.float32)
+        if frames.shape[0]:
+            mono[-frames.shape[0]:] = np.mean(frames, axis=1, dtype=np.float32)
+            if stereo is not None:
+                stereo[:, -frames.shape[0]:] = frames.T
+        return mono, stereo
+
     def _read_file_block(self, block_size: int):
         """(mono, channels [ch, n] or None, reached_eof) for the next block; samples may be fewer than block_size."""
         start = int(self._cursor_sample)

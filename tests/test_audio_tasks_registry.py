@@ -538,28 +538,34 @@ class TestAudioTasksRegistry(unittest.TestCase):
         out = np.asarray(task_b.process({0: np.array([0.25, 0.75], dtype=np.float32)}), dtype=np.float32)
         self.assertTrue(np.allclose(out, np.array([1.75, 1.75], dtype=np.float32)))
 
-    def test_masked_rms_prefers_provider_feature_path(self):
-        calls = []
+    def test_band_rms_of_a_tone_inside_the_band_equals_its_rms(self):
+        sr, n = 48000, 2000
+        t = np.arange(3 * n, dtype=np.float64) / sr
+        signal = (0.5 * np.sin(2.0 * np.pi * 1000.0 * t)).astype(np.float32)
+        task = atr.RMSTask("rms_node", {}, block_size=n)
+        expected = 0.5 / np.sqrt(2.0)
+        for history in (None, signal[:2 * n]):
+            chunk = atr.AudioChunk(
+                signal[2 * n:], None, sr, band_hz_bounds=(500.0, 2000.0), lineage=("src",), history_mono=history,
+            )
+            self.assertAlmostEqual(float(task.process({0: chunk})), expected, delta=0.01 * expected)
 
-        class DummyProvider:
-            def compute_feature(self, name, chunk):  # noqa: ARG002
-                calls.append(name)
-                if name == "rms":
-                    return 0.1234
-                return None
-
-        chunk = atr.AudioChunk(
-            np.ones(256, dtype=np.float32),
-            None,
-            48000,
-            provider=DummyProvider(),
-            band_hz_bounds=(100.0, 2000.0),
-            lineage=("src",),
-        )
-        task = atr.RMSTask("rms_node", {}, block_size=256)
-        out = task.process({0: chunk})
-        self.assertAlmostEqual(float(out), 0.1234, places=6)
-        self.assertIn("rms", calls)
+    def test_band_rms_counts_a_click_on_a_block_boundary_once(self):
+        sr, n = 48000, 2000
+        signal = np.zeros(4 * n, dtype=np.float32)
+        click = (0.8 * np.sin(2.0 * np.pi * 2000.0 * np.arange(96) / sr)).astype(np.float32)
+        task = atr.RMSTask("rms_node", {}, block_size=n)
+        for start in (2 * n, 2 * n - 48):  # just after a boundary, and across it
+            signal[:] = 0.0
+            signal[start:start + click.size] = click
+            energy = 0.0
+            for k in range(1, 4):
+                chunk = atr.AudioChunk(
+                    signal[k * n:(k + 1) * n], None, sr, band_hz_bounds=(20.0, 20000.0), lineage=("src",),
+                    history_mono=signal[:k * n], frame_index=k,
+                )
+                energy += float(task.process({0: chunk})) ** 2 * n
+            self.assertAlmostEqual(energy, float(np.sum(click ** 2)), delta=0.02 * float(np.sum(click ** 2)))
 
     def test_rms_paths_avoid_overflow_for_hot_float32_chunks(self):
         hot = np.full(256, 1.0e20, dtype=np.float32)

@@ -68,6 +68,9 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self._live_clock_anchor_frame: Optional[int] = None
         self._live_clock_anchor_sample: Optional[float] = None
         self._live_clock_last_target_sample: Optional[int] = None
+        self._live_history_block: Optional[np.ndarray] = None
+        self._live_history_tail: Optional[Tuple[np.ndarray, Optional[np.ndarray]]] = None
+        self._live_history_before: Optional[Tuple[np.ndarray, Optional[np.ndarray]]] = None
         self._filter_cache = {
             "sr": None,
             "freq_min": None,

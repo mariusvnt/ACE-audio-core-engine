@@ -18,7 +18,11 @@ def _fit(mono: np.ndarray, size: int) -> np.ndarray:
 
 
 def source_payload(chunk, block_size: int, sample_rate: int) -> Dict[str, Any]:
-    """A chunk as a picklable dict: mono of exactly block_size samples, stereo channels-first."""
+    """A chunk as a picklable dict: mono of exactly block_size samples, stereo channels-first.
+
+    The audio before the block, when the chunk has it, sits in front of both
+    arrays; history_len says how many samples that is.
+    """
     mono = _fit(np.asarray(getattr(chunk, "mono", chunk), dtype=np.float32).reshape(-1), max(int(block_size), 1))
     stereo = getattr(chunk, "stereo", None)
     stereo_payload = None
@@ -34,6 +38,15 @@ def source_payload(chunk, block_size: int, sample_rate: int) -> Dict[str, Any]:
         "sample_rate": max(int(sample_rate), 1),
         "latency_ms": float(getattr(chunk, "latency_ms", 0.0) or 0.0),
     }
+    history = getattr(chunk, "history_mono", None)
+    if isinstance(history, np.ndarray) and history.size:
+        payload["history_len"] = int(history.size)
+        payload["mono"] = np.concatenate((history.astype(np.float32, copy=False), mono))
+        if stereo_payload is not None:
+            before = getattr(chunk, "history_stereo", None)
+            if not isinstance(before, np.ndarray) or before.shape != (stereo_payload.shape[0], history.size):
+                before = np.zeros((stereo_payload.shape[0], history.size), dtype=np.float32)
+            payload["stereo"] = np.concatenate((before, stereo_payload), axis=1).astype(np.float32, copy=False)
     frontend_config = getattr(chunk, "frontend_config", None)
     if isinstance(frontend_config, (list, tuple)) and len(frontend_config) >= 4:
         with utils.logged_errors("slots.source_payload"):

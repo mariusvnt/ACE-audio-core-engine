@@ -675,7 +675,7 @@ def _run_engine_benchmark(
     parallel_wait_samples: List[float] = []
     completion_counters = {"done": 0}
     completion_elapsed_samples: List[float] = []
-    seen_completed_futures: set[int] = set()
+    seen_completed_futures: set = set()  # the futures: an id() is reused once one is freed
     original_submit = engine.parallel.submit_graph_job
     original_values_for_frame = engine.parallel.values_for_frame
     original_poll_futures = engine.parallel.poll
@@ -699,15 +699,14 @@ def _run_engine_benchmark(
 
     def _poll_futures_instrumented(scene_obj, current_frame):  # noqa: ANN001
         for fut in list(getattr(getattr(engine, "parallel", None), "future_meta", {}).keys()):
-            fut_key = id(fut)
-            if fut_key in seen_completed_futures or (not fut.done()):
+            if fut in seen_completed_futures or (not fut.done()):
                 continue
             try:
                 payload = fut.result(timeout=0.0)
             except Exception:
-                seen_completed_futures.add(fut_key)
+                seen_completed_futures.add(fut)
                 continue
-            seen_completed_futures.add(fut_key)
+            seen_completed_futures.add(fut)
             if isinstance(payload, dict) and (not bool(payload.get("needs_graph_ir", False))):
                 completion_counters["done"] += 1
                 elapsed_s = float(payload.get("elapsed_s", 0.0) or 0.0)
@@ -768,6 +767,8 @@ def _run_engine_benchmark(
         submit_counters["success"] = 0
         result_counters["requests"] = 0
         result_counters["fresh"] = 0
+        completion_counters["done"] = 0
+        completion_elapsed_samples.clear()
 
         next_due = time.perf_counter()
         _drive_frames(

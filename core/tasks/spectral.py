@@ -5,7 +5,19 @@ from typing import Optional, Tuple
 import numpy as np
 from ... import utils
 from .base import _LAYER3_THREAD_LOCAL
-from .chunk import AudioChunk, SAMPLE_RATE, _analysis_signal_for_chunk, _finite_copy, _preview_signal_for_chunk
+from .chunk import AudioChunk, SAMPLE_RATE, _analysis_signal_for_chunk, _apply_analysis_ops, _finite_copy, _normalized_analysis_ops, _preview_signal_for_chunk
+from .frontend import SourceFrontendProcessor
+
+
+# Pitch: the newest samples are compared with the signal one period earlier (a 21 ms window at
+# 48 kHz); the frame is long enough for periods down to 20 Hz.
+_PITCH_WINDOW = 1024
+_PITCH_FRAME = 4096
+_PITCH_THRESHOLD = 0.15
+
+
+# Band level: the fade at each end of the analysed frame, in samples (5 ms at 48 kHz).
+_BAND_FADE = 256
 
 
 def _aligned_signal_length(signal: np.ndarray, target_len: int) -> np.ndarray:
@@ -188,63 +200,137 @@ def _masked_spectrum(chunk: AudioChunk, fft_size: Optional[int] = None) -> Tuple
     return masked_mag, freqs
 
 
-def _autocorr_pitch_estimate(
-    mono: np.ndarray,
-    sample_rate: int,
-    min_hz: float = 40.0,
-    max_hz: float = 2000.0,
-) -> float:
-    signal = np.asarray(mono, dtype=np.float32).reshape(-1)
-    n = int(signal.shape[0] or 0)
-    if n < 8:
-        return 0.0
+def _analysis_history(chunk: AudioChunk) -> Optional[np.ndarray]:
+    """The analysis signal before the chunk's block, processed like the block, or None."""
+    if "analysis_history" in chunk.features:
+        return chunk.features["analysis_history"]
+    mono = chunk.history_mono
+    stereo = chunk.history_stereo
+    if mono is not None:
+        if chunk.analysis_mono is not None and chunk.frontend_config is not None:
+            # A fresh filter, so the result depends only on the audio, not on what played before.
+            mono, stereo = SourceFrontendProcessor().process(mono, stereo, int(chunk.sample_rate), chunk.frontend_config)
+        ops = _normalized_analysis_ops(chunk)
+        if ops:
+            mono, stereo = _apply_analysis_ops(mono, stereo, ops)
+        mono = _finite_copy(mono)
+    chunk.features["analysis_history"] = mono
+    return mono
 
-    signal = signal - float(np.mean(signal))
-    energy = float(np.sum(signal * signal))
-    if energy <= 1e-8:
-        return 0.0
 
+def _analysis_frame(chunk: AudioChunk, length: int) -> Tuple[np.ndarray, int]:
+    """The last *length* samples of the analysis signal, ending with this block.
+
+    Also returns how many of them are audio: a chunk without history only has
+    its block, and the rest of the frame is zero padding.
+    """
+    mono, _ = _analysis_signals_normalized(chunk)
+    mono = mono[-length:]
+    need = length - mono.size
+    if need <= 0:
+        return mono, length
+    frame = np.zeros(length, dtype=np.float32)
+    frame[need:] = mono
+    history = _analysis_history(chunk)
+    if history is None:
+        return frame, int(mono.size)
+    tail = history[-need:]
+    frame[need - tail.size:need] = tail
+    return frame, length
+
+
+def _yin_pitch(frame: np.ndarray, sample_rate: int, min_hz: float = 20.0, max_hz: float = 5000.0) -> float:
+    """Fundamental frequency at the end of *frame* in Hz, 0.0 when it has none.
+
+    YIN (de Cheveigne and Kawahara, 2002): the shortest lag at which the newest
+    samples repeat the earlier signal, by the cumulative mean normalized
+    difference. Only the newest samples are compared, so the estimate stays
+    close to the end of the frame.
+    """
+    x = np.asarray(frame, dtype=np.float64).reshape(-1)
+    window = min(_PITCH_WINDOW, x.size // 2)
     sr = float(max(int(sample_rate), 1))
-    min_lag = max(int(sr / max(float(max_hz), 1.0)), 1)
-    max_lag = min(int(sr / max(float(min_hz), 1.0)), n - 1)
-    if max_lag <= min_lag:
+    tau_min = max(int(sr / max_hz), 2)
+    tau_max = min(int(sr / min_hz) + 1, x.size - window)
+    if tau_max <= tau_min + 1:
         return 0.0
-
-    corr = np.correlate(signal, signal, mode="full")[n - 1:]
-    corr = corr.astype(np.float64, copy=False)
-    if corr.shape[0] <= max_lag:
+    head = x[x.size - window:]
+    head_energy = float(np.dot(head, head))
+    if head_energy <= 1e-8 * window:  # below -80 dBFS
         return 0.0
-    corr[:min_lag] = 0.0
-    lag_slice = corr[min_lag:max_lag + 1]
-    if lag_slice.size == 0:
+    seg = x[x.size - window - tau_max:]
+    size = 1 << int(math.ceil(math.log2(seg.size)))
+    # corr[k] = sum(head * seg[k:k + window]); the lag of offset k is tau_max - k.
+    corr = np.fft.irfft(np.conj(np.fft.rfft(head, size)) * np.fft.rfft(seg, size), size)[:tau_max + 1]
+    energy = np.concatenate(([0.0], np.cumsum(seg * seg)))
+    seg_energy = energy[window:window + tau_max + 1] - energy[:tau_max + 1]
+    diff = np.maximum(head_energy + seg_energy - 2.0 * corr, 0.0)[::-1]  # by lag, 0 first
+    normalized = np.ones_like(diff)
+    normalized[1:] = diff[1:] * np.arange(1, diff.size) / np.maximum(np.cumsum(diff[1:]), 1e-20)
+    below = np.nonzero(normalized[tau_min:tau_max] < _PITCH_THRESHOLD)[0]
+    if below.size == 0:
         return 0.0
-    best_lag = int(np.argmax(lag_slice)) + min_lag
-    peak = float(corr[best_lag])
-    if peak <= 0.0:
+    tau = int(below[0]) + tau_min
+    while tau + 1 < tau_max and normalized[tau + 1] < normalized[tau]:
+        tau += 1
+    before, at, after = diff[tau - 1], diff[tau], diff[tau + 1]
+    curve = before - 2.0 * at + after
+    shift = float(np.clip(0.5 * (before - after) / curve, -1.0, 1.0)) if curve > 0.0 else 0.0
+    return float(sr / (tau + shift))
+
+
+def _chunk_pitch(chunk: AudioChunk) -> float:
+    """Pitch of the chunk's analysis signal, inside its band when it has one."""
+    frame, _ = _analysis_frame(chunk, _PITCH_FRAME)
+    sr = int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
+    if _chunk_has_mask_constraints(chunk):
+        idx = _resolve_effective_bin_indices(chunk, frame.size)
+        if idx is None or idx.size == 0:
+            return 0.0
+        spec = np.fft.rfft(frame)
+        masked = np.zeros_like(spec)
+        masked[idx] = spec[idx]
+        frame = np.fft.irfft(masked, n=frame.size)
+    return _yin_pitch(frame, sr, max_hz=min(5000.0, sr / 2.0 - 10.0))
+
+
+def _band_rms(chunk: AudioChunk) -> float:
+    """RMS of the part of the block's signal inside the chunk's band (Parseval).
+
+    The frame starts a fade before the block and fades out at its end. The
+    squares of the two fades add up to 1, so across consecutive blocks every
+    sample counts exactly once: a click on a block boundary is not lost, and
+    the bands of a split add up to the full level. A chunk without history is
+    measured on its block alone.
+    """
+    mono, _ = _analysis_signals_normalized(chunk)
+    block = int(mono.size)
+    if block == 0:
         return 0.0
-    if peak < (0.12 * float(corr[0])):
-        return 0.0
+    fade = min(_BAND_FADE, block // 2) if chunk.history_mono is not None else 0
+    frame = _analysis_frame(chunk, block + fade)[0].astype(np.float64)
+    if fade:
+        rise = np.sin(0.5 * np.pi * (np.arange(fade) + 0.5) / fade)
+        frame[:fade] *= rise
+        frame[-fade:] *= rise[::-1]
+    n = int(frame.size)
+    sr = float(max(getattr(chunk, "sample_rate", SAMPLE_RATE), 1.0))
+    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
 
-    pitch = sr / float(best_lag)
-    if not np.isfinite(pitch):
-        return 0.0
-    return float(np.clip(pitch, 20.0, 5000.0))
+    inside = np.ones(freqs.size, dtype=bool)
+    if chunk.band_indices is not None:
+        # The indices are bins of another FFT size: a bin here is inside when its nearest one there is.
+        source_n = int(chunk.band_index_fft_size or block)
+        inside &= np.isin(np.rint(freqs * source_n / sr).astype(np.int64), np.asarray(chunk.band_indices, dtype=np.int64))
+    if chunk.band_hz_bounds is not None:
+        low, high = float(chunk.band_hz_bounds[0]), float(chunk.band_hz_bounds[1])
+        if high > low:
+            inside &= (freqs >= low) & (freqs < high)
 
-
-def _get_rfft(chunk: AudioChunk, fft_size: int):
-    key = f"rfft_{fft_size}"
-    if key in chunk.features:
-        return chunk.features[key]
-
-    mono_sig, stereo_sig = _analysis_signal_for_chunk(chunk)
-    mono_fft = np.fft.rfft(mono_sig, n=fft_size)
-    stereo_fft = None
-    if stereo_sig is not None and stereo_sig.shape[0] >= 2:
-        stereo_fft = np.fft.rfft(stereo_sig, n=fft_size, axis=1)
-
-    freq_bins = np.fft.rfftfreq(fft_size, d=1.0 / chunk.sample_rate)
-    chunk.features[key] = (mono_fft, stereo_fft, freq_bins)
-    return chunk.features[key]
+    power = np.square(np.abs(np.fft.rfft(frame)))
+    power[1:(n + 1) // 2] *= 2.0  # the negative frequencies
+    # The fades hold one block of energy between them, so the block length normalizes.
+    return float(math.sqrt(float(np.sum(power[inside])) / (n * block)))
 
 
 def _remap_indices_fft_domain(

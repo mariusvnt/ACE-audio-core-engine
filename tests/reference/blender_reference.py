@@ -146,6 +146,16 @@ def _clear_spectrum_cache(addon_key) -> None:
     analyzer_cls._GLOBAL_SPECTRUM_CACHE.clear()
 
 
+def reset_tempo(source) -> None:
+    """Back to a new source's tempo: a file with no beat keeps whatever the last one set."""
+    for key in ("ace_bpm_auto", "ace_meter_auto", "ace_bpm_user_override", "ace_meter_user_override",
+                "ace_tempo_detect_status", "ace_tempo_detect_message"):
+        if key in source:
+            del source[key]
+    source.property_unset("bpm")
+    source.property_unset("beats_per_bar")
+
+
 def settle(addon_key, engine, scene, timeout_s=60.0):
     """Play the first second until no recompile and no background analysis has happened for 0.5 s."""
     _clear_spectrum_cache(addon_key)
@@ -337,6 +347,7 @@ def main():
     scene = bpy.context.scene
     ace = scene.audiocore
     engine_cls = importlib.import_module(f"{addon_key}.core.engine.engine").ACEAudioEngine
+    handlers_mod = importlib.import_module(f"{addon_key}.core.engine.handlers")
     engine = engine_cls.ensure_instance(scene)
 
     bpy.ops.audiocore.add_audio_source()
@@ -378,6 +389,10 @@ def main():
             scene.frame_start, scene.frame_end = spec.FRAME_START, spec.FRAME_START + n_frames - 1
             src.source_type = "FILE"
             src.filepath = wav_path
+            reset_tempo(src)
+            # With the engine too: its tasks remember which tempo they already wrote.
+            handlers_mod._load_post_reset_engine(None)
+            engine = engine_cls.ensure_instance(scene)
 
             ace.engine_settings.ace_parallel_mode = "off"
             settle(addon_key, engine, scene)
@@ -387,7 +402,11 @@ def main():
             unstable = sorted(k for k in set(first) | set(second)
                               if k not in first or k not in second or not np.array_equal(first[k], second[k], equal_nan=True))
             if unstable:
-                summary["nondeterministic"][tag] = unstable
+                summary["nondeterministic"][tag] = {
+                    k: np.flatnonzero(np.any(np.reshape(first[k] != second[k], (len(first[k]), -1)), axis=1))[:8].tolist()
+                    if k in first and k in second and first[k].shape == second[k].shape else "missing or reshaped"
+                    for k in unstable
+                }
 
             ace.engine_settings.ace_parallel_mode = "threads_io"
             settle(addon_key, engine, scene)

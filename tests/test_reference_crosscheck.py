@@ -28,19 +28,8 @@ try:
 except ImportError:
     TOOLS = False
 
-# (check, fps) -> what was measured when the check was added (2026-11-26, Blender 5.2, AudioFlux + Numba).
-KNOWN_FAILURES = {
-    ("centroid_tracks_sweep", 30): "median error 0.83 octave: wrong below a few kHz when the block is not a power of two",
-    ("centroid_tracks_sweep", 60): "median error 0.91 octave",
-    ("centroid_matches_librosa", 60): "Pearson r 0.59 on music_synth",
-    ("pitch_tracks_sweep", 24): "0% of frames: AudioFlux YIN returns 0 on every frame",
-    ("pitch_tracks_sweep", 30): "0% of frames: AudioFlux YIN returns 0 on every frame",
-    ("pitch_tracks_sweep", 60): "59% of frames: reads 2000 Hz (the cap) below ~200 Hz",
-    # The click track's tempo is right; the music loop is detected at double tempo.
-    ("tempo_matches_music", 24): "6 frames per beat for 12: 240 BPM for a 120 BPM loop",
-    ("tempo_matches_music", 30): "7.5 frames per beat for 15",
-    ("tempo_matches_music", 60): "15 frames per beat for 30",
-}
+# (check, fps) -> what is measured today, for checks ACE fails. None at present.
+KNOWN_FAILURES: dict = {}
 
 
 def _golden(name: str, fps: int) -> dict:
@@ -59,10 +48,14 @@ def _sweep_frequency(t: np.ndarray) -> np.ndarray:
 
 
 def _ace_stft(y: np.ndarray, sr: int, fps: int):
-    """Magnitude spectra on ACE's grid: one per frame, FFT size the next power of two of the block."""
+    """Magnitude spectra on ACE's grid: one per frame, FFT size the next power of two of the block.
+
+    Each window ends with its frame's block and reaches back before it (zeros before the start).
+    """
     hop = int(round(sr / fps))
     n_fft = 1 << int(np.ceil(np.log2(hop)))
-    mags = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop, win_length=hop, center=False))
+    padded = np.concatenate((np.zeros(n_fft - hop, dtype=y.dtype), y))
+    mags = np.abs(librosa.stft(padded, n_fft=n_fft, hop_length=hop, center=False))
     times = (np.arange(mags.shape[1]) * hop + hop / 2.0) / sr
     return mags, times
 

@@ -12,7 +12,7 @@ Requirements
 - Blender 5.2 or later, on Windows (x64), macOS (Apple silicon, macOS 12 or
   later) or Linux (x64).
 - Nothing else to install. The libraries ACE uses ship inside the extension:
-  - AudioFlux: spectral analysis (spectrum, pitch, spectral features).
+  - AudioFlux: spectral analysis (spectrum and spectral features).
   - Numba: faster filters and envelopes.
   - SoundDevice: live capture and preview playback. On Linux it needs the
     PortAudio system library (`libportaudio2` on Debian and Ubuntu).

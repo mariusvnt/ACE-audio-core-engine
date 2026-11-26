@@ -15,12 +15,12 @@ try:
 except ImportError:
     AUDIOFLUX_AVAILABLE = False
 from ... import utils
-from .chunk import AudioChunk, SAMPLE_RATE, _analysis_signal_for_chunk, _normalized_analysis_ops
-from .spectral import _analysis_signals_normalized, _remap_indices_fft_domain, _safe_rms, _zero_crossing_rate
+from .chunk import AudioChunk, SAMPLE_RATE, _normalized_analysis_ops
+from .spectral import _analysis_frame, _analysis_signals_normalized, _remap_indices_fft_domain, _zero_crossing_rate
 
 
 class AudioFluxAnalyzer:
-    """Pool-managed wrapper around long-lived audioflux BFT / Spectral / Pitch objects."""
+    """Pool-managed wrapper around long-lived audioflux BFT / Spectral objects."""
     _POOL: Dict[Tuple[int, int], list['AudioFluxAnalyzer']] = {}
     _MAX_POOL_PER_KEY = 4
     _MAX_POOL_KEYS = 16
@@ -41,8 +41,6 @@ class AudioFluxAnalyzer:
 
         self.bft = None
         self.spectral = None
-        self.pitch = None
-        self.pitch_buffer = None
         self.freq_bins = np.fft.rfftfreq(self.fft_length, d=1.0 / self.sample_rate)
         self.prev_masked_mag: Dict[Tuple[Any, Optional[Tuple[int, ...]]], np.ndarray] = {}
         self._last_error_log: Dict[str, float] = {}
@@ -65,30 +63,16 @@ class AudioFluxAnalyzer:
                     normal_type=af_type.SpectralFilterBankNormalType.NONE,
                     data_type=af_type.SpectralDataType.MAG,
                     is_reassign=False,
-                    is_temporal=True,
+                    is_temporal=False,
                 )
                 self.spectral = audioflux.Spectral(
                     num=self.num_bins,
                     fre_band_arr=self.bft.get_fre_band_arr()
                 )
-
-                pitch_radix = max(self.radix2_exp, 12)
-                pitch_len = max(self.fft_length * 2, 2048)
-                self.pitch = audioflux.PitchYIN(
-                    samplate=self.sample_rate,
-                    low_fre=20.0,
-                    high_fre=min(5000.0, self.sample_rate / 2 - 10),
-                    radix2_exp=pitch_radix,
-                    slide_length=max(self.block_size, 256),
-                    auto_length=pitch_len
-                )
-                self.pitch_buffer = np.zeros(self.pitch.auto_length, dtype=np.float32)
             except Exception as exc:
                 utils.note_swallowed("analyzer.AudioFluxAnalyzer.__init__", exc)
                 self.bft = None
                 self.spectral = None
-                self.pitch = None
-                self.pitch_buffer = None
 
     @classmethod
     def borrow(cls, sample_rate: int, block_size: int) -> 'AudioFluxAnalyzer':
@@ -209,11 +193,13 @@ class AudioFluxAnalyzer:
         if spec_key in self.cache:
             return self.cache[spec_key]
 
-        data, _ = _analysis_signal_for_chunk(chunk)
         # Guard against empty chunks (e.g. from _make_silence_chunk on broken sources)
         # to prevent null/invalid spectrum entries from entering the cache.
-        if data is None or data.size == 0:
+        if chunk.mono is None or chunk.mono.size == 0:
             return None
+        # The FFT frame ends with this block and starts with the audio before it, so the
+        # window never tapers into padding in the middle of the signal.
+        data, _ = _analysis_frame(chunk, self.fft_length)
 
         # The chunk token and frame stay the same when the file, sample rate or
         # frame rate changes, so the key also holds what the spectrum is made
@@ -230,13 +216,9 @@ class AudioFluxAnalyzer:
             AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
             self.cache[spec_key] = global_mag
             return global_mag
-        if data.shape[-1] < self.fft_length:
-            padded = np.zeros(self.fft_length, dtype=np.float32)
-            padded[:data.shape[-1]] = data
-            data = padded
 
         try:
-            spec = self.bft.bft(data)
+            spec = self.bft.bft(samples)
         except Exception as e:
             self._log_error("bft", f"AudioFlux BFT failed: {e}")
             return None
@@ -257,14 +239,6 @@ class AudioFluxAnalyzer:
             except Exception as exc:
                 utils.note_swallowed("analyzer.AudioFluxAnalyzer._ensure_spectrum#2", exc)
                 break
-        if self.bft.is_temporal:
-            try:
-                _, rms_arr, zcr_arr = self.bft.get_temporal_data()
-                self.cache[("rms_arr", chunk_token)] = rms_arr
-                self.cache[("zcr_arr", chunk_token)] = zcr_arr
-            except Exception as e:
-                self._log_error("temporal", f"AudioFlux temporal feature extraction failed: {e}")
-                pass
         return mag
 
     def _get_mask_key(self, indices: Optional[np.ndarray]) -> Optional[Tuple[int, int]]:
@@ -367,41 +341,12 @@ class AudioFluxAnalyzer:
         if not AUDIOFLUX_AVAILABLE:
             return None
 
-        if name in ("rms", "centroid", "flux"):
+        if name in ("centroid", "flux"):
             mag = self._ensure_spectrum(chunk)
             if mag is None:
                 return None
 
-            if name == "rms":
-                arr = self.cache.get(("rms_arr", chunk_token)) if mask_indices is None else None
-                if arr is not None and arr.size > 0:
-                    val = float(arr[..., -1])
-                else:
-                    if mask_indices is None:
-                        analysis_mono, _ = _analysis_signals_normalized(chunk)
-                        val = _safe_rms(analysis_mono)
-                    else:
-                        idx = np.asarray(mask_indices, dtype=np.int64).ravel()
-                        if idx.size == 0:
-                            val = 0.0
-                        else:
-                            idx = np.unique(idx)
-                            idx = idx[(idx >= 0) & (idx < self.num_bins)]
-                            if idx.size == 0:
-                                val = 0.0
-                            else:
-                                frame_mag = np.abs(mag[..., -1]).reshape(-1)
-                                masked_power = np.square(frame_mag[idx], dtype=np.float64)
-                                n = max(int(self.fft_length), 1)
-                                weights = np.full(masked_power.shape, 2.0, dtype=np.float64)
-                                weights[idx == 0] = 1.0
-                                if (n % 2) == 0:
-                                    weights[idx == (n // 2)] = 1.0
-                                mean_square = float(np.sum(masked_power * weights) / (n * n))
-                                val = float(np.sqrt(max(mean_square, 0.0)))
-                self.cache[cache_key] = val
-                return val
-            elif name == "centroid":
+            if name == "centroid":
                 try:
                     self.spectral.set_time_length(mag.shape[-1])
                     self._apply_spectral_mask(mask_indices)
@@ -417,26 +362,5 @@ class AudioFluxAnalyzer:
                 self.cache[cache_key] = val
                 return val
             # Onset comes from OnsetTask's own envelope detector.
-
-        if name == "pitch":
-            if not self.pitch or self.pitch_buffer is None:
-                return None
-
-            data, _ = _analysis_signal_for_chunk(chunk)
-            target = self.pitch_buffer.shape[-1] if self.pitch_buffer is not None else data.shape[-1]
-            if target > data.shape[-1]:
-                buf = np.zeros(target, dtype=np.float32)
-                buf[-data.shape[-1]:] = data
-            else:
-                buf = data[-target:]
-            try:
-                fre_arr, _, _ = self.pitch.pitch(buf)
-                if fre_arr.size > 0:
-                    val = float(np.asarray(fre_arr).reshape(-1)[-1])
-                    self.cache[cache_key] = val
-                    return val
-            except Exception as e:
-                self._log_error("pitch", f"AudioFlux pitch failed: {e}")
-                return None
 
         return None

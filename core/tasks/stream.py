@@ -9,7 +9,7 @@ from ...vars import LEGACY_STREAM_TYPES, LOUDNESS_FLOOR_DB, resolve_node_mode
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk
 from .filters import _biquad_filter_block
-from .spectral import _analysis_signals_normalized, _autocorr_pitch_estimate, _get_rfft, _masked_mono_signal, _masked_spectrum, _resolve_effective_bin_indices, _safe_rms, _zero_crossing_rate
+from .spectral import _analysis_signals_normalized, _band_rms, _chunk_pitch, _masked_mono_signal, _masked_spectrum, _safe_rms, _zero_crossing_rate
 
 
 def _loudness_db_to_unit(db_value: float) -> float:
@@ -33,33 +33,10 @@ class RMSTask(ACEAudioTask):
         if analysis_mono.size == 0:
             return 0.0
 
-        # Fast path for unmasked streams: pure time-domain RMS.
-        mask_indices = getattr(chunk, "band_indices", None)
-        band_bounds = getattr(chunk, "band_hz_bounds", None)
-        if mask_indices is None and band_bounds is None:
+        # Unmasked streams: pure time-domain RMS. A band is measured in the spectrum.
+        if getattr(chunk, "band_indices", None) is None and getattr(chunk, "band_hz_bounds", None) is None:
             return _safe_rms(analysis_mono)
-
-        # Masked RMS should reuse the source analyzer's shared spectrum state.
-        if isinstance(chunk, AudioChunk) and chunk.provider:
-            val = chunk.get_feature("rms", lambda: chunk.provider.compute_feature("rms", chunk))
-            if val is not None:
-                return float(val)
-
-        # Masked RMS: estimate energy from selected FFT bins (Parseval).
-        mono_fft, _, _ = _get_rfft(chunk, self.block_size)
-        idx = _resolve_effective_bin_indices(chunk, self.block_size)
-        if idx is None or idx.size == 0:
-            return 0.0
-
-        n = max(int(self.block_size), 1)
-        power = np.abs(mono_fft[idx]) ** 2
-        weights = np.full(power.shape, 2.0, dtype=np.float64)
-        weights[idx == 0] = 1.0
-        if (n % 2) == 0:
-            weights[idx == (n // 2)] = 1.0
-        mean_square = float(np.sum(power * weights) / (n * n))
-        return float(np.sqrt(max(mean_square, 0.0)))
-
+        return chunk.get_feature("rms", lambda: _band_rms(chunk))
 
 
 class RMSLoudnessTask(RMSTask):
@@ -351,17 +328,7 @@ class PitchTask(ACEAudioTask):
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        val = None
-        if isinstance(chunk, AudioChunk) and chunk.provider:
-            val = chunk.get_feature("pitch", lambda: chunk.provider.compute_feature("pitch", chunk))
-        if val is not None:
-            with utils.logged_errors("stream.PitchTask.process"):
-                resolved = float(val)
-                if np.isfinite(resolved):
-                    return resolved
-
-        analysis_mono = _masked_mono_signal(chunk)
-        return _autocorr_pitch_estimate(analysis_mono, int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE))
+        return chunk.get_feature("pitch", lambda: _chunk_pitch(chunk))
 
 
 class SpectralCentroidTask(ACEAudioTask):
