@@ -1176,6 +1176,44 @@ def _check_group_rebuild_keeps_input_values(addon_key, scene):
         bpy.data.node_groups.remove(tree)
 
 
+def _check_file_formats_decode(addon_key):
+    """Blender's audio module decodes compressed files for ACE: FLAC exactly like the WAV, MP3 and Ogg to the same length."""
+    import aud  # type: ignore
+    import numpy as np
+    decode = importlib.import_module(f"{addon_key}.core.input.decode")
+    reception = importlib.import_module(f"{addon_key}.core.input.reception").AudioReception
+    _assert(decode.AUD_AVAILABLE, "Blender's audio module did not load: only WAV files can be read")
+    for ext in (".mp3", ".flac", ".ogg", ".wav"):
+        _assert(ext in reception.supported_file_extensions(), f"{ext} is not offered")
+    tmp_dir = tempfile.mkdtemp(prefix="ace_smoke_formats_")
+    wav_path = os.path.join(tmp_dir, "tone.wav")
+    _write_test_wav(wav_path, seconds=2.0)
+    reference = decode.decode(wav_path)
+    for name, container, codec, exact in (
+        ("tone.flac", aud.CONTAINER_FLAC, aud.CODEC_FLAC, True),
+        ("tone.mp3", aud.CONTAINER_MP3, aud.CODEC_MP3, False),
+        ("tone.ogg", aud.CONTAINER_OGG, aud.CODEC_VORBIS, False),
+    ):
+        path = os.path.join(tmp_dir, name)
+        aud.Sound(wav_path).write(path, 48000, aud.CHANNELS_MONO, aud.FORMAT_S16, container, codec)
+        _assert(reception.is_supported_file_path(path), f"{name} is not readable")
+        decoded = decode.decode(path)
+        _assert(decoded.sample_rate == 48000, f"{name}: {decoded.sample_rate} Hz")
+        if exact:
+            _assert(np.array_equal(decoded.samples, reference.samples), f"{name} does not decode like the WAV")
+        else:
+            frames = min(decoded.samples.shape[0], reference.samples.shape[0])
+            _assert(abs(decoded.samples.shape[0] - reference.samples.shape[0]) <= 4800, f"{name}: {decoded.samples.shape[0]} frames")
+            rms = float(np.sqrt(np.mean(decoded.samples[:frames] ** 2)))
+            ref_rms = float(np.sqrt(np.mean(reference.samples[:frames] ** 2)))
+            _assert(abs(rms - ref_rms) < 0.05 * ref_rms, f"{name}: level {rms:.4f} vs {ref_rms:.4f}")
+        rec = reception("FILE", filepath=path)
+        _assert(rec.open(block_size=2000), f"{name} did not open: {rec.last_error}")
+        block = rec.read_block(2000)
+        _assert(block is not None and block[0].shape == (2000,), f"{name}: no block")
+        rec.close()
+
+
 def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io"):
     """A file source wired to RMS, LUFS and a splitter writes values that follow the audio, and bakes."""
     scene.audiocore.engine_settings.ace_parallel_mode = parallel_mode
@@ -1413,6 +1451,7 @@ def main():
 
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io")
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="processes_dsp")
+    _check_file_formats_decode(addon_key)
     _check_old_stream_nodes_migrate(addon_key, scene)
     _check_operator_list_follows_tree(addon_key, scene)
     _check_splitter_sliders(addon_key, scene)

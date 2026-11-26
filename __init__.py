@@ -17,6 +17,7 @@ MODULE_NAMES = [
     "core.id_management",
     "core.input",
     "core.input.resampler",
+    "core.input.decode",
     "core.input.file",
     "core.input.udp",
     "core.input.device",

@@ -154,10 +154,13 @@ def pcm16(samples: np.ndarray) -> np.ndarray:
 
 
 def render(name: str) -> Tuple[np.ndarray, int]:
-    """(float32 samples [frames, channels] as decoded from the 16-bit file, sample rate)."""
+    """(float32 samples [frames, channels] as ACE decodes the 16-bit file, sample rate).
+
+    Blender's audio module maps 16-bit PCM to float by 1/32767.
+    """
     sample_rate, generator = FIXTURES[name]
     ints = pcm16(generator(sample_rate))
-    return ints.astype(np.float32) / 32768.0, sample_rate
+    return ints.astype(np.float32) / 32767.0, sample_rate
 
 
 def write_wav(name: str, path: str) -> str:

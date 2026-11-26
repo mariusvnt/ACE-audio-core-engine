@@ -4,7 +4,7 @@ import threading
 from typing import Any, Dict, Optional
 from ... import utils
 from ...properties import ACEAudioSource
-from ..input.reception import AudioReception
+from ..input import decode
 from ..tasks.chunk import SAMPLE_RATE
 from ..tasks.specs import SourceSpecsTask
 
@@ -82,18 +82,14 @@ class SourceProbes:
                 mtime = _os.path.getmtime(fp)
             except OSError:
                 mtime = None
-            rec = AudioReception("FILE", filepath=fp)
-            if rec.open():
-                try:
-                    native_sr = int(
-                        getattr(rec, "native_sample_rate", 0)
-                        or getattr(rec, "sample_rate", SAMPLE_RATE)
-                        or SAMPLE_RATE
-                    )
-                    duration = float(getattr(rec, "duration", 0.0) or 0.0)
-                finally:
-                    with utils.logged_errors("probes.SourceProbes._run_probe_in_bg"):
-                        rec.close()
+            # Header only: decoding the samples is left to the source that reads them.
+            try:
+                info = decode.probe(fp)
+            except (decode.DecodeError, OSError):
+                info = None  # missing or unreadable: the source reports it when it opens
+            if info is not None:
+                native_sr = int(info.sample_rate or SAMPLE_RATE)
+                duration = float(info.frames) / float(max(native_sr, 1))
                 with self._probe_thread_lock:
                     if int(undo_generation) != int(getattr(self.engine, "undo_generation", 0) or 0):
                         return

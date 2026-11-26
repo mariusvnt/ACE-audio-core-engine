@@ -465,7 +465,7 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
     ace_file_working_sample_rate: bpy.props.EnumProperty(                                                                          # type: ignore
         name="Engine Sample Rate",
         description=(
-            "Cap file sources to this working sample rate for analysis, preview, and prefetch proxy generation"
+            "Cap file sources to this working sample rate for analysis and preview; files above it are resampled when loaded"
         ),
         items=[
             ("22050", "22 kHz", "Minimum viable sample rate for voice analysis"),

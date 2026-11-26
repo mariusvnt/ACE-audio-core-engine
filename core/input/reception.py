@@ -6,11 +6,7 @@ from typing import Any, Optional, Tuple
 from ... import utils
 import numpy as np
 from ...utils import compose_live_flow_identifier as _compose_live_flow_identifier
-try:
-    import soundfile as sf  # type: ignore
-    SF_AVAILABLE = True
-except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
-    SF_AVAILABLE = False
+from . import decode
 from .device import DeviceInput
 from .file import FileInput
 from .udp import UdpInput
@@ -24,34 +20,8 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
 
     @staticmethod
     def supported_file_extensions() -> tuple[str, ...]:
-        """Conservative extension list supported by current file backends."""
-        exts = [".wav", ".wave"]
-        if SF_AVAILABLE:
-            exts.extend([
-                ".flac",
-                ".ogg",
-                ".oga",
-                ".opus",
-                ".aiff",
-                ".aif",
-                ".caf",
-                ".w64",
-                ".rf64",
-                ".au",
-                ".snd",
-                ".mp3",
-                ".m4a",
-                ".aac",
-            ])
-        seen = set()
-        ordered = []
-        for ext in exts:
-            key = str(ext).lower()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            ordered.append(key)
-        return tuple(ordered)
+        """Every format Blender's FFmpeg reads, or WAV only without Blender's audio module."""
+        return decode.supported_extensions()
 
     @staticmethod
     def supported_file_filter_glob() -> str:
@@ -60,21 +30,16 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
 
     @staticmethod
     def is_supported_file_path(filepath: str) -> bool:
-        """Return True if *filepath* exists and can be opened by a supported backend."""
+        """Return True if *filepath* exists and its header can be read."""
         if not filepath or not os.path.isfile(filepath):
             return False
         ext = str(os.path.splitext(filepath)[1] or "").lower()
         if ext not in AudioReception.supported_file_extensions():
             return False
-        if ext in {".wav", ".wave"}:
-            return True
-        if not SF_AVAILABLE:
-            return False
         try:
-            handle = sf.SoundFile(filepath, mode="r")  # type: ignore
-            handle.close()
+            decode.probe(filepath)
             return True
-        except Exception as exc:
+        except (decode.DecodeError, OSError) as exc:
             utils.note_swallowed("reception.AudioReception.is_supported_file_path", exc)
             return False
 
@@ -96,7 +61,6 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         # Possible values: "not_found", "unsupported_format", "open_failed", "read_failed"
         self._cursor_sample: int = 0
         self.target_sample_rate: Optional[int] = None
-        self.proxy_filepath: str = ""
 
         # Live capture state
         self._live_queue: Optional[Queue] = None
@@ -123,7 +87,6 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         self.last_error = ""
         self._cursor_sample = 0
         self.native_sample_rate = 0
-        self.proxy_filepath = ""
         self._live_capture_sample_cursor = 0
         self._live_last_capture_sample = 0
         self._live_last_capture_block_samples = 0
@@ -172,29 +135,14 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         if sample_index < 0:
             return False
 
-        try:
-            if self.kind == "soundfile" and self.reader is not None:
-                self.reader.seek(int(sample_index))
-                self._eof = False
-                self._cursor_sample = int(sample_index)
-                return True
-            if self.kind == "wave" and self.reader is not None:
-                self.reader.setpos(int(sample_index))
-                self._eof = False
-                self._cursor_sample = int(sample_index)
-                return True
-        except Exception as e:
-            utils.note_swallowed("reception.AudioReception.seek", e)
-            self.last_error = f"seek failed: {e}"
-            return False
-        return False
+        return self._seek_file(int(sample_index))
 
     def read_block(self, block_size: int) -> Optional[Tuple[np.ndarray, Optional[np.ndarray], int]]:
         """Read the next block of audio from the source."""
         if self.source_type == "LIVE":
             return self._read_live_block(block_size)
 
-        if not self.reader:
+        if self.reader is None:
             return None
 
         mono = None
@@ -202,27 +150,8 @@ class AudioReception(FileInput, UdpInput, DeviceInput):
         reached_eof = False
 
         try:
-            if self.kind == "soundfile":
-                data = self.reader.read(frames=block_size, dtype="float32", always_2d=True)
-                if data is None or len(data) == 0:
-                    reached_eof = True
-                else:
-                    arr = np.asarray(data, dtype=np.float32)
-                    mono = np.mean(arr, axis=1)
-                    if arr.shape[1] >= 2:
-                        stereo = arr.T
-                    if arr.shape[0] < block_size:
-                        reached_eof = True
-            elif self.kind == "wave":
-                frames = self.reader.readframes(block_size)
-                if not frames:
-                    reached_eof = True
-                else:
-                    sampwidth = self.reader.getsampwidth()
-                    mono, stereo = self._decode_wave_bytes(frames, sampwidth, self.channels)
-                    if mono is not None and mono.shape[-1] < block_size:
-                        reached_eof = True
-        except Exception as e:
+            mono, stereo, reached_eof = self._read_file_block(block_size)
+        except (ValueError, IndexError, TypeError) as e:
             utils.note_swallowed("reception.AudioReception.read_block", e)
             self.last_error = f"read_block failed ({self.kind}): {e}"
             self.error_kind = "read_failed"

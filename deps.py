@@ -29,6 +29,14 @@ PACKAGE = __package__ or ""
 
 # id -> display name, what it gives, preference switch (None: always used), extra hint per platform.
 LIBRARIES: Dict[str, dict] = {
+    # Blender's own module, not a bundled wheel; it can fail when another extension shadows Blender's NumPy.
+    "aud": {
+        "name": "Blender Audio",
+        "desc": "Reads audio files: MP3, FLAC, Ogg and every format Blender can",
+        "switch": None,
+        "version_label": "Blender",
+        "missing_note": "Only WAV files can be read",
+    },
     "audioflux": {
         "name": "AudioFlux",
         "desc": "Spectrum, pitch and spectral features",
@@ -170,11 +178,12 @@ def report() -> List[dict]:
             error = _try_import(lib_id)
             if error is None:
                 row["state"] = "ok"
-                row["version"] = _version(lib_id)
+                row["version"] = info.get("version_label") or _version(lib_id)
             else:
                 row["state"] = "missing"
                 hint = info.get("linux_hint") if sys.platform.startswith("linux") else None
-                row["detail"] = hint or error
+                note = info.get("missing_note")
+                row["detail"] = hint or (f"{note}: {error}" if note else error)
         rows.append(row)
     return rows
 

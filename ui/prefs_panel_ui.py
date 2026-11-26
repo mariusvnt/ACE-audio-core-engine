@@ -47,7 +47,7 @@ class ACE_preferences(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
 
-        layout.label(text="Libraries bundled with the extension")
+        layout.label(text="Libraries")
         box = layout.box()
         for row_info in deps.report():
             row = box.row()
