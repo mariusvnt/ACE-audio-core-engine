@@ -35,8 +35,6 @@ def automatic_node_label(node, category: str, node_type: str) -> str:
     base = str(ACE_NODES.get(category, {}).get("nodes", {}).get(node_type, {}).get("label", "") or node_type)
     if (category, node_type) == ("delta", "frequency_splitter"):
         return f"{base} ({int(node.get('ace_band_count', max(2, len(node.outputs))))} Bands)"
-    if (category, node_type) == ("utilities", "audio_math"):
-        return base
     return base
 
 

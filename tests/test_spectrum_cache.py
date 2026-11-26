@@ -61,15 +61,6 @@ class SpectrumCacheTests(unittest.TestCase):
         second = self.spectral._frame_spectrum(self._chunk(np.sin(np.arange(2000) / 3.0)), 2048)
         self.assertFalse(np.array_equal(first, second))
 
-    def test_other_analysis_ops_get_their_own_spectrum(self):
-        block = np.sin(np.arange(2000) / 7.0)
-        shared = ("src", "shared")
-        mid = self._chunk(block, spectrum_token=shared, analysis_ops=(("midside", "mid"),))
-        side = self._chunk(block, spectrum_token=shared, analysis_ops=(("midside", "side"),))
-        self.spectral._frame_spectrum(mid, 2048)
-        self.spectral._frame_spectrum(side, 2048)
-        self.assertEqual(self.calls, 2)
-
 
 if __name__ == "__main__":
     unittest.main()

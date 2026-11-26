@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 import numpy as np
 from ... import utils
 from ...vars import ACE_NODES
 from ..tasks.base import ACEAudioTask
 from ..tasks.chunk import AudioChunk, SAMPLE_RATE
-from ..tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
+from ..tasks.delta import FrequencySplitterTask
 from ..tasks.frontend import SourceFrontendProcessor
 from ..tasks.stream import create_stream_task
-from ..tasks.utility import AudioMathTask, StreamAccumulatorTask
+from ..tasks.utility import StreamAccumulatorTask
 
 
 def _coerce_worker_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:
@@ -176,19 +176,6 @@ class _WorkerSourceBridgeTask:
         else:
             frontend_config = None
 
-        analysis_ops_raw = payload.get("analysis_ops", ()) or ()
-        analysis_ops: Tuple[Tuple[str, str], ...] = ()
-        if isinstance(analysis_ops_raw, (list, tuple)):
-            normalized = []
-            for item in analysis_ops_raw:
-                if not isinstance(item, (list, tuple)) or len(item) < 2:
-                    continue
-                kind = str(item[0] or "").strip().lower()
-                mode = str(item[1] or "").strip().lower()
-                if kind and mode:
-                    normalized.append((kind, mode))
-            analysis_ops = tuple(normalized)
-
         analysis_mono = None
         analysis_stereo = None
         if frontend_config is not None:
@@ -213,7 +200,6 @@ class _WorkerSourceBridgeTask:
             band_hz_bounds=band_hz_bounds,
             lineage=self.default_lineage,
             spectrum_token=self.default_spectrum_token,
-            analysis_ops=analysis_ops if analysis_ops else (),
             latency_ms=float(payload.get("latency_ms", 0.0) or 0.0),
             history_mono=history_mono,
             history_stereo=history_stereo,
@@ -289,22 +275,12 @@ def _create_worker_task(node_id: str, category: str, node_type: str, params: Dic
     if cat == "utilities":
         if typ == "src_specs":
             return _WorkerSourceSpecsPassthroughTask(node_id, params, bs)
-        if typ == "audio_math":
-            return AudioMathTask(node_id, params, bs)
         if typ == "stream_accumulator":
             return StreamAccumulatorTask(node_id, params, bs)
 
     if cat == "delta":
         if typ == "frequency_splitter":
             return FrequencySplitterTask(node_id, params, bs)
-        if typ == "midside_splitter":
-            return MidsideSplitterTask(node_id, params, bs)
-        if typ == "attackrelease_splitter":
-            return AttackReleaseSplitterTask(node_id, params, bs)
-        if typ == "chromagram":
-            return ChromagramTask(node_id, params, bs)
-        if typ == "auto_component_splitter":
-            return AutoComponentSplitterTask(node_id, params, bs)
 
     if cat == "stream":
         task = create_stream_task(node_id, typ, params, bs)

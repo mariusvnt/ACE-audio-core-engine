@@ -403,7 +403,7 @@ def main():
             ace.engine_settings.ace_parallel_mode = "off"
             engine = engine_cls.ensure_instance(scene)
             # Known issue: with the I/O threads on, the first frame of the
-            # spectrum-band outputs (splitters, chromagram) sometimes differs.
+            # spectrum-band outputs (splitters) sometimes differs.
             # It is reported, not failed; every later frame must match.
             mismatch = compare({k: v[1:] for k, v in threaded.items()}, {k: v[1:] for k, v in first.items()})
             if mismatch:

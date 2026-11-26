@@ -75,7 +75,7 @@ class ACEDummyTreeReader(NodeIdentity):
         return self.abstract_tree
 
     def _validate_cross_source_links(self):
-        """Warn when a non-AudioMath node receives inputs from distinct root sources."""
+        """Warn when a node receives inputs from distinct root sources."""
         for link in self.abstract_tree.links:
             src_node = self.abstract_tree.nodes.get(link.source_node_id)
             tgt_node = self.abstract_tree.nodes.get(link.target_node_id)
@@ -87,12 +87,9 @@ class ACEDummyTreeReader(NodeIdentity):
                 continue
             if src_roots.issubset(tgt_roots):
                 continue
-            # Cross-source link detected.
-            if getattr(tgt_node, "type", "") == "audio_math":
-                continue
             utils.log(
                 f"ACE: Cross-source link '{src_node.name}' → '{tgt_node.name}': "
-                f"only AudioMath can receive mixed sources. "
+                f"a node takes the audio of one source. "
                 f"Node '{tgt_node.name}' will produce undefined output.",
                 "WARNING",
             )
@@ -448,11 +445,6 @@ class ACEDummyTreeReader(NodeIdentity):
             for k in range(input_count - 1):
                 input_defs.append(('NodeSocketFloat', f"Split Freq {k+1}"))
             output_defs = [('NodeSocketBundle', 'Band')] * output_count
-        elif cat == 'utilities' and typ == 'audio_math':
-            input_count = len(bl_node.inputs)
-            output_count = len(bl_node.outputs)
-            input_defs = [('NodeSocketBundle', f"Audio {k+1}") for k in range(input_count)]
-            output_defs = [('NodeSocketBundle', 'Audio')] * max(output_count, 1)
         else:
             try:
                 node_def = ACE_NODES[cat]['nodes'][typ]
@@ -500,10 +492,6 @@ class ACEDummyTreeReader(NodeIdentity):
                     is_custom = bool(attr_name)
                     params[f"attr_id_custom_out_{attr_out_idx}"] = bool(is_custom)
 
-        # Custom parameters (e.g., Audio Math operation)
-        op_value = bl_node.get("ace_op")
-        if isinstance(op_value, str):
-            params["op"] = op_value
         mode = resolve_node_mode(cat, typ, bl_node.get("ace_mode"))
         if mode:
             params["mode"] = mode

@@ -439,13 +439,6 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
         min=2,
         max=8,
     )
-    audio_math_default_inputs: bpy.props.IntProperty(                                                                              # type: ignore
-        name="Default Audio Math Inputs",
-        description="Initial input count when adding an Audio Math node",
-        default=2,
-        min=2,
-        max=8,
-    )
     preview_numba_turbo: bpy.props.BoolProperty(                                                                                   # type: ignore
         name="High quality audio preview",
         description="Enable Numba acceleration for high quality time-domain preview filtering.",

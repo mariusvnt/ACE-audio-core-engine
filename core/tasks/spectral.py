@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 from ... import utils
 from .base import _LAYER3_THREAD_LOCAL
-from .chunk import AudioChunk, SAMPLE_RATE, _analysis_signal_for_chunk, _apply_analysis_ops, _finite_copy, _normalized_analysis_ops, _preview_signal_for_chunk
+from .chunk import AudioChunk, SAMPLE_RATE, _analysis_signal_for_chunk, _finite_copy, _preview_signal_for_chunk
 from .frontend import SourceFrontendProcessor
 
 
@@ -179,9 +179,6 @@ def _analysis_history_pair(chunk: AudioChunk) -> Tuple[Optional[np.ndarray], Opt
         if chunk.analysis_mono is not None and chunk.frontend_config is not None:
             # A fresh filter, so the result depends only on the audio, not on what played before.
             mono, stereo = SourceFrontendProcessor().process(mono, stereo, int(chunk.sample_rate), chunk.frontend_config)
-        ops = _normalized_analysis_ops(chunk)
-        if ops:
-            mono, stereo = _apply_analysis_ops(mono, stereo, ops)
         mono = _finite_copy(mono)
         stereo = _finite_copy(stereo) if isinstance(stereo, np.ndarray) and stereo.ndim == 2 else None
     else:
@@ -393,7 +390,7 @@ def _frame_spectrum(chunk: AudioChunk, n: int) -> np.ndarray:
     """
     frame = np.ascontiguousarray(_analysis_frame(chunk, n)[0], dtype=np.float32)
     token = chunk.spectrum_token if chunk.spectrum_token is not None else tuple(chunk.lineage or ())
-    key = (token, _normalized_analysis_ops(chunk), int(chunk.frame_index), int(chunk.sample_rate), int(n), zlib.crc32(frame))
+    key = (token, int(chunk.frame_index), int(chunk.sample_rate), int(n), zlib.crc32(frame))
     with _SPECTRUM_CACHE_LOCK:
         mag = _SPECTRUM_CACHE.get(key)
         if mag is not None:

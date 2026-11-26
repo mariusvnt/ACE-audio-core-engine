@@ -92,11 +92,6 @@ def _scenario_benchmark(atr, operator_count: int, frames: int = 180) -> Dict[str
         lambda idx: atr.StereoBalanceTask(f"balance_node_{idx}", {}, block_size=block_size),
     )
     stream_tasks = [stream_factories[idx % len(stream_factories)](idx) for idx in range(op_count)]
-    math_task_count = max(op_count // 12, 1)
-    math_tasks = [
-        atr.AudioMathTask(f"math_node_{idx}", {"op": "add" if (idx % 2) == 0 else "multiply"}, block_size=block_size)
-        for idx in range(math_task_count)
-    ]
     preview_task = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=block_size)
 
     stage_series = {
@@ -123,11 +118,6 @@ def _scenario_benchmark(atr, operator_count: int, frames: int = 180) -> Dict[str
         for task_idx, task in enumerate(stream_tasks):
             chunk = chunks[task_idx % len(chunks)]
             rms_values.append(float(task.process({0: chunk}) or 0.0))
-        for math_idx, math_task in enumerate(math_tasks):
-            left = chunks[math_idx % len(chunks)]
-            right = chunks[(math_idx + 1) % len(chunks)]
-            mix_out = math_task.process({0: left, 1: right})
-            rms_values.append(float(np.mean(np.abs(mix_out.mono))) if hasattr(mix_out, "mono") else 0.0)
         stage_series["dsp"].append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()

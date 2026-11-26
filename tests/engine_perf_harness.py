@@ -88,8 +88,7 @@ def engine_perf_contract() -> Dict[str, Any]:
             "ideal_total_latency_p95_ms": float(ENGINE_PERF_SLA_IDEAL_TOTAL_LATENCY_MS),
             "topology": (
                 "3 sources -> specs -> 5-band splitters -> stream terminals; "
-                "cross-source multiply -> chromagram; "
-                "chroma[0] preview + all chroma outputs to streams"
+                "band 0 of the first source to preview"
             ),
             "machine_profile": dict(ENGINE_PERF_SLA_MACHINE_PROFILE),
         },
@@ -521,75 +520,23 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
             )
             abstract_tree.add_link(abs_mod.ACEAbstractLink(split_id, stream_id, band_idx, 0))
 
-    math_id = "math_mul_3src"
-    math_task = atr.AudioMathTask(math_id, {"op": "multiply"}, block_size=graph.block_size)
-    for idx, specs_id in enumerate(specs_task_ids):
-        specs_task = graph.tasks.get(specs_id)
-        if specs_task is None:
-            continue
-        math_task.connect_input(idx, specs_task, 3)
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, math_id, 3, idx))
-    graph.tasks[math_id] = math_task
-    abstract_tree.add_node(
-        abs_mod.ACEAbstractNode(
-            id=math_id,
-            name=math_id,
-            category="utilities",
-            type="audio_math",
-            parameters={"op": "multiply"},
-        )
-    )
-
-    chroma_id = "chroma_mix"
-    chroma_task = atr.ChromagramTask(chroma_id, {}, block_size=graph.block_size)
-    chroma_task.connect_input(0, math_task, 0)
-    graph.tasks[chroma_id] = chroma_task
-    abstract_tree.add_node(
-        abs_mod.ACEAbstractNode(
-            id=chroma_id,
-            name=chroma_id,
-            category="delta",
-            type="chromagram",
-            parameters={},
-        )
-    )
-    abstract_tree.add_link(abs_mod.ACEAbstractLink(math_id, chroma_id, 0, 0))
-
-    preview_id = "sla_preview_chroma0"
-    preview_task = atr.PreviewSinkTask(preview_id, {"preview_enabled": True}, block_size=graph.block_size)
-    preview_task.connect_input(0, chroma_task, 0)
-    graph.tasks[preview_id] = preview_task
-    graph.manual_preview_task_ids = [preview_id]
-    graph.preview_task_ids = [preview_id]
-    abstract_tree.add_node(
-        abs_mod.ACEAbstractNode(
-            id=preview_id,
-            name=preview_id,
-            category="utilities",
-            type="preview_sink",
-            parameters={"preview_enabled": True},
-        )
-    )
-    abstract_tree.add_link(abs_mod.ACEAbstractLink(chroma_id, preview_id, 0, 0))
-
-    for chroma_idx in range(12):
-        stream_id = f"chroma_{chroma_idx}_rms"
-        stream_task = atr.RMSTask(stream_id, {}, block_size=graph.block_size)
-        stream_task.connect_input(0, chroma_task, chroma_idx)
-        graph.tasks[stream_id] = stream_task
-        attr_key = f"{stream_id}:0"
-        output_attr_keys.append(attr_key)
-        output_defs[attr_key] = {"node_id": stream_id, "type": "FLOAT"}
-        abstract_tree.add_node(
-            abs_mod.ACEAbstractNode(
-                id=stream_id,
-                name=stream_id,
-                category="stream",
-                type="rms",
-                parameters={},
+        if idx == 0:
+            preview_id = "sla_preview_band0"
+            preview_task = atr.PreviewSinkTask(preview_id, {"preview_enabled": True}, block_size=graph.block_size)
+            preview_task.connect_input(0, split_task, 0)
+            graph.tasks[preview_id] = preview_task
+            graph.manual_preview_task_ids = [preview_id]
+            graph.preview_task_ids = [preview_id]
+            abstract_tree.add_node(
+                abs_mod.ACEAbstractNode(
+                    id=preview_id,
+                    name=preview_id,
+                    category="utilities",
+                    type="preview_sink",
+                    parameters={"preview_enabled": True},
+                )
             )
-        )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(chroma_id, stream_id, chroma_idx, 0))
+            abstract_tree.add_link(abs_mod.ACEAbstractLink(split_id, preview_id, 0, 0))
 
     graph.source_task_ids = source_task_ids
     graph.file_source_task_ids = file_source_task_ids

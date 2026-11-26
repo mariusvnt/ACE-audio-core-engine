@@ -5,13 +5,13 @@ from typing import List, Optional
 from .... import utils
 from ...abstract_tree import ACEAbstractNode, audio_links
 from ...tasks.base import ACEAudioTask
-from ...tasks.delta import AttackReleaseSplitterTask, AutoComponentSplitterTask, ChromagramTask, FrequencySplitterTask, MidsideSplitterTask
+from ...tasks.delta import FrequencySplitterTask
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
 from ...tasks.specs import SourceSpecsTask
 from ...tasks.stream import create_stream_task
-from ...tasks.utility import AudioMathTask, RollingAvgTask, StreamAccumulatorTask
+from ...tasks.utility import RollingAvgTask, StreamAccumulatorTask
 
 
 class GraphBuild:
@@ -257,8 +257,6 @@ class GraphBuild:
                 return SourceSpecsTask(node.id, node.parameters, block_size)
             if typ == 'preview_sink':
                 return PreviewSinkTask(node.id, node.parameters, block_size)
-            if typ == 'audio_math':
-                return AudioMathTask(node.id, node.parameters, block_size)
             if typ == 'util_rolling_avg':
                 return RollingAvgTask(node.id, node.parameters, block_size)
             if typ == 'stream_accumulator':
@@ -266,14 +264,6 @@ class GraphBuild:
         elif cat == 'delta':
             if typ == 'frequency_splitter':
                 return FrequencySplitterTask(node.id, node.parameters, block_size)
-            if typ == 'midside_splitter':
-                return MidsideSplitterTask(node.id, node.parameters, block_size)
-            if typ == 'attackrelease_splitter':
-                return AttackReleaseSplitterTask(node.id, node.parameters, block_size)
-            if typ == 'chromagram':
-                return ChromagramTask(node.id, node.parameters, block_size)
-            if typ == 'auto_component_splitter':
-                return AutoComponentSplitterTask(node.id, node.parameters, block_size)
         elif cat == 'stream':
             task = create_stream_task(node.id, typ, node.parameters, block_size)
             if task is not None:

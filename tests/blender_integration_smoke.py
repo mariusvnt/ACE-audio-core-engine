@@ -783,27 +783,14 @@ def _check_status_and_inputs(addon_key, scene):
 
 
 def _check_titles_units_and_info(addon_key, scene):
-    """Audio Math titles, the buffer field's unit, the Info panel and the Rolling Average window."""
+    """The buffer field's unit, the Info panel and the Rolling Average window."""
     panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
-    dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
     factory = importlib.import_module(f"{addon_key}.nodes.geometry.factory").ACEDummyNodeFactory
     frontend = importlib.import_module(f"{addon_key}.nodes.frontend")
     ace = scene.audiocore
     count, first_index = len(ace.audio_sources), ace.active_audio_source_index
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Titles")
     try:
-        group = dynamic.ACEAudioMathManager.get_or_create_variant(3, tree)
-        math_node = tree.nodes.new("GeometryNodeGroup")
-        math_node.node_tree = group
-        math_node["ace_id"] = "ACE_utilities_audio_math_abc123"
-        math_node.label = "Audio Math (3 Inputs)"
-        dynamic.drop_input_counts_from_math_titles()
-        _assert(math_node.label == "Audio Math", f"Audio Math title: {math_node.label!r}")
-        math_node.label = "Mix bus"
-        dynamic.drop_input_counts_from_math_titles()
-        dynamic.ACEAudioMathManager.apply_variant_to_node(math_node, 4)
-        _assert(math_node.label == "Mix bus", f"A given title was replaced: {math_node.label!r}")
-
         bpy.ops.audiocore.add_audio_source()
         source = ace.audio_sources[-1]
         _assert(abs(source.ace_buffer_latency - 0.005) < 1e-9, f"Buffer field: {source.ace_buffer_latency}")

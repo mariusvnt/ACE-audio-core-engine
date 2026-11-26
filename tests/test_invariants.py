@@ -183,7 +183,7 @@ class TestAmbiguousCompilePruning(unittest.TestCase):
             "src_a": node("src_a", "A", "source_mngmt", "src", root_sources={"a"}),
             "src_b": node("src_b", "B", "source_mngmt", "src", root_sources={"b"}),
             "rms_a": node("rms_a", "RMS A", "stream", "rms", root_sources={"a"}),
-            "mix": node("mix", "Mix", "utilities", "audio_math", root_sources={"a", "b"}),
+            "mix": node("mix", "Mix", "delta", "frequency_splitter", root_sources={"a", "b"}),
             "rms_mix": node("rms_mix", "RMS Mix", "stream", "rms", root_sources={"a", "b"}),
         }
         links = [

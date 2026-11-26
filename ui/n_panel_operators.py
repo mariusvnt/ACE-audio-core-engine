@@ -5,7 +5,7 @@ import os
 from bpy_extras.io_utils import ImportHelper                                                                                            # type: ignore
 
 from ..core.id_management import ACEIdManager
-from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from ..nodes.dynamic_audio_operators import ACESplitterManager
 from ..nodes.split_freqs import sort_all_split_freqs, sort_split_freqs
 from ..nodes.source_nodes import bind_node
 from ..nodes.modes import apply_node_mode
@@ -390,45 +390,8 @@ class ACE_OT_even_splitter_freqs(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class ACE_OT_update_audio_math_inputs(bpy.types.Operator):
-    bl_idname = "ace.update_audio_math_inputs"
-    bl_label = "Change Audio Math Inputs"
-    bl_options = {'INTERNAL', 'UNDO'}
-    direction: bpy.props.EnumProperty(items=[('UP', "Up", ""), ('DOWN', "Down", "")])  # type: ignore
-
-    def execute(self, context):
-        node, parsed = _resolve_panel_selected_node(context)
-        is_audio_math = bool(parsed and parsed.get("category") == "utilities" and parsed.get("type") == "audio_math")
-        if not node or not is_audio_math:
-            return {'CANCELLED'}
-        current = int(node.get('ace_input_count', max(2, len(getattr(node, "inputs", [])))))
-        new_cnt = min(current + 1, 8) if self.direction == 'UP' else max(current - 1, 2)
-        if new_cnt != current:
-            ACEAudioMathManager.apply_variant_to_node(node, new_cnt)
-        return {'FINISHED'}
-
-
-class ACE_OT_set_audio_math_op(bpy.types.Operator):
-    bl_idname = "ace.set_audio_math_op"
-    bl_label = "Set Audio Math Operation"
-    bl_options = {'INTERNAL', 'UNDO'}
-    op: bpy.props.StringProperty()                                                                                                              # type: ignore
-
-    def execute(self, context):
-        node, parsed = _resolve_panel_selected_node(context)
-        is_audio_math = bool(parsed and parsed.get("category") == "utilities" and parsed.get("type") == "audio_math")
-        if not node or not is_audio_math:
-            return {'CANCELLED'}
-        op = str(self.op or "add").strip().lower()
-        if op not in {"add", "subtract", "multiply"}:
-            op = "add"
-        node["ace_op"] = op
-        _refresh_node_instance(node)
-        return {'FINISHED'}
-
-
 class ACE_OT_set_node_mode(bpy.types.Operator):
-    """Switch the method of the selected Loudness, Stereo or Spectral operator."""
+    """Switch the method of the selected Loudness or Stereo operator."""
     bl_idname = "ace.set_node_mode"
     bl_label = "Set Operator Method"
     bl_options = {'INTERNAL', 'UNDO'}
@@ -756,8 +719,6 @@ classes = (
     ACE_OT_update_splitter_bands,
     ACE_OT_even_splitter_freqs,
     ACE_OT_sort_split_freqs_on_release,
-    ACE_OT_update_audio_math_inputs,
-    ACE_OT_set_audio_math_op,
     ACE_OT_set_node_mode,
     ACE_OT_select_operator,
     ACE_OT_toggle_operator_branch,

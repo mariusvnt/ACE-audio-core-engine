@@ -62,34 +62,6 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketBundle', 'Audio')], # template sockets, runtime variants are dynamic
             },
-            "midside_splitter": {
-            "label": "Mid/Side Splitter",
-            "icon": "",
-            "description": "Splits the incoming audio between the middle and side part of the stereo image.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'Mid'), ('NodeSocketBundle', 'Side')],
-            },
-            "attackrelease_splitter": {
-            "label": "Attack/Release Splitter",
-            "icon": "",
-            "description": "Splits the incoming audio between the rising and falling parts of the signal.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'Attack'), ('NodeSocketBundle', 'Release')],
-            },
-            "chromagram": {
-            "label": "Chromagram",
-            "icon": "",
-            "description": "Splits the incoming audio into 12 audios, each corresponing to the level of a particular note.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'C'), ('NodeSocketBundle', 'C#'), ('NodeSocketBundle', 'D'), ('NodeSocketBundle', 'D#'), ('NodeSocketBundle', 'E'), ('NodeSocketBundle', 'F'), ('NodeSocketBundle', 'F#'), ('NodeSocketBundle', 'G'), ('NodeSocketBundle', 'G#'), ('NodeSocketBundle', 'A'), ('NodeSocketBundle', 'A#'), ('NodeSocketBundle', 'B')],
-            },
-            "auto_component_splitter": {
-            "label": "Automatic Component Splitter",
-            "icon": "",
-            "description": "Automatically splits the incoming audio between its percussive and harmonics components (residual undefined elements are also outputted separately).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'Percussive'), ('NodeSocketBundle', 'Harmonics'), ('NodeSocketBundle', 'Residual')],
-            },
         },
     },
 
@@ -187,13 +159,6 @@ ACE_NODES: dict[str, Category] = {
             "description": "Branch audio monitor sink used for in-editor preview playback.",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [],
-            },
-            "audio_math": {
-            "label": "Audio Math",
-            "icon": "",
-            "description": "Audio operations: add, subtract, multiply.",
-            "inputs": [('NodeSocketBundle', 'Audio')], # dynamic
-            "outputs": [('NodeSocketBundle', 'Audio')], # dynamic
             },
             "util_rolling_avg": {
             "label": "Rolling Average",

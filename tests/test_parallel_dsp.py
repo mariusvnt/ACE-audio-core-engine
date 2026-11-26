@@ -47,18 +47,17 @@ class TestParallelDSP(unittest.TestCase):
     def tearDown(self):
         _clear_worker_state(self.pds)
 
-    def _audio_math_graph_ir(self):
+    def _two_source_graph_ir(self):
         return {
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
                 "src_b": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "math": {"category": "utilities", "type": "audio_math", "parameters": {"op": "add"}},
-                "rms": {"category": "stream", "type": "rms", "parameters": {}},
+                "rms_a": {"category": "stream", "type": "rms", "parameters": {}},
+                "rms_b": {"category": "stream", "type": "rms", "parameters": {}},
             },
             "links": [
-                ("src_a", 0, "math", 0),
-                ("src_b", 0, "math", 1),
-                ("math", 0, "rms", 0),
+                ("src_a", 0, "rms_a", 0),
+                ("src_b", 0, "rms_b", 0),
             ],
             "source_node_ids": ["src_a", "src_b"],
             "source_ir": {
@@ -66,7 +65,8 @@ class TestParallelDSP(unittest.TestCase):
                 "src_b": {"sample_rate": 48000, "lineage": ["src_b"], "spectrum_token": ["src_b"]},
             },
             "output_specs": {
-                "rms:0": {"node_id": "rms", "socket_idx": 0, "attr_type": "FLOAT"},
+                "rms_a:0": {"node_id": "rms_a", "socket_idx": 0, "attr_type": "FLOAT"},
+                "rms_b:0": {"node_id": "rms_b", "socket_idx": 0, "attr_type": "FLOAT"},
             },
         }
 
@@ -173,38 +173,7 @@ class TestParallelDSP(unittest.TestCase):
             },
         }
 
-    def _math_chroma_stream_graph_ir(self):
-        return {
-            "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "src_b": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "src_c": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "math": {"category": "utilities", "type": "audio_math", "parameters": {"op": "multiply"}},
-                "chroma": {"category": "delta", "type": "chromagram", "parameters": {}},
-                "rms0": {"category": "stream", "type": "rms", "parameters": {}},
-                "rms1": {"category": "stream", "type": "rms", "parameters": {}},
-            },
-            "links": [
-                ("src_a", 0, "math", 0),
-                ("src_b", 0, "math", 1),
-                ("src_c", 0, "math", 2),
-                ("math", 0, "chroma", 0),
-                ("chroma", 0, "rms0", 0),
-                ("chroma", 1, "rms1", 0),
-            ],
-            "source_node_ids": ["src_a", "src_b", "src_c"],
-            "source_ir": {
-                "src_a": {"sample_rate": 48000, "lineage": ["src_a"], "spectrum_token": ["src_a"]},
-                "src_b": {"sample_rate": 48000, "lineage": ["src_b"], "spectrum_token": ["src_b"]},
-                "src_c": {"sample_rate": 48000, "lineage": ["src_c"], "spectrum_token": ["src_c"]},
-            },
-            "output_specs": {
-                "rms0:0": {"node_id": "rms0", "socket_idx": 0, "attr_type": "FLOAT"},
-                "rms1:0": {"node_id": "rms1", "socket_idx": 0, "attr_type": "FLOAT"},
-            },
-        }
-
-    def test_cross_source_audio_math_uses_distinct_source_chunks(self):
+    def test_each_source_of_a_graph_gets_its_own_chunk(self):
         n = 256
         a = np.full(n, 0.1, dtype=np.float32)
         b = np.full(n, 0.2, dtype=np.float32)
@@ -216,7 +185,7 @@ class TestParallelDSP(unittest.TestCase):
             "block_size": n,
             "sample_rate": 48000,
             "graph_ir_digest": "digest_a",
-            "graph_ir": self._audio_math_graph_ir(),
+            "graph_ir": self._two_source_graph_ir(),
             "source_chunks": {
                 "src_a": {"mono": a, "sample_rate": 48000, "latency_ms": 1.0},
                 "src_b": {"mono": b, "sample_rate": 48000, "latency_ms": 2.0},
@@ -225,10 +194,9 @@ class TestParallelDSP(unittest.TestCase):
 
         out = self.pds.evaluate_parallel_job(job)
         values = dict(out.get("values", {}) or {})
-        self.assertIn("rms:0", values)
-        # RMS reads on the Loudness scale: 0.1 + 0.2 = 0.3, i.e. -10.46 dB over the -70 dB floor.
-        expected = (20.0 * np.log10(0.3) + 70.0) / 70.0
-        self.assertAlmostEqual(float(values["rms:0"]), expected, places=4)
+        # RMS reads on the Loudness scale: dB over the -70 dB floor.
+        for key, level in (("rms_a:0", 0.1), ("rms_b:0", 0.2)):
+            self.assertAlmostEqual(float(values[key]), (20.0 * np.log10(level) + 70.0) / 70.0, places=4)
         self.assertEqual(str(out.get("job_key", "")), "cross_source_graph:f7:j1")
 
     def test_payload_schema_accepts_keyed_source_chunks_contract(self):
@@ -243,7 +211,7 @@ class TestParallelDSP(unittest.TestCase):
             "block_size": n,
             "sample_rate": 48000,
             "graph_ir_digest": "digest_b",
-            "graph_ir": self._audio_math_graph_ir(),
+            "graph_ir": self._two_source_graph_ir(),
             "source_chunks": {
                 "src_a": {"mono": a, "sample_rate": 48000, "latency_ms": 0.0},
                 "src_b": {"mono": b, "sample_rate": 48000, "latency_ms": 0.0},
@@ -254,7 +222,7 @@ class TestParallelDSP(unittest.TestCase):
         self.assertEqual(int(out.get("frame_id", -1)), 3)
         self.assertEqual(str(out.get("graph_uid", "")), "schema_graph")
         self.assertEqual(str(out.get("job_key", "")), "schema_graph:f3:j1")
-        self.assertIn("rms:0", dict(out.get("values", {}) or {}))
+        self.assertIn("rms_a:0", dict(out.get("values", {}) or {}))
 
     def test_parallel_job_can_evaluate_subset_of_output_keys(self):
         n = 256
@@ -388,33 +356,6 @@ class TestParallelDSP(unittest.TestCase):
         self.assertTrue(np.isfinite(float(values["peak:0"])))
         self.assertGreaterEqual(float(values["peak:0"]), 0.0)
         self.assertLessEqual(float(values["peak:0"]), 1.0)
-
-    def test_worker_supports_cross_source_math_chromagram_branches(self):
-        n = 1024
-        t = np.arange(n, dtype=np.float32) / 48000.0
-        src_a = np.sin((2.0 * np.pi * 220.0 * t)).astype(np.float32, copy=False)
-        src_b = np.sin((2.0 * np.pi * 330.0 * t)).astype(np.float32, copy=False)
-        src_c = np.sin((2.0 * np.pi * 440.0 * t)).astype(np.float32, copy=False)
-        job = {
-            "generation_id": 1005,
-            "graph_uid": "math_chroma_graph",
-            "frame_id": 11,
-            "block_size": n,
-            "sample_rate": 48000,
-            "graph_ir_digest": "digest_math_chroma",
-            "graph_ir": self._math_chroma_stream_graph_ir(),
-            "source_chunks": {
-                "src_a": {"mono": src_a, "sample_rate": 48000, "latency_ms": 0.0},
-                "src_b": {"mono": src_b, "sample_rate": 48000, "latency_ms": 0.0},
-                "src_c": {"mono": src_c, "sample_rate": 48000, "latency_ms": 0.0},
-            },
-        }
-        out = self.pds.evaluate_parallel_job(job)
-        values = dict(out.get("values", {}) or {})
-        self.assertIn("rms0:0", values)
-        self.assertIn("rms1:0", values)
-        self.assertTrue(np.isfinite(float(values["rms0:0"])))
-        self.assertTrue(np.isfinite(float(values["rms1:0"])))
 
     def test_worker_stream_accumulator_persists_state_and_resets_on_rewind(self):
         n = 256

@@ -20,7 +20,6 @@ FRAME_START = 1
 EXCLUDED: Dict[Tuple[str, str], str] = {
     ("source_mngmt", "src"): "the root of every case",
     ("utilities", "preview_sink"): "an audio monitor: it outputs no values",
-    ("utilities", "audio_math"): "dynamic sockets; needs a scripted setup before it can be pinned",
 }
 
 # How many outputs a delta node has once placed (the frequency splitter's

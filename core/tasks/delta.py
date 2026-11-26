@@ -1,13 +1,10 @@
 """Delta tasks: splitters and masks that constrain downstream analysis."""
 
-import math
 from typing import List, Optional, Tuple
 import numpy as np
 from ... import utils
 from .base import ACEAudioTask
-from .block_size import _block_duration_ms
-from .chunk import SAMPLE_RATE, _analysis_signal_for_chunk, _append_analysis_op, _ensure_audio_chunk, _normalized_analysis_ops, _spawn_audio_chunk
-from .spectral import _analysis_fft_size, _resolve_effective_bin_indices
+from .chunk import SAMPLE_RATE, _ensure_audio_chunk, _spawn_audio_chunk
 
 
 # Split frequencies closer than this coincide: the band between them is empty.
@@ -87,7 +84,6 @@ class FrequencySplitterTask(ACEAudioTask):
         stereo = getattr(chunk, "stereo", None)
         sample_rate = getattr(chunk, "sample_rate", SAMPLE_RATE)
         shared_spec_token = getattr(chunk, "spectrum_token", None)
-        analysis_ops = _normalized_analysis_ops(chunk)
         band_index_fft_size = getattr(chunk, "band_index_fft_size", None)
         latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
         
@@ -126,7 +122,6 @@ class FrequencySplitterTask(ACEAudioTask):
                     band_hz_bounds=(low_band, high_band),
                     lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:0",),
                     spectrum_token=shared_spec_token,
-                    analysis_ops=analysis_ops,
                     latency_ms=latency_ms,
                 ),
             )
@@ -169,7 +164,6 @@ class FrequencySplitterTask(ACEAudioTask):
                             band_hz_bounds=(low_cut, low_cut),
                             lineage=lineage,
                             spectrum_token=None,
-                            analysis_ops=(),
                             latency_ms=latency_ms,
                         )
                     )
@@ -185,7 +179,6 @@ class FrequencySplitterTask(ACEAudioTask):
                         band_hz_bounds=(low_cut, high_cut),
                         lineage=lineage,
                         spectrum_token=shared_spec_token,
-                        analysis_ops=analysis_ops,
                         latency_ms=latency_ms,
                     )
                 )
@@ -193,254 +186,3 @@ class FrequencySplitterTask(ACEAudioTask):
             bands.append(chunk)
 
         return tuple(bands)
-
-
-class MidsideSplitterTask(ACEAudioTask):
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        sr = getattr(chunk, "sample_rate", SAMPLE_RATE)
-        shared_spec_token = getattr(chunk, "spectrum_token", None)
-        band_index_fft_size = getattr(chunk, "band_index_fft_size", None)
-        latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
-        mid_ops = _append_analysis_op(chunk, "midside", "mid")
-        side_ops = _append_analysis_op(chunk, "midside", "side")
-        return (
-            _spawn_audio_chunk(
-                chunk,
-                sample_rate=sr,
-                band_index_fft_size=band_index_fft_size,
-                band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:0",),
-                spectrum_token=shared_spec_token,
-                analysis_ops=mid_ops,
-                latency_ms=latency_ms,
-            ),
-            _spawn_audio_chunk(
-                chunk,
-                sample_rate=sr,
-                band_index_fft_size=band_index_fft_size,
-                band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:1",),
-                spectrum_token=shared_spec_token,
-                analysis_ops=side_ops,
-                latency_ms=latency_ms,
-            ),
-        )
-
-
-class AttackReleaseSplitterTask(ACEAudioTask):
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        shared_spec_token = getattr(chunk, "spectrum_token", None)
-        band_index_fft_size = getattr(chunk, "band_index_fft_size", None)
-        latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
-        attack_ops = _append_analysis_op(chunk, "attackrelease", "attack")
-        release_ops = _append_analysis_op(chunk, "attackrelease", "release")
-
-        return (
-            _spawn_audio_chunk(
-                chunk,
-                sample_rate=chunk.sample_rate,
-                band_index_fft_size=band_index_fft_size,
-                band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:0",),
-                spectrum_token=shared_spec_token,
-                analysis_ops=attack_ops,
-                latency_ms=latency_ms,
-            ),
-            _spawn_audio_chunk(
-                chunk,
-                sample_rate=chunk.sample_rate,
-                band_index_fft_size=band_index_fft_size,
-                band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:1",),
-                spectrum_token=shared_spec_token,
-                analysis_ops=release_ops,
-                latency_ms=latency_ms,
-            ),
-        )
-
-
-class ChromagramTask(ACEAudioTask):
-    def __init__(self, node_id, params, block_size):
-        super().__init__(node_id, params, block_size)
-        self._mask_cache_key: Optional[Tuple[int, int]] = None
-        self._mask_cache: Optional[np.ndarray] = None
-
-    def _build_masks(self, fft_size: int, sample_rate: int):
-        freq_bins = np.fft.rfftfreq(max(int(fft_size), 1), d=1.0 / sample_rate)
-        masks = np.zeros((12, len(freq_bins)), dtype=bool)
-        for idx, f in enumerate(freq_bins):
-            if f <= 0.0:
-                continue
-            midi = int(round(69 + 12 * math.log2(f / 440.0)))
-            chroma = midi % 12
-            masks[chroma, idx] = True
-        self._mask_cache_key = (max(int(fft_size), 1), sample_rate)
-        self._mask_cache = masks
-
-    @staticmethod
-    def _fallback_indices_for_chroma(
-        chroma_idx: int,
-        domain_indices: np.ndarray,
-        fft_size: int,
-        sample_rate: int,
-    ) -> np.ndarray:
-        """Coarse FFT grids can miss a chroma class entirely in narrow parent bands."""
-        dom = np.asarray(domain_indices, dtype=np.int64).ravel()
-        if dom.size == 0:
-            return np.zeros(0, dtype=np.int64)
-
-        freqs = np.fft.rfftfreq(max(int(fft_size), 1), d=1.0 / max(float(sample_rate), 1.0))
-        dom = dom[(dom >= 0) & (dom < freqs.shape[0])]
-        if dom.size == 0:
-            return np.zeros(0, dtype=np.int64)
-
-        dom_freqs = freqs[dom]
-        valid = dom_freqs > 0.0
-        if not np.any(valid):
-            return np.zeros(0, dtype=np.int64)
-        dom = dom[valid]
-        dom_freqs = dom_freqs[valid]
-
-        midi = 69.0 + (12.0 * np.log2(dom_freqs / 440.0))
-        chroma = np.mod(np.round(midi).astype(np.int64), 12)
-        # Circular semitone distance in chroma space.
-        delta = np.abs(((chroma - int(chroma_idx) + 6) % 12) - 6)
-        min_delta = int(np.min(delta))
-        nearest = dom[delta == min_delta]
-        if nearest.size == 0:
-            return np.zeros(0, dtype=np.int64)
-        return np.unique(nearest.astype(np.int64, copy=False))
-
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        sr = getattr(chunk, "sample_rate", SAMPLE_RATE)
-        shared_spec_token = getattr(chunk, "spectrum_token", None)
-        analysis_ops = _normalized_analysis_ops(chunk)
-        base_latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
-        fft_size = _analysis_fft_size(max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 0), 1))
-        # Chroma projection is spectral-domain constrained; account for an
-        # approximate half-window analysis lag in branch latency tracking.
-        latency_ms = base_latency_ms + (0.5 * _block_duration_ms(sr, fft_size))
-        upstream_idx = _resolve_effective_bin_indices(chunk, fft_size)
-        if self._mask_cache_key != (fft_size, sr) or self._mask_cache is None:
-            self._build_masks(fft_size, sr)
-
-        outputs = []
-        for chroma_idx in range(12):
-            mask = self._mask_cache[chroma_idx] if self._mask_cache is not None else None
-            if mask is None:
-                band_indices = None
-            else:
-                chroma_indices = np.nonzero(mask)[0].astype(np.int64, copy=False)
-                if upstream_idx is None:
-                    band_indices = chroma_indices
-                else:
-                    band_indices = np.intersect1d(chroma_indices, upstream_idx, assume_unique=False).astype(np.int64, copy=False)
-                if band_indices.size == 0:
-                    if upstream_idx is None:
-                        domain = np.arange(mask.shape[0], dtype=np.int64)
-                    else:
-                        domain = np.asarray(upstream_idx, dtype=np.int64).ravel()
-                    fallback = self._fallback_indices_for_chroma(chroma_idx, domain, fft_size, sr)
-                    if fallback.size > 0:
-                        band_indices = fallback
-                    else:
-                        # Keep bounds-based processing alive downstream instead of
-                        # forcing an explicit empty sparse mask.
-                        band_indices = None
-
-            outputs.append(
-                _spawn_audio_chunk(
-                    chunk,
-                    sample_rate=sr,
-                    band_indices=band_indices,
-                    band_index_fft_size=fft_size,
-                    band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                    lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:{chroma_idx}",),
-                    spectrum_token=shared_spec_token,
-                    analysis_ops=analysis_ops,
-                    latency_ms=latency_ms,
-                )
-            )
-
-        return tuple(outputs)
-
-
-class AutoComponentSplitterTask(ACEAudioTask):
-    def __init__(self, node_id, params, block_size):
-        super().__init__(node_id, params, block_size)
-        self._prev_mag: Optional[np.ndarray] = None
-        self._last_sr: Optional[int] = None
-
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        sr = getattr(chunk, "sample_rate", SAMPLE_RATE)
-        shared_spec_token = getattr(chunk, "spectrum_token", None)
-        analysis_ops = _normalized_analysis_ops(chunk)
-        base_latency_ms = float(getattr(chunk, "latency_ms", 0.0) or 0.0)
-        fft_size = _analysis_fft_size(max(int(getattr(chunk, "mono", np.zeros(1, dtype=np.float32)).shape[-1] or 0), 1))
-        # Auto-component separation uses inter-frame spectral deltas and keeps
-        # one extra frame of historical context.
-        latency_ms = base_latency_ms + _block_duration_ms(sr, fft_size)
-        upstream_idx = _resolve_effective_bin_indices(chunk, fft_size)
-
-        # Per-bin mask instead of HPSS: flux above median + std is percussive, quieter bins are residual, the rest harmonic.
-        analysis_mono, _ = _analysis_signal_for_chunk(chunk)
-        mag = np.abs(np.fft.rfft(analysis_mono, n=fft_size))
-        if mag.size == 0:
-            return (chunk, chunk, chunk)
-
-        if self._prev_mag is None or self._prev_mag.shape != mag.shape or self._last_sr != sr:
-            self._prev_mag = mag.copy()
-            self._last_sr = sr
-
-        diff = np.abs(mag - self._prev_mag)
-        self._prev_mag = mag.copy()
-
-        if upstream_idx is None:
-            work_idx = np.arange(mag.shape[0], dtype=np.int64)
-        else:
-            work_idx = upstream_idx.astype(np.int64, copy=False)
-
-        if work_idx.size == 0:
-            perc_idx = np.zeros(0, dtype=np.int64)
-            harm_idx = np.zeros(0, dtype=np.int64)
-            res_idx = np.zeros(0, dtype=np.int64)
-        else:
-            diff_work = diff[work_idx]
-            mag_work = mag[work_idx]
-            flux_thresh = np.median(diff_work) + 0.5 * np.std(diff_work)
-            energy_thresh = max(np.median(mag_work) * 0.25, 1e-8)
-
-            perc_mask = diff_work > flux_thresh
-            harm_mask = diff_work <= flux_thresh
-            res_mask = mag_work <= energy_thresh
-
-            perc_idx = work_idx[perc_mask]
-            harm_idx = work_idx[harm_mask]
-            res_idx = work_idx[res_mask]
-
-            if perc_idx.size == 0:
-                perc_idx = np.array([int(work_idx[int(np.argmax(diff_work))])], dtype=np.int64)
-            if harm_idx.size == 0:
-                harm_idx = work_idx[mag_work > energy_thresh]
-            if res_idx.size == 0:
-                res_idx = np.array([], dtype=np.int64)
-
-        def _masked(indices: np.ndarray, out_idx: int):
-            valid_idx = np.asarray(indices, dtype=np.int64).ravel() if indices is not None else None
-            return _spawn_audio_chunk(
-                chunk,
-                sample_rate=sr,
-                band_indices=valid_idx,
-                band_index_fft_size=fft_size,
-                band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:{out_idx}",),
-                spectrum_token=shared_spec_token,
-                analysis_ops=analysis_ops,
-                latency_ms=latency_ms,
-            )
-
-        return (_masked(harm_idx, 0), _masked(perc_idx, 1), _masked(res_idx, 2))

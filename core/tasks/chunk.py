@@ -56,7 +56,6 @@ class AudioChunk:
         "band_hz_bounds",
         "lineage",
         "spectrum_token",
-        "analysis_ops",
         "history_mono",
         "history_stereo",
     )
@@ -71,7 +70,6 @@ class AudioChunk:
                  band_hz_bounds: Optional[Tuple[float, float]] = None,
                  lineage: Optional[Tuple[str, ...]] = None,
                  spectrum_token: Optional[Any] = None,
-                 analysis_ops: Optional[Tuple[Tuple[str, str], ...]] = None,
                  latency_ms: float = 0.0,
                  history_mono: Optional[np.ndarray] = None,
                  history_stereo: Optional[np.ndarray] = None):
@@ -103,7 +101,6 @@ class AudioChunk:
             self.band_index_fft_size = None
         self.band_hz_bounds = band_hz_bounds
         self.lineage = lineage or ()
-        self.analysis_ops = tuple(analysis_ops or ())
         if spectrum_token is not None:
             self.spectrum_token = spectrum_token
         elif lineage:
@@ -144,7 +141,6 @@ def _spawn_audio_chunk(
     band_hz_bounds: Any = _KEEP,
     lineage: Any = _KEEP,
     spectrum_token: Any = _KEEP,
-    analysis_ops: Any = _KEEP,
     latency_ms: Any = _KEEP,
     history_mono: Any = _KEEP,
     history_stereo: Any = _KEEP,
@@ -164,128 +160,28 @@ def _spawn_audio_chunk(
         band_hz_bounds=(source.band_hz_bounds if band_hz_bounds is _KEEP else band_hz_bounds),
         lineage=(source.lineage if lineage is _KEEP else lineage),
         spectrum_token=(source.spectrum_token if spectrum_token is _KEEP else spectrum_token),
-        analysis_ops=(source.analysis_ops if analysis_ops is _KEEP else analysis_ops),
         latency_ms=(source.latency_ms if latency_ms is _KEEP else latency_ms),
         history_mono=(source.history_mono if history_mono is _KEEP else history_mono),
         history_stereo=(source.history_stereo if history_stereo is _KEEP else history_stereo),
     )
 
 
-def _normalized_analysis_ops(chunk: AudioChunk) -> Tuple[Tuple[str, str], ...]:
-    """Return the chunk's ``analysis_ops`` as a normalised immutable tuple."""
-    raw_ops = getattr(chunk, "analysis_ops", ()) or ()
-    if isinstance(raw_ops, tuple):
-        items = raw_ops
-    elif isinstance(raw_ops, list):
-        items = tuple(raw_ops)
-    else:
-        return ()
-
-    normalized: list[Tuple[str, str]] = []
-    for op in items:
-        if not isinstance(op, (tuple, list)) or len(op) < 2:
-            continue
-        kind = str(op[0] or "").strip().lower()
-        mode = str(op[1] or "").strip().lower()
-        if not kind or not mode:
-            continue
-        normalized.append((kind, mode))
-    return tuple(normalized)
-
-
-def _append_analysis_op(chunk: AudioChunk, kind: str, mode: str) -> Tuple[Tuple[str, str], ...]:
-    ops = _normalized_analysis_ops(chunk)
-    return ops + ((str(kind).strip().lower(), str(mode).strip().lower()),)
-
-
-def _signal_for_chunk(
-    chunk: AudioChunk,
-    *,
-    prefer_analysis_track: bool = True,
-    apply_analysis_ops: bool = True,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Resolve the effective (mono, stereo) signal arrays for a chunk."""
-    ops = _normalized_analysis_ops(chunk)
-    if not apply_analysis_ops:
-        ops = ()
-
-    mono_base = (
-        getattr(chunk, "analysis_mono", None)
-        if prefer_analysis_track and isinstance(getattr(chunk, "analysis_mono", None), np.ndarray)
-        else getattr(chunk, "mono", None)
-    )
-    stereo_base = (
-        getattr(chunk, "analysis_stereo", None)
-        if prefer_analysis_track and isinstance(getattr(chunk, "analysis_stereo", None), np.ndarray)
-        else getattr(chunk, "stereo", None)
-    )
-    mono_arr = np.asarray(mono_base if isinstance(mono_base, np.ndarray) else np.zeros(0, dtype=np.float32), dtype=np.float32).reshape(-1)
-    if not ops:
-        return mono_arr, stereo_base
-
-    cache_key = ("analysis_signal", bool(prefer_analysis_track), ops)
-    cached = chunk.features.get(cache_key)
-    if isinstance(cached, tuple) and len(cached) == 2:
-        mono_cached, stereo_cached = cached
-        return mono_cached, stereo_cached
-
-    mono, stereo = _apply_analysis_ops(mono_arr, stereo_base, ops)
-    chunk.features[cache_key] = (mono, stereo)
-    return mono, stereo
-
-
-def _apply_analysis_ops(
-    mono_arr: np.ndarray,
-    stereo_src: Optional[np.ndarray],
-    ops: Tuple[Tuple[str, str], ...],
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Run the Mid/Side and Attack/Release operations of a chunk on a signal."""
-    mono = np.asarray(mono_arr, dtype=np.float32).reshape(-1).astype(np.float32, copy=True)
-    stereo: Optional[np.ndarray] = None
-    if isinstance(stereo_src, np.ndarray) and stereo_src.ndim == 2 and stereo_src.shape[1] == mono.shape[0]:
-        stereo = np.asarray(stereo_src, dtype=np.float32).astype(np.float32, copy=True)
-
-    for kind, mode in ops:
-        if kind == "midside":
-            if stereo is not None and stereo.shape[0] >= 2:
-                left = stereo[0]
-                right = stereo[1]
-            else:
-                # Mono sources behave as perfectly centered stereo for Mid/Side.
-                left = mono
-                right = mono
-
-            if mode == "side":
-                mono = (0.5 * (left - right)).astype(np.float32, copy=False)
-            else:
-                mono = (0.5 * (left + right)).astype(np.float32, copy=False)
-            # Mid/Side branches collapse to mono descriptors for analysis.
-            stereo = None
-            continue
-
-        if kind == "attackrelease":
-            if mono.size == 0:
-                continue
-            env = np.abs(mono)
-            diff = np.diff(env, prepend=env[0])
-            if mode == "release":
-                gate = (diff < 0.0).astype(np.float32, copy=False)
-            else:
-                gate = (diff >= 0.0).astype(np.float32, copy=False)
-            mono = (mono * gate).astype(np.float32, copy=False)
-            if stereo is not None and stereo.shape[1] == gate.shape[0]:
-                stereo = (stereo * gate[np.newaxis, :]).astype(np.float32, copy=False)
-            continue
-
-    return mono, stereo
+def _signal_for_chunk(chunk: AudioChunk, *, prefer_analysis_track: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """The (mono, stereo) arrays of a chunk: its analysis track when it has one and that is preferred."""
+    analysis_mono = getattr(chunk, "analysis_mono", None)
+    analysis_stereo = getattr(chunk, "analysis_stereo", None)
+    mono_base = analysis_mono if prefer_analysis_track and isinstance(analysis_mono, np.ndarray) else getattr(chunk, "mono", None)
+    stereo_base = analysis_stereo if prefer_analysis_track and isinstance(analysis_stereo, np.ndarray) else getattr(chunk, "stereo", None)
+    mono = mono_base if isinstance(mono_base, np.ndarray) else np.zeros(0, dtype=np.float32)
+    return np.asarray(mono, dtype=np.float32).reshape(-1), stereo_base
 
 
 def _analysis_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    return _signal_for_chunk(chunk, prefer_analysis_track=True, apply_analysis_ops=True)
+    return _signal_for_chunk(chunk, prefer_analysis_track=True)
 
 
 def _preview_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    return _signal_for_chunk(chunk, prefer_analysis_track=False, apply_analysis_ops=True)
+    return _signal_for_chunk(chunk, prefer_analysis_track=False)
 
 
 def _ensure_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:

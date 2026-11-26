@@ -128,12 +128,10 @@ class TestAudioTasksRegistry(unittest.TestCase):
             heard = atr.PreviewSinkTask("p", {"preview_enabled": True}, block_size=n).process({0: band})
             self.assertFalse(np.any(heard.mono), cuts)
 
-        # The bands around the empty one are unchanged, and Audio Math keeps the other band's range.
+        # The bands around the empty one are unchanged.
         low, none, high = atr.FrequencySplitterTask("split", {}, block_size=n).process({0: source, 1: 1000.0, 2: 1000.0})
         self.assertEqual((low.band_hz_bounds, high.band_hz_bounds), ((20.0, 1000.0), (1000.0, 20000.0)))
-        mixed = atr.AudioMathTask("mix", {"op": "add"}, block_size=n).process({0: none, 1: high})
-        self.assertEqual(mixed.band_hz_bounds, (1000.0, 20000.0))
-        np.testing.assert_allclose(mixed.mono, mono)
+        np.testing.assert_allclose(high.mono, mono)
 
     def test_frequency_splitter_leaves_an_uncomputable_link_as_an_empty_band(self):
         source = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
@@ -144,147 +142,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         # An audio value arriving through the link is used.
         low, mid, _high = task.process({0: source, 1: 500.0, 2: 4000.0})
         self.assertEqual((low.band_hz_bounds, mid.band_hz_bounds), ((20.0, 500.0), (500.0, 4000.0)))
-
-    def test_midside_splitter_emits_metadata_only_branches(self):
-        n = 256
-        sr = 48000
-        t = np.arange(n, dtype=np.float32) / float(sr)
-        left = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
-        right = (-left).astype(np.float32)
-        stereo = np.stack([left, right], axis=0)
-        mono = np.mean(stereo, axis=0).astype(np.float32)
-        source = atr.AudioChunk(
-            mono,
-            stereo,
-            sr,
-            lineage=("src",),
-            spectrum_token=("src", "frame"),
-            band_hz_bounds=(100.0, 2000.0),
-        )
-
-        splitter = atr.MidsideSplitterTask("ms_node", {}, block_size=n)
-        mid_chunk, side_chunk = splitter.process({0: source})
-
-        self.assertTrue(np.array_equal(mid_chunk.mono, source.mono))
-        self.assertTrue(np.array_equal(side_chunk.mono, source.mono))
-        self.assertEqual(mid_chunk.spectrum_token, source.spectrum_token)
-        self.assertEqual(side_chunk.spectrum_token, source.spectrum_token)
-        self.assertEqual(mid_chunk.band_hz_bounds, source.band_hz_bounds)
-        self.assertEqual(side_chunk.band_hz_bounds, source.band_hz_bounds)
-        self.assertEqual(mid_chunk.analysis_ops[-1], ("midside", "mid"))
-        self.assertEqual(side_chunk.analysis_ops[-1], ("midside", "side"))
-
-    def test_attackrelease_splitter_emits_metadata_only_branches(self):
-        n = 64
-        sr = 48000
-        mono = np.array([0.0, 0.8, 0.2, 0.9, 0.3, 0.1, 0.7, 0.4], dtype=np.float32)
-        mono = np.tile(mono, n // mono.shape[0]).astype(np.float32)
-        source = atr.AudioChunk(
-            mono,
-            None,
-            sr,
-            lineage=("src",),
-            spectrum_token=("src", "frame"),
-            band_indices=np.array([1, 2, 3], dtype=np.int64),
-        )
-
-        splitter = atr.AttackReleaseSplitterTask("ar_node", {}, block_size=n)
-        attack_chunk, release_chunk = splitter.process({0: source})
-
-        self.assertTrue(np.array_equal(attack_chunk.mono, source.mono))
-        self.assertTrue(np.array_equal(release_chunk.mono, source.mono))
-        self.assertEqual(attack_chunk.spectrum_token, source.spectrum_token)
-        self.assertEqual(release_chunk.spectrum_token, source.spectrum_token)
-        self.assertTrue(np.array_equal(attack_chunk.band_indices, source.band_indices))
-        self.assertTrue(np.array_equal(release_chunk.band_indices, source.band_indices))
-        self.assertEqual(attack_chunk.analysis_ops[-1], ("attackrelease", "attack"))
-        self.assertEqual(release_chunk.analysis_ops[-1], ("attackrelease", "release"))
-
-    def test_audio_math_add_mode(self):
-        n = 8
-        a = atr.AudioChunk(np.full(n, 1.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-        out = task.process({0: a, 1: b})
-        self.assertTrue(np.allclose(out.mono, np.full(n, 3.0, dtype=np.float32)))
-
-    def test_audio_math_subtract_mode(self):
-        n = 8
-        a = atr.AudioChunk(np.full(n, 5.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        c = atr.AudioChunk(np.full(n, 1.0, dtype=np.float32), None, 48000, lineage=("src", "c"))
-        task = atr.AudioMathTask("math_node", {"op": "subtract"}, block_size=n)
-        out = task.process({0: a, 1: b, 2: c})
-        self.assertTrue(np.allclose(out.mono, np.full(n, 2.0, dtype=np.float32)))
-
-    def test_audio_math_multiply_mode(self):
-        n = 8
-        a = atr.AudioChunk(np.full(n, 3.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        task = atr.AudioMathTask("math_node", {"op": "multiply"}, block_size=n)
-        out = task.process({0: a, 1: b})
-        self.assertTrue(np.allclose(out.mono, np.full(n, 6.0, dtype=np.float32)))
-
-    def test_audio_math_add_mode_preserves_stereo(self):
-        n = 16
-        left_a = np.linspace(0.0, 1.0, n, dtype=np.float32)
-        right_a = np.linspace(1.0, 0.0, n, dtype=np.float32)
-        stereo_a = np.stack([left_a, right_a], axis=0).astype(np.float32, copy=False)
-        mono_a = np.mean(stereo_a, axis=0).astype(np.float32, copy=False)
-
-        left_b = np.linspace(0.5, -0.5, n, dtype=np.float32)
-        right_b = np.linspace(-0.25, 0.75, n, dtype=np.float32)
-        stereo_b = np.stack([left_b, right_b], axis=0).astype(np.float32, copy=False)
-        mono_b = np.mean(stereo_b, axis=0).astype(np.float32, copy=False)
-
-        a = atr.AudioChunk(mono_a, stereo_a, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(mono_b, stereo_b, 48000, lineage=("src", "b"))
-
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-        out = task.process({0: a, 1: b})
-
-        self.assertIsNotNone(out.stereo)
-        self.assertEqual(out.stereo.shape, (2, n))
-        self.assertTrue(np.allclose(out.stereo[0], left_a + left_b))
-        self.assertTrue(np.allclose(out.stereo[1], right_a + right_b))
-        self.assertTrue(np.allclose(out.mono, np.mean(out.stereo, axis=0)))
-
-    def test_audio_math_merges_mask_metadata_from_all_inputs(self):
-        n = 256
-        a = atr.AudioChunk(
-            np.ones(n, dtype=np.float32),
-            None,
-            48000,
-            lineage=("src", "a"),
-            band_indices=np.array([2, 4, 6], dtype=np.int64),
-            band_index_fft_size=n,
-            band_hz_bounds=(100.0, 1200.0),
-        )
-        b = atr.AudioChunk(
-            np.ones(n, dtype=np.float32) * 2.0,
-            None,
-            48000,
-            lineage=("src", "b"),
-            band_indices=np.array([6, 8, 10], dtype=np.int64),
-            band_index_fft_size=n,
-            band_hz_bounds=(900.0, 3200.0),
-        )
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-        out = task.process({0: a, 1: b})
-
-        self.assertTrue(np.array_equal(out.band_indices, np.array([2, 4, 6, 8, 10], dtype=np.int64)))
-        self.assertEqual(out.band_index_fft_size, n)
-        self.assertEqual(out.band_hz_bounds, (100.0, 3200.0))
-
-    def test_audio_math_handles_mismatched_input_lengths(self):
-        a = atr.AudioChunk(np.full(512, 1.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(1024, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=1024)
-        out = task.process({0: a, 1: b})
-
-        self.assertEqual(out.mono.shape[0], 1024)
-        self.assertTrue(np.allclose(out.mono[:512], 3.0))
-        self.assertTrue(np.allclose(out.mono[512:], 2.0))
 
     def test_source_task_forwards_live_latency_to_reception(self):
         captured = {}
@@ -650,46 +507,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertGreater(float(spec[idx_mid]), float(spec[low_idx]) * 1.8)
         self.assertGreater(float(spec[idx_high]), float(spec[low_idx]) * 1.8)
 
-    def test_splitter_then_chromagram_preview_respects_parent_band_with_variable_chunk_size(self):
-        sr = 48000
-        chunk_n = 960
-        task_block = 1024
-        t = np.arange(chunk_n, dtype=np.float32) / float(sr)
-        tone_low = np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32)   # A
-        tone_high = np.sin(2.0 * np.pi * 1760.0 * t).astype(np.float32)  # A one octave stack
-        mixed = (tone_low + tone_high).astype(np.float32)
-
-        src = atr.AudioChunk(mixed, None, sr, lineage=("src",))
-        splitter = atr.FrequencySplitterTask("split_node", {"in_1": 400.0}, block_size=task_block)
-        low_band = splitter.process({0: src})[0]
-
-        chroma = atr.ChromagramTask("chroma_node", {}, block_size=task_block)
-        chroma_a = chroma.process({0: low_band})[9]  # A pitch class
-
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=task_block)
-        out = preview.process({0: chroma_a})
-
-        freqs = np.fft.rfftfreq(chunk_n, d=1.0 / float(sr))
-        spec = np.abs(np.fft.rfft(out.mono))
-        low_idx = int(np.argmin(np.abs(freqs - 220.0)))
-        high_idx = int(np.argmin(np.abs(freqs - 1760.0)))
-        self.assertGreater(float(spec[low_idx]), float(spec[high_idx]) * 3.0)
-
-    def test_chromagram_fallback_keeps_sparse_mask_non_empty_in_coarse_band(self):
-        sr = 48000
-        chunk_n = 960
-        task_block = 1024
-        t = np.arange(chunk_n, dtype=np.float32) / float(sr)
-        signal = np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32)
-        src = atr.AudioChunk(signal, None, sr, lineage=("src",))
-        splitter = atr.FrequencySplitterTask("split_node", {"in_1": 400.0}, block_size=task_block)
-        low_band = splitter.process({0: src})[0]
-
-        chroma = atr.ChromagramTask("chroma_node", {}, block_size=task_block)
-        chroma_a = chroma.process({0: low_band})[9]
-        self.assertIsNotNone(chroma_a.band_indices)
-        self.assertGreater(int(chroma_a.band_indices.size), 0)
-
     def test_preview_sink_gain_staging_avoids_hard_clipping(self):
         sr = 48000
         n = 1024
@@ -704,47 +521,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         out = task.process({0: chunk})
         peak = float(np.max(np.abs(out.mono))) if out.mono.size > 0 else 0.0
         self.assertLessEqual(peak, 0.985)
-
-    def test_preview_sink_reconstructs_midside_branches_from_analysis_ops(self):
-        sr = 48000
-        n = 1024
-        t = np.arange(n, dtype=np.float32) / float(sr)
-        left = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
-        right = (-left).astype(np.float32)
-        stereo = np.stack([left, right], axis=0)
-        mono = np.mean(stereo, axis=0).astype(np.float32)
-        src = atr.AudioChunk(mono, stereo, sr, lineage=("src",), spectrum_token=("src", "frame"))
-
-        splitter = atr.MidsideSplitterTask("ms_node", {}, block_size=n)
-        mid_chunk, side_chunk = splitter.process({0: src})
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
-
-        mid_out = preview.process({0: mid_chunk})
-        side_out = preview.process({0: side_chunk})
-
-        self.assertLess(float(np.max(np.abs(mid_out.mono))), 1e-4)
-        self.assertGreater(float(np.max(np.abs(side_out.mono))), 0.2)
-        self.assertEqual(mid_out.analysis_ops, ())
-        self.assertEqual(side_out.analysis_ops, ())
-
-    def test_preview_sink_reconstructs_attackrelease_branches_from_analysis_ops(self):
-        n = 512
-        sr = 48000
-        pattern = np.array([0.0, 1.0, 0.3, 0.2, 0.9, 0.1, 0.8, 0.0], dtype=np.float32)
-        mono = np.tile(pattern, n // pattern.shape[0]).astype(np.float32)
-        src = atr.AudioChunk(mono, None, sr, lineage=("src",), spectrum_token=("src", "frame"))
-
-        splitter = atr.AttackReleaseSplitterTask("ar_node", {}, block_size=n)
-        attack_chunk, release_chunk = splitter.process({0: src})
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
-
-        attack_out = preview.process({0: attack_chunk})
-        release_out = preview.process({0: release_chunk})
-
-        recombined = attack_out.mono + release_out.mono
-        self.assertTrue(np.allclose(recombined, mono, atol=1e-6))
-        self.assertEqual(attack_out.analysis_ops, ())
-        self.assertEqual(release_out.analysis_ops, ())
 
     def test_source_frontend_signed_smoothing_preserves_polarity_and_reduces_jitter(self):
         processor = atr.SourceFrontendProcessor()
@@ -921,33 +697,12 @@ class TestAudioTasksRegistry(unittest.TestCase):
         mapped_idx = int(np.argmax(mask.astype(np.int32)))
         self.assertLess(abs(float(dst_freqs[mapped_idx]) - target_hz), 80.0)
 
-    def test_preview_sink_passthrough_without_masks_or_ops(self):
+    def test_preview_sink_passthrough_without_masks(self):
         n = 512
         chunk = atr.AudioChunk(np.linspace(-1.0, 1.0, n, dtype=np.float32), None, 48000, lineage=("src",))
         preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
         out = preview.process({0: chunk})
         self.assertIs(out, chunk)
-
-    def test_audio_math_caches_analysis_extraction_per_input(self):
-        original_extract = tasks_spectral._analysis_signal_for_chunk
-        calls = {"count": 0}
-
-        def _counting_extract(chunk):
-            calls["count"] += 1
-            return original_extract(chunk)
-
-        tasks_spectral._analysis_signal_for_chunk = _counting_extract
-        try:
-            n = 128
-            task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-            a = atr.AudioChunk(np.full(n, 1.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-            b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-            c = atr.AudioChunk(np.full(n, 3.0, dtype=np.float32), None, 48000, lineage=("src", "c"))
-            out = task.process({0: a, 1: b, 2: c})
-            self.assertEqual(out.mono.shape[0], n)
-            self.assertEqual(calls["count"], 3)
-        finally:
-            tasks_spectral._analysis_signal_for_chunk = original_extract
 
 
 if __name__ == "__main__":

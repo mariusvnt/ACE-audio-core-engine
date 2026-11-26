@@ -6,7 +6,7 @@ from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
 from ..core.id_management import ACEIdManager
 from ..core.proxy.manager import ACEProxyManager
-from ..nodes.dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+from ..nodes.dynamic_audio_operators import ACESplitterManager
 from ..nodes.source_nodes import bind_node
 from .. import utils
 
@@ -303,7 +303,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         factory_cls = self._factory_for_context(context)
         group_node_type = self._group_node_type_for_context(context)
         splitter_bands = 2
-        audio_math_inputs = 2
         
         if self.category_key == "delta" and self.node_type_key == "frequency_splitter":
             try:
@@ -315,16 +314,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
                 splitter_bands = 2
             splitter_bands = max(2, min(splitter_bands, 8))
             group = ACESplitterManager.get_or_create_variant(splitter_bands, tree)
-        elif self.category_key == "utilities" and self.node_type_key == "audio_math":
-            try:
-                ace = getattr(getattr(context, "scene", None), "audiocore", None)
-                settings = getattr(ace, "engine_settings", None) if ace else None
-                audio_math_inputs = int(getattr(settings, "audio_math_default_inputs", 2) or 2)
-            except Exception as exc:
-                utils.note_swallowed("gn_menu.ACE_OT_add_node_group.execute#2", exc)
-                audio_math_inputs = 2
-            audio_math_inputs = max(2, min(audio_math_inputs, 8))
-            group = ACEAudioMathManager.get_or_create_variant(audio_math_inputs, tree)
         else:
             group_name = factory_cls.get_group_name(self.category_key, self.node_type_key)
             existing_group = bpy.data.node_groups.get(group_name)
@@ -366,9 +355,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if self.node_type_key == 'frequency_splitter':
             node['ace_band_count'] = max(2, min(int(node.get('ace_band_count', splitter_bands)), 8))
             node.label = f"{node.label} ({int(node['ace_band_count'])} Bands)"
-        if self.node_type_key == 'audio_math':
-            node["ace_input_count"] = max(2, min(int(node.get("ace_input_count", audio_math_inputs)), 8))
-            node["ace_op"] = node.get("ace_op", "add")
         if self.node_type_key == 'preview_sink':
             node["ace_preview_enabled"] = bool(node.get("ace_preview_enabled", True))
         if node_modes(self.category_key, self.node_type_key):

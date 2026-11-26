@@ -48,14 +48,12 @@ def _migrate_legacy_nodes():
     """Bring the open file's nodes up to date: old stream nodes become mode nodes, split frequencies get ordered."""
     from ...nodes.modes import migrate_legacy_stream_nodes
     from ...nodes.split_freqs import sort_all_split_freqs
-    from ...nodes.dynamic_audio_operators import drop_input_counts_from_math_titles
     from ...nodes.frontend import convert_rolling_average_groups
 
     try:
         convert_rolling_average_groups()
         migrate_legacy_stream_nodes()
         sort_all_split_freqs()
-        drop_input_counts_from_math_titles()
     except Exception as exc:  # noqa: BLE001 boundary: a load must not fail on node migration
         utils.log(f"ACE node migration failed: {exc}", "ERROR")
 

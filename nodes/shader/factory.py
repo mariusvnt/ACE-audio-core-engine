@@ -528,10 +528,9 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     continue
                 cls._build_group_content(ng, node_def, cat_key, type_key)
         with utils.logged_errors("factory.ACEShaderNodeFactory.ensure_node_groups_exist#2"):
-            from ..dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+            from ..dynamic_audio_operators import ACESplitterManager
 
             ACESplitterManager.refresh_existing_variants("ShaderNodeTree")
-            ACEAudioMathManager.refresh_existing_variants("ShaderNodeTree")
         if current_hash:
             from .reader import ACEShaderTreeReader
 

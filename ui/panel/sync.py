@@ -122,7 +122,7 @@ def _ui_tree_topology_signature(tree) -> str:
                 utils.note_swallowed("sync._ui_tree_topology_signature#2", exc)
                 source_id = ""
             try:
-                op_value = f"{node.get('ace_op', '') or ''}|{node.get('ace_mode', '') or ''}"
+                op_value = str(node.get('ace_mode', '') or '')
             except Exception as exc:
                 utils.note_swallowed("sync._ui_tree_topology_signature#3", exc)
                 op_value = ""

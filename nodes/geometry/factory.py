@@ -60,9 +60,8 @@ class ACEDummyNodeFactory:
                     ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
 
         with utils.logged_errors("factory.ACEDummyNodeFactory.ensure_node_groups_exist"):
-            from ..dynamic_audio_operators import ACESplitterManager, ACEAudioMathManager
+            from ..dynamic_audio_operators import ACESplitterManager
             ACESplitterManager.refresh_existing_variants("GeometryNodeTree")
-            ACEAudioMathManager.refresh_existing_variants("GeometryNodeTree")
 
         # A registry change also invalidates the reader's group-name lookup.
         if current_hash:
@@ -147,11 +146,6 @@ class ACEDummyNodeFactory:
         if node_type == "preview_sink":
             # Sink: one Audio input, no outputs required.
             return "Audio" not in inputs
-        if node_type == "audio_math":
-            # Renamed sockets break the audio math wiring, so check names, not counts.
-            has_audio_in = any(n == "Audio" or n.startswith("Audio ") for n in inputs)
-            has_audio_out = any(n == "Audio" or n.startswith("Audio ") for n in outputs)
-            return not has_audio_in or not has_audio_out
         if node_type == "util_rolling_avg":
             required_inputs = {"Value", "Window", "Attribute ID", "Proxy Object"}
             required_outputs = {"Rolling Avg"}
@@ -187,16 +181,6 @@ class ACEDummyNodeFactory:
             )
 
         # Delta nodes: one Audio input and type-specific bundle outputs.
-        if node_type == "midside_splitter":
-            return "Audio" not in inputs or not {"Mid", "Side"}.issubset(outputs)
-        if node_type == "attackrelease_splitter":
-            return "Audio" not in inputs or not {"Attack", "Release"}.issubset(outputs)
-        if node_type == "auto_component_splitter":
-            return "Audio" not in inputs or not {"Percussive", "Harmonics", "Residual"}.issubset(outputs)
-        if node_type == "chromagram":
-            # 12 chroma outputs; verify at least the first (C) is present and
-            # the input is wired correctly.
-            return "Audio" not in inputs or "C" not in outputs
         if node_type == "frequency_splitter":
             # Dynamic output count; require at least the template "Audio" output.
             return "Audio" not in inputs or not any(
@@ -454,11 +438,6 @@ class ACEDummyNodeFactory:
             elif node_type == 'preview_sink':
                 # Pure sink: one bundle input, no outputs.
                 pass
-
-            elif node_type == 'audio_math':
-                # Pass-through facade; the math runs in the backend.
-                for i in range(min(len(inputs_def), len(outputs_def))):
-                    ng.links.new(input_node.outputs[i], output_node.inputs[i])
 
             elif node_type == 'util_rolling_avg':
                 # Attribute ID input (string) — the auto-generated proxy attribute name.

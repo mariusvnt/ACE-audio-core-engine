@@ -7,7 +7,7 @@ import numpy as np
 from .filters import NUMBA_AVAILABLE
 from ... import utils
 from .base import ACEAudioTask, _LAYER3_THREAD_LOCAL
-from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk, _normalized_analysis_ops, _preview_signal_for_chunk, _signal_for_chunk
+from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk, _preview_signal_for_chunk
 from .filters import _run_biquad
 from .spectral import _remap_indices_fft_domain
 
@@ -350,11 +350,8 @@ class PreviewSinkTask(ACEAudioTask):
 
     def _process_impl(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        # Filter the raw signal; analysis ops apply after the filters (band first, then gate or matrix).
-        mono_base, stereo_base = _signal_for_chunk(
-            chunk, prefer_analysis_track=False, apply_analysis_ops=False
-        )
-        analysis_ops = _normalized_analysis_ops(chunk)
+        # The raw signal, filtered to the chunk's band.
+        mono_base, stereo_base = _preview_signal_for_chunk(chunk)
         sample_rate = float(max(getattr(chunk, "sample_rate", SAMPLE_RATE), 1))
         nyquist = 0.5 * sample_rate
         stereo_in = stereo_base
@@ -367,27 +364,11 @@ class PreviewSinkTask(ACEAudioTask):
         bounds = self._coerce_bounds(self._resolve_bounds(chunk), sample_rate)
         sparse_mask = self._resolve_sparse_mask(chunk, signal_length=signal_length)
         if bounds is None and sparse_mask is None:
-            if analysis_ops:
-                # No frequency filtering needed; apply ops directly and return.
-                mono, stereo_out = _preview_signal_for_chunk(chunk)
-                return AudioChunk(
-                    mono,
-                    stereo_out,
-                    getattr(chunk, "sample_rate", SAMPLE_RATE),
-                    provider=chunk.provider,
-                    frame_index=chunk.frame_index,
-                    band_indices=getattr(chunk, "band_indices", None),
-                    band_index_fft_size=getattr(chunk, "band_index_fft_size", None),
-                    band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
-                    lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:preview",),
-                    spectrum_token=getattr(chunk, "spectrum_token", None),
-                    latency_ms=float(getattr(chunk, "latency_ms", 0.0) or 0.0),
-                )
             return chunk
 
         if bounds is not None and sparse_mask is None:
             low_hz, high_hz = bounds
-            if (not analysis_ops) and low_hz <= 20.5 and high_hz >= (nyquist * 0.985):
+            if low_hz <= 20.5 and high_hz >= (nyquist * 0.985):
                 return chunk
             self._ensure_iir_setup(sample_rate, low_hz, high_hz, channels)
             use_numba = self._numba_turbo_enabled()
@@ -451,19 +432,6 @@ class PreviewSinkTask(ACEAudioTask):
 
         mono, stereo_out = self._apply_preview_gain(mono, stereo_out, coverage)
 
-        if analysis_ops:
-            _filtered = AudioChunk(
-                mono,
-                stereo_out,
-                int(getattr(chunk, "sample_rate", SAMPLE_RATE)),
-                provider=chunk.provider,
-                frame_index=chunk.frame_index,
-                analysis_ops=analysis_ops,
-            )
-            mono, stereo_out = _signal_for_chunk(
-                _filtered, prefer_analysis_track=False, apply_analysis_ops=True
-            )
-
         return AudioChunk(
             mono,
             stereo_out,
@@ -475,7 +443,6 @@ class PreviewSinkTask(ACEAudioTask):
             band_hz_bounds=getattr(chunk, "band_hz_bounds", None),
             lineage=tuple(getattr(chunk, "lineage", ())) + (f"{self.node_id}:preview",),
             spectrum_token=getattr(chunk, "spectrum_token", None),
-            analysis_ops=(),
             latency_ms=float(getattr(chunk, "latency_ms", 0.0) or 0.0),
         )
 

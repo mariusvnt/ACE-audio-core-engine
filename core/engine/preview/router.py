@@ -108,7 +108,6 @@ class PreviewRouter:
             stereo,
             sample_rate,
             lineage=("preview_mix",),
-            analysis_ops=(),
             latency_ms=latency_ms,
         )
 
@@ -127,12 +126,6 @@ class PreviewRouter:
             except Exception as exc:
                 utils.note_swallowed("router.PreviewRouter._chunk_is_unmasked_audio", exc)
                 return False
-        try:
-            if bool(getattr(chunk, "analysis_ops", ())):
-                return False
-        except Exception as exc:
-            utils.note_swallowed("router.PreviewRouter._chunk_is_unmasked_audio#2", exc)
-            return False
         return True
 
     @staticmethod

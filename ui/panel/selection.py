@@ -221,7 +221,6 @@ def _parsed_node_has_operator_settings(parsed) -> bool:
         return True
     return key in {
         ("delta", "frequency_splitter"),
-        ("utilities", "audio_math"),
         ("utilities", "preview_sink"),
         ("utilities", "util_rolling_avg"),
     }
@@ -375,26 +374,6 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                     continue
                 field.label(text="" if value is None else f"{value:.0f} Hz")
                 field.label(text="Linked", icon="LINKED")
-
-    if parsed.get("category") == "utilities" and parsed.get("type") == "audio_math":
-        drew_settings = True
-        box = layout.box()
-        box.label(text="Audio Math", icon="MODIFIER")
-        inputs = int(node.get("ace_input_count", max(2, len(getattr(node, "inputs", []))))) if node else 2
-        row = box.row(align=True)
-        op = row.operator("ace.update_audio_math_inputs", text="", icon="REMOVE")
-        op.direction = 'DOWN'
-        row.label(text=f"{inputs} Inputs")
-        op = row.operator("ace.update_audio_math_inputs", text="", icon="ADD")
-        op.direction = 'UP'
-
-        current_op = str(node.get("ace_op", "add")).lower()
-        if current_op not in {"add", "subtract", "multiply"}:
-            current_op = "add"
-        row = box.row(align=True)
-        for op_id, label in (("add", "Add"), ("subtract", "Subtract"), ("multiply", "Multiply")):
-            op = row.operator("ace.set_audio_math_op", text=label, depress=(current_op == op_id))
-            op.op = op_id
 
     if parsed.get("category") == "utilities" and parsed.get("type") == "preview_sink":
         drew_settings = True
