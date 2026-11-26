@@ -9,7 +9,9 @@ missing for a platform, or when a wheel would bring NumPy.
 
 Then: blender --command extension build --split-platforms
 
-Usage: python tools/fetch_wheels.py [--platform windows-x64 ...]
+Usage: python tools/fetch_wheels.py [--platform windows-x64 ...] [--no-manifest]
+
+--no-manifest only downloads (CI installs the Linux wheels to run unit tests with them).
 """
 
 import argparse
@@ -172,11 +174,15 @@ def write_manifest(wheel_names):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--platform", action="append", help="Blender platform (default: every one in the manifest)")
+    parser.add_argument("--no-manifest", action="store_true", help="download only; leave blender_manifest.toml and other wheels alone")
     args = parser.parse_args()
     with open(MANIFEST, "rb") as fh:
         manifest = tomllib.load(fh)
     platforms = args.platform or list(manifest.get("platforms", []))
     names = fetch(platforms)
+    if args.no_manifest:
+        print(f"{len(names)} wheels for {', '.join(platforms)} in {WHEELS_DIR}")
+        return 0
     if args.platform:
         # Keep what the manifest already lists for the other platforms.
         names = sorted(set(names) | {os.path.basename(w) for w in manifest.get("wheels", [])

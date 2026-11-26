@@ -4,15 +4,21 @@ on:
   push:
   pull_request:
 
+env:
+  # Blender 5.2 runs Python 3.13 and bundles NumPy 2.3.4; tests outside Blender use the same.
+  PYTHON_VERSION: "3.13"
+  NUMPY_VERSION: "2.3.4"
+  BLENDER_VERSION: "5.2.0"
+
 jobs:
   tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # minimal: the fallbacks users get before installing dependencies.
-        # full: what the add-on's dependency installer provides.
-        deps: [minimal, full]
+        # minimal: NumPy only, the fallbacks ACE uses when no optional library loads.
+        # bundled: the Linux wheels the extension ships (tools/wheels.txt, AudioFlux trimmed).
+        deps: [minimal, bundled]
     # Perf gates are skipped here (no ACE_PERF); they run in the perf job below.
     steps:
       - uses: actions/checkout@v7
@@ -20,16 +26,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          # Blender 5.x bundles Python 3.11.
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ "${{ matrix.deps }}" = "full" ]; then
-            pip install numpy scipy soundfile numba audioflux
-          else
-            pip install numpy
+          pip install "numpy==${NUMPY_VERSION}"
+          if [ "${{ matrix.deps }}" = "bundled" ]; then
+            python tools/fetch_wheels.py --platform linux-x64 --no-manifest
+            pip install --no-deps wheels/*.whl
           fi
 
       - name: Run unit tests
@@ -51,7 +56,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install ruff
       - run: ruff check .
 
@@ -65,8 +70,86 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
-      - run: pip install numpy scipy soundfile numba audioflux
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install NumPy and the bundled wheels
+        run: |
+          pip install "numpy==${NUMPY_VERSION}"
+          python tools/fetch_wheels.py --platform linux-x64 --no-manifest
+          pip install --no-deps wheels/*.whl
       - name: Strict perf gates
         working-directory: tests
         run: python -m unittest test_engine_perf_gate test_perf_gate -v
+
+  blender:
+    # The extension as users install it: built for Linux, installed with its wheels, run headless.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Libraries headless Blender needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libsm6 libice6 libxi6 libxkbcommon0 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1
+
+      - name: Cache Blender
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/blender-${{ env.BLENDER_VERSION }}-linux-x64
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
+      - name: Download Blender
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        run: |
+          series="${BLENDER_VERSION%.*}"
+          curl -sSfL "https://download.blender.org/release/Blender${series}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+            | tar -xJ -C "$HOME"
+
+      - name: Fetch the wheels
+        run: python tools/fetch_wheels.py
+
+      - name: Manifest lists exactly the pinned wheels
+        run: |
+          git diff --exit-code blender_manifest.toml \
+            || { echo "::error::blender_manifest.toml is out of date: run python tools/fetch_wheels.py and commit it"; exit 1; }
+
+      - name: Smoke test (installed extension)
+        run: python tests/run_in_blender.py --package --blender "$HOME/blender-${BLENDER_VERSION}-linux-x64/blender"
+
+      - name: Reference curves (installed extension)
+        run: |
+          python tests/run_in_blender.py --package --blender "$HOME/blender-${BLENDER_VERSION}-linux-x64/blender" \
+            --script tests/reference/blender_reference.py
+
+      - name: Drift report
+        if: failure()
+        run: python tests/reference/report.py || true
+
+      - name: Upload reference artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-curves
+          path: tests/artifacts/reference/
+          if-no-files-found: ignore
+
+  reference-crosscheck:
+    # The committed curves against independent tools (librosa, pyloudnorm). No Blender.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install the tools
+        run: |
+          pip install "numpy==${NUMPY_VERSION}"
+          pip install -r tests/requirements-reference.txt
+      - name: Coverage and cross-checks
+        working-directory: tests
+        run: python -m unittest test_reference_goldens test_reference_crosscheck -v
