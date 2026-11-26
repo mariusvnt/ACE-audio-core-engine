@@ -7,7 +7,6 @@ from .... import utils
 from ...tasks.chunk import AudioChunk, SAMPLE_RATE
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
-from ...tasks.specs import SourceSpecsTask
 from .block_size import BlockSizing
 from .evaluation import GraphEvaluation
 
@@ -40,7 +39,6 @@ class FrameRunner(BlockSizing, GraphEvaluation):
     def __init__(self, engine):
         self.engine = engine
         self._block_size_state: Dict[str, Dict[str, int]] = {}
-        self._source_specs_task_registry: Dict[tuple[str, float], SourceSpecsTask] = {}
         self._preview_last_chunk: Optional[AudioChunk] = None
         self._preview_last_eval_frame: int = -1
         self._preview_next_eval_ts: float = 0.0
@@ -83,10 +81,8 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                 min_interval=5.0,
             )
             return
-        # Flush async bake progress/completions and any deferred SourceSpecs ctx writes.
+        # Flush async bake progress and completions.
         self.engine.bake.flush_bake_results()
-        self._refresh_source_specs_task_registry()
-        SourceSpecsTask.flush_pending_ctx_writes(self._source_specs_task_registry)
         if self.engine.bake._bake_jobs:
             # Bake worker evaluates the live graph/task set; suspend frame-runtime
             # evaluation while a bake is active to avoid cross-thread task mutation.

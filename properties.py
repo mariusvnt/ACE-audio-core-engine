@@ -35,8 +35,7 @@ def _clear_tempo_detection_state(source_prop):
         "ace_tempo_detect_message",
         "ace_tempo_detect_filepath",
         "ace_tempo_detect_mtime",
-        "ace_bpm_auto",
-        "ace_meter_auto",
+        "ace_tempo_detect_auto",
     )
     for key in stale_keys:
         with utils.logged_errors("properties._clear_tempo_detection_state"):

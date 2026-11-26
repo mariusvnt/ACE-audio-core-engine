@@ -121,16 +121,9 @@ def build_tree(addon_key, scene, cases):
 
 def _specs_busy(addon_key, scene) -> str:
     """What background tempo analysis may still change a value ("" when nothing)."""
-    # The tempo write queue is not checked: a detected tempo is queued again on
-    # every frame and flushed at the next one, so it is never empty.
-    specs_cls = importlib.import_module(f"{addon_key}.core.tasks.specs").SourceSpecsTask
-    queue = getattr(specs_cls, "_BG_TASK_QUEUE", None)
-    if queue is not None and getattr(queue, "unfinished_tasks", 0):
-        return f"analysis queue ({queue.unfinished_tasks} unfinished)"
-    if getattr(specs_cls, "_BG_PENDING", None):
-        return f"pending {dict(specs_cls._BG_PENDING)}"
-    if getattr(specs_cls, "_BG_QUEUED", None):
-        return f"queued {set(specs_cls._BG_QUEUED)}"
+    waiting = importlib.import_module(f"{addon_key}.core.tasks.tempo").TempoService.busy()
+    if waiting:
+        return f"tempo detection of {waiting}"
     for src in scene.audiocore.audio_sources:
         if str(src.get("ace_tempo_detect_status", "")) == "pending":
             return f"tempo detection pending on {src.name}"
@@ -144,8 +137,9 @@ def _clear_spectrum_cache(addon_key) -> None:
 
 def reset_tempo(source) -> None:
     """Back to a new source's tempo: a file with no beat keeps whatever the last one set."""
-    for key in ("ace_bpm_auto", "ace_meter_auto", "ace_bpm_user_override", "ace_meter_user_override",
-                "ace_tempo_detect_status", "ace_tempo_detect_message"):
+    for key in ("ace_bpm_user_override", "ace_meter_user_override", "ace_tempo_detect_status",
+                "ace_tempo_detect_message", "ace_tempo_detect_filepath", "ace_tempo_detect_mtime",
+                "ace_tempo_detect_auto"):
         if key in source:
             del source[key]
     source.property_unset("bpm")
@@ -385,7 +379,7 @@ def main():
             src.source_type = "FILE"
             src.filepath = wav_path
             reset_tempo(src)
-            # With the engine too: its tasks remember which tempo they already wrote.
+            # And a fresh engine, as after loading a file.
             handlers_mod._load_post_reset_engine(None)
             engine = engine_cls.ensure_instance(scene)
 

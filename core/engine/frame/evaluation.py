@@ -6,7 +6,6 @@ from collections import deque
 from typing import Any, Dict, List, Optional
 from .... import utils
 from ...tasks.graph import ACEAudioGraph
-from ...tasks.specs import SourceSpecsTask
 from ..common import engine_settings
 
 
@@ -206,18 +205,6 @@ class GraphEvaluation:
                 continue
             results[attr_key] = self._normalize_output_value(attr_key, val)
         return results
-
-    def _refresh_source_specs_task_registry(self) -> None:
-        registry: Dict[tuple[str, float], SourceSpecsTask] = {}
-        for graph in (self.engine.graphs or {}).values():
-            for task in (getattr(graph, "tasks", {}) or {}).values():
-                if not isinstance(task, SourceSpecsTask):
-                    continue
-                target = getattr(task, "_long_term_target", None)
-                if target is None:
-                    continue
-                registry[target] = task
-        self._source_specs_task_registry = registry
 
     @classmethod
     def _scheduler_mode(cls, scene_or_engine_settings=None) -> str:

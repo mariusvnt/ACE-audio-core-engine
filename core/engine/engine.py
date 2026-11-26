@@ -11,7 +11,7 @@ from ..tasks.chunk import SAMPLE_RATE
 from ..tasks.filters import reset_biquad_fallback_warned
 from ..tasks.graph import ACEAudioGraph
 from ..tasks.source import _clear_file_open_locks
-from ..tasks.specs import SourceSpecsTask
+from ..tasks.tempo import TempoService
 from ..proxy.manager import ACEProxyManager
 from .common import FRONTEND_KIND_SHADER
 from .bake import BakeManager
@@ -202,7 +202,7 @@ class ACEAudioEngine:
         with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#2"):
             PreviewRouter._preview_monitor.close()
         with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#3"):
-            SourceSpecsTask.shutdown_background_worker()
+            TempoService.shutdown()
         with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#4"):
             _clear_file_open_locks()
         with utils.logged_errors("engine.ACEAudioEngine.shutdown_all_instances#5"):
@@ -239,7 +239,6 @@ class ACEAudioEngine:
         self.compiler._last_tree_signature = None
         self._attr_schema_dirty.clear()
         self._last_attr_sync_frame.clear()
-        self.frame._source_specs_task_registry.clear()
         self.writer = None
         self.frame._preview_last_chunk = None
         self.frame._preview_last_eval_frame = -1
@@ -268,7 +267,7 @@ class ACEAudioEngine:
         with utils.logged_errors("engine.ACEAudioEngine.begin_undo_recovery"):
             self.invalidate_runtime_caches()
         with utils.logged_errors("engine.ACEAudioEngine.begin_undo_recovery#2"):
-            SourceSpecsTask.shutdown_background_worker()
+            TempoService.shutdown()
         self._shutdown_graphs(clear_bake_cache=False)
         now = time.time()
         self.frontends._pending_scene_rebuild = True

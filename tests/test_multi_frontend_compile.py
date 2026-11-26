@@ -258,7 +258,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.bake._bake_jobs = {}
         import queue as _queue
         engine.bake._bake_result_queue = _queue.Queue()
-        engine.frame._source_specs_task_registry = {}
         engine._current_delta_frames = 1.0
         engine.diagnostics._pending_geometry_events = []
         engine.parallel.last_submit_frame = -1
@@ -1155,14 +1154,14 @@ class TestMultiFrontendCompile(unittest.TestCase):
         engine.invalidate_runtime_caches = lambda: None
         scene = types.SimpleNamespace(name="Scene")
         original_monotonic = self.engine_mod.time.monotonic
-        original_shutdown_bg = self.tasks_mod.SourceSpecsTask.shutdown_background_worker
+        original_shutdown_bg = self.engine_mod.TempoService.shutdown
         try:
             self.engine_mod.time.monotonic = lambda: 10.0
-            self.tasks_mod.SourceSpecsTask.shutdown_background_worker = classmethod(lambda cls: None)
+            self.engine_mod.TempoService.shutdown = classmethod(lambda cls: None)
             engine.begin_undo_recovery(scene)
         finally:
             self.engine_mod.time.monotonic = original_monotonic
-            self.tasks_mod.SourceSpecsTask.shutdown_background_worker = original_shutdown_bg
+            self.engine_mod.TempoService.shutdown = original_shutdown_bg
 
         self.assertEqual(engine.undo_generation, 1)
         self.assertEqual(engine.undo_recovery_until, 10.75)
@@ -1230,24 +1229,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
 
         self.assertNotIn("sample_rate", task.source_context)
         self.assertEqual(task._pending_ctx_writes, {})
-
-    def test_source_specs_flush_pending_ctx_writes_ignores_stale_generation(self):
-        self.tasks_mod.SourceSpecsTask.clear_pending_ctx_writes_queue()
-        ctx = _FakePropertyCtx(bpm=120.0, beats_per_bar=4)
-        task = types.SimpleNamespace(
-            source_context=ctx,
-            _auto_bpm_key="ace_bpm_auto",
-            _auto_meter_key="ace_meter_auto",
-            undo_generation=3,
-            engine_ref=types.SimpleNamespace(undo_generation=4),
-        )
-        self.tasks_mod.SourceSpecsTask._PENDING_CTX_WRITES.put_nowait((("file.wav", 1.0), 128.0, 7, 3))
-
-        self.tasks_mod.SourceSpecsTask.flush_pending_ctx_writes({("file.wav", 1.0): task})
-
-        self.assertEqual(ctx["bpm"], 120.0)
-        self.assertEqual(ctx["beats_per_bar"], 4)
-        self.tasks_mod.SourceSpecsTask.clear_pending_ctx_writes_queue()
 
     def test_flush_probe_updates_ignores_results_from_stale_undo_generation(self):
         engine = self._engine_shell()

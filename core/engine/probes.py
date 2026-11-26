@@ -6,7 +6,7 @@ from ... import utils
 from ...properties import ACEAudioSource
 from ..input import decode
 from ..tasks.chunk import SAMPLE_RATE
-from ..tasks.specs import SourceSpecsTask
+from ..tasks.tempo import TempoService
 
 
 class SourceProbes:
@@ -162,16 +162,30 @@ class SourceProbes:
                 self.engine.frontends.request_recompile(preferred_tree)
         return any_updated
 
+    @staticmethod
+    def _user_set_tempo(source) -> bool:
+        """True once the user typed a BPM or Beats per Bar: automatic detection leaves the source alone."""
+        try:
+            return bool(source.get("ace_bpm_user_override", False) or source.get("ace_meter_user_override", False))
+        except Exception as exc:
+            utils.note_swallowed("probes.SourceProbes._user_set_tempo", exc)
+            return False
+
+    @staticmethod
+    def _set_detect_status(source, status: str, message: str) -> None:
+        with utils.logged_errors("probes.SourceProbes._set_detect_status"):
+            source["ace_tempo_detect_status"] = status
+            source["ace_tempo_detect_message"] = message
+
     def _apply_tempo_detection_to_source(self, source: ACEAudioSource, detected: Dict[str, Any]) -> bool:
         bpm = float(detected.get("bpm", 0.0) or 0.0)
         beats_per_bar = int(detected.get("beats_per_bar", 0) or 0)
         if bpm <= 0.0 or beats_per_bar <= 0:
             return False
         try:
-            source["ace_bpm_auto"] = float(bpm)
-            source["ace_meter_auto"] = int(beats_per_bar)
             source.bpm = float(bpm)
             source.beats_per_bar = int(beats_per_bar)
+            # Writing the values ran their update callbacks, which mark a user override.
             source["ace_bpm_user_override"] = False
             source["ace_meter_user_override"] = False
             source["ace_tempo_detect_status"] = "ready"
@@ -181,91 +195,100 @@ class SourceProbes:
             utils.note_swallowed("probes.SourceProbes._apply_tempo_detection_to_source", exc)
             return False
 
-    def request_source_tempo_detection(self, source: Optional[ACEAudioSource]) -> tuple[bool, str]:
-        """Queue non-blocking BPM / beats-per-bar detection for a FILE source."""
+    def request_source_tempo_detection(self, source: Optional[ACEAudioSource], automatic: bool = False) -> tuple[bool, str]:
+        """Queue non-blocking BPM / beats-per-bar detection for a FILE source.
+
+        The Auto Detect button asks with automatic=False: its result replaces
+        values the user typed. An automatic request leaves those alone.
+        """
         utils.assert_main_thread("request_source_tempo_detection")
         if source is None:
             return False, "No source selected."
 
-        target = SourceSpecsTask.resolve_analysis_target(source)
+        target = TempoService.target(source)
         if target is None:
-            with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection"):
-                source["ace_tempo_detect_status"] = "failed"
-                source["ace_tempo_detect_message"] = "Select a valid file source before detecting tempo."
+            self._set_detect_status(source, "failed", "Select a valid file source before detecting tempo.")
             return False, "Select a valid file source before detecting tempo."
 
         filepath, mtime = target
-        with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#2"):
+        with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection"):
             source["ace_tempo_detect_status"] = "pending"
             source["ace_tempo_detect_message"] = "Analyzing source tempo in the background..."
             source["ace_tempo_detect_filepath"] = str(filepath)
             source["ace_tempo_detect_mtime"] = float(mtime)
+            source["ace_tempo_detect_auto"] = bool(automatic)
 
-        cached = SourceSpecsTask.get_cached_analysis(target)
-        if cached:
-            if cached.get("bpm", None) is not None and self._apply_tempo_detection_to_source(source, cached):
+        found = TempoService.result(target)
+        if found:
+            if self._take_result(source, found):
                 return True, "Tempo detection updated from cache."
-            error_msg = str(cached.get("error", "") or "Tempo analysis failed.")
-            with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#3"):
-                source["ace_tempo_detect_status"] = "failed"
-                source["ace_tempo_detect_message"] = error_msg
-            return False, error_msg
+            return found.get("bpm") is not None, str(found.get("error", "") or "Tempo detection skipped.")
 
-        queued = SourceSpecsTask._queue_background_analysis(target)
-        if not queued:
-            with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#4"):
-                source["ace_tempo_detect_status"] = "failed"
-                source["ace_tempo_detect_message"] = "Tempo analysis queue is full. Try again in a moment."
+        if not TempoService.request(target):
+            self._set_detect_status(source, "failed", "Tempo analysis queue is full. Try again in a moment.")
+            if automatic:
+                # Forget the file, so the next automatic pass asks again.
+                with utils.logged_errors("probes.SourceProbes.request_source_tempo_detection#2"):
+                    del source["ace_tempo_detect_filepath"]
             return False, "Tempo analysis queue is full. Try again in a moment."
 
         return True, "Tempo detection queued."
 
+    def _take_result(self, source, found: Dict[str, Any]) -> bool:
+        """Apply a finished detection to *source*; True when it wrote the tempo."""
+        if found.get("bpm", None) is None:
+            self._set_detect_status(source, "failed", str(found.get("error", "") or "Tempo detection failed."))
+            return False
+        if bool(source.get("ace_tempo_detect_auto", False)) and self._user_set_tempo(source):
+            self._set_detect_status(source, "", "")  # the user typed a tempo while it ran
+            return False
+        return self._apply_tempo_detection_to_source(source, found)
+
+    def _wants_automatic_detection(self, source) -> bool:
+        """A FILE source with no typed tempo whose current file was not detected yet, or whose detection was lost."""
+        target = TempoService.target(source)
+        if target is None or self._user_set_tempo(source):
+            return False
+        try:
+            recorded = (str(source.get("ace_tempo_detect_filepath", "") or ""),
+                        float(source.get("ace_tempo_detect_mtime", 0.0) or 0.0))
+            status = str(source.get("ace_tempo_detect_status", "") or "")
+        except Exception as exc:
+            utils.note_swallowed("probes.SourceProbes._wants_automatic_detection", exc)
+            return False
+        if recorded[0] != target[0] or abs(recorded[1] - target[1]) > 1e-6:
+            return True
+        # Pending, but the request is gone (an undo or reset stopped the detection thread).
+        return status == "pending" and not TempoService.waiting(target) and TempoService.result(target) is None
+
     def flush_source_tempo_detection_updates(self, sources) -> bool:
-        """Apply finished background tempo detections to FILE source properties."""
+        """Start automatic detections and apply finished ones to FILE source properties."""
         utils.assert_main_thread("flush_source_tempo_detection_updates")
         any_updated = False
         for source in (sources or []):
             if getattr(source, "source_type", "") != "FILE":
                 continue
+            if self._wants_automatic_detection(source):
+                self.request_source_tempo_detection(source, automatic=True)
+                any_updated = True
             try:
                 status = str(source.get("ace_tempo_detect_status", "") or "")
-            except Exception as exc:
-                utils.note_swallowed("probes.SourceProbes.flush_source_tempo_detection_updates", exc)
-                status = ""
-            if status != "pending":
-                continue
-
-            try:
                 filepath = str(source.get("ace_tempo_detect_filepath", "") or "")
                 mtime = float(source.get("ace_tempo_detect_mtime", 0.0) or 0.0)
             except Exception as exc:
-                utils.note_swallowed("probes.SourceProbes.flush_source_tempo_detection_updates#2", exc)
-                filepath = ""
-                mtime = 0.0
-            if not filepath or mtime <= 0.0:
+                utils.note_swallowed("probes.SourceProbes.flush_source_tempo_detection_updates", exc)
+                continue
+            if status != "pending" or not filepath or mtime <= 0.0:
                 continue
 
-            current_target = SourceSpecsTask.resolve_analysis_target(source)
-            if current_target is None or str(current_target[0]) != filepath or abs(float(current_target[1]) - mtime) > 1e-6:
-                with utils.logged_errors("probes.SourceProbes.flush_source_tempo_detection_updates#3"):
-                    source["ace_tempo_detect_status"] = "failed"
-                    source["ace_tempo_detect_message"] = "Source changed. Run tempo detection again."
+            current = TempoService.target(source)
+            if current is None or str(current[0]) != filepath or abs(float(current[1]) - mtime) > 1e-6:
+                self._set_detect_status(source, "failed", "Source changed. Run tempo detection again.")
                 any_updated = True
                 continue
 
-            cached = SourceSpecsTask.get_cached_analysis((filepath, mtime))
-            if not cached:
-                continue
-
-            if cached.get("bpm", None) is None:
-                with utils.logged_errors("probes.SourceProbes.flush_source_tempo_detection_updates#4"):
-                    source["ace_tempo_detect_status"] = "failed"
-                    source["ace_tempo_detect_message"] = str(
-                        cached.get("error", "") or "Tempo analysis failed."
-                    )
-                any_updated = True
-                continue
-
-            if self._apply_tempo_detection_to_source(source, cached):
+            found = TempoService.result((filepath, mtime))
+            if found:
+                self._take_result(source, found)
                 any_updated = True
         return any_updated

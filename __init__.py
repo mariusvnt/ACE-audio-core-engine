@@ -33,7 +33,6 @@ MODULE_NAMES = [
     "core.tasks.source_clock",
     "core.tasks.source",
     "core.tasks.tempo",
-    "core.tasks.specs_analysis",
     "core.tasks.specs",
     "core.tasks.delta",
     "core.tasks.stream",

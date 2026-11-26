@@ -4,8 +4,8 @@ import bpy
 import numpy as np
 import time
 from ... import utils
-from ..tasks.specs import SourceSpecsTask
 from ..tasks.spectral import clear_spectrum_cache
+from ..tasks.tempo import TempoService
 from .common import _NUMBA_AVAILABLE, _preview_limiter_block_numba, persistent
 from .engine import ACEAudioEngine
 from .frontends import FrontendTracker
@@ -24,7 +24,7 @@ def hard_reset_engine(scene):
     """Manual reset: drop every engine, worker and cache, bring the nodes up to date, compile anew."""
     _load_post_reset_engine(None)
     clear_spectrum_cache()
-    SourceSpecsTask._GLOBAL_LONG_TERM_CACHE.clear()
+    TempoService.clear_cache()
     engine = ACEAudioEngine.ensure_instance(scene)
     if engine.discover_scene_frontends(scene):
         engine.compile_scene_frontends(scene)

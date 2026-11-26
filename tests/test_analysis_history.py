@@ -34,7 +34,7 @@ class AnalysisHistoryTests(unittest.TestCase):
         cls.chunk = load_module("core.tasks.chunk")
         cls.stream = load_module("core.tasks.stream")
         cls.spectral = load_module("core.tasks.spectral")
-        cls.specs = load_module("core.tasks.specs")
+        cls.tempo = load_module("core.tasks.tempo")
         cls.reception = load_module("core.input.reception")
         cls.graph = load_module("core.worker.graph")
         cls.slots = load_module("core.engine.parallel.slots")
@@ -173,7 +173,7 @@ class AnalysisHistoryTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as folder:
                 path = os.path.join(folder, "loop.wav")
                 _write_wav(path, signal)
-                detected = self.specs.SourceSpecsTask._estimate_tempo_for_target((path, 0.0))
+                detected = self.tempo.estimate_file_tempo(path)
             self.assertIsNotNone(detected, f"{bpm} BPM not detected")
             self.assertAlmostEqual(detected["bpm"] / bpm, 1.0, delta=0.01, msg=f"{bpm} read as {detected['bpm']}")
 
@@ -182,7 +182,56 @@ class AnalysisHistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "noise.wav")
             _write_wav(path, noise)
-            self.assertIsNone(self.specs.SourceSpecsTask._estimate_tempo_for_target((path, 0.0)))
+            self.assertIsNone(self.tempo.estimate_file_tempo(path))
+
+    @staticmethod
+    def _accented_loop(bpm: float, beats_per_bar: int, seconds: float = 8.0) -> np.ndarray:
+        """Kick on every beat, hats on the off-beats, a crash on every downbeat."""
+        rng = np.random.default_rng(2)
+        t = np.arange(int(0.25 * SR)) / SR
+        kick = 0.7 * np.sin(2.0 * np.pi * np.cumsum(50.0 + 70.0 * np.exp(-t / 0.03)) / SR) * np.exp(-t / 0.12)
+        hat = 0.15 * rng.uniform(-1.0, 1.0, 1600) * np.exp(-np.arange(1600) / 400.0)
+        crash = 0.3 * rng.uniform(-1.0, 1.0, 4800) * np.exp(-np.arange(4800) / 1500.0)
+        signal = np.zeros(int(seconds * SR), dtype=np.float32)
+        beat = 60.0 / bpm
+        for k in range(int(seconds / beat) - 1):
+            hits = [(k * beat, kick), ((k + 0.5) * beat, hat)] + ([(k * beat, crash)] if k % beats_per_bar == 0 else [])
+            for start, sound in hits:
+                i = int(round(start * SR))
+                signal[i:i + sound.size] += sound[:signal.size - i].astype(np.float32)
+        return signal
+
+    def test_beats_per_bar_follow_the_accents(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for bpm in (90.0, 120.0, 140.0):
+                for beats_per_bar in (3, 4):
+                    path = os.path.join(folder, f"loop_{int(bpm)}_{beats_per_bar}.wav")
+                    _write_wav(path, self._accented_loop(bpm, beats_per_bar))
+                    detected = self.tempo.estimate_file_tempo(path)
+                    label = f"{bpm} BPM in {beats_per_bar}"
+                    self.assertIsNotNone(detected, label)
+                    self.assertAlmostEqual(detected["bpm"] / bpm, 1.0, delta=0.01, msg=f"{label}: {detected}")
+                    self.assertEqual(detected["beats_per_bar"], beats_per_bar, f"{label}: {detected}")
+                    # The crashes start the bars: the downbeat lies on a multiple of the bar.
+                    bar_s = beats_per_bar * 60.0 / bpm
+                    offset = detected["downbeat_s"] % bar_s
+                    self.assertLess(min(offset, bar_s - offset), 0.05, f"{label}: {detected}")
+
+    def test_beats_per_bar_without_accents_is_four(self):
+        """Every beat alike, or a click track: nothing to count bars by."""
+        step = 0.01
+        period = 50.0
+        envelope = np.zeros(1500)
+        envelope[np.arange(0, 1500, int(period))] = 10.0
+        self.assertEqual(self.tempo._meter(envelope, period), (4, None))
+        rng = np.random.default_rng(7)
+        envelope[np.arange(0, 1500, int(period))] = rng.uniform(5.0, 10.0, 30)
+        self.assertEqual(self.tempo._meter(envelope, period)[0], 4)
+        accented = np.zeros(1500)
+        accented[np.arange(0, 1500, int(period))] = 5.0
+        accented[np.arange(100, 1500, 3 * int(period))] = 10.0
+        self.assertEqual(self.tempo._meter(accented, period), (3, 100.0))
+        self.assertAlmostEqual(self.tempo._tempo_of_envelope(accented, step)["bpm"], 120.0, delta=0.5)
 
 
 if __name__ == "__main__":
