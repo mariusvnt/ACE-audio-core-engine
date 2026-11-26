@@ -98,7 +98,7 @@ jobs:
 
       - name: Cache Blender
         id: blender-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/blender-${{ env.BLENDER_VERSION }}-linux-x64
           key: blender-${{ env.BLENDER_VERSION }}-linux-x64
@@ -132,7 +132,7 @@ jobs:
 
       - name: Upload reference artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reference-curves
           path: tests/artifacts/reference/
