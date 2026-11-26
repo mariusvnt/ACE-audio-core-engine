@@ -175,15 +175,24 @@ class TempoEstimation:
         self._long_term_done = True
         # Do not write bpy properties here: this may be called from background work.
         # Queue the write for main-thread flush instead.
-        if ctx and (not respect_override or not self._user_overrode_tempo(ctx)):
-            target = self._long_term_target
-            if target is not None:
-                with utils.logged_errors("tempo.TempoEstimation._apply_detected_tempo"):
-                    self._PENDING_CTX_WRITES.put_nowait(
-                        (
-                            target,
-                            float(bpm_val),
-                            int(max(1, beats_per_bar)),
-                            int(getattr(self, "undo_generation", 0) or 0),
-                        )
-                    )
+        if not ctx:
+            return
+        if respect_override and self._user_overrode_tempo(ctx):
+            # Forget what was written, so the detected tempo returns when the override is removed.
+            self._last_queued_tempo = None
+            return
+        target = self._long_term_target
+        if target is None:
+            return
+        payload = (
+            target,
+            float(bpm_val),
+            int(max(1, beats_per_bar)),
+            int(getattr(self, "undo_generation", 0) or 0),
+        )
+        # The cached result is applied on every frame; write the source only when it changes.
+        if payload == getattr(self, "_last_queued_tempo", None):
+            return
+        with utils.logged_errors("tempo.TempoEstimation._apply_detected_tempo"):
+            self._PENDING_CTX_WRITES.put_nowait(payload)
+            self._last_queued_tempo = payload

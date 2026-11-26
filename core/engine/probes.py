@@ -119,6 +119,9 @@ class SourceProbes:
             updates = dict(self._probe_pending_updates)
             self._probe_pending_updates.clear()
         any_updated = False
+        # A probe repeats for a file it already measured (a fresh engine, an expired
+        # cache entry); only a changed sample rate or duration needs a recompile.
+        metadata_changed = False
         active_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
         for source in (sources or []):
             if getattr(source, "source_type", "") != "FILE":
@@ -131,8 +134,15 @@ class SourceProbes:
                 continue
             with utils.logged_errors("probes.SourceProbes._flush_probe_updates"):
                 native_sr = int(result.get("native_sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
+                duration = float(result.get("duration", 0.0) or 0.0)
+                if (
+                    int(getattr(source, "native_sample_rate", 0) or 0) != native_sr
+                    or abs(float(getattr(source, "duration", 0.0) or 0.0) - duration) > 1e-6
+                    or not int(getattr(source, "sample_rate", 0) or 0)
+                ):
+                    metadata_changed = True
                 source.native_sample_rate = native_sr
-                source.duration = float(result.get("duration", 0.0) or 0.0)
+                source.duration = duration
                 if not int(getattr(source, "sample_rate", 0) or 0):
                     source.sample_rate = native_sr
             cache_key = f"FILE:{fp}"
@@ -145,7 +155,7 @@ class SourceProbes:
                 for stale_key, _ in stale_keys:
                     self._meta_cache.pop(stale_key, None)
             any_updated = True
-        if any_updated:
+        if metadata_changed:
             with utils.logged_errors("probes.SourceProbes._flush_probe_updates#2"):
                 preferred_tree = self.engine.frontends._resolve_preferred_tree_from_discoveries(
                     self.engine.frontends.discover_scene_frontends(scene) if scene is not None else [],

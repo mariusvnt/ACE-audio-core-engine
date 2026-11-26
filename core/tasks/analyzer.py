@@ -4,6 +4,7 @@ import math
 import os
 import hashlib
 import time
+import zlib
 from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
@@ -208,19 +209,27 @@ class AudioFluxAnalyzer:
         if spec_key in self.cache:
             return self.cache[spec_key]
 
-        # Keyed by frame too: the chunk token is stable across frames.
-        global_key = (chunk_token, "full_spectrum", int(chunk.frame_index))
-        global_mag = AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.get(global_key)
-        if global_mag is not None:
-            AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
-            self.cache[spec_key] = global_mag
-            return global_mag
-
         data, _ = _analysis_signal_for_chunk(chunk)
         # Guard against empty chunks (e.g. from _make_silence_chunk on broken sources)
         # to prevent null/invalid spectrum entries from entering the cache.
         if data is None or data.size == 0:
             return None
+
+        # The chunk token and frame stay the same when the file, sample rate or
+        # frame rate changes, so the key also holds what the spectrum is made
+        # of: the samples and this analyzer's FFT. Otherwise another setup's
+        # spectrum comes back, and with another FFT size the band masks index
+        # past its end.
+        samples = np.ascontiguousarray(data, dtype=np.float32)
+        global_key = (
+            chunk_token, "full_spectrum", int(chunk.frame_index),
+            int(self.sample_rate), int(self.fft_length), int(samples.size), zlib.crc32(samples),
+        )
+        global_mag = AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.get(global_key)
+        if global_mag is not None:
+            AudioFluxAnalyzer._GLOBAL_SPECTRUM_CACHE.move_to_end(global_key)
+            self.cache[spec_key] = global_mag
+            return global_mag
         if data.shape[-1] < self.fft_length:
             padded = np.zeros(self.fft_length, dtype=np.float32)
             padded[:data.shape[-1]] = data

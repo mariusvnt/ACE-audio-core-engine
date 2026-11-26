@@ -48,6 +48,11 @@ def forget_modules(*names: str):
         full = f"{PKG_NAME}.{name}"
         for key in [k for k in sys.modules if k == full or k.startswith(full + ".")]:
             sys.modules.pop(key, None)
+            # "from .. import name" reads the parent package's attribute before sys.modules.
+            parent_name, _, child = key.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is not None and hasattr(parent, child):
+                delattr(parent, child)
 
 
 def load_tasks():

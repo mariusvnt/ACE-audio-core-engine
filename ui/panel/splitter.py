@@ -1,7 +1,6 @@
 """Frequency splitter display: band bounds and the band strip."""
 
 import bpy  # type: ignore
-from ... import utils
 from ...nodes.split_freqs import split_freq_states
 
 
