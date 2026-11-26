@@ -5,7 +5,7 @@ Planned changes that aren't built yet, in the order they should be done. Nothing
 1. [Infrastructure](#1-infrastructure): extension packaging, presets as assets, reference-curve tests
 2. [Instance model](#2-instance-model-definitions-instances-signals): definitions, instances, signals
 3. [Time model: render, bake, live](#3-time-model-render-bake-live)
-4. [Event and control nodes](#4-event-and-control-nodes)
+4. [Motion and event nodes](#4-motion-and-event-nodes)
 5. [Live output window](#5-live-output-window)
 
 ## 1. Infrastructure
@@ -152,7 +152,7 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 
 `core/clock.py` owns this table and is the only place that decides how a value is obtained. The render handlers stop calling the playback frame path and ask the clock layer for "value at this frame".
 
-**Stateful nodes** (Stream Accumulator, and the Envelope and Counter of section 4) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
+**Stateful nodes** (Smooth, Running Total, Gate and Envelope, section 4) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
 
 ### 3.2 Random access for file sources
 
@@ -238,33 +238,101 @@ Recording writes WAV and the event log off the main thread. `core/takes.py` owns
 
 The live output window of section 5 needs the live clock.
 
-## 4. Event and control nodes
+## 4. Motion and event nodes
 
-### Why event nodes
+### Why motion and event nodes
 
-ACE measures audio well (level, spectrum, pitch, onset), but turning a measurement into "something happens on each kick" is left to the user in Geometry Nodes: thresholds, holds, decays and counters built from math nodes. That is hard to get right per frame, and impossible to get right across a scrub, because the state lives nowhere.
+ACE measures audio well (level, spectrum, pitch, onset), but every measurement describes the current frame, so whatever it drives moves in short twitches. Two things are left to the user in Geometry Nodes: giving that motion weight, and turning it into "something happens on each kick". They need smoothing, thresholds, holds, decays and counters built from math nodes. That is hard to get right per frame, and impossible to get right across a scrub, because the state lives nowhere.
 
-### Event design
+**Today:**
 
-New backend tasks. The frontends stay contracts with no maths, as the 3-layer model requires.
+- Two utilities keep state:
+  - **Rolling Average** is a symmetric box window. It lags on the way up as much as it blurs on the way down.
+  - **Stream Accumulator** adds its input once per frame, so the same scene moves twice as far at 48 fps as at 24 fps.
+- **Source Specs** outputs Frames per Beat and Beat Phase. Beat Phase is really the position in the bar, and it assumes the music starts on a downbeat at the first frame.
+- Each of these nodes is special-cased by name in the reader, the sinks, the proxy attributes, the compiler, the offload policy, both factories and the UI.
 
-- **Trigger:** float in → pulse (0/1) when the input crosses a threshold. Includes a re-arm level (hysteresis) and a minimum interval, so one kick gives one pulse.
-- **Envelope:** pulse in → attack / decay / sustain / release curve, times in seconds or in beats (from `src_specs` tempo).
-- **Counter:** pulse in → integer that counts up, with modulo and reset. For "change colour every 4 kicks" and stepping through instances.
-- **Hold / Peak hold:** keeps the maximum for a time, then falls at a set rate.
-- **Beat quantize:** snaps pulses to the beat grid of the source's tempo.
-- **Control sources:** MIDI (notes, velocity, CC) and OSC messages as sources of control signals, not audio, routed through the same graph. Options: `mido`/`python-rtmidi` for MIDI and a plain UDP OSC parser, both optional dependencies (1.1).
+### Design rules
 
-State and timeline:
+- These are new backend tasks. The frontends stay contracts with no maths, as the 3-layer model requires.
+- **A node that writes values is described by `ACE_NODES` alone.**
+  - Its value outputs give its attribute sockets ("Attribute ID", "Attribute ID 2", …).
+  - A `stateful` flag keeps it on the main thread.
+  - The reader, sinks, compiler, offload policy and both factories ask the registry instead of checking node names. A new node is then one registry entry and one task.
+- **Times are in seconds**, and each step uses the duration of a frame. Results don't depend on fps.
+- **Each stateful task is a pure step**: `(state, input, dt) → (state, output)`. This is what makes replay possible (see State and timeline).
+- Booleans are Bool sockets in Geometry Nodes and 0/1 floats in shaders.
 
-- Stateful tasks (Counter, Envelope) must give the same value on any frame whether it is reached by playing or by jumping. For file sources, the task replays from a cached checkpoint before the target frame, or reads the bake (section 3).
-- Live sources can't be replayed, so their state simply carries on.
-- The task diff of section 2 keeps this state across recompiles.
+### Motion nodes
+
+**Smooth** replaces Rolling Average. It smooths a value over time, in three modes, with Follow as the default:
+
+- **Average:** a box window over Window, the current Rolling Average.
+- **Follow:** rises with Attack and falls with Release. Hold keeps the value at its peak for Hold seconds before it starts to fall. With Attack at 0, this is a peak hold: it keeps the maximum for a time, then falls. The fall is set by Release, a time, like every other time in these nodes, rather than by a rate in units per second.
+- **Spring:** the output follows the input like a weight on a spring. It speeds up toward the input, overshoots and settles. Speed (Hz) sets how fast it follows. Bounce sets how much it overshoots: 0 means not at all, 1 means it barely stops. This gives motion weight and follow-through.
+
+Inputs used by one mode only are hidden in the others, as Loudness already does for Window.
+
+**Running Total** replaces Stream Accumulator. Its input is a rate and its output is the total over time (value × seconds), for a scalar or a vector:
+
+- **Keep:** sums from the start of the timeline.
+- **Leak:** the total drifts back toward 0 over Leak Time when the input goes quiet. Energy pushes it forward, and silence lets it return.
+- **Count:** adds the input once per frame instead of value × seconds. Fed a Gate's Hit, it counts kicks: a Hit lasts one frame at any fps, so the count doesn't depend on fps. Modulo needs no state, so a Floored Modulo math node does it in Geometry Nodes: "change colour every 4 kicks", stepping through instances.
+- **Reset**, a Boolean input, for example from another Gate's Hit. Today's accumulator reads a hidden reset from input 1, which is where Leak Time goes, so Reset gets its own socket.
+
+### Event nodes
+
+- **Gate:** float in, two Boolean outputs:
+  - **Open:** true from the moment the input crosses Threshold until it falls below Re-arm Level (the hysteresis).
+  - **Hit:** true only on the frame it opens.
+  - The **Min Interval** input prevents a new Hit sooner than this, so one kick gives one pulse.
+
+A pulse is any Boolean or 0/1 input, usually a Gate's Hit.
+
+- **Envelope:** pulse in → attack / decay / sustain / release curve, with times in seconds or in beats. Smooth's Follow tracks a value; Envelope plays a shape on each pulse.
+- **Beat Quantize:** snaps pulses to the beat grid given by the source's BPM and Downbeat.
+
+Counting pulses is Running Total in Count mode.
+
+### Musical time: Source Specs
+
+Source Specs exposes only what musical time depends on: **BPM, Beats per Bar and Downbeat**. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so the node outputs no phase.
+
+- **Downbeat estimate:** found together with the tempo, as the position in the bar with the strongest mean spectral flux. It is a source property the user can override, like BPM and meter.
+- **Tasks that work in beats** (Envelope, Beat Quantize) read BPM and Downbeat from the source, not through sockets.
+- **Phases in Geometry Nodes** come from a **Beat Clock** preset (1.2). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
+- **Old files:** links from Frames per Beat and Beat Phase are dropped on load, with one log line per node.
+
+### Migration
+
+- Rolling Average becomes Smooth in Average mode, and Stream Accumulator becomes Running Total in Keep mode. This uses the legacy-type map that already turns old stream nodes into mode nodes (`nodes/modes.py`), so links and values move by socket name.
+- Running Total now adds per second, so a migrated scene moves at a different speed. The load log says so.
+
+### State and timeline
+
+- **Rule:** a stateful node gives the same value on a frame whether that frame is reached by playing or by jumping.
+- **File sources replay.**
+  - Smooth and Gate forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (3.2) for the measurements upstream.
+  - Running Total and Envelope remember indefinitely. They need checkpoints saved every N frames, or the bake (3.3).
+- **Until section 3 exists**, state resets on a rewind or a jump, and the panel says so.
+- **Live sources** can't be replayed, so their state simply carries on.
+- **Recompiles:** the task diff of section 2 keeps this state. Today's per-task export and import covers only the accumulator.
+
+### Event order
+
+1. Registry-driven value nodes and the `stateful` flag.
+2. Smooth and Running Total, with migration.
+3. Source Specs: the Downbeat estimate, the reduced outputs, the Beat Clock preset.
+4. Gate, then Envelope and Beat Quantize.
+5. Replay on jump, once random access (3.2) exists.
+
+Each new node gets reference curves (1.3), which also check that 24 and 48 fps give the same curve.
 
 ### Event open questions
 
-- Should Envelope and Counter outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
-- MIDI timing: per frame (simple), or with sub-frame timestamps folded into the envelope (more precise for fast patterns)?
+- Should Envelope and Running Total outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
+- Should Smooth and Envelope also take times in beats, or only Envelope?
+- Should Gate's Re-arm Level be a free level, or a fraction of Threshold?
 
 ## 5. Live output window
 
