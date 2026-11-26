@@ -1,0 +1,3 @@
+# Independent tools for tests/test_reference_crosscheck.py. Test machine only: never shipped.
+librosa>=0.11
+pyloudnorm>=0.1.1

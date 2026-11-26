@@ -9,8 +9,12 @@ import types
 import bpy  # type: ignore
 import importlib
 import os
+import sys
 import tempfile
 import wave
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from blender_helpers import _add_ace_node, _new_gn_tree, _proxy_values, _write_test_wav  # noqa: E402
 
 
 def _assert(condition, message):
@@ -69,70 +73,6 @@ def _check_loaded_files_get_current_node_groups(addon_key):
     names = [i.name for i in bpy.data.node_groups[lufs_name].interface.items_tree if i.in_out == "INPUT"]
     _assert("Leftover" not in names, f"Outdated ACE group kept after load: {names}")
     _assert(not _stale_ace_groups(addon_key), "ACE groups still stale after load")
-
-
-def _write_test_wav(path, seconds=4.0, sample_rate=48000):
-    """Write a mono 16-bit WAV: quiet 220 Hz for the first half, loud 440 Hz after.
-
-    Played over frames 1-72 at 24 fps (3 s), so every sampled frame is inside the file.
-    """
-    import array
-    import math
-    import wave
-
-    frames = int(seconds * sample_rate)
-    half = frames // 2
-    samples = array.array("h")
-    for i in range(frames):
-        amp, freq = (0.05, 220.0) if i < half else (0.6, 440.0)
-        samples.append(int(32767 * amp * math.sin(2.0 * math.pi * freq * i / sample_rate)))
-    with wave.open(path, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(samples.tobytes())
-
-
-def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
-    """Add an ACE group node the way the Add menu does (that operator needs a node editor)."""
-    gn_menu = importlib.import_module(f"{addon_key}.ui.gn_menu")
-    dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
-    dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
-    id_management = importlib.import_module(f"{addon_key}.core.id_management")
-    if (category, node_type) == ("delta", "frequency_splitter"):
-        group = dynamic.ACESplitterManager.get_or_create_variant(2, tree)
-    else:
-        factory = dummy_tree.ACEDummyNodeFactory
-        if factory.get_group_name(category, node_type) not in bpy.data.node_groups:
-            factory.rebuild_node_group(category, node_type)  # built on first use, as by the menu
-        group = bpy.data.node_groups[factory.get_group_name(category, node_type)]
-    node = tree.nodes.new("GeometryNodeGroup")
-    node.node_tree = group
-    existing = [n.get("ace_id") for n in tree.nodes if n.get("ace_id")]
-    node["ace_id"] = id_management.ACEIdManager.generate_node_id(category, node_type, existing_ids=existing)
-    node.label = node.name = label
-    if (category, node_type) == ("delta", "frequency_splitter"):
-        node["ace_band_count"] = 2
-    op = gn_menu.ACE_OT_add_node_group
-    if (category, node_type) == ("source_mngmt", "src"):
-        op._initialize_source_binding(node, bpy.context)
-    modes = importlib.import_module(f"{addon_key}.nodes.modes")
-    if importlib.import_module(f"{addon_key}.vars").node_modes(category, node_type):
-        modes.apply_node_mode(node, category, node_type, mode)
-        node.name = label
-    op._initialize_auto_attr_ids(node, bpy.context)
-    op._show_attr_id_socket_values(node)
-    return node
-
-
-def _new_gn_tree(scene, name):
-    mesh = bpy.data.meshes.new(f"{name}_Mesh")
-    obj = bpy.data.objects.new(f"{name}_Object", mesh)
-    scene.collection.objects.link(obj)
-    tree = bpy.data.node_groups.new(name, "GeometryNodeTree")
-    tree.is_modifier = True
-    obj.modifiers.new(name, "NODES").node_group = tree
-    return obj, tree
 
 
 def _check_old_stream_nodes_migrate(addon_key, scene):
@@ -1234,18 +1174,6 @@ def _check_group_rebuild_keeps_input_values(addon_key, scene):
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
-
-
-def _proxy_values(engine):
-    """Float ACE attributes on each source proxy (names are generated, so read them all)."""
-    values = {}
-    for graph in engine.graphs.values():
-        proxy = graph.get_proxy_object()
-        mesh = getattr(proxy, "data", None)
-        for attr in getattr(mesh, "attributes", []):
-            if attr.name.startswith("ACE_") and attr.data_type == "FLOAT" and len(attr.data) > 0:
-                values[attr.name] = float(attr.data[0].value)
-    return values
 
 
 def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io"):

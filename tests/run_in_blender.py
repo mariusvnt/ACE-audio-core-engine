@@ -8,6 +8,10 @@ started with it as ``BLENDER_USER_SCRIPTS``, and the add-on is enabled through
 ``addon_utils`` before the script runs (``--addons`` is ignored next to
 ``--factory-startup``). An enable failure stops the run.
 
+``BLENDER_USER_EXTENSIONS`` points at an empty temporary folder too: installed
+extensions share one site-packages, and a wheel one of them ships (NumPy 2, for
+instance) would otherwise shadow Blender's own modules during the run.
+
 Usage (from the repo root, with the system Python):
   python tests/run_in_blender.py [--blender PATH] [--script tests/other_script.py]
                                  [--root OTHER_CHECKOUT] [-- script args]
@@ -74,7 +78,14 @@ def main() -> int:
         addons_dir.mkdir()
         link = addons_dir / ADDON_MODULE
         _link_dir(link, Path(args.root).resolve())
-        env = dict(os.environ, BLENDER_USER_SCRIPTS=tmp, PYTHONDONTWRITEBYTECODE="1")
+        extensions_dir = Path(tmp) / "extensions"
+        extensions_dir.mkdir()
+        env = dict(
+            os.environ,
+            BLENDER_USER_SCRIPTS=tmp,
+            BLENDER_USER_EXTENSIONS=str(extensions_dir),
+            PYTHONDONTWRITEBYTECODE="1",
+        )
         cmd = [
             blender,
             "--background",
