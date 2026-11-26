@@ -82,6 +82,18 @@ def cases() -> List[dict]:
                 "chain": [_step("delta", node_type), _step("stream", "loudness", "rms", from_output=idx)],
             })
 
+    # Measurements that must stay inside a band: one case per band and measurement.
+    banded = [("stereo", mode) for mode in ("width", "balance")] + [("stereo_vector", None)]
+    for idx in range(SPLITTER_BANDS):
+        for node_type, mode in banded:
+            if node_type not in stream:
+                continue
+            suffix = f"{node_type}.{mode}" if mode else node_type
+            out.append({
+                "id": f"delta.frequency_splitter.out{idx:02d}.{suffix}",
+                "chain": [_step("delta", "frequency_splitter"), _step("stream", node_type, mode, from_output=idx)],
+            })
+
     utilities = nodes["utilities"]["nodes"]
     if "src_specs" in utilities:
         out.append({"id": "utilities.src_specs", "chain": [_step("utilities", "src_specs")]})

@@ -80,6 +80,45 @@ class AnalysisHistoryTests(unittest.TestCase):
         value = self.stream.PitchTask("p", {}, BLOCK).process({0: chunk})
         self.assertAlmostEqual(value, 1500.0, delta=15.0)
 
+    def _stereo_chunk(self, left: np.ndarray, right: np.ndarray, end: int, **kwargs):
+        """A stereo block ending at *end*, with what came before it in both channels."""
+        stereo = np.stack([left, right]).astype(np.float32)
+        mono = stereo.mean(axis=0)
+        history = np.zeros((2, self.chunk.HISTORY_SAMPLES), dtype=np.float32)
+        before = stereo[:, max(end - BLOCK - history.shape[1], 0):end - BLOCK]
+        if before.shape[1]:
+            history[:, -before.shape[1]:] = before
+        return self.chunk.AudioChunk(
+            mono[end - BLOCK:end], stereo[:, end - BLOCK:end], SR, lineage=("src",),
+            history_mono=history.mean(axis=0), history_stereo=history, **kwargs,
+        )
+
+    def test_stereo_measures_inside_the_band(self):
+        left, right = _tone(100.0, 8000), _tone(3000.0, 8000)
+        low = self._stereo_chunk(left, right, 8000, band_hz_bounds=(20.0, 1000.0))
+        high = self._stereo_chunk(left, right, 8000, band_hz_bounds=(1000.0, 20000.0))
+        for chunk, side in ((low, -1.0), (high, 1.0)):
+            balance = self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: chunk})
+            self.assertAlmostEqual(balance, side, delta=0.02)
+            l_rms, r_rms, vec_balance = self.stream.StereoVectorTask("v", {}, BLOCK).process({0: chunk})
+            self.assertAlmostEqual(vec_balance, balance, places=9)
+            self.assertAlmostEqual(max(l_rms, r_rms), 0.5 / np.sqrt(2.0), delta=0.01)
+        # Without a splitter both tones count (the block holds 1.67 periods of 100 Hz, so not exactly 0).
+        full = self._stereo_chunk(left, right, 8000)
+        self.assertAlmostEqual(self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: full}), 0.0, delta=0.05)
+
+    def test_band_stereo_levels_add_up_and_a_centred_band_has_no_width(self):
+        noise = np.random.default_rng(4).standard_normal((2, 8000)).astype(np.float32) * 0.2
+        parts = [
+            self.spectral._band_stereo_levels(self._stereo_chunk(noise[0], noise[1], 8000, band_hz_bounds=bounds))
+            for bounds in ((0.0, 1000.0), (1000.0, 1e9))
+        ]
+        whole = self.spectral._band_stereo_levels(self._stereo_chunk(noise[0], noise[1], 8000, band_hz_bounds=(0.0, 1e9)))
+        np.testing.assert_allclose(np.add(parts[0], parts[1]), whole, rtol=1e-9)
+        centred = self._stereo_chunk(noise[0], noise[0], 8000, band_hz_bounds=(200.0, 2000.0))
+        self.assertAlmostEqual(self.stream.StereoWidthTask("w", {}, BLOCK).process({0: centred}), 0.0, places=6)
+        self.assertAlmostEqual(self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: centred}), 0.0, places=6)
+
     def test_worker_gets_the_same_history_as_the_main_process(self):
         signal = _tone(55.0, 8000) + _tone(2000.0, 8000)
         local = self._chunk(signal, 8000)

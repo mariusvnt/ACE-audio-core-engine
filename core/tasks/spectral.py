@@ -200,10 +200,10 @@ def _masked_spectrum(chunk: AudioChunk, fft_size: Optional[int] = None) -> Tuple
     return masked_mag, freqs
 
 
-def _analysis_history(chunk: AudioChunk) -> Optional[np.ndarray]:
-    """The analysis signal before the chunk's block, processed like the block, or None."""
-    if "analysis_history" in chunk.features:
-        return chunk.features["analysis_history"]
+def _analysis_history_pair(chunk: AudioChunk) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """The analysis signal before the chunk's block, mono and stereo, processed like the block."""
+    if "analysis_history_pair" in chunk.features:
+        return chunk.features["analysis_history_pair"]
     mono = chunk.history_mono
     stereo = chunk.history_stereo
     if mono is not None:
@@ -214,8 +214,16 @@ def _analysis_history(chunk: AudioChunk) -> Optional[np.ndarray]:
         if ops:
             mono, stereo = _apply_analysis_ops(mono, stereo, ops)
         mono = _finite_copy(mono)
-    chunk.features["analysis_history"] = mono
-    return mono
+        stereo = _finite_copy(stereo) if isinstance(stereo, np.ndarray) and stereo.ndim == 2 else None
+    else:
+        stereo = None
+    chunk.features["analysis_history_pair"] = (mono, stereo)
+    return mono, stereo
+
+
+def _analysis_history(chunk: AudioChunk) -> Optional[np.ndarray]:
+    """The analysis signal before the chunk's block, processed like the block, or None."""
+    return _analysis_history_pair(chunk)[0]
 
 
 def _analysis_frame(chunk: AudioChunk, length: int) -> Tuple[np.ndarray, int]:
@@ -294,6 +302,66 @@ def _chunk_pitch(chunk: AudioChunk) -> float:
     return _yin_pitch(frame, sr, max_hz=min(5000.0, sr / 2.0 - 10.0))
 
 
+def _analysis_frame_stereo(chunk: AudioChunk, length: int) -> Optional[np.ndarray]:
+    """Both channels of the analysis signal over the last *length* samples, as (2, length), or None.
+
+    Built like ``_analysis_frame``: the block, preceded by its history, else zero padding.
+    """
+    _, stereo = _analysis_signals_normalized(chunk)
+    if stereo is None or stereo.shape[0] < 2:
+        return None
+    stereo = stereo[:2, -length:]
+    need = length - int(stereo.shape[1])
+    if need <= 0:
+        return stereo
+    frame = np.zeros((2, length), dtype=np.float32)
+    frame[:, need:] = stereo
+    _, history = _analysis_history_pair(chunk)
+    if history is None or history.shape[0] < 2:
+        return frame
+    tail = history[:2, -need:]
+    frame[:, need - tail.shape[1]:need] = tail
+    return frame
+
+
+def _band_fade(chunk: AudioChunk, block: int) -> int:
+    """Samples of fade at each end of a band frame: none for a chunk without history."""
+    return min(_BAND_FADE, block // 2) if chunk.history_mono is not None else 0
+
+
+def _apply_band_fades(frame: np.ndarray, fade: int) -> None:
+    """Fade in the first and fade out the last *fade* samples of each row, in place."""
+    if fade:
+        rise = np.sin(0.5 * np.pi * (np.arange(fade) + 0.5) / fade)
+        frame[..., :fade] *= rise
+        frame[..., -fade:] *= rise[::-1]
+
+
+def _band_bins(chunk: AudioChunk, n: int, block: int) -> np.ndarray:
+    """Which bins of an n-point real FFT lie inside the chunk's band."""
+    sr = float(max(getattr(chunk, "sample_rate", SAMPLE_RATE), 1.0))
+    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
+    inside = np.ones(freqs.size, dtype=bool)
+    if chunk.band_indices is not None:
+        # The indices are bins of another FFT size: a bin here is inside when its nearest one there is.
+        source_n = int(chunk.band_index_fft_size or block)
+        inside &= np.isin(np.rint(freqs * source_n / sr).astype(np.int64), np.asarray(chunk.band_indices, dtype=np.int64))
+    if chunk.band_hz_bounds is not None:
+        low, high = float(chunk.band_hz_bounds[0]), float(chunk.band_hz_bounds[1])
+        if high > low:
+            inside &= (freqs >= low) & (freqs < high)
+    return inside
+
+
+def _band_mean_square(frame: np.ndarray, inside: np.ndarray, block: int) -> np.ndarray:
+    """Mean square per block sample of the part of each faded row inside the band (Parseval)."""
+    n = int(frame.shape[-1])
+    power = np.square(np.abs(np.fft.rfft(frame)))
+    power[..., 1:(n + 1) // 2] *= 2.0  # the negative frequencies
+    # The fades hold one block of energy between them, so the block length normalizes.
+    return np.sum(power[..., inside], axis=-1) / (n * block)
+
+
 def _band_rms(chunk: AudioChunk) -> float:
     """RMS of the part of the block's signal inside the chunk's band (Parseval).
 
@@ -307,30 +375,32 @@ def _band_rms(chunk: AudioChunk) -> float:
     block = int(mono.size)
     if block == 0:
         return 0.0
-    fade = min(_BAND_FADE, block // 2) if chunk.history_mono is not None else 0
+    fade = _band_fade(chunk, block)
     frame = _analysis_frame(chunk, block + fade)[0].astype(np.float64)
-    if fade:
-        rise = np.sin(0.5 * np.pi * (np.arange(fade) + 0.5) / fade)
-        frame[:fade] *= rise
-        frame[-fade:] *= rise[::-1]
-    n = int(frame.size)
-    sr = float(max(getattr(chunk, "sample_rate", SAMPLE_RATE), 1.0))
-    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
+    _apply_band_fades(frame, fade)
+    inside = _band_bins(chunk, int(frame.size), block)
+    return float(math.sqrt(float(_band_mean_square(frame, inside, block))))
 
-    inside = np.ones(freqs.size, dtype=bool)
-    if chunk.band_indices is not None:
-        # The indices are bins of another FFT size: a bin here is inside when its nearest one there is.
-        source_n = int(chunk.band_index_fft_size or block)
-        inside &= np.isin(np.rint(freqs * source_n / sr).astype(np.int64), np.asarray(chunk.band_indices, dtype=np.int64))
-    if chunk.band_hz_bounds is not None:
-        low, high = float(chunk.band_hz_bounds[0]), float(chunk.band_hz_bounds[1])
-        if high > low:
-            inside &= (freqs >= low) & (freqs < high)
 
-    power = np.square(np.abs(np.fft.rfft(frame)))
-    power[1:(n + 1) // 2] *= 2.0  # the negative frequencies
-    # The fades hold one block of energy between them, so the block length normalizes.
-    return float(math.sqrt(float(np.sum(power[inside])) / (n * block)))
+def _band_stereo_levels(chunk: AudioChunk) -> Optional[Tuple[float, float, float, float]]:
+    """Mean squares of left, right, mid and side inside the chunk's band, or None without stereo.
+
+    Measured like ``_band_rms``, so a band's levels are on the scale of the full signal's.
+    """
+    mono, _ = _analysis_signals_normalized(chunk)
+    block = int(mono.size)
+    if block == 0:
+        return None
+    fade = _band_fade(chunk, block)
+    frame = _analysis_frame_stereo(chunk, block + fade)
+    if frame is None:
+        return None
+    left, right = frame.astype(np.float64)
+    rows = np.stack((left, right, 0.5 * (left + right), 0.5 * (left - right)))
+    _apply_band_fades(rows, fade)
+    inside = _band_bins(chunk, int(rows.shape[-1]), block)
+    ms = _band_mean_square(rows, inside, block)
+    return float(ms[0]), float(ms[1]), float(ms[2]), float(ms[3])
 
 
 def _remap_indices_fft_domain(

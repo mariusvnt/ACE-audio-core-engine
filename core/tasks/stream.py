@@ -9,7 +9,7 @@ from ...vars import LEGACY_STREAM_TYPES, LOUDNESS_FLOOR_DB, resolve_node_mode
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk
 from .filters import _biquad_filter_block
-from .spectral import _analysis_signals_normalized, _band_rms, _chunk_pitch, _masked_mono_signal, _masked_spectrum, _safe_rms, _zero_crossing_rate
+from .spectral import _analysis_signals_normalized, _band_rms, _band_stereo_levels, _chunk_has_mask_constraints, _chunk_pitch, _masked_mono_signal, _masked_spectrum, _safe_rms, _zero_crossing_rate
 
 
 def _loudness_db_to_unit(db_value: float) -> float:
@@ -474,11 +474,34 @@ class ZeroCrossTask(ACEAudioTask):
         return _zero_crossing_rate(analysis_mono)
 
 
+def _chunk_band_stereo_levels(chunk: AudioChunk) -> Optional[Tuple[float, float, float, float]]:
+    """In-band mean squares (left, right, mid, side) of a chunk behind a splitter, else None.
+
+    A chunk without a band keeps the time-domain measurement over the whole block.
+    """
+    if not _chunk_has_mask_constraints(chunk):
+        return None
+    return chunk.get_feature("band_stereo_levels", lambda: _band_stereo_levels(chunk))
+
+
+def _balance(l_rms: float, r_rms: float) -> float:
+    return float(np.clip((r_rms - l_rms) / (l_rms + r_rms + 1e-9), -1.0, 1.0))
+
+
 class StereoWidthTask(ACEAudioTask):
     """Measure the stereo width of the audio chunk."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
+        if _chunk_has_mask_constraints(chunk):
+            levels = _chunk_band_stereo_levels(chunk)
+            if levels is None:
+                return 0.0
+            _, _, mid_energy, side_energy = levels
+            total_energy = mid_energy + side_energy
+            if total_energy < 1e-20:
+                return 0.0
+            return float(np.clip(side_energy / total_energy, 0.0, 1.0))
         _, stereo = _analysis_signals_normalized(chunk)
         if stereo is None or stereo.shape[0] < 2:
             return 0.0
@@ -500,6 +523,11 @@ class StereoBalanceTask(ACEAudioTask):
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
+        if _chunk_has_mask_constraints(chunk):
+            levels = _chunk_band_stereo_levels(chunk)
+            if levels is None:
+                return 0.0
+            return _balance(math.sqrt(levels[0]), math.sqrt(levels[1]))
         _, stereo = _analysis_signals_normalized(chunk)
         if stereo is None or stereo.shape[0] < 2:
             return 0.0
@@ -515,6 +543,14 @@ class StereoVectorTask(ACEAudioTask):
     """Time-domain vector summary of stereo energy and balance."""
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
+        if _chunk_has_mask_constraints(chunk):
+            levels = _chunk_band_stereo_levels(chunk)
+            if levels is None:
+                # Mono behind a splitter: both channels are the band's level.
+                level = float(chunk.get_feature("rms", lambda: _band_rms(chunk)))
+                return (level, level, 0.0)
+            l_rms, r_rms = math.sqrt(levels[0]), math.sqrt(levels[1])
+            return (l_rms, r_rms, _balance(l_rms, r_rms))
         analysis_mono, stereo = _analysis_signals_normalized(chunk)
         if stereo is not None and stereo.shape[0] >= 2:
             left = stereo[0]
