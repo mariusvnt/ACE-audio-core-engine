@@ -3,7 +3,7 @@ import bpy                                                                      
 import os
 import re
 import time
-from . import utils
+from . import deps, utils
 from .utils import compose_live_flow_identifier as _compose_live_flow_identifier
 
 
@@ -155,10 +155,9 @@ def _refresh_live_device_cache() -> None:
     items = [
         ("__AUTO__", "Auto (Default Input)", "Use the system default input device"),
     ]
-    try:
+    sd = None
+    if deps.sounddevice_enabled():
         import sounddevice as sd  # type: ignore
-    except Exception:  # noqa: BLE001 boundary: not installed (or its PortAudio DLL fails) means no live devices
-        sd = None
     try:
         if sd is None:
             raise _NoLiveBackend()
@@ -211,7 +210,7 @@ def _refresh_live_device_cache() -> None:
             (
                 "__MISSING__",
                 "SoundDevice Unavailable",
-                "Install SoundDevice in add-on preferences to enumerate live devices",
+                "SoundDevice is off or failed to load; the add-on preferences show why",
             )
         )
     _LIVE_DEVICE_CACHE = items

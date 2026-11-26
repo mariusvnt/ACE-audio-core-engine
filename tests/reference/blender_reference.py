@@ -137,8 +137,18 @@ def _specs_busy(addon_key, scene) -> str:
     return ""
 
 
+def _clear_spectrum_cache(addon_key) -> None:
+    """Drop cached spectra. The cache is keyed by node lineage and frame index only, not by
+    file, sample rate or block size: after a switch it hands out the previous fixture's
+    spectra, and with another FFT size the band masks index past their end (IndexError).
+    Manual Engine Reset clears it too."""
+    analyzer_cls = importlib.import_module(f"{addon_key}.core.tasks.analyzer").AudioFluxAnalyzer
+    analyzer_cls._GLOBAL_SPECTRUM_CACHE.clear()
+
+
 def settle(addon_key, engine, scene, timeout_s=60.0):
     """Play the first second until no recompile and no background analysis has happened for 0.5 s."""
+    _clear_spectrum_cache(addon_key)
     handlers_mod = importlib.import_module(f"{addon_key}.core.engine.handlers")
     compiles = []
     original = engine.compiler.compile_scene_frontends
@@ -176,6 +186,7 @@ def fresh_engine(addon_key, scene):
     engine_cls = importlib.import_module(f"{addon_key}.core.engine.engine").ACEAudioEngine
     scene.frame_set(scene.frame_start)
     handlers_mod._load_post_reset_engine(None)
+    _clear_spectrum_cache(addon_key)
     engine = engine_cls.ensure_instance(scene)
     engine.compiler.compile_scene_frontends(scene)
     # A compile writes into the user tree; the next frame change sends that
@@ -216,11 +227,7 @@ def fresh_engine(addon_key, scene):
             time.sleep(0.05)
     finally:
         engine.compiler.compile_scene_frontends = original
-    # The spectrum cache is keyed by node lineage and frame index only, not by
-    # file, sample rate or block size, so it would hand this pass spectra from
-    # an earlier fixture or frame rate. Manual Engine Reset clears it too.
-    analyzer_cls = importlib.import_module(f"{addon_key}.core.tasks.analyzer").AudioFluxAnalyzer
-    analyzer_cls._GLOBAL_SPECTRUM_CACHE.clear()
+    _clear_spectrum_cache(addon_key)
     engine.compiler.compile_scene_frontends(scene)
     return engine
 
@@ -312,10 +319,14 @@ def _versions() -> dict:
 
 
 def _ace_version(addon_key) -> str:
+    import tomllib
     module = sys.modules.get(addon_key)
-    info = getattr(module, "bl_info", None) or {}
-    version = info.get("version")
-    return ".".join(str(v) for v in version) if version else ""
+    manifest = os.path.join(os.path.dirname(getattr(module, "__file__", "") or ""), "blender_manifest.toml")
+    try:
+        with open(manifest, "rb") as fh:
+            return str(tomllib.load(fh).get("version", ""))
+    except OSError:
+        return ""
 
 
 # ---------------------------------------------------------------------------

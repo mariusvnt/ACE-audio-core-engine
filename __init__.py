@@ -1,35 +1,14 @@
-bl_info = {
-    "name": "Audio Core Engine",
-    "author": "Marius Viennot",
-    "version": (0, 5, 0),
-    "blender": (5, 0, 0),  # NodeSocketBundle
-    "location": "Node Editor > Add Menu / N-Panel",
-    "description": (
-        "Drive Geometry Node Trees with information streams extracted from audio sources in real-time. "
-        "A performance engine to map and drive audio-reactive object motion."
-    ),
-    "category": "Animation",
-}
+"""Audio Core Engine: a Blender extension (see blender_manifest.toml)."""
 
 import importlib
 import sys
-import os
 
 PACKAGE_NAME = __name__
 
-def _ensure_dependency_paths():
-    try:
-        from . import utils as _ace_utils
-        _ace_utils.ensure_dependency_vendor_path(create=True)
-    except ImportError:
-        vendor_path = os.path.join(os.path.dirname(__file__), "_vendor")
-        if vendor_path and os.path.isdir(vendor_path) and vendor_path not in sys.path:
-            sys.path.insert(0, vendor_path)
-
-_ensure_dependency_paths()
-
 # Dependency order; packages come before their modules so a reload re-imports parents first.
+# deps comes first: it sets up the optional libraries' environment before any of them loads.
 MODULE_NAMES = [
+    "deps",
     "vars",
     "utils",
     "properties",
@@ -121,7 +100,6 @@ MODULE_NAMES = [
     "ui.panel.sync",
     "ui.panel.selection",
     "ui.panel.panels",
-    "ui.prefs_library_manager",
     "ui.prefs_panel_ui",
 ]
 

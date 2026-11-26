@@ -1,0 +1,9 @@
+# Wheels bundled in the extension, per platform (tools/fetch_wheels.py).
+# Exact versions only. NumPy never: Blender ships its own.
+# audioflux is repackaged per platform by tools/trim_audioflux.py.
+audioflux==0.1.9
+numba==0.63.1
+llvmlite==0.46.0
+sounddevice==0.5.5
+cffi==2.0.0
+pycparser==2.23

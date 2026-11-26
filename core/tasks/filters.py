@@ -2,11 +2,10 @@
 
 from typing import List, Tuple
 import numpy as np
-try:
+from ... import deps
+NUMBA_AVAILABLE = deps.numba_enabled()
+if NUMBA_AVAILABLE:
     from numba import njit  # type: ignore
-    NUMBA_AVAILABLE = True
-except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
-    NUMBA_AVAILABLE = False
 try:
     from scipy.signal import lfilter as scipy_lfilter  # type: ignore
     SCIPY_AVAILABLE = True
@@ -132,9 +131,9 @@ def _run_biquad(
     if not _BIQUAD_PYTHON_FALLBACK_WARNED:
         _BIQUAD_PYTHON_FALLBACK_WARNED = True
         utils.log(
-            "ACE Layer-3 preview: Numba and scipy.signal are both unavailable. "
+            "ACE Layer-3 preview: Numba is off or failed to load. "
             "Using a slow Python biquad fallback that may cause audio dropouts. "
-            "Install Numba or scipy to restore full preview performance.",
+            "Turn Numba on in the add-on preferences (see its status there) to restore full preview performance.",
             "WARNING",
         )
 

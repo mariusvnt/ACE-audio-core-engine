@@ -2,7 +2,7 @@
 
 from queue import Queue, Empty, Full
 from typing import Any, Optional, Tuple
-from ... import utils
+from ... import deps, utils
 import numpy as np
 try:
     import sounddevice as sd  # type: ignore
@@ -34,20 +34,15 @@ class DeviceInput:
 
     def _open_live_sounddevice(self, cfg: dict, kind: str = "sounddevice") -> bool:
         """Open a sounddevice InputStream for live audio capture."""
-        global sd, SOUNDDEVICE_AVAILABLE
-        if not SOUNDDEVICE_AVAILABLE:
-            # Re-attempt import — sounddevice may have been installed after startup
-            # or the module-level import may have run before sys.path was fully set up.
-            with utils.logged_errors("device.DeviceInput._open_live_sounddevice"):
-                import sounddevice as _sd  # type: ignore
-                sd = _sd
-                SOUNDDEVICE_AVAILABLE = True
+        if not deps.setting("use_sounddevice"):
+            self.kind = "live_stub"
+            self.last_error = "Live input is turned off in the add-on preferences (SoundDevice)."
+            return False
         if not SOUNDDEVICE_AVAILABLE:
             self.kind = "live_stub"
             self.last_error = (
-                "sounddevice is not installed in Blender's Python environment. "
-                "Install it via the add-on preferences or run: "
-                "import pip; pip.main(['install', 'sounddevice']) in Blender's Python."
+                "SoundDevice could not be loaded, so live input is unavailable. "
+                "The add-on preferences show why."
             )
             return False
 

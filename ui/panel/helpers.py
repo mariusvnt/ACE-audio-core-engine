@@ -5,7 +5,7 @@ from ...core.id_management import ACEIdManager
 from ...core.engine.engine import ACEAudioEngine
 from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...vars import ACE_NODES
-from ... import utils
+from ... import deps, utils
 
 
 _ui_label_icon_ids: set[str] | None = None
@@ -23,13 +23,13 @@ def _tree_has_ace_nodes(tree) -> bool:
 def _deal_breakers():
     issues = []
     try:
-        if tuple(getattr(bpy.app, "version", (0, 0, 0))) < (5, 0, 0):
-            issues.append("Blender 5.0+ is required.")
+        if tuple(getattr(bpy.app, "version", (0, 0, 0))) < (5, 2, 0):
+            issues.append("Blender 5.2+ is required.")
     except Exception as exc:
         utils.note_swallowed("helpers._deal_breakers", exc)
         issues.append("Unable to read Blender version.")
-    if not utils.is_module_installed("audioflux"):
-        issues.append("AudioFlux is not installed although it is one of the core elements of the engine; see add-on preferences to install it.")
+    if not deps.available("audioflux"):
+        issues.append("AudioFlux, which ships with the extension, failed to load; the add-on preferences show why.")
     return issues
 
 

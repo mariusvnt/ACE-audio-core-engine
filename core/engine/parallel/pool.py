@@ -8,7 +8,7 @@ from typing import Iterable, Optional
 
 from .... import utils
 from ...worker.job import warm_worker, worker_pid
-from ..common import _main_script_hidden_from_spawn
+from ..common import _spawn_bootstrap_main
 
 
 class WorkerPool:
@@ -73,7 +73,7 @@ class WorkerPool:
 
     def submit(self, fn, *args):
         # Worker processes start inside submit().
-        with _main_script_hidden_from_spawn():
+        with _spawn_bootstrap_main():
             return self.executor.submit(fn, *args)
 
     def take_restart(self) -> Optional[float]:

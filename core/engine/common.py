@@ -1,16 +1,16 @@
 """Shared imports, optional-library probes and small types for the ACE engine modules."""
 
 import contextlib
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any
 import bpy  # type: ignore
 import numpy as np
-try:
+from ... import deps
+_NUMBA_AVAILABLE = deps.numba_enabled()
+if _NUMBA_AVAILABLE:
     from numba import njit  # type: ignore
-    _NUMBA_AVAILABLE = True
-except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
-    _NUMBA_AVAILABLE = False
 try:
     from bpy.app.handlers import persistent  # type: ignore
 except ImportError:  # pragma: no cover - Blender provides this at runtime
@@ -77,18 +77,40 @@ if _NUMBA_AVAILABLE:
         return out, g
 else:
     _preview_limiter_block_numba = None
+_ADDON_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ADDON_PACKAGE = (__package__ or "").rsplit(".core.engine", 1)[0]
+_SPAWN_MAIN = os.path.join(_ADDON_DIR, "core", "worker", "spawn_main.py")
+_MISSING = object()
+
+
 @contextlib.contextmanager
-def _main_script_hidden_from_spawn():
+def _spawn_bootstrap_main():
+    """While worker processes spawn, make each child run core/worker/spawn_main.py as its __main__.
+
+    Spawn re-runs the parent's __main__ in every child. Under Blender that is a
+    bpy script (or nothing), and an extension's package name starts with
+    bl_ext, which a plain interpreter cannot import; spawn_main.py fixes the
+    latter and runs nothing else.
+    """
     main_module = sys.modules.get("__main__")
-    main_file = getattr(main_module, "__file__", None)
-    if main_module is None or main_file is None:
+    if main_module is None:
         yield
         return
-    del main_module.__file__
+    saved_file = getattr(main_module, "__file__", _MISSING)
+    saved_spec = getattr(main_module, "__spec__", _MISSING)
+    os.environ["ACE_SPAWN_PACKAGE"] = _ADDON_PACKAGE
+    os.environ["ACE_SPAWN_PACKAGE_DIR"] = _ADDON_DIR
+    main_module.__file__ = _SPAWN_MAIN
+    main_module.__spec__ = None  # spawn would run a named __main__ module instead of the file
     try:
         yield
     finally:
-        main_module.__file__ = main_file
+        for name, saved in (("__file__", saved_file), ("__spec__", saved_spec)):
+            if saved is _MISSING:
+                with contextlib.suppress(AttributeError):
+                    delattr(main_module, name)
+            else:
+                setattr(main_module, name, saved)
 
 def engine_settings(scene_or_engine_settings=None):
     if scene_or_engine_settings is None:

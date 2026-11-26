@@ -10,35 +10,6 @@ ACE_PROXY_PREFIX = "ACE_"
 ACE_BLUE = (79 / 255.0, 146 / 255.0, 254 / 255.0, 1.0)
 ACE_LOGO_FILENAME = "ACE_Logo.png"
 
-# Required external libraries
-REQUIRED_LIBRARIES = {
-    "numpy": {
-        "name": "NumPy",
-        "default": True,
-        "desc": "Core numeric processing (bundled with Blender)"
-    },
-    "audioflux": {
-        "name": "AudioFlux",
-        "default": False,
-        "desc": "High-level audio analysis engine (spectrum, pitch, onset)"
-    },
-    "numba": {
-        "name": "NumBa (Optional)",
-        "default": False,
-        "desc": "Optional turbo-acceleration for DSP (envelope/filters).",
-    },
-    "soundfile": {
-        "name": "SoundFile",
-        "default": False,
-        "desc": "Robust audio file reader (WAV, FLAC, etc.)"
-    },
-    "sounddevice": {
-        "name": "SoundDevice",
-        "default": False,
-        "desc": "Real-time audio capture and preview output"
-    }
-}
-
 # Hierarchy of the available audio nodes
 class Meta(TypedDict):
     """format of a category"""

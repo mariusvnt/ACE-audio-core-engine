@@ -11,4 +11,7 @@ AI_Code_Review.md
 # Generated test reports (machine-specific)
 tests/artifacts/
 tests/*_report.json
-_vendor/
+
+# Extension wheels (tools/fetch_wheels.py) and built zips
+wheels/
+dist/

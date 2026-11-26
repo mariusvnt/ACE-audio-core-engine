@@ -6,7 +6,7 @@ import threading
 import time
 from collections import deque
 from typing import Any, Dict, Optional
-from .... import utils
+from .... import deps, utils
 from ...tasks.chunk import SAMPLE_RATE
 from ..common import _NUMBA_AVAILABLE, _preview_limiter_block_numba
 from .feeder import _ACEPreviewFeeder
@@ -64,13 +64,13 @@ class _ACEPreviewAudioMonitor:
     def _resolve_backend(self):
         if self._backend is not None:
             return self._backend
-        try:
+        if deps.sounddevice_enabled():
             import sounddevice as sd  # type: ignore
             self._backend = sd
-        except Exception:
+        else:
             self._backend = False
             if not self._unavailable_logged:
-                utils.log("Preview monitor unavailable: install 'sounddevice' in add-on preferences.", "WARNING")
+                utils.log("Preview monitor unavailable: SoundDevice is off or failed to load (see the add-on preferences).", "WARNING")
                 self._unavailable_logged = True
         return self._backend
 

@@ -14,7 +14,7 @@
     "audioflux": "0.1.9+ace.1",
     "numba": "0.63.1",
     "llvmlite": "0.46.0",
-    "soundfile": "0.13.1",
+    "soundfile": null,
     "sounddevice": "0.5.5"
   },
   "fixtures": {

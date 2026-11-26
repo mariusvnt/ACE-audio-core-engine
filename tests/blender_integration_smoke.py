@@ -14,7 +14,7 @@ import tempfile
 import wave
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from blender_helpers import _add_ace_node, _new_gn_tree, _proxy_values, _write_test_wav  # noqa: E402
+from blender_helpers import _add_ace_node, _new_gn_tree, _proxy_values, _write_test_wav, find_addon_key  # noqa: E402
 
 
 def _assert(condition, message):
@@ -1312,10 +1312,9 @@ def main():
     print("[ACE smoke] Blender-side smoke script loaded.")
 
     # Basic sanity checks users can expand:
-    _assert(bpy.app.version >= (5, 0, 0), "Blender 5.0+ is required")
-    addon_keys = [k for k in bpy.context.preferences.addons.keys() if "AudioCore" in k]
-    _assert(bool(addon_keys), "AudioCore add-on is not enabled in current Blender session")
-    addon_key = addon_keys[0]
+    _assert(bpy.app.version >= (5, 2, 0), "Blender 5.2+ is required")
+    addon_key = find_addon_key()
+    addon_keys = [addon_key]
     engine_mod = importlib.import_module(f"{addon_key}.core.engine.engine")
     handlers_mod = importlib.import_module(f"{addon_key}.core.engine.handlers")
     _assert(

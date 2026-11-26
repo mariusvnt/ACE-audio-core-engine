@@ -29,7 +29,10 @@ from array import array
 
 import bpy  # type: ignore
 
-ADDON = "AudioCoreEngine"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from blender_helpers import find_addon_key  # noqa: E402
+
+ADDON = find_addon_key()
 NODE_TYPES = (
     ("loudness", "rms"), ("loudness", "peak"), ("loudness", "lufs"), ("spectral", "centroid"),
     ("spectral", "flux"), ("spectral", "zcr"), ("onset", None), ("pitch", None),

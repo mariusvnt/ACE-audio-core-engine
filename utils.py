@@ -1,9 +1,6 @@
 """utils.py contains helper functions used across the add-on."""
-import sys
-import os
 import threading
 import time
-import importlib.util
 from typing import Any
 
 # Preview cache to avoid leaking ImagePreviewCollection instances
@@ -11,7 +8,6 @@ _preview_collections = {}
 _logo_icon_id = None
 _DEBUG_LOG_ENABLED = False
 _DEBUG_STRICT = True  # Guardrail defaults to hard-fail to block unsafe off-main-thread bpy writes.
-_module_presence_cache = {}
 
 
 def set_debug_strict(enabled: bool) -> None:
@@ -131,81 +127,6 @@ class logged_errors:
             return False
         note_swallowed(self.key, exc, self.level)
         return True
-
-def get_python_executable():
-    """Return the path to the Python executable used by Blender."""
-    return sys.executable
-
-
-def dependency_vendor_path(create: bool = False) -> str:
-    """Return the path to the add-on's local _vendor directory."""
-    path = os.path.join(os.path.dirname(__file__), "_vendor")
-    if create:
-        try:
-            os.makedirs(path, exist_ok=True)
-        except OSError as exc:
-            note_swallowed("utils.dependency_vendor_path", exc)
-    return path
-
-
-def ensure_dependency_vendor_path(create: bool = False) -> str:
-    """Ensure the _vendor directory is on sys.path and return its path."""
-    path = dependency_vendor_path(create=create)
-    if path and os.path.isdir(path) and path not in sys.path:
-        # Keep add-on-local dependencies ahead of ambient interpreter paths.
-        sys.path.insert(0, path)
-    return path
-
-def is_module_installed(module_name):
-    """Check whether a module is importable in Blender's Python environment."""
-    key = str(module_name or "").strip()
-    if not key:
-        return False
-    cached = _module_presence_cache.get(key)
-    if cached is not None:
-        return bool(cached)
-
-    spec = importlib.util.find_spec(module_name)
-    if spec is None:
-        # Module files are not on sys.path at all.
-        _module_presence_cache[key] = False
-        return False
-
-    # Module files were found — verify they actually load (native extensions,
-    # DLL dependencies, etc.).
-    try:
-        __import__(module_name)
-        _module_presence_cache[key] = True
-        return True
-    except Exception as exc:  # noqa: BLE001 boundary: any import failure means "not installed"
-        # Native extension failed to initialise (missing DLL, ABI mismatch …).
-        log(f"Module '{module_name}' found but failed to import: {type(exc).__name__}: {exc}", "DEBUG")
-        _module_presence_cache[key] = False
-        return False
-
-def is_module_in_vendor(module_name: str) -> bool:
-    """Return True if the module can be found inside ACE's local _vendor directory."""
-    vendor_dir = dependency_vendor_path(create=False)
-    if not vendor_dir or not os.path.isdir(vendor_dir):
-        return False
-    token = str(module_name or "").strip().lower().replace("-", "_")
-    if not token:
-        return False
-    try:
-        for entry in os.listdir(vendor_dir):
-            normalized = entry.lower().replace("-", "_")
-            if normalized == token or normalized.startswith(token + "-") or normalized.startswith(token + "."):
-                return True
-    except OSError as exc:
-        note_swallowed("utils.is_module_in_vendor", exc)
-    return False
-
-
-def refresh_import_caches():
-    """Invalidate importlib caches to reflect recent installs/uninstalls."""
-    importlib.invalidate_caches()
-    _module_presence_cache.clear()
-
 
 def compose_live_flow_identifier(source_like: Any) -> str:
     """Build the internal live routing token from structured source settings."""
