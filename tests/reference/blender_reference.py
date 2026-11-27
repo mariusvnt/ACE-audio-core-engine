@@ -191,7 +191,7 @@ def fresh_engine(addon_key, scene):
     """The engine as a file load leaves it: every engine, task and worker dropped, caches kept.
 
     A seek moves the file reader but keeps each analyzer's history (previous
-    spectrum, Onset's running average), so values after a jump depend on what
+    spectrum, Transient's running average), so values after a jump depend on what
     played before it. Each pass starts from this state instead.
     """
     handlers_mod = importlib.import_module(f"{addon_key}.core.engine.handlers")

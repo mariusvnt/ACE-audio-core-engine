@@ -347,7 +347,7 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
         ("rms", atr.RMSTask),
         ("pitch", atr.PitchTask),
         ("brightness", atr.BrightnessTask),
-        ("onset", atr.OnsetTask),
+        ("transient", atr.TransientTask),
         ("stereo_width", atr.StereoWidthTask),
         ("stereo_balance", atr.StereoBalanceTask),
     )

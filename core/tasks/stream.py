@@ -339,8 +339,8 @@ class BrightnessTask(ACEAudioTask):
         return chunk.get_feature("brightness", lambda: _band_centroid(chunk))
 
 
-class OnsetTask(ACEAudioTask):
-    """Detect audio onsets (transient events) in the audio chunk."""
+class TransientTask(ACEAudioTask):
+    """How sharp the attack in the audio chunk is (0 smooth, 1 a sharp transient)."""
 
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -348,7 +348,7 @@ class OnsetTask(ACEAudioTask):
         self._prev_sr: int = 0
         self._flux_env: float = 0.0
 
-    def _fallback_onset(self, chunk: AudioChunk) -> float:
+    def _transient(self, chunk: AudioChunk) -> float:
         mag, _ = _masked_spectrum(chunk)
         sr = int(getattr(chunk, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
         if mag.size <= 0:
@@ -382,7 +382,7 @@ class OnsetTask(ACEAudioTask):
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        return self._fallback_onset(chunk)
+        return self._transient(chunk)
 
 
 def _chunk_band_stereo_levels(chunk: AudioChunk) -> Optional[Tuple[float, float, float, float]]:
@@ -485,7 +485,7 @@ _STREAM_TASKS: Dict[str, Dict[str, type]] = {
     "brightness": {"": BrightnessTask},
     "stereo_vector": {"": StereoVectorTask},
     "pitch": {"": PitchTask},
-    "onset": {"": OnsetTask},
+    "transient": {"": TransientTask},
 }
 
 

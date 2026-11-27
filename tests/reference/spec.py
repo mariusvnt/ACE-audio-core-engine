@@ -108,7 +108,7 @@ def cases() -> List[dict]:
     if "stream_accumulator" in utilities:
         out.append({
             "id": "utilities.stream_accumulator",
-            "chain": [_step("stream", "onset"), _step("utilities", "stream_accumulator")],
+            "chain": [_step("stream", "transient"), _step("utilities", "stream_accumulator")],
         })
     out.append({"id": SOURCE_CASE, "chain": []})
     return out

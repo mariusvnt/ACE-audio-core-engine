@@ -223,7 +223,7 @@ class AttributeSinks:
             dtype = attr.data_type
             # Pulse outputs reset every frame, so an unchanged value must still be written.
             _output_name = str(info.get("output_name", "") or "").lower()
-            _is_transient = _output_name == "onset"
+            _is_transient = _output_name == "transient"
             if dtype == 'FLOAT':
                 try:
                     val = float(value)

@@ -83,9 +83,9 @@ def check_lufs_matches_pyloudnorm(fps):
     return worst <= 0.5, f"max error {worst:.2f} dB"
 
 
-def check_onsets_match_clicks(fps):
-    """Onset peaks against the click times, within one frame."""
-    curve = _golden("click_track", fps)["stream.onset/Onset"]
+def check_transients_match_clicks(fps):
+    """Transient peaks against the click times, within one frame."""
+    curve = _golden("click_track", fps)["stream.transient/Transient"]
     clicks = np.floor(np.arange(0.25, fixtures.DURATION_S - 0.01, 60.0 / fixtures.BPM) * fps).astype(int)
     peaks = [
         i for i in range(len(curve))

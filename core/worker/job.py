@@ -234,7 +234,7 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
 # Every stream task class, as (node type, mode), so each one warms up.
 _WARMUP_STREAM_TYPES = (
     ("loudness", "rms"), ("loudness", "lufs"), ("loudness", "peak"), ("pitch", ""), ("brightness", ""),
-    ("onset", ""), ("stereo", "width"), ("stereo", "balance"), ("stereo_vector", ""),
+    ("transient", ""), ("stereo", "width"), ("stereo", "balance"), ("stereo_vector", ""),
 )
 
 

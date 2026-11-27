@@ -142,7 +142,7 @@ class ACEIdManager:
             "rms": "rms",
             "brightness": "bright",
             "pitch": "pitch",
-            "onset": "onset",
+            "transient": "trans",
             "stereowidth": "width",
             "stereobalance": "bal",
             "stereovector": "svec",

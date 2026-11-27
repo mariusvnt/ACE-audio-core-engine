@@ -125,12 +125,12 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Pitch')],
             },
-            "onset": {
-            "label": "Onset",
+            "transient": {
+            "label": "Transient",
             "icon": "",
-            "description": "Sharp transient witness (0 = smooth, 1 = sharp transient).",
+            "description": "Sharp attacks in the audio (0 = smooth, 1 = sharp transient).",
             "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Onset')],
+            "outputs": [('NodeSocketFloat', 'Transient')],
             },
         },
     },
