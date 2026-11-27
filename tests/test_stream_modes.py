@@ -37,8 +37,8 @@ class TestStreamModes(unittest.TestCase):
             self.assertIs(type(task), task_cls, f"{node_type}/{mode}")
 
     def test_missing_or_unknown_mode_uses_the_default(self):
-        self.assertIs(type(stream.create_stream_task("n", "loudness", {}, 256)), stream.LUFSTask)
-        self.assertIs(type(stream.create_stream_task("n", "loudness", {"mode": "bogus"}, 256)), stream.LUFSTask)
+        self.assertIs(type(stream.create_stream_task("n", "loudness", {}, 256)), stream.RMSLoudnessTask)
+        self.assertIs(type(stream.create_stream_task("n", "loudness", {"mode": "bogus"}, 256)), stream.RMSLoudnessTask)
         self.assertIs(type(stream.create_stream_task("n", "stereo", {}, 256)), stream.StereoWidthTask)
 
     def test_old_type_names_resolve_to_their_mode(self):

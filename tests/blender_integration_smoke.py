@@ -137,7 +137,7 @@ def _check_operator_list_follows_tree(addon_key, scene):
             return [("  " * item.depth) + item.name for item in src.ui_nodes]
 
         source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness", mode="lufs")
         root = source.label or source.name
         _assert(rows() == [root], f"An unconnected operator is listed: {rows()}")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
@@ -979,7 +979,7 @@ def _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine):
         return len(compiles) - before
 
     def switch_mode():
-        modes.apply_node_mode(loud, "stream", "loudness", "rms")
+        modes.apply_node_mode(loud, "stream", "loudness", "lufs")
         tree.update_tag()
 
     try:

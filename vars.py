@@ -90,7 +90,7 @@ ACE_NODES: dict[str, Category] = {
                 ("lufs", "LUFS", "K-weighted perceived loudness averaged over Window (s)."),
                 ("peak", "Peak", "Highest K-weighted sample of the frame."),
             ],
-            "default_mode": "lufs",
+            "default_mode": "rms",
             },
             "stereo": {
             "label": "Stereo",
