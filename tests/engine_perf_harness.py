@@ -592,6 +592,8 @@ def _run_engine_benchmark(
     bpy_mod = sys.modules.get("bpy")
     prev_context_scene = getattr(getattr(bpy_mod, "context", None), "scene", None) if bpy_mod else None
     ae.ACEAudioEngine._is_animation_playing = staticmethod(lambda: bool(preview_playing))
+    original_is_timeline_moving = ae.ACEAudioEngine._is_timeline_moving
+    ae.ACEAudioEngine._is_timeline_moving = staticmethod(lambda: True)  # the harness plays the timeline
     frame_pace_hz = float(os.environ.get("ACE_ENGINE_PERF_FRAME_PACE_HZ", str(ENGINE_PERF_DEFAULT_FRAME_PACE_HZ)) or ENGINE_PERF_DEFAULT_FRAME_PACE_HZ)
     frame_interval_s = (1.0 / frame_pace_hz) if frame_pace_hz > 0.0 else 0.0
     drain_timeout_s = float(os.environ.get("ACE_ENGINE_PERF_DRAIN_TIMEOUT_S", str(ENGINE_PERF_DEFAULT_DRAIN_TIMEOUT_S)) or ENGINE_PERF_DEFAULT_DRAIN_TIMEOUT_S)
@@ -772,6 +774,7 @@ def _run_engine_benchmark(
         return result
     finally:
         ae.ACEAudioEngine._is_animation_playing = original_is_animation_playing
+        ae.ACEAudioEngine._is_timeline_moving = original_is_timeline_moving
         if mode == "processes_dsp":
             engine.parallel.submit_graph_job = original_submit  # type: ignore[assignment]
             engine.parallel.values_for_frame = original_values_for_frame  # type: ignore[assignment]

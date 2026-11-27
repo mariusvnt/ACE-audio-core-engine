@@ -484,7 +484,10 @@ def _draw_bake_state(layout, context, source):
 
 
 def _draw_downstream_bakes(layout, context):
-    """The Bake nodes downstream of ACE nodes, and whether what they read is baked."""
+    """The Bake nodes downstream of ACE nodes, and whether the sources they read are baked.
+
+    ACE bakes nothing for them: a native bake records what ACE streams on each frame it steps.
+    """
     engine = ACEAudioEngine.get_instance(context.scene)
     bakes = list(getattr(getattr(engine, "bake", None), "downstream_bakes", []) or []) if engine is not None else []
     if not bakes:
@@ -492,19 +495,13 @@ def _draw_downstream_bakes(layout, context):
     box = layout.box()
     box.label(text="Bake nodes downstream:", icon="NODETREE")
     for bake in bakes:
-        states = []
-        for uid in bake["sources"]:
-            graph = engine.graphs.get(uid)
-            if uid in engine.bake._bake_jobs:
-                states.append("baking")
-            elif graph is not None and engine.bake.missing_keys(graph, bake["frame_start"], bake["frame_end"]):
-                states.append("updating")
-            else:
-                states.append("ready")
-        state = "baking" if "baking" in states else ("updating" if "updating" in states else "ready")
-        row = box.row()
-        row.alert = state != "ready"
-        row.label(text=f"{bake['label']}: ACE input {state}", icon="CHECKMARK" if state == "ready" else "TIME")
+        baked = all(
+            (graph := engine.graphs.get(uid)) is not None
+            and not engine.bake.missing_keys(graph, bake["frame_start"], bake["frame_end"])
+            for uid in bake["sources"]
+        )
+        state = "baked" if baked else "streamed"
+        box.label(text=f"{bake['label']}: ACE input {state}", icon="CHECKMARK" if baked else "PLAY")
 
 
 def _draw_bake_controls(layout, context):

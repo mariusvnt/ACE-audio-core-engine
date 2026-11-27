@@ -18,7 +18,7 @@ Overview
 - **Preview and bake**: listen to any part of the analysis during playback, or
   bake a file over the frame range into the .blend itself. A baked scene
   renders exactly what playback shows, even on a computer without ACE, and a
-  Bake node placed after ACE nodes gets what it reads baked.
+  Bake node placed after ACE nodes records exactly what playback computes.
 - **Live**: a live session plays every frame, never drops one and never loops,
   and can be recorded as a take to render the show later.
 

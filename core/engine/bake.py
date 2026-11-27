@@ -3,7 +3,6 @@
 import os
 import queue
 import threading
-import time
 from typing import Any, Dict, Iterable, List, Optional
 
 import bpy
@@ -53,14 +52,12 @@ class BakeManager:
 
     # -- compile hooks ------------------------------------------------------
 
-    # Edits must have been quiet this long before a held source bakes what it is missing.
-    DOWNSTREAM_DEBOUNCE_S = 1.0
-
     def find_downstream_bakes(self, scene) -> List[Dict[str, Any]]:
         """The Geometry Nodes bakes (Bake nodes, simulation zones) of modifiers whose trees read ACE.
 
-        A native bake records what the proxies hold at each frame it steps, so the ACE sources
-        such a modifier reads are kept baked over the bake's range (FUTURE.md 1.4).
+        Listed for the panel only: ACE bakes nothing for them. A native bake steps its frames
+        from the first, and ACE streams each one; Python can't tell whether a native bake holds
+        data, so keeping ACE's own bake for one would mean re-baking on every edit.
         """
         tree = getattr(self.engine, "instance_tree_ref", None)
         if tree is None or scene is None:
@@ -98,55 +95,6 @@ class BakeManager:
                         "frame_end": max(frame_range),
                     })
         return found
-
-    def held_ranges(self) -> Dict[str, tuple]:
-        """{source uid: (first, last frame)} every downstream bake needs baked."""
-        held: Dict[str, tuple] = {}
-        for bake in self.downstream_bakes:
-            for uid in bake["sources"]:
-                first, last = held.get(uid, (bake["frame_start"], bake["frame_end"]))
-                held[uid] = (min(first, bake["frame_start"]), max(last, bake["frame_end"]))
-        return held
-
-    def maintain_downstream(self, scene, force: bool = False) -> Optional[str]:
-        """Keep the sources downstream bakes need baked; release what none needs (the 0.25 s poll).
-
-        Only the outputs missing from a source's store are baked (an edit changes only some
-        signals), one job at a time, once edits have been quiet for DOWNSTREAM_DEBOUNCE_S; the
-        proxies read live values meanwhile. Returns the uid of a source it started baking.
-        """
-        if self._bake_jobs or scene is None:
-            return None
-        frontends = self.engine.frontends
-        if not force:
-            quiet_since = float(getattr(self.engine.compiler, "_last_compile_time", 0.0) or 0.0)
-            if getattr(frontends, "_dirty_frontend_uids", None) or getattr(frontends, "_pending_scene_rebuild", False):
-                return None
-            if time.time() - quiet_since < self.DOWNSTREAM_DEBOUNCE_S:
-                return None
-        held = self.held_ranges()
-        sources = {str(s.stable_id): s for s in getattr(getattr(scene, "audiocore", None), "audio_sources", []) or []}
-        for uid, (first, last) in sorted(held.items()):
-            source = sources.get(uid)
-            graph = self.engine.graphs.get(uid)
-            if source is None or graph is None or getattr(source, "source_type", "") != "FILE":
-                continue
-            if not bool(source.get("ace_bake_use", True)):
-                continue
-            missing = self.missing_keys(graph, first, last)
-            if missing and self.bake_source_to_cache(
-                source, scene=scene, keys=missing, frame_range=(first, last), compile=False, origin="downstream"
-            ):
-                return uid
-        released = False
-        for uid in sources:
-            view = self.store.read(uid)
-            if view is not None and view.origin == "downstream" and uid not in held:
-                self.store.clear(uid)
-                released = True
-        if released:
-            self.layout()
-        return None
 
     def after_compile(self, sources, scene=None) -> None:
         """Drop the stores of files that changed, then lay every store out (main thread)."""
@@ -231,7 +179,7 @@ class BakeManager:
         # meanwhile, so nothing is discarded here.
         self.store.write(
             str(src_uid), frame_start, frame_end, series, dict(job.get("types") or {}),
-            dict(payload.get("identity") or {}), origin=str(job.get("origin", "user") or "user"),
+            dict(payload.get("identity") or {}),
         )
         self.layout()
         self._set_source_status(
@@ -283,9 +231,8 @@ class BakeManager:
             return list(graph.output_attr_keys)
         return [key for key in graph.output_attr_keys if key not in view.series]
 
-    def bake_source_to_cache(self, source, tree=None, scene=None, keys: Optional[Iterable[str]] = None,
-                             frame_range: Optional[tuple] = None, compile: bool = True, origin: str = "user"):
-        """Bake a file source's outputs over the scene's frame range (or *frame_range*), on a thread.
+    def bake_source_to_cache(self, source, tree=None, scene=None, keys: Optional[Iterable[str]] = None):
+        """Bake a file source's outputs over the scene's frame range, on a thread.
 
         With *keys*, only those outputs (the others keep their curves); without, every output.
         """
@@ -302,13 +249,12 @@ class BakeManager:
                 source["ace_bake_error"] = "Missing source file."
             return False
 
-        if compile:
-            target_tree = tree if tree and self.engine.frontends._tree_has_ace_nodes(tree) else None
-            try:
-                self.engine.compiler.compile_scene_frontends(scene, preferred_tree=target_tree)
-            except Exception as e:
-                utils.log_throttled("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
-                return False
+        target_tree = tree if tree and self.engine.frontends._tree_has_ace_nodes(tree) else None
+        try:
+            self.engine.compiler.compile_scene_frontends(scene, preferred_tree=target_tree)
+        except Exception as e:
+            utils.log_throttled("bake_compile", f"Bake compile failed: {e}", "ERROR", min_interval=0.0)
+            return False
 
         ace = getattr(scene, "audiocore", None)
         existing_ids = [getattr(s, "stable_id", "") for s in getattr(ace, "audio_sources", []) if getattr(s, "stable_id", "")]
@@ -333,8 +279,8 @@ class BakeManager:
                 source["ace_bake_error"] = "No stream/spec outputs to bake." if keys is None else ""
             return keys is not None
 
-        frame_start, frame_end = frame_range if frame_range else (int(getattr(scene, "frame_start", 1)), int(getattr(scene, "frame_end", 1)))
-        frame_start, frame_end = int(frame_start), int(frame_end)
+        frame_start = int(getattr(scene, "frame_start", 1))
+        frame_end = int(getattr(scene, "frame_end", frame_start))
         if frame_end < frame_start:
             frame_start, frame_end = frame_end, frame_start
         total_frames = max(frame_end - frame_start + 1, 1)
@@ -354,8 +300,6 @@ class BakeManager:
             "frame_start": int(frame_start),
             "frame_end": int(frame_end),
             "types": {k: str((output_defs.get(k) or {}).get("type", "FLOAT") or "FLOAT") for k in output_attr_keys},
-            "keys": list(output_attr_keys),
-            "origin": str(origin),
             "tasks": fresh.tasks,
             "cancel": cancel,
         }

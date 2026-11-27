@@ -179,8 +179,10 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         elif self.engine.parallel.pool.executor is not None:
             self.engine.parallel.shutdown_pool()
         frame_clock = current_clock(self.engine)
-        if frame_clock is Clock.RENDER:
-            # A rendered frame is computed here and now: worker values may be up to 50 ms old.
+        if frame_clock is Clock.RENDER or not self.engine._is_timeline_moving():
+            # A rendered frame, or one set on its own (a jump, a script's frame_set, a native
+            # bake stepping its frames), is computed here and now: worker values come a frame
+            # or more late. Workers serve playback and scrubbing.
             parallel_mode = "off"
             parallel_pool_ready = False
 

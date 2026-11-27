@@ -1870,8 +1870,8 @@ def _wait_bake(engine, src, timeout_s=60.0):
 
 
 def _check_downstream_bake_node(addon_key, engine, scene, src):
-    """A Bake node downstream of ACE nodes gets what it reads baked, only what changed is baked again,
-    and the bake is released when the Bake node goes (FUTURE.md 1.4)."""
+    """A Bake node downstream of ACE nodes is listed, and ACE bakes nothing for it: the native bake
+    steps the frames from its first and records what ACE streams on each, stateful nodes included."""
     uid = str(src.stable_id)
     engine.bake.store.clear(uid)
     mesh = bpy.data.meshes.new("ACE_Smoke_Baked_Mesh")
@@ -1885,68 +1885,58 @@ def _check_downstream_bake_node(addon_key, engine, scene, src):
     modifier.node_group = tree
     source_node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
     rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
+    peak = _add_ace_node(addon_key, tree, "stream", "loudness", "Peak", mode="peak")
     tree.links.new(source_node.outputs["Audio"], rms.inputs["Audio"])
-    store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
-    store.data_type = "FLOAT"
-    store.inputs["Name"].default_value = "ace_probe"
+    tree.links.new(source_node.outputs["Audio"], peak.inputs["Audio"])
+    geometry = group_in.outputs["Geometry"]
+    for name, node in (("ace_probe", rms), ("ace_probe_peak", peak)):
+        store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = "FLOAT"
+        store.inputs["Name"].default_value = name
+        tree.links.new(geometry, store.inputs["Geometry"])
+        tree.links.new(node.outputs["Loudness"], store.inputs["Value"])
+        geometry = store.outputs["Geometry"]
     bake_node = tree.nodes.new("GeometryNodeBake")
     bake_node.bake_items.new("GEOMETRY", "Geometry")
-    tree.links.new(group_in.outputs["Geometry"], store.inputs["Geometry"])
-    tree.links.new(rms.outputs["Loudness"], store.inputs["Value"])
-    tree.links.new(store.outputs["Geometry"], bake_node.inputs[0])
+    tree.links.new(geometry, bake_node.inputs[0])
     tree.links.new(bake_node.outputs[0], group_out.inputs["Geometry"])
     modifier.bakes[0].bake_mode = "ANIMATION"
 
     engine.compiler.compile_scene_frontends(scene)
-    held = [b for b in engine.bake.downstream_bakes if b["object"] == obj.name]
-    _assert(len(held) == 1 and held[0]["sources"] == [uid], f"The Bake node is not found downstream: {engine.bake.downstream_bakes}")
-    _assert(engine.bake.maintain_downstream(scene, force=True) == uid, "The held source did not start baking")
-    _wait_bake(engine, src)
-    graph = engine.graphs[uid]
-    view = engine.bake.store.read(uid)
-    _assert(view is not None and view.origin == "downstream", "The held bake is missing or not marked as held")
-    rms_id = blender_helpers.node_id(addon_key, rms)
-    key = next(k for k in graph.output_attr_keys
-               if any(use == rms_id for use, _s, _k in (engine.writer.output_defs.get(k) or {}).get("sinks", [])))
-    _assert(key in graph.baked_attr_keys, "The RMS the Bake node reads is not laid out as baked")
+    listed = [b for b in engine.bake.downstream_bakes if b["object"] == obj.name]
+    _assert(len(listed) == 1 and listed[0]["sources"] == [uid], f"The Bake node is not listed: {engine.bake.downstream_bakes}")
+    _assert(not engine.bake._bake_jobs and engine.bake.store.read(uid) is None, "ACE baked for a Bake node downstream")
 
-    # The native bake steps through the frames: it records the baked values, with no help from ACE.
+    # Away from the first frame, as a user would be: the native bake jumps back to its start.
+    scene.frame_set(scene.frame_start + 30)
     _assert(bpy.ops.object.geometry_node_bake_single(session_uid=obj.session_uid, modifier_name=modifier.name,
                                                      bake_id=modifier.bakes[0].bake_id) == {"FINISHED"}, "The native bake failed")
-    for frame in (scene.frame_start, scene.frame_start + 11, scene.frame_end):
+    _assert(not engine.bake._bake_jobs and engine.bake.store.read(uid) is None, "ACE baked during the native bake")
+    recorded = {}
+    for frame in range(scene.frame_start, scene.frame_end + 1):
         scene.frame_set(frame)
-        dg = bpy.context.evaluated_depsgraph_get()
-        attr = obj.evaluated_get(dg).data.attributes.get("ace_probe")
-        expected = float(view.series[key][frame - view.frame_start])
-        _assert(attr is not None and abs(attr.data[0].value - expected) < 1e-6,
-                f"The native bake holds {attr.data[0].value if attr else None} at frame {frame}, the ACE bake {expected}")
+        data = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data
+        recorded[frame] = tuple(float(data.attributes[n].data[0].value) for n in ("ace_probe", "ace_probe_peak"))
 
-    # An edit adds one signal (no other tree computes a Peak of this source): only that one is baked.
-    peak = _add_ace_node(addon_key, tree, "stream", "loudness", "Peak", mode="peak")
-    tree.links.new(source_node.outputs["Audio"], peak.inputs["Audio"])
-    engine.compiler.compile_scene_frontends(scene)
-    graph = engine.graphs[uid]
-    missing = engine.bake.missing_keys(graph, view.frame_start, view.frame_end)
-    _assert(len(missing) == 1 and key not in missing, f"After one new node, missing: {missing}")
-    _assert(engine.bake.maintain_downstream(scene, force=True) == uid, "The new signal was not baked")
-    job_keys = list(engine.bake._bake_jobs[uid]["keys"])
-    _assert(job_keys == missing, f"The bake after an edit is not just the new signal: {job_keys}")
+    # The reference: ACE's own bake, which is what a playback from the first frame computes.
+    _assert(engine.bake.bake_source_to_cache(src, scene=scene), "The reference bake did not start")
     _wait_bake(engine, src)
-    _assert(not engine.bake.missing_keys(engine.graphs[uid], view.frame_start, view.frame_end), "Still missing after the bake")
+    view = engine.bake.store.read(uid)
+    graph = engine.graphs[uid]
+    keys = []
+    for node in (rms, peak):
+        node_id = blender_helpers.node_id(addon_key, node)
+        keys.append(next(k for k in graph.output_attr_keys
+                         if any(use == node_id for use, _s, _k in (engine.writer.output_defs.get(k) or {}).get("sinks", []))))
+    for frame, values in recorded.items():
+        expected = tuple(float(view.series[k][frame - view.frame_start]) for k in keys)
+        _assert(all(abs(v - e) < 1e-6 for v, e in zip(values, expected)),
+                f"The native bake holds {values} at frame {frame}, playback computes {expected}")
+    engine.bake.clear_source(uid)
+    print(f"[ACE smoke] {scene.audiocore.engine_settings.ace_parallel_mode}: a Bake node downstream: listed, nothing baked by ACE, the native bake records the stream exactly")
 
-    # The Bake node goes: the held bake goes with it.
     bpy.ops.object.geometry_node_bake_delete_single(session_uid=obj.session_uid, modifier_name=modifier.name,
                                                     bake_id=modifier.bakes[0].bake_id)
-    tree.nodes.remove(bake_node)
-    tree.links.new(store.outputs["Geometry"], group_out.inputs["Geometry"])
-    engine.compiler.compile_scene_frontends(scene)
-    _assert(not [b for b in engine.bake.downstream_bakes if b["object"] == obj.name], "The removed Bake node is still found")
-    engine.bake.maintain_downstream(scene, force=True)
-    _assert(engine.bake.store.read(uid) is None, "The held bake was not released")
-    proxy = bpy.data.objects.get(engine.graphs[uid].proxy_name)
-    _assert(proxy is not None and len(proxy.data.vertices) == 1, "The released source's proxy is still baked")
-    print("[ACE smoke] a Bake node downstream: held, baked natively, re-baked only the new signal, released")
-
     bpy.data.objects.remove(obj, do_unlink=True)
     bpy.data.meshes.remove(mesh)
     bpy.data.node_groups.remove(tree)
@@ -2065,6 +2055,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     engine.compiler.compile_scene_frontends = original_compile
     _assert(len(settle_compiles) <= 1, f"Scene recompiled {len(settle_compiles)} times while settling")
     cold_start_s = None
+    # The loops below stand in for playback: workers serve only a timeline that plays or scrubs.
+    engine._is_timeline_moving = lambda: True
     if parallel_mode == "processes_dsp":
         # Workers spawn on first use and take seconds to import; play until one answers.
         t_warm = time.monotonic()
@@ -2100,6 +2092,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         if frame == 66:  # 2.75 s, in the loud half
             loud = _proxy_values(engine)
     engine.compiler.compile_scene_frontends = original_compile
+    del engine._is_timeline_moving
     _assert(not compiles, f"Playback without edits recompiled the scene {len(compiles)} time(s)")
     if parallel_mode == "processes_dsp":
         accepted, stale, pressure = (
@@ -2178,7 +2171,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         _check_render_reads_bake_or_streams_once(engine, scene, graph, entry, tmp_dir)
     else:
         _check_bake_renders_without_ace(addon_key, engine, scene, src, tmp_dir)
-        _check_downstream_bake_node(addon_key, engine, scene, src)
+    _check_downstream_bake_node(addon_key, engine, scene, src)
 
     bpy.data.objects.remove(obj, do_unlink=True)
     bpy.data.node_groups.remove(tree)

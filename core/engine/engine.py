@@ -369,6 +369,17 @@ class ACEAudioEngine:
         return False
 
     @staticmethod
+    def _is_timeline_moving() -> bool:
+        """True while Blender plays or the user scrubs: frames come too fast to compute each here."""
+        with utils.logged_errors("engine.ACEAudioEngine._is_timeline_moving"):
+            wm = getattr(getattr(bpy, "context", None), "window_manager", None)
+            for win in getattr(wm, "windows", []) if wm else []:
+                screen = getattr(win, "screen", None)
+                if screen and (getattr(screen, "is_animation_playing", False) or getattr(screen, "is_scrubbing", False)):
+                    return True
+        return False
+
+    @staticmethod
     def _tree_has_ace_nodes(tree: bpy.types.NodeTree | None):
         return FrontendTracker._tree_has_ace_nodes(tree)
 

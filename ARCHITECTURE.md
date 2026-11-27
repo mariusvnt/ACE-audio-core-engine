@@ -97,8 +97,11 @@ FUTURE.md §4.
 2. **Stage B, offload (worker processes).** Numeric outputs run in worker
    processes from a serialized graph IR. Results come back asynchronously; a
    frame uses this frame's values, else values at most 50 ms old, else local
-   DSP. The 50 ms window bounds how stale an output can look at any fps. The
-   IR holds no sink names, so renaming a sink sends workers nothing.
+   DSP. The 50 ms window bounds how stale an output can look at any fps.
+   Workers serve only a timeline that plays or scrubs: any other frame (a
+   jump, a script's `frame_set`, a native bake stepping its frames, a render)
+   is computed locally, here and now. The IR holds no sink names, so renaming
+   a sink sends workers nothing.
 3. **Stage C, commit (main thread).** Values are written, when they change,
    to proxy mesh attributes, to the `ACE_Values` mesh, or to scene custom
    properties.
@@ -386,14 +389,14 @@ covered by local DSP.
     disabled.
   - **Live and baked:** `source["ace_bake_use"]` off lays a source out live
     and keeps its store. A live input reads its take only with it on.
-  - **Downstream Bake nodes.** A native bake records what the proxies hold at
-    each frame it steps, so the sources read by a modifier holding a Bake node
-    or a simulation zone are kept baked over that bake's range. The 0.25 s
-    poll bakes what such a source is missing, once edits have been quiet for a
-    second; the proxies read live values meanwhile. The bake is released when
-    no Bake node needs it, unless the user baked it. Python can't tell whether
-    a native bake holds data, so ACE can't follow its bake and delete
-    buttons.
+  - **Downstream Bake nodes.** ACE bakes nothing for a Bake node or a
+    simulation zone downstream of ACE nodes. Python can't tell whether a
+    native bake holds data, so holding ACE's bake for one would mean
+    re-baking on every edit while the Bake node sits idle. A native bake
+    steps its frames in order from its first, and ACE computes each one
+    locally, so it records what a playback from that frame computes,
+    stateful nodes included. The panel lists these Bake nodes, and whether
+    the sources they read are baked or streamed.
 
 ## 9. Error handling
 

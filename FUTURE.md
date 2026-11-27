@@ -11,8 +11,8 @@ The extension packaging, the reference-curve tests, the fixes and removals, the 
 
 Left from the time model:
 
-- **To check by hand** (they need a window): which thread runs the frame handlers during an F12 render from the interface (background renders run them on the main thread); a live session of 30 minutes with a simulation zone, its memory with the simulation cache on and off, and that no frame is skipped.
-- **Downstream Bake nodes** are kept baked for as long as they sit downstream of ACE nodes, because Python can't tell whether a native bake holds data. If Blender exposes that one day, ACE can follow the native Bake and Delete buttons instead.
+- **To check by hand** (they need a window): which thread runs the frame handlers during an F12 render, and during a Bake node's bake started from its button (both run as jobs; started from a script, they run on the main thread), and that the baked values are right; a live session of 30 minutes with a simulation zone, its memory with the simulation cache on and off, and that no frame is skipped.
+- **Downstream Bake nodes** record what ACE streams, and ACE bakes nothing for them: Python can't tell whether a native bake holds data. If Blender exposes that one day, ACE could bake its sources when a Bake node is baked, and release them when it is deleted.
 - **Takes** record device inputs only: UDP inputs, and MIDI and OSC once ACE reads them, come later.
 
 ## 1. Core operator set
