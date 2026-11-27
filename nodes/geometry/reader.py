@@ -133,6 +133,15 @@ class ACEDummyTreeReader:
             with utils.logged_errors("reader.ACEDummyTreeReader._source_of"):
                 return str(proxy.get(SOURCE_ID_KEY, "") or "")
             return ""
+        # Read now, not from the cached definition: the id is on the proxy object, which can be
+        # marked (or another source's) without any change to the tree the cache follows.
+        node = scope.tree.nodes.get(entry.name) if hasattr(scope.tree.nodes, "get") else None
+        if node is None:
+            return entry.source_id
+        from ..source_nodes import node_source_id
+
+        with utils.logged_errors("reader.ACEDummyTreeReader._source_of#own"):
+            return node_source_id(node)
         return entry.source_id
 
     def _node_id(self, scope: _Scope, entry) -> str:

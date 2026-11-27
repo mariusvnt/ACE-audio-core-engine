@@ -1027,6 +1027,8 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
             uses.append(rms)
         acc = _add_ace_node(addon_key, tree_a, "utilities", "stream_accumulator", "Accumulator")
         tree_a.links.new(uses[0].outputs[0], acc.inputs["Value"])
+        # A proxy made by an earlier version carries no source id: the first compile still reads it.
+        del bpy.data.objects[src.proxy_object_name]["ace_source_id"]
 
         engine.compiler.compile_scene_frontends(scene)
         signals = {_signal(engine, rms) for rms in uses}

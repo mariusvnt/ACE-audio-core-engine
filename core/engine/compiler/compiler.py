@@ -285,6 +285,13 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             self.engine.frontends.request_recompile(None)
             return
 
+        # Source nodes find their source through the id their proxy carries: mark the proxies
+        # before reading (a proxy made by an earlier version, or renamed, has none yet).
+        for source in getattr(getattr(scene, "audiocore", None), "audio_sources", []) or []:
+            proxy = bpy.data.objects.get(str(getattr(source, "proxy_object_name", "") or ""))
+            if proxy is not None and getattr(source, "stable_id", ""):
+                with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#mark"):
+                    ACEProxyManager._mark_proxy(proxy, source.stable_id)
         frontends = self.engine.frontends.discover_scene_frontends(scene)
         membership_signature = self.engine.frontends._frontend_membership_signature(frontends)
         self._last_frontend_membership_signature = membership_signature
