@@ -24,6 +24,9 @@ class NodeType(TypedDict):
     description: str
     inputs: list[tuple[str, str]]
     outputs: list[tuple[str, str]]
+    # Optional keys: "modes", "default_mode", and "stateful" (True, or the list of modes that are):
+    # a stateful node's value depends on the frames before, so it runs on the main thread and
+    # settles after a seek (FUTURE.md 1.2).
 
 class Category(TypedDict):
     """category container"""
@@ -91,6 +94,7 @@ ACE_NODES: dict[str, Category] = {
                 ("peak", "Peak", "Highest K-weighted sample of the frame."),
             ],
             "default_mode": "rms",
+            "stateful": ["lufs", "peak"],
             },
             "stereo": {
             "label": "Stereo",
@@ -131,6 +135,7 @@ ACE_NODES: dict[str, Category] = {
             "description": "Sharp attacks in the audio (0 = smooth, 1 = sharp transient).",
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Transient')],
+            "stateful": True,
             },
         },
     },
@@ -155,6 +160,7 @@ ACE_NODES: dict[str, Category] = {
             "description": "Smooths a scalar attribute stream over a time window.",
             "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Window')],
             "outputs": [('NodeSocketFloat', 'Rolling Avg')],
+            "stateful": True,
             },
             "stream_accumulator": {
             "label": "Stream Accumulator",
@@ -162,6 +168,7 @@ ACE_NODES: dict[str, Category] = {
             "description": "Maintains a running sum of the input stream values.",
             "inputs": [('NodeSocketFloat', 'Value')],
             "outputs": [('NodeSocketFloat', 'Accumulated')],
+            "stateful": True,
             },
         },
     },
@@ -191,6 +198,15 @@ def resolve_node_mode(category: str, node_type: str, raw_mode=None) -> str:
     node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(typ, {})
     default = str(node_def.get("default_mode", "") or "")
     return default if default in ids else ids[0]
+
+
+def node_is_stateful(category: str, node_type: str, raw_mode=None) -> bool:
+    """True when the node's value depends on earlier frames (its "stateful" entry, for its mode)."""
+    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(str(node_type or ""), {})
+    flag = node_def.get("stateful", False)
+    if isinstance(flag, (list, tuple)):
+        return resolve_node_mode(category, node_type, raw_mode) in flag
+    return bool(flag)
 
 
 def node_mode_label(category: str, node_type: str, mode: str) -> str:

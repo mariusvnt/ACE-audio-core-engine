@@ -12,13 +12,19 @@ from ...tasks.chunk import SAMPLE_RATE
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.source import SourceTask
 from ..compiler.signals import worker_params
+from ....vars import node_is_stateful
 
 
 def is_offload_candidate(node: Optional[ACEAbstractNode]) -> bool:
     if node is None:
         return False
-    # Utilities stay on the main thread: a running sum must not jump when execution moves.
-    return str(getattr(node, "category", "") or "") == "stream"
+    category = str(getattr(node, "category", "") or "")
+    if category != "stream":
+        return False
+    # Stateful nodes stay on the main thread: worker processes each keep their own copy of a
+    # task, so its state would be split across them.
+    mode = (getattr(node, "parameters", None) or {}).get("mode")
+    return not node_is_stateful(category, str(getattr(node, "type", "") or ""), mode)
 
 
 def sanitize(value: Any):

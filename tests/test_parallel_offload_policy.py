@@ -22,8 +22,9 @@ class TestParallelOffloadPolicy(unittest.TestCase):
         cls.ae, _, _ = _load_engine_stack()
 
     @staticmethod
-    def _node(category: str, node_type: str):
-        return types.SimpleNamespace(category=str(category), type=str(node_type))
+    def _node(category: str, node_type: str, mode=None):
+        params = {} if mode is None else {"mode": mode}
+        return types.SimpleNamespace(category=str(category), type=str(node_type), parameters=params)
 
     def test_stream_accumulator_is_not_parallel_offload_candidate(self):
         node = self._node("utilities", "stream_accumulator")
@@ -34,3 +35,13 @@ class TestParallelOffloadPolicy(unittest.TestCase):
         node = self._node("stream", "rms")
         allowed = self.ae.ParallelOffload.is_offload_candidate(node)
         self.assertTrue(allowed)
+
+    def test_stateful_stream_nodes_stay_on_the_main_thread(self):
+        """Each worker keeps its own task copy, so a stateful task offloaded would split its state."""
+        offload = self.ae.ParallelOffload.is_offload_candidate
+        self.assertFalse(offload(self._node("stream", "transient")))
+        self.assertFalse(offload(self._node("stream", "loudness", "lufs")))
+        self.assertFalse(offload(self._node("stream", "loudness", "peak")))
+        self.assertTrue(offload(self._node("stream", "loudness", "rms")))
+        self.assertTrue(offload(self._node("stream", "loudness")))  # RMS is the default
+        self.assertTrue(offload(self._node("stream", "brightness")))
