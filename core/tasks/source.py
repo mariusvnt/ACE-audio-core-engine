@@ -72,12 +72,16 @@ class SourceTask(SourceClock, ACEAudioTask):
         self._prefetch_trigger: threading.Event = threading.Event()
         self._prefetch_stop: threading.Event = threading.Event()
         self._prefetch_thread: Optional[threading.Thread] = None
+        # One read of the reader at a time: the main thread's and the prefetch
+        # thread's both move its one cursor, and interleaved they skip a block.
+        self._read_lock = threading.RLock()
 
     def _start_prefetch_thread(self):
         if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
             return
         self._prefetch_stop.clear()
         self._prefetch_ready.clear()
+        self._prefetch_trigger.clear()  # A new thread waits for a request made after it started
         self._prefetch_enabled = True
         t = threading.Thread(
             target=self._prefetch_loop,
@@ -95,6 +99,10 @@ class SourceTask(SourceClock, ACEAudioTask):
         self._prefetch_thread = None
         if t is not None and t is not threading.current_thread():
             t.join(timeout=1.0)
+        # The wake-up above and the old target must not reach the next thread:
+        # it would read the frame the main thread is about to read itself.
+        self._prefetch_trigger.clear()
+        self._prefetch_target_frame = None
         self._prefetch_ready.clear()
         self._prefetch_chunk = None
         self._prefetch_for_frame = None
@@ -109,20 +117,20 @@ class SourceTask(SourceClock, ACEAudioTask):
             target_frame = self._prefetch_target_frame
             if target_frame is None:
                 continue
-            # Temporarily set the frame request so _read_next_block_sync uses
-            # the correct timestamp for cursor alignment.
-            old_request = getattr(self, "_current_frame_request", None)
-            self._current_frame_request = target_frame
+            # Wait for a read on the main thread to finish, unless stopped meanwhile.
+            while not self._read_lock.acquire(timeout=0.05):
+                if self._prefetch_stop.is_set():
+                    return
             try:
-                chunk = self._read_next_block_sync(track_perf_stage=False)
+                if self._prefetch_stop.is_set():
+                    return
+                # The frame goes in as an argument: the main thread owns _current_frame_request.
+                chunk = self._read_next_block_sync(track_perf_stage=False, frame_request=target_frame)
             except Exception as exc:
                 utils.note_swallowed("source.SourceTask._prefetch_loop", exc)
                 chunk = None
             finally:
-                # Only restore the previous value if the main thread hasn't
-                # written a newer request in the meantime; avoids clobbering it.
-                if self._current_frame_request == target_frame:
-                    self._current_frame_request = old_request
+                self._read_lock.release()
             self._prefetch_chunk = chunk
             self._prefetch_for_frame = target_frame
             self._prefetch_ready.set()
