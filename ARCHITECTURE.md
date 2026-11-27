@@ -368,7 +368,9 @@ CI (`.github/workflows/ci.yml`) runs on Python 3.13 with Blender's NumPy: unit
 tests with NumPy only and with the bundled wheels, ruff, the perf gates, the
 installed extension in headless Blender 5.2 (smoke test and reference curves,
 after checking that the manifest lists the pinned wheels), and the
-cross-checks.
+cross-checks. That full set runs on pull requests and by hand
+(`workflow_dispatch`). A push runs only ruff and the NumPy-only unit tests,
+and nothing when its branch has an open pull request, which already tests it.
 
 ## 11. Adding a node type
 
