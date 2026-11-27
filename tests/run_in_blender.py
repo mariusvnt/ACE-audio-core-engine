@@ -19,6 +19,9 @@ Two ways to provide the extension:
   tools/fetch_wheels.py) and installed with ``extension install-file``, exactly
   as a user installs the zip. This checks that the shipped wheels load.
 
+Exit status: 0 when the script passed, 1 when it failed, 2 when Blender crashed (the
+crash report, if Blender wrote one, is printed).
+
 Usage (from the repo root, with the system Python):
   python tests/run_in_blender.py [--blender PATH] [--package | --extra-path LIBS]
                                  [--script tests/other_script.py] [--root OTHER_CHECKOUT] [-- script args]
@@ -31,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,39 +121,79 @@ def main() -> int:
 
     blender = _find_blender(args.blender)
     root = Path(args.root).resolve()
-    with tempfile.TemporaryDirectory(prefix="ace_blender_") as tmp_name:
-        tmp = Path(tmp_name)
-        extensions = tmp / "extensions"
-        (extensions / REPOSITORY).mkdir(parents=True)
-        (tmp / "scripts").mkdir()
-        env = dict(
-            os.environ,
-            BLENDER_USER_SCRIPTS=str(tmp / "scripts"),
-            BLENDER_USER_EXTENSIONS=str(extensions),
-            PYTHONDONTWRITEBYTECODE="1",
-        )
-        link = None
-        if args.package:
-            _build_and_install(blender, root, env, tmp)
-        else:
-            link = extensions / REPOSITORY / EXTENSION_ID
-            _link_dir(link, root)
-        cmd = [
-            blender,
-            "--background",
-            "--factory-startup",
-            "--python-exit-code", "1",
-            "--python-expr", _enable_expr(args.extra_path),
-            "--python", args.script,
-        ]
-        if args.script_args:
-            cmd += ["--", *args.script_args]
+    tmp = Path(tempfile.mkdtemp(prefix="ace_blender_"))
+    try:
+        return _run(args, blender, root, tmp)
+    finally:
+        _remove_tree(tmp)
+
+
+def _remove_tree(path: Path, wait_s: float = 10.0) -> None:
+    """Delete the run's folder. Worker processes leave with Blender but may still hold a DLL for a moment."""
+    deadline = time.monotonic() + wait_s
+    while True:
         try:
-            result = subprocess.run(cmd, env=env)
-        finally:
-            if link is not None:
-                _unlink_dir(link)
-    return int(result.returncode)
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if time.monotonic() > deadline:
+                print(f"[run_in_blender] could not remove {path}: {exc}", file=sys.stderr)
+                return
+            time.sleep(0.25)
+
+
+def _report_crash(code: int, started: float) -> None:
+    """Say that Blender crashed and show its crash report, written to the temp folder."""
+    print(f"[run_in_blender] Blender crashed (exit code {code}): the script did not finish.", file=sys.stderr)
+    report = Path(tempfile.gettempdir()) / "blender.crash.txt"
+    if report.exists() and report.stat().st_mtime >= started - 1.0:
+        lines = report.read_text(encoding="utf-8", errors="replace").splitlines()
+        print(f"[run_in_blender] {report}:", file=sys.stderr)
+        for line in lines[:60]:
+            print(f"    {line}", file=sys.stderr)
+
+
+def _run(args, blender: str, root: Path, tmp: Path) -> int:
+    extensions = tmp / "extensions"
+    (extensions / REPOSITORY).mkdir(parents=True)
+    (tmp / "scripts").mkdir()
+    env = dict(
+        os.environ,
+        BLENDER_USER_SCRIPTS=str(tmp / "scripts"),
+        BLENDER_USER_EXTENSIONS=str(extensions),
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    link = None
+    if args.package:
+        _build_and_install(blender, root, env, tmp)
+    else:
+        link = extensions / REPOSITORY / EXTENSION_ID
+        _link_dir(link, root)
+    cmd = [
+        blender,
+        "--background",
+        "--factory-startup",
+        "--python-exit-code", "1",
+        "--python-expr", _enable_expr(args.extra_path),
+        "--python", args.script,
+    ]
+    if args.script_args:
+        cmd += ["--", *args.script_args]
+    started = time.time()
+    try:
+        result = subprocess.run(cmd, env=env)
+    finally:
+        if link is not None:
+            _unlink_dir(link)
+    code = int(result.returncode)
+    # 0: done; 1: the script failed (--python-exit-code). Anything else: Blender itself died,
+    # reported as 2 (a Windows crash code does not fit an exit status).
+    if code not in (0, 1):
+        _report_crash(code, started)
+        return 2
+    return code
 
 
 if __name__ == "__main__":

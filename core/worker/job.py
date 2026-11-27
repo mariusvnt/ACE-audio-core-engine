@@ -239,11 +239,33 @@ _WARMUP_STREAM_TYPES = (
 
 
 def warm_worker():
-    """Pool initializer: load the DSP stack before the process takes jobs."""
+    """Pool initializer: follow the parent's lifetime, then load the DSP stack before the process takes jobs."""
+    _exit_with_parent()
     try:
         _warm_evaluation()
     except Exception as exc:  # noqa: BLE001 boundary: a failed warm-up must not break the pool
         utils.note_swallowed("job.warm_worker", exc)
+
+
+def _exit_with_parent() -> None:
+    """End this worker as soon as Blender is gone.
+
+    Blender shuts the pool down when it quits normally. When it crashes, nothing does: the
+    workers would live on, holding CPU, their shared memory and Blender's console, so whatever
+    reads that console (a terminal, a test run) waits for an end that never comes.
+    """
+    import multiprocessing
+    import threading
+
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+
+    def _watch():
+        parent.join()  # returns when the parent process has ended, however it ended
+        os._exit(0)
+
+    threading.Thread(target=_watch, name="ACEParentWatch", daemon=True).start()
 
 
 def _warm_evaluation():
