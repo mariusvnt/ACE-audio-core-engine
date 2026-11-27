@@ -1760,11 +1760,14 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     original_compile = engine.compiler.compile_scene_frontends
     engine.compiler.compile_scene_frontends = lambda *a, **k: (compiles.append(1), original_compile(*a, **k))[1]
     t0 = time.monotonic()
+    played: dict = {}  # frame -> {output key: value written}
     for frame in range(1, 73):
         # Real-time pace (24 fps): worker results arrive frames later.
         target = t0 + (frame - 1) / 24.0
         time.sleep(max(0.0, target - time.monotonic()))
+        engine.latest_values.clear()
         scene.frame_set(frame)
+        played[frame] = dict(engine.latest_values)
         handlers_mod.auto_compile_timer()  # timers do not run in background mode
         if first_accept_s is None and int(getattr(getattr(engine, "parallel", None), "result_accepts", 0) or 0) > 0:
             first_accept_s = time.monotonic() - t0
@@ -1819,6 +1822,32 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
         time.sleep(0.05)
     engine.bake.flush_bake_results()
     _assert(str(src.get("ace_bake_status", "")) == "done", f"Bake ended as {src.get('ace_bake_status')!r}: {src.get('ace_bake_error')!r}")
+    # The bake streams on its own fresh tasks, so it equals what playback from the first frame
+    # computed. With worker processes, only main-thread values are exact (worker values may be
+    # up to 50 ms old).
+    graph = next(iter(engine.graphs.values()))
+    entry = engine.bake._bake_cache.get(str(getattr(graph, "source_uid", "")))
+    _assert(entry is not None, "The bake left no cache entry")
+    keys = list(graph.output_attr_keys)
+    if parallel_mode == "processes_dsp":
+        keys = [k for k in keys if k not in set(getattr(graph, "parallel_offload_attr_keys", []) or [])]
+    _assert(keys, "No output to compare the bake with")
+    import numpy as np
+    mismatches = []
+    compared = 0
+    for key in keys:
+        series = entry["values"].get(key)
+        _assert(series is not None, f"The bake has no curve for {key}")
+        for frame, values in played.items():
+            if key not in values or not isinstance(values[key], float):
+                continue
+            compared += 1
+            baked = float(series[frame - entry["frame_start"]])
+            if abs(baked - float(np.float32(values[key]))) > 1e-6:
+                mismatches.append((key, frame, baked, values[key]))
+    _assert(compared > 0, "No played value to compare the bake with")
+    _assert(not mismatches, f"The bake differs from playback ({len(mismatches)} values), first: {mismatches[:3]}")
+    print(f"[ACE smoke] {parallel_mode}: bake matches playback on {compared} values")
 
     bpy.data.objects.remove(obj, do_unlink=True)
     bpy.data.node_groups.remove(tree)

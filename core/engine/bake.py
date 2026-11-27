@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from ... import utils
 from ..tasks.graph import ACEAudioGraph
 from ..id_management import ACEIdManager
+from .common import close_task
 
 
 class BakeManager:
@@ -137,18 +138,58 @@ class BakeManager:
             self._cleanup_bake_entry(entry if isinstance(entry, dict) else None)
             self._bake_cache.pop(source_id, None)
 
+    @staticmethod
+    def _find_source(scene_name: str, src_uid: str):
+        """The source with *src_uid* in the scene, looked up again: a job holds no Blender references."""
+        scene = bpy.data.scenes.get(scene_name) if scene_name else None
+        if scene is None:
+            scene = getattr(getattr(bpy, "context", None), "scene", None)
+        ace = getattr(scene, "audiocore", None)
+        for src in getattr(ace, "audio_sources", []) or []:
+            if str(getattr(src, "stable_id", "") or "") == str(src_uid):
+                return src
+        return None
+
+    def _set_source_status(self, job: Dict[str, Any], **values) -> None:
+        source = self._find_source(str(job.get("scene_name", "") or ""), str(job.get("source_uid", "") or ""))
+        if source is None:
+            return
+        with utils.logged_errors("bake.BakeManager._set_source_status"):
+            for key, value in values.items():
+                source[f"ace_bake_{key}"] = value
+
+    def cancel_jobs(self) -> None:
+        """Stop every running bake and drop its results (file load, add-on shutdown)."""
+        for job in self._bake_jobs.values():
+            cancel = job.get("cancel")
+            if cancel is not None:
+                cancel.set()
+            for task in (job.get("tasks") or {}).values():
+                close_task(task)
+        self._bake_jobs.clear()
+        try:
+            while True:
+                self._bake_result_queue.get_nowait()
+        except queue.Empty:
+            pass
+
     def _finalise_bake_arrays(self, src_uid: str, baked_values: Dict[str, List[Any]]) -> None:
-        """Finalize completed bake payloads and commit to _bake_cache on main thread."""
-        job = self._bake_jobs.get(str(src_uid))
+        """Commit a finished bake on the main thread, if the source still computes what was baked."""
+        job = self._bake_jobs.pop(str(src_uid), None)
         if not isinstance(job, dict):
             return
-        source = job.get("source")
-        graph = job.get("graph")
-        scene = job.get("scene")
-        target_tree = job.get("target_tree")
+        for task in (job.get("tasks") or {}).values():
+            close_task(task)
+        signature = str(job.get("signal_signature", "") or "")
         filepath = str(job.get("filepath", "") or "")
         frame_start = int(job.get("frame_start", 0) or 0)
         frame_end = int(job.get("frame_end", frame_start) or frame_start)
+        graph = self.engine.graphs.get(str(src_uid))
+        if graph is not None and str(getattr(graph, "signal_signature", "") or "") != signature:
+            # The source's signals changed while it baked: the curves are of a graph that no longer exists.
+            utils.log(f"Bake of '{src_uid}' discarded: its signals changed while it ran.", "WARNING")
+            self._set_source_status(job, status="stale", error="The nodes changed during the bake.", progress=0.0)
+            return
 
         baked_arrays: Dict[str, np.ndarray] = {}
         for attr_key, series in dict(baked_values or {}).items():
@@ -176,7 +217,7 @@ class BakeManager:
                         "source_uid": str(src_uid or ""),
                         "frame_start": int(frame_start),
                         "frame_end": int(frame_end),
-                        "signal_signature": str(getattr(graph, "signal_signature", "") or ""),
+                        "signal_signature": signature,
                     },
                     sort_keys=True,
                     default=str,
@@ -197,9 +238,10 @@ class BakeManager:
                 values_store = dict(baked_arrays)
                 utils.log_throttled("bake_spill", f"Could not spill bake cache to disk: {e}", "WARNING", min_interval=0.0)
 
+        self._cleanup_bake_entry(self._bake_cache.get(str(src_uid)))
         self._bake_cache[str(src_uid)] = {
-            "signal_signature": str(getattr(graph, "signal_signature", "") or ""),
-            "block_size": int(getattr(graph, "block_size", 0)),
+            "signal_signature": signature,
+            "block_size": int(job.get("block_size", 0) or 0),
             "frame_start": frame_start,
             "frame_end": frame_end,
             "values": values_store,
@@ -209,23 +251,15 @@ class BakeManager:
             "filepath": filepath,
             "mtime": self._safe_file_mtime(filepath),
         }
-
-        with utils.logged_errors("bake.BakeManager._finalise_bake_arrays"):
-            source["ace_bake_status"] = "done"
-            source["ace_bake_error"] = ""
-            source["ace_bake_progress"] = 1.0
-            source["ace_bake_frame_start"] = frame_start
-            source["ace_bake_frame_end"] = frame_end
-            source["ace_bake_samples"] = max(frame_end - frame_start + 1, 0)
-
-        # Reset runtime tasks after offline bake so live playback state remains stable.
-        try:
-            if scene is not None:
-                self.engine.compiler.compile_scene_frontends(scene, preferred_tree=target_tree)
-        except Exception as e:
-            utils.log_throttled("bake_recompile", f"Post-bake recompile failed: {e}", "ERROR", min_interval=0.0)
-        finally:
-            self._bake_jobs.pop(str(src_uid), None)
+        self._set_source_status(
+            job,
+            status="done",
+            error="",
+            progress=1.0,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            samples=max(frame_end - frame_start + 1, 0),
+        )
 
     def flush_bake_results(self) -> None:
         """Drain completed async bake events and write results on the main thread."""
@@ -240,25 +274,18 @@ class BakeManager:
                 kind = str(event[0] or "")
                 src_uid = str(event[1] or "")
                 payload = event[2]
-                if not src_uid:
-                    continue
                 job = self._bake_jobs.get(src_uid)
-                source = job.get("source") if isinstance(job, dict) else None
-
+                if not src_uid or not isinstance(job, dict):
+                    continue
                 if kind == "progress":
-                    if source is not None:
-                        with utils.logged_errors("bake.BakeManager.flush_bake_results"):
-                            source["ace_bake_progress"] = float(max(0.0, min(float(payload), 1.0)))
+                    self._set_source_status(job, progress=float(max(0.0, min(float(payload), 1.0))))
                     continue
-
                 if kind == "error":
-                    if source is not None:
-                        with utils.logged_errors("bake.BakeManager.flush_bake_results#2"):
-                            source["ace_bake_status"] = "error"
-                            source["ace_bake_error"] = str(payload or "Bake failed.")
                     self._bake_jobs.pop(src_uid, None)
+                    for task in (job.get("tasks") or {}).values():
+                        close_task(task)
+                    self._set_source_status(job, status="error", error=str(payload or "Bake failed."))
                     continue
-
                 if kind == "done" and isinstance(payload, dict):
                     self._finalise_bake_arrays(src_uid, payload)
         except queue.Empty:
@@ -322,43 +349,41 @@ class BakeManager:
             source["ace_bake_error"] = ""
             source["ace_bake_progress"] = 0.0
 
-        prev_entry = self._bake_cache.get(src_uid)
-        if isinstance(prev_entry, dict):
-            self._cleanup_bake_entry(prev_entry)
-
+        fresh = self.engine.compiler.fresh_graph_copy(graph)
+        cancel = threading.Event()
         self._bake_jobs[str(src_uid)] = {
-            "source": source,
-            "graph": graph,
-            "scene": scene,
-            "target_tree": target_tree,
+            "source_uid": str(src_uid),
+            "scene_name": str(getattr(scene, "name", "") or ""),
+            "signal_signature": str(getattr(graph, "signal_signature", "") or ""),
+            "block_size": int(getattr(graph, "block_size", 0) or 0),
             "filepath": filepath,
             "frame_start": int(frame_start),
             "frame_end": int(frame_end),
+            "tasks": fresh.tasks,
+            "cancel": cancel,
         }
-
-        engine_ref = self
+        frame_runner = self.engine.frame
+        result_queue = self._bake_result_queue
 
         def _bake_worker():
             baked_values: Dict[str, List[Any]] = {k: [] for k in output_attr_keys}
             try:
                 for i, frame_idx in enumerate(range(frame_start, frame_end + 1)):
-                    frame_results = engine_ref.engine.frame._collect_graph_results_for_frame(graph, frame_idx)
+                    if cancel.is_set():
+                        return
+                    frame_results = frame_runner._collect_graph_results_for_frame(fresh, frame_idx)
                     for attr_key in output_attr_keys:
                         baked_values[attr_key].append(
-                            frame_results.get(attr_key, engine_ref.engine.frame._zero_value_for_attr(attr_key))
+                            frame_results.get(attr_key, frame_runner._zero_value_for_attr(attr_key))
                         )
-                    with utils.logged_errors("bake.BakeManager.bake_source_to_cache._bake_worker"):
-                        engine_ref._bake_result_queue.put_nowait(
-                            ("progress", str(src_uid), float(i + 1) / float(total_frames))
-                        )
+                    if (i % 32) == 0 or frame_idx == frame_end:
+                        result_queue.put_nowait(("progress", str(src_uid), float(i + 1) / float(total_frames)))
             except Exception as exc:
-                utils.note_swallowed("bake.BakeManager.bake_source_to_cache._bake_worker#2", exc)
-                with utils.logged_errors("bake.BakeManager.bake_source_to_cache._bake_worker#3"):
-                    engine_ref._bake_result_queue.put_nowait(("error", str(src_uid), str(exc)))
+                utils.note_swallowed("bake.BakeManager.bake_source_to_cache._bake_worker", exc)
+                result_queue.put_nowait(("error", str(src_uid), str(exc)))
                 return
-
-            with utils.logged_errors("bake.BakeManager.bake_source_to_cache._bake_worker#4"):
-                engine_ref._bake_result_queue.put_nowait(("done", str(src_uid), baked_values))
+            if not cancel.is_set():
+                result_queue.put_nowait(("done", str(src_uid), baked_values))
 
         t = threading.Thread(target=_bake_worker, name=f"ACE_BakeWorker_{src_uid}", daemon=True)
         t.start()

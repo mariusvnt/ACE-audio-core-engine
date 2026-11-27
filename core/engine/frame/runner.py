@@ -81,18 +81,9 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                 min_interval=5.0,
             )
             return
-        # Flush async bake progress and completions.
+        # Flush async bake progress and completions. A bake runs on its own copy of the
+        # tasks, so playback goes on meanwhile.
         self.engine.bake.flush_bake_results()
-        if self.engine.bake._bake_jobs:
-            # Bake worker evaluates the live graph/task set; suspend frame-runtime
-            # evaluation while a bake is active to avoid cross-thread task mutation.
-            utils.log_throttled(
-                "bake_runtime_pause",
-                "ACE runtime graph evaluation paused while offline bake is active.",
-                "INFO",
-                min_interval=2.0,
-            )
-            return
         scene_frame = getattr(scene, "frame_current", None)
         if scene_frame is None:
             scene_frame = self.engine.current_frame + 1

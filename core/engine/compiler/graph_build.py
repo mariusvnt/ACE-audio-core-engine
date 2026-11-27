@@ -1,6 +1,7 @@
 """One source graph: tasks, links, outputs and preview taps."""
 
 from collections import OrderedDict
+from types import SimpleNamespace
 from typing import List, Optional
 from .... import utils
 from ...abstract_tree import ACEAbstractNode, audio_links
@@ -12,6 +13,7 @@ from ...tasks.source import SourceTask
 from ...tasks.stream import create_stream_task
 from ...tasks.utility import RollingAvgTask, StreamAccumulatorTask
 from .signals import graph_signature
+from ..common import rna_snapshot
 
 
 class GraphBuild:
@@ -247,6 +249,58 @@ class GraphBuild:
                 "WARNING",
                 min_interval=5.0,
             )
+
+    def fresh_graph_copy(self, graph: ACEAudioGraph) -> ACEAudioGraph:
+        """A copy of *graph* with new tasks, wired the same way, for work off the live tasks.
+
+        The bake streams through a copy: its result is then what a fresh playback computes,
+        whatever state live playback left in the graph, and live playback carries on meanwhile.
+        Sources and settings are snapshots, so the copy can run on another thread. Preview taps
+        are left out.
+        """
+        settings_snapshot = rna_snapshot(getattr(next(iter(graph.tasks.values()), None), "engine_settings", None))
+        source_snapshot = rna_snapshot(getattr(graph, "source_context", None))
+        copy = ACEAudioGraph(source_snapshot, str(getattr(graph, "proxy_name", "") or ""))
+        for attr in ("source_uid", "block_size", "sample_rate", "scheduler_mode", "timeslice_mode", "signal_signature"):
+            setattr(copy, attr, getattr(graph, attr))
+        copy.output_attr_keys = list(graph.output_attr_keys)
+        node_of_task = {id(task): node_id for node_id, task in graph.tasks.items()}
+        abstract_tree = getattr(self.engine, "abstract_tree_ref", None)
+        snapshots: dict = {}
+        for node_id, old in graph.tasks.items():
+            if isinstance(old, PreviewSinkTask):
+                continue
+            node = abstract_tree.nodes.get(node_id) if abstract_tree is not None else None
+            if node is None:
+                continue
+            spec = SimpleNamespace(
+                id=node.id, category=node.category, type=node.type, parameters=dict(getattr(old, "parameters", {}) or {})
+            )
+            task = self._create_task_for_node(spec, int(getattr(old, "block_size", graph.block_size) or graph.block_size))
+            if task is None:
+                continue
+            for attr in ("engine_ref", "undo_generation", "resolve_block_size_fn", "scene_fps", "scene_frame_start"):
+                setattr(task, attr, getattr(old, attr, getattr(task, attr, None)))
+            task.engine_settings = settings_snapshot
+            if isinstance(task, SourceTask):
+                ctx = getattr(old, "source_context", None)
+                if ctx is not None and id(ctx) not in snapshots:
+                    snapshots[id(ctx)] = source_snapshot if ctx is graph.source_context else rna_snapshot(ctx)
+                task.source_context = snapshots.get(id(ctx)) if ctx is not None else None
+                task.prefetch_allowed = False
+            copy.tasks[node_id] = task
+        for node_id, old in graph.tasks.items():
+            task = copy.tasks.get(node_id)
+            if task is None:
+                continue
+            for input_idx, conn in old.inputs.items():
+                upstream = copy.tasks.get(node_of_task.get(id(conn.task), ""))
+                if upstream is not None:
+                    task.connect_input(input_idx=input_idx, target_task=upstream, target_output_idx=conn.socket_index)
+        self._rebuild_graph_output_slot_specs(copy)
+        self._index_source_tasks(copy)
+        self.engine.frame._rebuild_graph_execution_order(copy)
+        return copy
 
     def _create_task_for_node(self, node: ACEAbstractNode, block_size: int) -> Optional[ACEAudioTask]:
         cat = node.category

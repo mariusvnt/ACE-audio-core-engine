@@ -234,7 +234,7 @@ class SourceClock:
                 return None
 
             # Arm prefetch thread on the first successful FILE source open.
-            if source_type == "FILE" and not self._prefetch_enabled:
+            if source_type == "FILE" and not self._prefetch_enabled and getattr(self, "prefetch_allowed", True):
                 self._start_prefetch_thread()
 
             resolve_fn = self.resolve_block_size_fn or _resolve_block_size_default

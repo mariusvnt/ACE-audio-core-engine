@@ -127,6 +127,35 @@ def engine_settings(scene_or_engine_settings=None):
     return getattr(getattr(scene, "audiocore", None), "engine_settings", None)
 
 
+def rna_snapshot(obj) -> Any:
+    """A plain copy of *obj*'s values (an RNA struct, or any object with attributes).
+
+    Work off the main thread (the bake) reads its source and settings from a snapshot, never
+    from Blender data, and whatever it writes back lands on the snapshot.
+    """
+    import types
+
+    if obj is None:
+        return None
+    values: dict = {}
+    rna = getattr(obj, "bl_rna", None)
+    if rna is not None:
+        for prop in rna.properties:
+            ident = str(getattr(prop, "identifier", "") or "")
+            if not ident or ident == "rna_type" or getattr(prop, "type", "") in {"POINTER", "COLLECTION"}:
+                continue
+            try:
+                value = getattr(obj, ident)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if hasattr(value, "__len__") and not isinstance(value, str):
+                value = tuple(value)
+            values[ident] = value
+    else:
+        values.update({k: v for k, v in vars(obj).items() if not k.startswith("__")} if hasattr(obj, "__dict__") else {})
+    return types.SimpleNamespace(**values)
+
+
 def close_task(task) -> None:
     """Close *task* (files, streams, threads), when it has anything to close."""
     from ... import utils

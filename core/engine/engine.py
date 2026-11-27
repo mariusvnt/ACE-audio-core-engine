@@ -1,7 +1,6 @@
 """The ACE engine: one ``ACEAudioEngine`` per Blender scene."""
 
 import bpy
-import queue
 import time
 from typing import Dict, Optional
 from ... import utils
@@ -261,14 +260,10 @@ class ACEAudioEngine:
         self.frame._preview_next_eval_ts = 0.0
         if clear_bake_cache:
             self.bake._clear_bake_cache()
-        self.bake._bake_jobs.clear()
-        try:
-            while True:
-                self.bake._bake_result_queue.get_nowait()
-        except queue.Empty:
-            pass
-        except Exception as exc:
-            utils.note_swallowed("engine.ACEAudioEngine._shutdown_graphs#2", exc)
+        if stop_parallel_pool or clear_bake_cache:
+            # A bake runs on its own tasks, so a recompile or an undo leaves it running; its
+            # result is checked against the source's signals when it lands.
+            self.bake.cancel_jobs()
         return previous
 
     def invalidate_runtime_caches(self):

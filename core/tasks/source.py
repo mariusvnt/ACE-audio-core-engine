@@ -75,6 +75,8 @@ class SourceTask(SourceClock, ACEAudioTask):
         # One read of the reader at a time: the main thread's and the prefetch
         # thread's both move its one cursor, and interleaved they skip a block.
         self._read_lock = threading.RLock()
+        # Off for a copy that reads on another thread already (the bake): no prefetch thread.
+        self.prefetch_allowed: bool = True
 
     def _start_prefetch_thread(self):
         if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
