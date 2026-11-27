@@ -212,8 +212,12 @@ class SourceClock:
 
         return self._read_next_block_sync()
 
-    def _read_next_block_sync(self, track_perf_stage: bool = True) -> Optional["AudioChunk"]:
-        """Synchronous block read."""
+    def _read_next_block_sync(self, track_perf_stage: bool = True, frame_request: Optional[int] = None) -> Optional["AudioChunk"]:
+        """Synchronous block read for *frame_request* (default: the frame being evaluated), one read at a time."""
+        with self._read_lock:
+            return self._read_block_locked(track_perf_stage, frame_request)
+
+    def _read_block_locked(self, track_perf_stage: bool, requested_frame: Optional[int]) -> Optional["AudioChunk"]:
         t0 = time.perf_counter()
         try:
             current_signature = self._config_signature()
@@ -282,7 +286,7 @@ class SourceClock:
             mono = None
             stereo = None
             history = None
-            frame_request = self._requested_frame()
+            frame_request = self._requested_frame() if requested_frame is None else int(requested_frame)
 
             if source_type == "LIVE" and self._last_frame_request is not None:
                 frame_jump = int(frame_request) - int(self._last_frame_request)
