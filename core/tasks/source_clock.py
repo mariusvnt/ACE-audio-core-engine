@@ -322,16 +322,10 @@ class SourceClock:
                             self.live_ready = True
                         # Stay live_ready while the buffer is empty so process() keeps running until audio arrives.
                 else:
+                    # The block of a frame is fixed: every frame reads from its own start sample, so
+                    # playing, seeking and baking read the same samples (FUTURE.md 1.2).
                     desired_sample = self._file_sample_clock_target(frame_request)
-                    file_force_seek = False
-                    if self._last_frame_request is None:
-                        file_force_seek = True
-                    else:
-                        frame_jump = int(frame_request) - int(self._last_frame_request)
-                        # Hard-seek only on scrubs/backward jumps or large frame skips.
-                        if frame_jump <= 0 or frame_jump > 3:
-                            file_force_seek = True
-                    self._sync_reader_cursor(desired_sample, force=file_force_seek)
+                    self._sync_reader_cursor(desired_sample, force=True)
                     history_fn = getattr(self.reception, "history_before", None)
                     if callable(history_fn):
                         history = history_fn(HISTORY_SAMPLES)

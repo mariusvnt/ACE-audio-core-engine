@@ -28,6 +28,7 @@ class RampReception:
         self._cursor_sample = 0
         self._eof = False
         self.read_delay_s = read_delay_s
+        self.sr = SR
         self.active = 0
         self.max_active = 0
         self._count_lock = threading.Lock()
@@ -50,7 +51,7 @@ class RampReception:
             time.sleep(self.read_delay_s)  # widens the window in which another read could slip in
             mono = self.data[start:start + n].copy()
             self._cursor_sample = start + n
-            return mono, np.stack((mono, mono)), SR
+            return mono, np.stack((mono, mono)), self.sr
         finally:
             with self._count_lock:
                 self.active -= 1
@@ -102,6 +103,22 @@ class SourcePrefetchTests(unittest.TestCase):
         starts = self._play(task, range(1, 25), frame_gap_s=0.02)
         self.assertEqual(starts, {f: (f - 1) * SPF for f in range(1, 25)})
         self.assertEqual(task.reception.max_active, 1)
+
+    def test_every_frame_reads_from_its_own_start(self):
+        """44.1 kHz at 24 fps: 1837.5 samples per frame. Blocks of 1838 must not drift from the frame clock."""
+        task = self._task(read_delay_s=0.0)
+        task.sample_rate = 44100
+        task.reception.sr = 44100
+        task.resolve_block_size_fn = lambda *_a, **_k: 1838
+        task.block_size = 1838
+        frames = list(range(1, 40))
+        starts = self._play(task, frames)
+        self.assertEqual(starts, {f: int(round((f - 1) * 44100 / FPS)) for f in frames})
+
+    def test_a_forward_skip_reads_the_frame_it_lands_on(self):
+        task = self._task(read_delay_s=0.0)
+        starts = self._play(task, [1, 2, 4, 5, 7])
+        self.assertEqual(starts, {f: (f - 1) * SPF for f in (1, 2, 4, 5, 7)})
 
     def test_a_restarted_thread_waits_for_a_new_request(self):
         """A stop wakes the thread and leaves a target behind; the next thread must not act on either."""
