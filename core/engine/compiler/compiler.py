@@ -164,7 +164,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             with utils.logged_errors("compiler.GraphCompiler.layout_values_object"):
                 self.engine.writer.layout_values_object(list(self.engine.graphs.values()))
             # The bakes, laid out onto what the frontends read (core/bake_store.py).
-            self.engine.bake.after_compile(sources)
+            self.engine.bake.after_compile(sources, blender_scene)
 
         self._last_compile_time = time.time()
 

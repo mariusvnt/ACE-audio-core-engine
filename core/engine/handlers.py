@@ -126,6 +126,16 @@ def _render_notes(engine, scene) -> list:
     return notes
 
 
+def _maintain_downstream_bakes(scene) -> None:
+    """Keep the sources Bake nodes downstream need baked (the 0.25 s poll)."""
+    engine = ACEAudioEngine.get_instance(scene)
+    if engine is None or engine._undo_recovery_active() or engine._unsafe_for_handler_writes(scene):
+        return
+    with utils.logged_errors("handlers._maintain_downstream_bakes"):
+        engine.bake.flush_bake_results()
+        engine.bake.maintain_downstream(scene)
+
+
 @persistent
 def render_init_handler(scene):
     """bpy.app.handlers.render_init: start a render's bookkeeping, and say what won't render exactly."""
@@ -315,6 +325,8 @@ def auto_compile_timer():
             compiled = engine.frontends._maybe_compile_dirty(scene)
             if compiled:
                 engine.frame.execute_next_frame(scene, force=True)
+            else:
+                _maintain_downstream_bakes(scene)
     return 0.25
 
 

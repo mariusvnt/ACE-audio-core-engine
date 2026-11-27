@@ -83,6 +83,7 @@ class BakeView:
     identity: Dict[str, Any]
     series: Dict[str, np.ndarray] = field(default_factory=dict)  # output key -> (n,) or (n, k)
     types: Dict[str, str] = field(default_factory=dict)
+    origin: str = "user"  # "user" (the Bake button) or "downstream" (for a Bake node downstream)
 
     def index(self, frame: int) -> int:
         return int(min(max(int(frame) - self.frame_start, 0), self.frame_end - self.frame_start))
@@ -135,6 +136,7 @@ class BakeStore:
             frame_end=frame_start + max(n - 1, 0),
             version=version,
             identity={k: mesh.get(f"ace_file_{k}") for k in ("path", "size", "mtime", "hash")},
+            origin=str(mesh.get("ace_bake_origin", "user") or "user"),
         )
         for attr in mesh.attributes:
             if attr.domain != "POINT" or attr.data_type not in _COMPONENTS or attr.name == "position":
@@ -149,8 +151,12 @@ class BakeStore:
         return view
 
     def write(self, src_uid: str, frame_start: int, frame_end: int, series: Dict[str, Any],
-              types: Dict[str, str], identity: Dict[str, Any]) -> BakeView:
-        """Store curves over [frame_start, frame_end]; another range or file starts the store again."""
+              types: Dict[str, str], identity: Dict[str, Any], origin: str = "user") -> BakeView:
+        """Store curves over [frame_start, frame_end]; another range or file starts the store again.
+
+        *origin* is "user" (the Bake button) or "downstream" (made for a Bake node downstream,
+        and released when none needs it). A store the user baked stays the user's.
+        """
         utils.assert_main_thread("BakeStore.write")
         n = max(int(frame_end) - int(frame_start) + 1, 1)
         mesh = self._mesh(src_uid)
@@ -182,6 +188,8 @@ class BakeStore:
                 attr = mesh.attributes.new(name=name, type=attr_type, domain="POINT")
             attr.data.foreach_set(_FOREACH_KEY[attr_type], np.ascontiguousarray(arr, dtype=np.float32).ravel())
         mesh["ace_source_uid"] = str(src_uid)
+        if str(mesh.get("ace_bake_origin", "") or "") != "user":
+            mesh["ace_bake_origin"] = str(origin)
         mesh["ace_frame_start"] = int(frame_start)
         for k in ("path", "size", "mtime", "hash"):
             value = identity.get(k)
