@@ -14,123 +14,133 @@ The extension packaging, the reference-curve tests, the fixes and removals, and 
 
 ### Why define time
 
-**Today:** every value is computed as a stream, driven by the frame-change handlers. Scrubbing, rendering, baking and live input are each partly special cases of that stream, and several behaviours are undefined:
+**Today:** every value is computed as a stream, driven by the frame-change handlers. Scrubbing, rendering, baking and live input are each partly special cases of that stream, and several behaviours are undefined or wrong:
 
-- what a render shows for a live source;
-- whether a rendered frame matches what playback showed;
-- what happens when the timeline loops. A wrap looks like a rewind, so Stream Accumulators reset and the preview buffers are flushed, which is wrong during a live show.
+- **A render goes through the playback handlers.** `render_pre`, `frame_change_pre` and `frame_change_post` all run the graph, so one rendered frame can step stateful nodes up to three times. Worker values can be up to 50 ms old, and a compile on that frame writes nothing. Without Lock Interface nothing is written at all.
+- **Streaming is not a function of the frame.** A seek reads frame f at `round((f − frame_start) · sr / fps)`. Consecutive frames instead advance a cursor by `N = round(sr / fps)`. At 44.1 kHz and 24 fps (N = 1838 against 1837.5) the blocks drift half a sample per frame, and a skip of one or two frames can leave the audio a frame behind.
+- **State survives a seek.** Transient's running average, and Loudness's filters on a forward jump, carry on from before the jump. Stream Accumulator and Rolling Average reset only when time goes backwards, so a loop wrap looks like a rewind.
+- **The bake depends on what was played.** It streams through the live graph's own tasks, starting from whatever state they hold, pauses live evaluation while it runs, and is lost if a recompile happens meanwhile. It lives in memory, so it's gone when the file is reloaded.
 
-### 1.1 Signals are functions of time
+### 1.1 Clocks and the rule table
 
-Every signal is `value(signal, t)`, with `t` a position in the source audio. The engine's only job is to answer that question for the current `t`. How it answers depends on the clock and the source.
+Every signal is `value(signal, frame)`. The engine's only job is to answer that question for the current frame. How it answers depends on the clock and the source.
 
-**Clocks** (what decides `t`):
+**Clocks** (what decides the frame):
 
-- **Timeline:** playback and scrubbing. `t` comes from the current frame.
-- **Render:** Blender's render job. `t` comes from the exact frame being rendered, and there's no hurry.
-- **Live:** ACE's own clock (1.4), independent of timeline playback.
+- **Timeline:** playback and scrubbing.
+- **Render:** Blender's render job.
+- **Live:** Blender's own playback in *Play Every Frame* mode, during a live session (1.5).
 
 **Ways to get a value:**
 
-- **Bake:** look up the stored curve (1.3).
-- **Random access:** for a file source, analyse the exact sample window at `t` (1.2).
-- **Stream:** read the next block from a live input. Only possible "now".
+- **Bake:** the stored curve, read by Blender with no Python (1.3).
+- **Stream:** compute the frame. For a file source, the block of that exact frame (1.2). For a live input, the latest block captured.
 
 **Rule table:**
 
 | Clock \ Source | File | Live input |
 | --- | --- | --- |
-| Timeline | Bake if valid, else random access | Stream: the value now, and scrubbing doesn't apply |
-| Render | Bake if valid, else random access. **Never stream** | A recorded take (1.5). If there is none, the render stops with a clear message |
-| Live | Real-time playback of the file as a backing track | Stream |
+| Timeline | Bake if valid, else stream, settling stateful nodes after a seek | Stream: the latest block, and scrubbing doesn't apply |
+| Render | Bake if valid. Otherwise stream, with a warning that the frames may not match playback | The take's bake (1.6). Otherwise the values are held at 0 and the render reports it |
+| Live | Stream by frame, like a render, so a take can be replayed exactly | Stream: the latest block |
 
-`core/clock.py` owns this table and is the only place that decides how a value is obtained. The render handlers stop calling the playback frame path and ask the clock layer for "value at this frame".
+`core/clock.py` owns this table and is the only place that decides how a value is obtained.
 
-**Stateful nodes** (Envelope, Running Total and Gate, section 2) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
+- **Unbaked renders** keep the handler path with Lock Interface, but run the graph once per rendered frame, with local DSP only and no stale worker values.
+- Blender gives handlers no way to stop a render, so a live source without a take can only be reported, in render_init and in the panel.
+- Which thread runs the frame handlers during a render is to be checked first (Blender's API notes say it is not the viewport's). ACE asserts the main thread in its frame path today.
 
-### 1.2 Random access for file sources
+### 1.2 Exact streaming and seeks
 
-- File sources gain `read_at(t, window)` next to `read_block`.
-- The block for frame f is the same one streaming would use: samples `[f·N, (f+1)·N)` with `N = sample_rate / fps`, plus the history the analyser needs (an FFT window longer than a block reads samples before it).
-- **Analyser state:** Loudness in LUFS and Peak modes runs K-weighting filters (LUFS also averages over its Window), and Transient compares each frame with the previous spectrum and a running average. Random access runs a pre-roll before `t`, long enough for that state to settle, so the result matches streaming within a tolerance set by the reference curves (ARCHITECTURE.md §10). Where the tolerance is too loose, use the checkpoints instead.
-- **Contract, checked by the tests:** random access = stream within tolerance, and bake = random access = render, value for value.
+- **The block of a frame is fixed.** Frame f of a file source always reads from sample `round((f − frame_start) · sr / fps)`, with the 4096 samples before it as history (ARCHITECTURE.md §8). Playing, seeking and baking then read the same samples. This changes the reference curves only where `sr / fps` is not an integer (44.1 kHz at 24 fps), and those are recorded again.
+- **Stateless measurements are exact after a seek already.** Band loudness, RMS, Brightness, Pitch and Stereo depend on their block and its history only.
+- **Stateful nodes settle after a seek.** Each task declares how many frames it needs to forget its past: Loudness in LUFS and Peak modes (K-weighting filters, and the Window), Transient (its running average, about 50 frames), Rolling Average (its window). On a seek, the engine resets them and replays that many frames before the target without writing them.
+- **Running Total and Gate's Count can't settle**, since they remember indefinitely. They are exact only when baked, and the panel says so. There are no checkpoints: the bake is exact for them and simpler.
+- **Stateful tasks run in one place.** Today LUFS, Peak and Transient are offloaded to worker processes with no affinity, so their state is split across copies. They get the `stateful` flag of section 2 and stay on the main thread.
+- **Timeline playback drops frames** in Blender's default *Sync to Audio* mode, so an unbaked stateful node can differ from the render. A baked source is always exact.
 
 ### 1.3 Baking into Blender data
 
-**Today:** the bake is a cache kept in memory (ARCHITECTURE.md §12). It's lost when the file is reloaded, and rendering still needs ACE running in the frame handlers. That means:
+A bake writes each signal's curve over the frame range into ordinary Blender data. Consumers then read it with no Python at all, so the .blend renders anywhere, with ACE disabled or not installed.
 
-- a render farm or another computer needs the add-on and its dependencies installed;
-- final frames go through the same handler path as playback, with its render-safety guards.
+- **Filled by streaming in order** from the range's first frame, on fresh tasks and a background thread. The bake is then exactly what a fresh playback computes, stateful nodes included, and live playback carries on while it runs. A test checks that bake and fresh stream match value for value.
+- **Geometry Nodes: one baked mesh per proxy.** One point per frame, one attribute per sink, and the first frame's number in `ACE_frame0`. Stream groups sample index `floor(frame) − ACE_frame0` with *Clamp* on, instead of point 0:
+  - a live proxy has one point, so the clamp keeps reading point 0;
+  - a baked proxy reads its frame;
+  - switching a source between live and baked swaps the proxy object's mesh. The node internals are the same in both modes, and the choice is saved in the .blend.
+  - `ACE_Values` gets the same treatment.
+- **Shaders: F-curves on the scene properties the shader sinks already read.** One F-curve per sink, converted to sample points (`FCurve.convert_to_samples`), in an ACE action on its own NLA track of the scene, so the scene's own action is untouched. The View Layer Attribute nodes don't change. A float image was the other option. It was dropped because Eevee loads float images at 16 bits by default while Cycles doesn't, GPU textures are limited to about 16384 pixels, and every sink group would need texture maths.
+- **Live vs baked** is per source. A baked source's F-curves are active and its proxy uses the baked mesh. Switching it to live mutes the F-curves and swaps the live mesh back, and the frame handler writes only to live sources.
+- **Identity.** Each curve is keyed by its signal key (ARCHITECTURE.md §1), the source file (path, size, modification time, content hash), the range and the fps. An edit invalidates only the signals it changes, and the panel marks a source's bake stale.
+- **Persistence.** The bake is the Blender data, so it survives reloads. The key is stored on the source.
 
-A bake writes each signal's full curve over the frame range into ordinary Blender data. Consumers then read it with no Python at all:
+`core/bake_store.py` owns it.
 
-- **Geometry Nodes:** one baked mesh per source, with one point per frame and one attribute per signal. The ACE node's internals switch from sampling point 0 of the live proxy to sampling point `frame - frame_start` of the baked mesh (Scene Time → Sample Index). The node interface is unchanged.
-- **Shaders:** a float image, one row per signal and one column per frame, packed in the .blend. An ACE shader node samples it at the current frame (Scene Time → coordinate, Closest interpolation). The baked image needs to be checked against the image size limit for long ranges; past that, use several rows per signal.
-- **Signal identity:** each baked curve is keyed by its signal key (ARCHITECTURE.md §1) plus the hash of the source file. A curve whose key still matches is reused after edits elsewhere; a changed key marks the bake stale in the UI.
-- **Live vs baked:** each source switches between the two. With the source in baked mode, the frame handler does nothing for it.
+### 1.4 Bake nodes downstream
 
-Results:
+A Geometry Nodes **Bake node or simulation zone** downstream of ACE nodes bakes the ACE analysis upstream as well, and releases it when its own bake is deleted.
 
-- the .blend renders anywhere, with ACE disabled or not installed;
-- scrubbing, viewport and render read exactly the same numbers;
-- the bake survives reloads.
+- **What Blender gives:** each Geometry Nodes modifier lists its bakes (`NodesModifier.bakes`: the node, its id, mode, target and frame range), and `object.geometry_node_bake_single` bakes one. There is no handler and no job type for these bakes, and no documented flag that says whether one is baked.
+- **ACE's own bake is the carrier.** A native bake steps through frames and records what the proxies hold. With the proxies on their baked meshes, every frame it steps reads exact values, with no Python involved.
+- **ACE follows the native bake, it doesn't anticipate it.** Keeping ACE's bake for as long as a Bake node sits downstream would bake again on every edit of the ACE tree.
+  - The compile finds, through groups, which ACE signals feed each downstream bake, and over which range.
+  - The 0.25 s poll watches each downstream bake's state. When one becomes baked while ACE's upstream bake was not valid for its range, ACE bakes upstream, swaps the proxies, and bakes the native node again. One click gives an exact result, after a short second pass.
+  - When the native bake is deleted, ACE releases its upstream bake, unless another downstream bake or the user's own bake still holds it, and the proxies go back to live.
+  - Editing the ACE tree while the native bake exists bakes nothing, as in Blender, where a baked node ignores upstream edits until it is baked again.
+- **To verify first:** whether Python can tell a baked bake from an unbaked one, for packed and disk bakes. If it can't, ACE keeps the upstream bake while a downstream bake exists and bakes again only the signals an edit changed, debounced like auto-compile, with live values meanwhile.
+- **Shaders** have no Bake node. Cycles texture baking bakes one frame and reads the current value, so ACE only commits the current frame in `object_bake_pre`.
 
-The bake uses the signal keys and is filled by random access (1.2), so it doesn't depend on playing the stream through. `core/bake_store.py` owns it.
+### 1.5 Live sessions
 
-### 1.4 Live clock
+A live session is Blender's own playback, set up so that frames are never dropped or wrapped:
 
-Under the live clock, ACE drives time instead of following timeline playback.
-
-**Each tick, at the scene's fps:**
-
-1. read the next block from the live inputs;
-2. compute the signals;
-3. commit the values;
-4. advance the scene by exactly one frame (`frame_set`).
-
-The frame-change handler does nothing for ACE while live, so a tick never runs twice.
-
-**Simulation nodes keep working.** They step only from one frame to the next, so the clock guarantees:
-
-- **Frames are always consecutive.** They are never skipped and never wrapped. If the scene can't keep up, ticks run late (time stretches) instead of frames being dropped. The readout shows how far the show has slipped behind real time.
-- **A long range.** On entry, `frame_end` is raised to Blender's maximum frame (1,048,574, about 4.8 h at 60 fps or 9.7 h at 30 fps) and restored on exit. Live stops cleanly if it reaches the end.
+- **Play Every Frame** (`sync_mode = 'NONE'`): frames are always consecutive. If the scene can't keep up, playback runs late (time stretches) instead of dropping frames. The readout shows how far the show has slipped behind real time.
+- **A long range.** On entry, `frame_end` is raised to Blender's maximum frame (1,048,574, about 4.8 h at 60 fps or 9.7 h at 30 fps). So is the simulation range when the scene uses a custom one. Both are restored on exit, and the session stops cleanly if it reaches the end.
 - **The start point is the user's choice:** either `frame_start` (simulations reset there, as Blender does) or the current frame (simulations continue).
-- **To verify with a prototype:** the memory used by simulation caches over a long session. Blender keeps simulated frames in memory for scrubbing. If that grows without limit, find whether it can be capped; otherwise document a maximum session length.
+- **Simulation caches.** Blender keeps simulated frames in memory for scrubbing. A session can turn that off per object (`use_simulation_cache`) and restore it on exit. A prototype measures memory over a long session with the cache on and off.
+- **Exit** when playback stops (`animation_playback_post`), or with Esc in the live window (section 3). Everything changed on entry is restored.
 
 Keyframed animation past its last key behaves as its F-curves say (hold, or cycle with a Cycles modifier). That's the scene author's choice.
 
 **Other rules while live:**
 
-- Live sources never reset on a frame change.
-- File sources play in real time, as backing tracks.
-- The main window's 3D views drop to solid shading (or stop redrawing) to leave the GPU and main thread to the show. They're restored on exit.
-- The side panel shows fps, end-to-end latency, and late ticks.
+- No source resets or seeks on a frame change.
+- **Live inputs read the latest block**, as today, at the capture clock minus the latency setting. Reading "the next block" would let latency grow without bound once playback runs late.
+- File sources stream by frame, as backing tracks.
+- The main window's 3D views can drop to solid shading to leave the GPU and main thread to the show, and are restored on exit.
+- The side panel shows fps, end-to-end latency, late frames and drift.
 
-### 1.5 Takes: record live, render later
+### 1.6 Takes: record live, render later
 
 A **take** is a recorded live session:
 
-- the input audio saved as WAV;
-- the MIDI and OSC events, once ACE reads them, logged with timestamps;
-- the take's first tick mapped to its scene frame. Since live frames are consecutive, tick n is frame `start + n`, exactly.
+- the input audio saved as WAV, recorded from the device callback (the analysis blocks keep only the latest device block);
+- the values computed live on each frame, written into the bake store. Live frames are consecutive, so tick n is frame `start + n`, exactly;
+- MIDI and OSC events once ACE reads them. It reads neither today.
 
-A take is a file source, so the rule table applies: it can be scrubbed, baked and rendered exactly. The use: perform live with an Eevee look, then render the same performance in Cycles at full quality.
+A take is a file source starting at its first frame, so the rule table applies: it can be scrubbed, baked and rendered. The use: perform live with an Eevee look, then render the same performance in Cycles at full quality.
 
 **Rendering a take, two options:**
 
-- **ideal sync:** values exactly on the audio;
-- **reproduce the live look:** values shifted by the latency measured during the session, as the audience saw them.
+- **reproduce the live look:** the values recorded during the session, exactly as the audience saw them. Latency varied from frame to frame, so no single shift would reproduce it;
+- **ideal sync:** a normal bake of the recorded WAV, with values exactly on the audio.
 
-Recording writes WAV and the event log off the main thread. `core/takes.py` owns it.
+Recording writes the WAV and the values off the main thread. `core/takes.py` owns it.
 
-### 1.6 Order
+### 1.7 Order
 
-1. Clock layer, random access for file sources, and the render rule. Rendering becomes defined and exact.
-2. Bake into Blender data (1.3).
-3. Live clock (1.4), with the simulation-cache prototype first.
-4. Takes (1.5).
+1. **Probes**, headless on Blender 5.2:
+   - animated scene properties reach View Layer Attribute nodes in a render, from an NLA track;
+   - Sample Index *Clamp* on a one-point and an N-point mesh, with ACE disabled;
+   - the thread that runs frame handlers during a render;
+   - whether a Geometry Nodes bake's state can be read, and what a bake job does with the handlers.
+2. **Exact streaming and the clock layer:** fixed block placement, settling after a seek, stateful tasks on the main thread, the bake on fresh tasks, and the render rule. Rendering becomes defined, and exact for baked sources.
+3. **Bake into Blender data** (1.3).
+4. **Bake nodes downstream** (1.4).
+5. **Live sessions** (1.5), with the simulation-cache prototype first.
+6. **Takes** (1.6).
 
-The live output window of section 3 needs the live clock.
+The live output window of section 3 needs live sessions.
 
 ## 2. Core operator set
 
@@ -254,8 +264,8 @@ The Source node outputs only what musical time depends on: **BPM, Beats per Bar 
 
 - **Rule:** a stateful node gives the same value on a frame whether that frame is reached by playing or by jumping.
 - **File sources replay.**
-  - Envelope and Gate's Open forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (1.2) for the measurements upstream.
-  - Running Total and Gate's Count remember indefinitely. They need checkpoints saved every N frames, or the bake (1.3).
+  - Envelope and Gate's Open forget within a few time constants. They declare how many frames they need, and the settling after a seek (1.2) replays those frames before the target.
+  - Running Total and Gate's Count remember indefinitely, so they are exact only when baked (1.3).
 - **Until section 1 exists**, state resets on a rewind or a jump, and the panel says so.
 - **Live sources** can't be replayed, so their state simply carries on.
 - **Recompiles:** a recompile keeps every task whose signal remains, with its state (ARCHITECTURE.md §3), so these nodes keep theirs too.
@@ -266,7 +276,7 @@ The Source node outputs only what musical time depends on: **BPM, Beats per Bar 
 2. Envelope and Running Total.
 3. The Downbeat estimate.
 4. Gate.
-5. Replay on jump, once random access (1.2) exists.
+5. Settling after a seek for Envelope and Gate, once 1.2 exists.
 
 Each new node gets reference curves (ARCHITECTURE.md §10), which also check that 24 and 48 fps give the same curve.
 
@@ -282,7 +292,7 @@ Each new node gets reference curves (ARCHITECTURE.md §10), which also check tha
 
 Live visuals go to a projector or to a mixing tool (OBS, Resolume, projection mapping). Making a clean output from Blender by hand takes about ten steps that have to be redone every session: new window, rendered shading, camera view, overlays off, every panel hidden, fullscreen. One button does it.
 
-The window is the output: the program that receives it captures the window. That adds no dependency to ACE, and ACE never copies frames from the GPU. The live clock (1.4) needs a 3D view that keeps redrawing anyway, and this window is that view.
+The window is the output: the program that receives it captures the window. That adds no dependency to ACE, and ACE never copies frames from the GPU. A live session (1.5) needs a 3D view that keeps redrawing anyway, and this window is that view.
 
 ### The window
 
@@ -292,8 +302,8 @@ The window is the output: the program that receives it captures the window. That
   - overlays, gizmos, header, tool header, toolbar, sidebar and asset shelf are all hidden;
   - the area outside the camera frame is black (passepartout fully opaque), so a display with a different shape gets clean letterboxing.
 - **Fullscreen** on the monitor where the window opens.
-- **Going live:** opening the window starts the live clock (1.4).
-- **Leaving:** Esc ends live. A timer notices if the window was closed some other way, and cleans up either way: the live clock's `frame_end` and the main window's 3D view shading are restored.
+- **Going live:** opening the window starts a live session (1.5).
+- **Leaving:** Esc ends live. A timer notices if the window was closed some other way, and cleans up either way: the live session's `frame_end`, simulation range and caches, and the main window's 3D view shading are restored.
 - **The readout** (fps, end-to-end latency, late ticks) is in the main window's side panel, never in the image.
 
 ### Getting the image out
@@ -312,7 +322,7 @@ The window is the output: the program that receives it captures the window. That
 
 - **Capture:** OBS captures the fullscreen Blender window reliably, with Window Capture (Windows Graphics Capture method) and with Display Capture.
 - **Clean frame:** no interface pixels anywhere, with the camera frame filling the window exactly.
-- **Cost:** rendered shading in this window, with the main window's 3D views dropped to solid (1.4).
+- **Cost:** rendered shading in this window, with the main window's 3D views dropped to solid (1.5).
 
 ### Code
 
