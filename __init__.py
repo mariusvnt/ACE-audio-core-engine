@@ -74,6 +74,7 @@ MODULE_NAMES = [
     "nodes.frontend",
     "nodes.identity",
     "nodes.source_nodes",
+    "nodes.definitions",
     "nodes.geometry",
     "nodes.geometry.factory",
     "nodes.geometry.reader",

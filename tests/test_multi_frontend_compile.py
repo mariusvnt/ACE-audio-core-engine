@@ -526,7 +526,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
                          ("SCENE_PROPERTY", "Scene", "ACE_rms_bbbbbb"))
         self.assertEqual(bindings["unnamed"], [])
 
-    def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
+    def test_depsgraph_handler_marks_updated_trees_and_never_object_updates(self):
         engine = _EngineStub(
             requested=[],
             _undo_recovery_active=lambda: False,
@@ -586,15 +586,9 @@ class TestMultiFrontendCompile(unittest.TestCase):
             self.engine_mod.ACEAudioEngine.ensure_instance = orig_ensure
             self.engine_mod.ACEAudioEngine.get_instance = orig_get
 
-        self.assertEqual(engine.requested[0], geometry_tree)
-        self.assertEqual(engine.requested[1], shader_tree)
-        self.assertEqual(engine.requested[2], geometry_tree)
-        self.assertEqual(engine.requested[3], shader_tree)
-        self.assertEqual(engine.requested[4], shader_tree)
-        # The evaluated copy resolves to the original object's trees.
-        self.assertEqual(engine.requested[5], geometry_tree)
-        self.assertEqual(engine.requested[6], shader_tree)
-        self.assertEqual(len(engine.requested), 7)
+        # Trees and the material's embedded tree are marked; objects (evaluated or not) mark
+        # nothing: which trees an object uses is checked by the compile poll's membership.
+        self.assertEqual(engine.requested, [geometry_tree, shader_tree, shader_tree])
 
     def test_frame_change_handler_skips_compile_and_sink_work_when_render_writes_are_unsafe(self):
         calls = []

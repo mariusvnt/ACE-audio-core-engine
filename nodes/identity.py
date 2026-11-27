@@ -4,9 +4,10 @@
   has the canonical name of its kind (``.ACE_stream_loudness``,
   ``.ACE_SHADER_stream_loudness`` and variants such as ``..._4``) or carries
   ``ace_kind`` (the shader sink and source groups, whose names are their own).
-- **Id**: ``ACE_<category>_<type>_<hash>`` of the node's tree and name. The tree
-  is identified by its session uid, which survives undo but not a reload; ids
-  live only as long as the session, the node's name is what lasts.
+- **Id**: ``ACE_<category>_<type>_<hash>`` of where the node is used: the root
+  tree (and the values its owner binds), the groups entered, and the node's
+  name. A tree is identified by its session uid, which survives undo but not a
+  reload; ids live only as long as the session, the node's name is what lasts.
 - **Sink names**: what an output node writes to, as the user's tree holds them:
   the Attribute ID sockets in Geometry Nodes, the node's sink group in shaders.
 """
@@ -98,15 +99,20 @@ def tree_key(tree) -> str:
     return f"o{id(tree)}"
 
 
+def instance_node_id(category: str, node_type: str, root_key: str, chain, name: str) -> str:
+    """The id of one use of an ACE node: its root (owner tree and bindings), the groups entered, its name."""
+    path = "/".join([*map(str, chain or ()), str(name)])
+    digest = hashlib.blake2b(f"{root_key}:{path}".encode("utf-8"), digest_size=4).hexdigest()
+    return f"{PREFIX}{category}_{node_type}_{digest}"
+
+
 def node_id(node, tree=None) -> str:
-    """The node's id for this session, "" when it is not an ACE node."""
+    """The id of the node used directly by its own tree, "" when it is not an ACE node."""
     category, node_type = node_kind(node)
     if not category:
         return ""
     tree = tree if tree is not None else getattr(node, "id_data", None)
-    seed = f"{tree_key(tree)}:{getattr(node, 'name', '')}"
-    digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=4).hexdigest()
-    return f"{PREFIX}{category}_{node_type}_{digest}"
+    return instance_node_id(category, node_type, tree_key(tree), (), getattr(node, "name", ""))
 
 
 def find_node(tree, wanted_id: str):

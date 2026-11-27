@@ -32,8 +32,11 @@ def _assert(condition, message):
 
 
 def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifier, gn_tree, shader_tree):
-    """Depsgraph updates on an object or material reach request_recompile with the original trees."""
-    settings = scene.audiocore.engine_settings
+    """A material edit marks its tree (the original, never an evaluated copy); an object edit marks nothing.
+
+    Which trees an object uses is owner membership, compared by every compile poll: a new
+    modifier is a membership change, not a dirty tree.
+    """
     requested = []
     original_request = engine.frontends.request_recompile
     engine.frontends.request_recompile = lambda tree, **_kw: requested.append(tree)
@@ -42,14 +45,21 @@ def _check_object_and_material_edits_queue_recompile(engine, scene, obj, modifie
         requested.clear()
         modifier.show_viewport = not modifier.show_viewport
         bpy.context.view_layer.update()
+        _assert(not requested, f"An object edit marked trees: {[getattr(t, 'name', t) for t in requested]}")
         obj.data.materials[0].diffuse_color = (0.2, 0.4, 0.6, 1.0)
         bpy.context.view_layer.update()
     finally:
         engine.frontends.request_recompile = original_request
     pointers = {t.as_pointer() for t in requested if t is not None}
-    _assert(gn_tree.as_pointer() in pointers, "Object edit did not queue its Geometry Nodes frontend")
     _assert(shader_tree.as_pointer() in pointers, "Material edit did not queue its shader frontend")
+    _assert(gn_tree.as_pointer() not in pointers, "A material edit marked an unrelated tree")
     _assert(all(not t.is_evaluated for t in requested if t is not None), "Recompile queued an evaluated copy")
+    before = engine.frontends._frontend_membership_signature(engine.frontends.discover_scene_frontends(scene))
+    extra = obj.modifiers.new("ACE Smoke GN 2", "NODES")
+    extra.node_group = gn_tree
+    after = engine.frontends._frontend_membership_signature(engine.frontends.discover_scene_frontends(scene))
+    obj.modifiers.remove(extra)
+    _assert(before != after, "A new modifier using an ACE tree did not change the owner membership")
 
 
 def _stale_ace_groups(addon_key):
@@ -801,6 +811,137 @@ def _check_linked_tree_compiles(addon_key, scene, engine):
         bpy.data.objects.remove(user, do_unlink=True)
         library = linked.library
         bpy.data.libraries.remove(library)
+
+
+def _user_group(name, inputs):
+    group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    for sock_name, sock_type in inputs:
+        group.interface.new_socket(sock_name, in_out="INPUT", socket_type=sock_type)
+    return group, group.nodes.new("NodeGroupInput")
+
+
+def _abstract_nodes(engine, node_type, name):
+    tree = engine.abstract_tree_ref
+    return [n for n in tree.nodes.values() if n.type == node_type and n.name == name] if tree is not None else []
+
+
+def _check_instances_through_groups(addon_key, scene, engine):
+    """ACE nodes in user groups are read once per use, with what each use binds: values and sources."""
+    ace = scene.audiocore
+    count, first_index = len(ace.audio_sources), ace.active_audio_source_index
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Groups")
+    made = []
+    try:
+        bpy.ops.audiocore.add_audio_source()
+        bpy.ops.audiocore.add_audio_source()
+        first, second = ace.audio_sources[count], ace.audio_sources[count + 1]
+        ace.active_audio_source_index = count
+        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+
+        # A group taking the audio and the LUFS window from outside, used twice with two windows.
+        window_group, gi = _user_group("ACE_Smoke_WindowGroup", [("Audio", "NodeSocketBundle"), ("Window", "NodeSocketFloat")])
+        made.append(window_group)
+        loud = _add_ace_node(addon_key, window_group, "stream", "loudness", "Loudness", mode="lufs")
+        window_idx = [s.name for s in loud.inputs].index("Window (s)")
+        window_group.links.new(gi.outputs["Audio"], loud.inputs["Audio"])
+        window_group.links.new(gi.outputs["Window"], loud.inputs[window_idx])
+        for value in (0.8, 1.6):
+            use = tree.nodes.new("GeometryNodeGroup")
+            use.node_tree = window_group
+            use.inputs["Window"].default_value = value
+            tree.links.new(source.outputs["Audio"], use.inputs["Audio"])
+
+        # A group with its own Source node, reading the proxy each use gives it.
+        source_group, gi2 = _user_group("ACE_Smoke_SourceGroup", [("Proxy", "NodeSocketObject")])
+        made.append(source_group)
+        inner_source = _add_ace_node(addon_key, source_group, "source_mngmt", "src", "Inner Source")
+        source_group.links.new(gi2.outputs["Proxy"], inner_source.inputs["Proxy Object"])
+        inner_loud = _add_ace_node(addon_key, source_group, "stream", "loudness", "Inner Loudness", mode="rms")
+        source_group.links.new(inner_source.outputs["Audio"], inner_loud.inputs["Audio"])
+        proxy_mod = importlib.import_module(f"{addon_key}.core.proxy.manager").ACEProxyManager
+        for src in (first, second):
+            use = tree.nodes.new("GeometryNodeGroup")
+            use.node_tree = source_group
+            use.inputs["Proxy"].default_value = proxy_mod.ensure_proxy_for_source(src, scene=scene)
+
+        engine.compiler.compile_scene_frontends(scene)
+        windows = sorted(round(float(n.parameters.get(f"in_{window_idx}", -1.0)), 3)
+                         for n in _abstract_nodes(engine, "loudness", "Loudness"))
+        _assert(windows == [0.8, 1.6], f"The group's two uses did not get their windows: {windows}")
+        roots = sorted(sorted(n.root_sources) for n in _abstract_nodes(engine, "loudness", "Inner Loudness"))
+        _assert(roots == sorted([[first.stable_id], [second.stable_id]]), f"Each use did not read its source: {roots}")
+        for src in (first, second):
+            graph = next((g for g in engine.graphs.values() if g.source_uid == src.stable_id), None)
+            _assert(graph is not None and any(n.name == "Inner Loudness" for n in
+                    (engine.abstract_tree_ref.nodes.get(t) for t in graph.tasks) if n is not None),
+                    f"No graph computes the group's Loudness for {src.name}")
+
+        # An edit inside a group is an edit of its uses.
+        before = engine.frontends._hierarchy_trees(engine.frontends.discover_scene_frontends(scene))
+        _assert(window_group.as_pointer() in before and source_group.as_pointer() in before,
+                "The groups are not part of the compiled trees")
+
+        # Definitions are cached: an edit inside one group parses that group again, nothing else.
+        definitions = importlib.import_module(f"{addon_key}.nodes.definitions")
+        kept = {name: definitions.definition(t) for name, t in (("tree", tree), ("source", source_group), ("window", window_group))}
+        importlib.import_module(f"{addon_key}.nodes.modes").apply_node_mode(loud, "stream", "loudness", "peak")
+        engine.compiler.compile_scene_frontends(scene)
+        now = {name: definitions.definition(t) for name, t in (("tree", tree), ("source", source_group), ("window", window_group))}
+        _assert(now["tree"] is kept["tree"] and now["source"] is kept["source"], "Unchanged trees were parsed again")
+        _assert(now["window"] is not kept["window"], "The edited group was not parsed again")
+        modes = sorted(n.parameters.get("mode") for n in _abstract_nodes(engine, "loudness", "Loudness"))
+        _assert(modes == ["peak", "peak"], f"The group's edit did not reach both uses: {modes}")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+        for group in made:
+            bpy.data.node_groups.remove(group)
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+
+
+def _check_world_and_instanced_trees_are_found(addon_key, scene, engine):
+    """The World's shader and the tree of an object instanced from another scene's collection are discovered."""
+    import warnings
+
+    own_world = scene.world
+    world = bpy.data.worlds.new("ACE_Smoke_World")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        world.use_nodes = True
+    other = bpy.data.scenes.new("ACE_Smoke_Other_Scene")
+    collection = bpy.data.collections.new("ACE_Smoke_Instanced")
+    other.collection.children.link(collection)
+    mesh = bpy.data.meshes.new("ACE_Smoke_Instanced_Mesh")
+    inner = bpy.data.objects.new("ACE_Smoke_Instanced_Object", mesh)
+    collection.objects.link(inner)
+    inner_tree = bpy.data.node_groups.new("ACE_Smoke_Instanced_GN", "GeometryNodeTree")
+    inner_tree.is_modifier = True
+    inner.modifiers.new("ACE", "NODES").node_group = inner_tree
+    empty = bpy.data.objects.new("ACE_Smoke_Instancer", None)
+    empty.instance_type = "COLLECTION"
+    empty.instance_collection = collection
+    scene.collection.objects.link(empty)
+    try:
+        scene.world = world
+        _add_ace_node(addon_key, world.node_tree, "stream", "loudness", "World Loudness")
+        _add_ace_node(addon_key, inner_tree, "stream", "loudness", "Instanced Loudness")
+        bpy.context.view_layer.update()
+        found = {rec.frontend_ref.tree_name: rec.frontend_ref.owner_keys
+                 for rec in engine.frontends.discover_scene_frontends(scene)}
+        _assert(any(f"world:{world.name}" in owners for owners in found.values()), f"The World was not found: {found}")
+        _assert(inner_tree.name in found, f"The instanced object's tree was not found: {found}")
+        engine.compiler.compile_scene_frontends(scene)
+    finally:
+        scene.world = own_world
+        bpy.data.objects.remove(empty, do_unlink=True)
+        bpy.data.objects.remove(inner, do_unlink=True)
+        bpy.data.node_groups.remove(inner_tree)
+        bpy.data.collections.remove(collection)
+        bpy.data.scenes.remove(other)
+        bpy.data.worlds.remove(world)
 
 
 def _check_source_nodes(addon_key, scene, engine):
@@ -1625,6 +1766,8 @@ def main():
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)
+    _check_instances_through_groups(addon_key, scene, engine)
+    _check_world_and_instanced_trees_are_found(addon_key, scene, engine)
     _check_file_formats_decode(addon_key)
     _check_operator_list_follows_tree(addon_key, scene)
     _check_splitter_sliders(addon_key, scene)

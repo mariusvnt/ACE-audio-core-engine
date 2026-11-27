@@ -160,6 +160,10 @@ def render_cancel_handler(scene):
     render_post_handler(scene)
 
 
+# ID types whose node tree is embedded: an edit of the tree arrives as an update of its owner too.
+_EMBEDDED_TREE_OWNERS = frozenset({"Material", "World"})
+
+
 def _original_id(update):
     update_id = getattr(update, "id", None)
     return getattr(update_id, "original", None) or update_id
@@ -180,7 +184,7 @@ def depsgraph_update_handler(scene, depsgraph):
         bl_idname = _id_type_name(update_id)
         if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
             return bool(FrontendTracker._tree_is_ace_managed(update_id))
-        if bl_idname == "Material":
+        if bl_idname in _EMBEDDED_TREE_OWNERS or bl_idname.endswith("Light"):
             tree = getattr(update_id, "node_tree", None) if update_id is not None else None
             return bool(FrontendTracker._tree_is_ace_managed(tree))
         if bl_idname == "Object":
@@ -223,84 +227,32 @@ def depsgraph_update_handler(scene, depsgraph):
     if engine is None:
         return
 
-    recompile_targets: list = []
+    # Only the trees that changed are marked: a node-tree update, or a material's, a World's or
+    # a light's (their embedded tree). Object updates mark nothing. Which trees an object uses
+    # (its modifiers, their values, its material slots) is owner membership, compared on every
+    # compile poll; and every proxy write re-evaluates the objects that read it, so their
+    # updates are mostly ACE's own.
     seen_targets: set[int] = set()
-
-    def _queue_recompile_target(tree_obj) -> None:
-        if tree_obj is None:
-            return
-        try:
-            key = int(tree_obj.as_pointer())
-        except Exception as exc:
-            utils.note_swallowed("handlers.depsgraph_update_handler._queue_recompile_target", exc)
-            key = id(tree_obj)
-        if key in seen_targets:
-            return
-        seen_targets.add(key)
-        recompile_targets.append(tree_obj)
-
-    compiled_frontend_snapshots = dict(getattr(getattr(engine, "compiler", None), "_compiled_frontend_snapshots", {}) or {})
-    discovered_frontends_by_uid = None
-
     for update in getattr(depsgraph, "updates", []):
         _id = _original_id(update)
         bl_idname = _id_type_name(_id)
-
         if bl_idname in {"GeometryNodeTree", "ShaderNodeTree"}:
-            if FrontendTracker._tree_is_ace_managed(_id):
-                _queue_recompile_target(_id)
-            continue
-
-        if bl_idname == "Material":
+            tree = _id
+        elif bl_idname in _EMBEDDED_TREE_OWNERS or bl_idname.endswith("Light"):
             tree = getattr(_id, "node_tree", None) if _id is not None else None
-            if FrontendTracker._tree_is_ace_managed(tree):
-                _queue_recompile_target(tree)
+        else:
             continue
-
-        if bl_idname == "Object":
-            obj = _id
-            has_update_flags = any(
-                hasattr(update, token)
-                for token in ("is_updated_geometry", "is_updated_shading", "is_updated_transform")
-            )
-            if has_update_flags and not (
-                bool(getattr(update, "is_updated_geometry", False))
-                or bool(getattr(update, "is_updated_shading", False))
-            ):
-                continue
-
-            obj_name = str(getattr(obj, "name", "") or "")
-            if obj_name and compiled_frontend_snapshots:
-                if discovered_frontends_by_uid is None:
-                    discovered_frontends_by_uid = {
-                        str(rec.frontend_ref.uid or ""): getattr(rec, "tree", None)
-                        for rec in (engine.frontends.discover_scene_frontends(scene) or [])
-                    }
-                for frontend_uid, frontend_snapshot in compiled_frontend_snapshots.items():
-                    owners = {
-                        str(v)
-                        for v in tuple(getattr(frontend_snapshot, "owner_keys", ()) or ())
-                        if str(v)
-                    }
-                    if obj_name not in owners:
-                        continue
-                    tree_ref = discovered_frontends_by_uid.get(str(frontend_uid))
-                    if tree_ref is not None:
-                        _queue_recompile_target(tree_ref)
-
-            for mod in getattr(obj, "modifiers", []) or []:
-                tree_ref = getattr(mod, "node_group", None)
-                if getattr(mod, "type", None) == "NODES" and FrontendTracker._tree_is_ace_managed(tree_ref):
-                    _queue_recompile_target(tree_ref)
-
-            for slot in getattr(obj, "material_slots", []) or []:
-                material = getattr(slot, "material", None)
-                tree = getattr(material, "node_tree", None) if material is not None else None
-                if FrontendTracker._tree_is_ace_managed(tree):
-                    _queue_recompile_target(tree)
-
-    for target in recompile_targets:
-        engine.frontends.request_recompile(target, verify_content=True)
+        if tree is None or not FrontendTracker._tree_is_ace_managed(tree):
+            continue
+        try:
+            key = int(tree.as_pointer())
+        except Exception as exc:
+            utils.note_swallowed("handlers.depsgraph_update_handler#pointer", exc)
+            key = id(tree)
+        if key in seen_targets:
+            continue
+        seen_targets.add(key)
+        engine.frontends.request_recompile(tree, verify_content=True)
 
 
 def auto_compile_timer():

@@ -47,14 +47,19 @@ def split_freq_states(node, scene=None) -> list[tuple]:
     return states
 
 
-def capture_driven_splits(node, params: dict) -> None:
-    """Give the engine the values of linked split frequencies, and where to read them again."""
+def capture_driven_splits(node, params: dict, chain=(), modifier=None, root_key: str = "") -> None:
+    """Give the engine the values of linked split frequencies, and where to read them again.
+
+    *chain* is the group nodes the walk entered to reach *node* and *modifier* the one at the
+    root, so a link from a group's input reads what that use of the group receives.
+    """
     linked = [i for i, sock in enumerate(node.inputs) if i and sock.is_linked]
     if not linked:
         return
+    context = driven_values.WalkContext(chain=tuple(chain or ()), modifier=modifier, root_key=root_key)
     unknown = []
     for i in linked:
-        value = driven_values.linked_value(node.inputs[i], bpy.context.scene)
+        value = driven_values.linked_value(node.inputs[i], bpy.context.scene, context)
         # The link wins over the socket's own value, even when it cannot be computed here (an
         # ACE output reaches the engine through its own link).
         params.pop(f"in_{i}", None)
@@ -65,6 +70,7 @@ def capture_driven_splits(node, params: dict) -> None:
     params["unknown_inputs"] = unknown
     params["driven_inputs"] = linked
     params["driven_node"] = driven_values.node_ref(node)
+    params["driven_context"] = context.ref()
 
 
 def refresh_driven_splits(graphs, scene) -> None:
@@ -78,10 +84,11 @@ def refresh_driven_splits(graphs, scene) -> None:
             node = driven_values.node_from_ref(params.get("driven_node"))
             if node is None:
                 continue
+            context = driven_values.WalkContext.from_ref(params.get("driven_context"))
             for i in params["driven_inputs"]:
                 if i >= len(node.inputs) or not node.inputs[i].is_linked:
                     continue
-                value = driven_values.linked_value(node.inputs[i], scene)
+                value = driven_values.linked_value(node.inputs[i], scene, context)
                 if value is not None:
                     params[f"in_{i}"] = value
                     overrides.setdefault(str(node_id), {})[f"in_{i}"] = value

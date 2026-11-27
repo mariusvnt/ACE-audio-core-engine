@@ -31,9 +31,13 @@ FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
 FRONTEND_KIND_SHADER = "SHADER_NODES"
 @dataclass
 class _ACEFrontendDiscovery:
+    """One root of ACE uses: a tree with its owners and the values they bind (live refs: one compile only)."""
     tree: Any
     frontend_ref: ACEFrontendRef
     consumer_object_names: tuple[str, ...] = ()
+    bindings: dict = None  # Group Input socket identifier -> plain value
+    root_key: str = ""
+    modifier: Any = None
 @dataclass(frozen=True)
 class _ACECompiledFrontendSnapshot:
     uid: str

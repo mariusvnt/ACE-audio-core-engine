@@ -273,6 +273,9 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                     frontend_uid=frontend_uid,
                     frontend_kind=frontend_kind,
                     consumer_keys=frontend.consumer_object_names,
+                    bindings=frontend.bindings,
+                    root_key=frontend.root_key,
+                    modifier=frontend.modifier,
                 )
             else:
                 reader = ACEDummyTreeReader(
@@ -280,6 +283,9 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                     frontend_uid=frontend_uid,
                     frontend_kind=frontend_kind,
                     consumer_keys=frontend.consumer_object_names,
+                    bindings=frontend.bindings,
+                    root_key=frontend.root_key,
+                    modifier=frontend.modifier,
                 )
 
             partial_tree = reader.build()

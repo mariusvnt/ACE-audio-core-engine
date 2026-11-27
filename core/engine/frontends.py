@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from ... import utils
 from ..abstract_tree import ACEAbstractTree, ACEFrontendRef
 from ..proxy.manager import ACEProxyManager
-from ...nodes.identity import is_ace_group, is_ace_node, node_kind, tree_key
+from ...nodes.identity import is_ace_group, tree_key
 from .common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, _ACEFrontendDiscovery
 
 
@@ -60,9 +60,10 @@ class FrontendTracker:
 
     @staticmethod
     def _tree_has_ace_nodes(tree: bpy.types.NodeTree | None) -> bool:
-        if not tree:
-            return False
-        return any(is_ace_node(node) for node in getattr(tree, "nodes", []) or [])
+        """True when *tree* or a group it uses (at any depth) holds an ACE node."""
+        from ...nodes.definitions import tree_uses_ace
+
+        return bool(tree) and tree_uses_ace(tree)
 
     @staticmethod
     def _frontend_membership_signature(frontends: list[_ACEFrontendDiscovery]) -> tuple[Any, ...]:
@@ -120,109 +121,128 @@ class FrontendTracker:
                     return getattr(rec, "tree", None)
         return None
 
+    @staticmethod
+    def _scene_objects(scene) -> list:
+        """The scene's objects and those it instances through collections (other scenes' included), each once.
+
+        Walked from the scene's own data, not from a depsgraph: a depsgraph not evaluated since
+        an object was deleted still lists it, and reading it crashes Blender.
+        """
+        objects: list = []
+        seen: set = set()
+        stack = list(getattr(scene, "objects", []) or [])
+        while stack:
+            obj = stack.pop()
+            marker = FrontendTracker._node_tree_pointer(obj)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            objects.append(obj)
+            collection = getattr(obj, "instance_collection", None)
+            if collection is not None and str(getattr(obj, "instance_type", "") or "") == "COLLECTION":
+                stack.extend(getattr(collection, "all_objects", []) or [])
+        return sorted(objects, key=lambda o: str(getattr(o, "name_full", "") or getattr(o, "name", "")))
+
+    @staticmethod
+    def _modifier_bindings(modifier, tree) -> dict:
+        """The values *modifier* gives the inputs of *tree* that reach an ACE node, as plain data."""
+        from ...nodes.definitions import plain_value, relevant_inputs
+
+        wanted = relevant_inputs(tree)
+        if not wanted:
+            return {}
+        inputs = getattr(getattr(modifier, "properties", None), "inputs", None)
+        bindings = {}
+        for identifier in sorted(wanted):
+            entry = getattr(inputs, identifier, None) if inputs is not None else None
+            if entry is None or getattr(entry, "type", "VALUE") != "VALUE":
+                continue
+            bindings[identifier] = plain_value(entry.value)
+        return bindings
+
     def discover_scene_frontends(self, scene) -> list[_ACEFrontendDiscovery]:
-        """Discover managed ACE frontends used by the scene."""
-        from ...nodes.shader.reader import ACEShaderTreeReader
+        """The roots of every ACE use in the scene, one per tree and distinct modifier values.
+
+        Owners: objects' Geometry Nodes modifiers and material slots, lights and the World.
+        A tree counts when it or a group it uses (at any depth) holds an ACE node.
+        """
+        from ...nodes.definitions import tree_uses_ace
 
         utils.assert_main_thread("discover_scene_frontends")
-
         if scene is None:
             return []
+        memo: dict = {}
+        roots: Dict[tuple, Dict[str, Any]] = {}
 
-        by_ptr: Dict[int, Dict[str, Any]] = {}
-
-        def _register_tree(tree, frontend_kind: str, owner_keys, material_name: str = "", consumer_object_names=()):
-            if tree is None or self._tree_is_internal_ace_group(tree):
+        def _register(tree, kind, owner_key, consumer="", material_name="", modifier=None, bindings=None):
+            if tree is None or self._tree_is_internal_ace_group(tree) or not tree_uses_ace(tree, memo):
                 return
-            tree_type = str(getattr(tree, "bl_idname", "") or "")
-            is_shader = str(frontend_kind or "") == FRONTEND_KIND_SHADER or tree_type == "ShaderNodeTree"
-            if is_shader:
-                managed = bool(ACEShaderTreeReader.is_managed_tree(tree) or self._tree_is_ace_managed(tree))
-            else:
-                managed = self._tree_is_ace_managed(tree)
-            if not managed:
-                return
-            tree_ptr = self._node_tree_pointer(tree)
-            owner_keys_tuple = tuple(sorted(str(v) for v in (owner_keys or []) if str(v)))
-            consumer_keys_tuple = tuple(sorted(str(v) for v in (consumer_object_names or []) if str(v)))
-            existing = by_ptr.get(tree_ptr)
-            if existing is None:
-                by_ptr[tree_ptr] = {
-                    "tree": tree,
-                    "frontend_kind": str(frontend_kind or ""),
-                    "discovery_index": len(by_ptr),
-                    "owner_keys": set(owner_keys_tuple),
-                    "consumer_keys": set(consumer_keys_tuple),
-                    "material_name": str(material_name or ""),
+            bindings = dict(bindings or {})
+            digest = hashlib.blake2b(repr(sorted(bindings.items())).encode("utf-8"), digest_size=4).hexdigest() if bindings else ""
+            key = (int(self._node_tree_pointer(tree)), digest)
+            rec = roots.get(key)
+            if rec is None:
+                rec = roots[key] = {
+                    "tree": tree, "kind": kind, "digest": digest, "bindings": bindings, "modifier": modifier,
+                    "owner_keys": set(), "consumer_keys": set(), "material_name": material_name,
+                    "discovery_index": len(roots),
                 }
-                return
-            existing["owner_keys"].update(owner_keys_tuple)
-            existing["consumer_keys"].update(consumer_keys_tuple)
-            if material_name and not existing.get("material_name"):
-                existing["material_name"] = str(material_name)
+            rec["owner_keys"].add(owner_key)
+            if consumer:
+                rec["consumer_keys"].add(consumer)
 
-        def _frontend_record_sort_key(rec: Dict[str, Any]) -> tuple[Any, ...]:
-            tree = rec.get("tree")
-            return (
-                str(rec.get("frontend_kind", "") or ""),
-                str(getattr(tree, "bl_idname", "") or ""),
-                str(getattr(tree, "name", "") or ""),
-                str(rec.get("material_name", "") or ""),
-                tuple(sorted(str(v) for v in rec.get("owner_keys", set()) if str(v))),
-                tuple(sorted(str(v) for v in rec.get("consumer_keys", set()) if str(v))),
-                int(self._node_tree_pointer(tree)),
-            )
-
-        for obj in getattr(scene, "objects", []) or []:
+        for obj in self._scene_objects(scene):
             obj_name = str(getattr(obj, "name", "") or "")
             for mod in getattr(obj, "modifiers", []) or []:
-                if getattr(mod, "type", None) != "NODES":
-                    continue
                 tree = getattr(mod, "node_group", None)
-                if tree is None:
+                if getattr(mod, "type", None) != "NODES" or tree is None:
                     continue
-                _register_tree(
-                    tree,
-                    FRONTEND_KIND_GEOMETRY,
-                    owner_keys=(f"{obj_name}:{getattr(mod, 'name', '')}",),
-                )
+                with utils.logged_errors("frontends.FrontendTracker.discover_scene_frontends#modifier"):
+                    _register(tree, FRONTEND_KIND_GEOMETRY, f"{obj_name}:{getattr(mod, 'name', '')}",
+                              modifier=mod, bindings=self._modifier_bindings(mod, tree))
             for slot in getattr(obj, "material_slots", []) or []:
                 material = getattr(slot, "material", None)
                 tree = getattr(material, "node_tree", None) if material is not None else None
                 if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
                     continue
-                _register_tree(
-                    tree,
-                    FRONTEND_KIND_SHADER,
-                    owner_keys=(obj_name,),
-                    material_name=str(getattr(material, "name", "") or ""),
-                    consumer_object_names=(obj_name,),
-                )
+                _register(tree, FRONTEND_KIND_SHADER, obj_name, consumer=obj_name,
+                          material_name=str(getattr(material, "name", "") or ""))
+            if str(getattr(obj, "type", "") or "") == "LIGHT":
+                light = getattr(obj, "data", None)
+                _register(getattr(light, "node_tree", None), FRONTEND_KIND_SHADER, f"light:{getattr(light, 'name', '')}",
+                          consumer=obj_name)
+        world = getattr(scene, "world", None)
+        if world is not None:
+            _register(getattr(world, "node_tree", None), FRONTEND_KIND_SHADER, f"world:{world.name}")
+
+        # Uses of one tree that differ in their values: the first keeps the tree's own ids.
+        firsts: Dict[int, str] = {}
+        for (ptr, digest), rec in sorted(roots.items(), key=lambda kv: (kv[0][0], sorted(kv[1]["owner_keys"]))):
+            firsts.setdefault(ptr, digest)
 
         discovered: list[_ACEFrontendDiscovery] = []
-        for rec in sorted(by_ptr.values(), key=_frontend_record_sort_key):
-            tree = rec.get("tree")
-            frontend_kind = str(rec.get("frontend_kind", "") or "")
-            frontend_uid = self._tree_frontend_uid(tree)
-            owner_keys = tuple(sorted(str(v) for v in rec.get("owner_keys", set()) if str(v)))
-            consumer_keys = tuple(sorted(str(v) for v in rec.get("consumer_keys", set()) if str(v)))
-            discovered.append(
-                _ACEFrontendDiscovery(
-                    tree=tree,
-                    frontend_ref=ACEFrontendRef(
-                        uid=frontend_uid,
-                        kind=frontend_kind,
-                        tree_name=str(getattr(tree, "name", "") or ""),
-                        tree_bl_idname=str(getattr(tree, "bl_idname", "") or ""),
-                        owner_keys=owner_keys,
-                        material_name=str(rec.get("material_name", "") or ""),
-                        tree_ptr=int(self._node_tree_pointer(tree)),
-                        discovery_index=int(rec.get("discovery_index", 0) or 0),
-                    ),
-                    consumer_object_names=consumer_keys,
-                )
-            )
-
+        for (ptr, digest), rec in roots.items():
+            tree = rec["tree"]
+            own = digest == firsts.get(ptr)
+            uid = self._tree_frontend_uid(tree) + ("" if own else f"_{digest}")
+            root_key = tree_key(tree) + ("" if own else f"#{digest}")
+            discovered.append(_ACEFrontendDiscovery(
+                tree=tree,
+                frontend_ref=ACEFrontendRef(
+                    uid=uid,
+                    kind=rec["kind"],
+                    tree_name=str(getattr(tree, "name", "") or ""),
+                    tree_bl_idname=str(getattr(tree, "bl_idname", "") or ""),
+                    owner_keys=tuple(sorted(rec["owner_keys"])),
+                    material_name=str(rec["material_name"] or ""),
+                    tree_ptr=int(ptr),
+                    discovery_index=int(rec["discovery_index"]),
+                ),
+                consumer_object_names=tuple(sorted(rec["consumer_keys"])),
+                bindings=rec["bindings"],
+                root_key=root_key,
+                modifier=rec["modifier"],
+            ))
         return sorted(discovered, key=lambda rec: str(rec.frontend_ref.uid or ""))
 
     @staticmethod
@@ -358,56 +378,27 @@ class FrontendTracker:
         )
         return (tuple(node_sig), links, output_links, frontend_sig, consumer_sig)
 
-    @classmethod
-    def _tree_content_signature(cls, tree) -> str:
-        """Hash of what a compile reads from *tree*: ACE nodes, their settings and inputs, links, interface.
+    @staticmethod
+    def _tree_content_signature(tree) -> str:
+        from ...nodes.definitions import tree_content_signature
 
-        Node positions, labels and selection are left out: changing them needs no recompile. An
-        ACE node's name is in: it is the node's identity.
-        """
-        tokens: list = []
-        for item in getattr(getattr(tree, "interface", None), "items_tree", []) or []:
-            tokens.append(("if", str(getattr(item, "in_out", "")), str(getattr(item, "name", "")),
-                           str(getattr(item, "socket_type", ""))))
-        for node in getattr(tree, "nodes", []) or []:
-            ace_props: tuple = ()
-            values: tuple = ()
-            get_keys = getattr(node, "keys", None)
-            keys = list(get_keys()) if callable(get_keys) else []
-            ace_name = ""
-            if node_kind(node)[0]:
-                ace_name = str(getattr(node, "name", "") or "")
-                ace_props = tuple(sorted((k, repr(node[k])) for k in keys if str(k).startswith("ace_")))
-                vals = []
-                for sock in getattr(node, "inputs", []) or []:
-                    value = getattr(sock, "default_value", None)
-                    if hasattr(value, "name"):
-                        value = value.name
-                    elif hasattr(value, "__len__") and not isinstance(value, str):
-                        value = tuple(value)
-                    vals.append((str(getattr(sock, "identifier", "")), bool(getattr(sock, "is_linked", False)), repr(value)))
-                values = tuple(vals)
-            tokens.append((
-                "n", cls._node_tree_pointer(node), str(getattr(node, "bl_idname", "")),
-                str(getattr(getattr(node, "node_tree", None), "name", "") or ""),
-                bool(getattr(node, "mute", False)), ace_name, ace_props, values,
-                len(getattr(node, "outputs", []) or []),
-            ))
-        for link in getattr(tree, "links", []) or []:
-            tokens.append((
-                "l", cls._node_tree_pointer(link.from_node), str(link.from_socket.identifier),
-                cls._node_tree_pointer(link.to_node), str(link.to_socket.identifier),
-                bool(getattr(link, "is_muted", False)), bool(getattr(link, "is_valid", True)),
-            ))
-        payload = repr(tokens).encode("utf-8", "ignore")
-        return hashlib.blake2b(payload, digest_size=16).hexdigest()
+        return tree_content_signature(tree)
+
+    @staticmethod
+    def _hierarchy_trees(frontends) -> Dict[int, Any]:
+        """Each root tree and every group it uses, at any depth, by pointer."""
+        from ...nodes.definitions import hierarchy_trees
+
+        found: Dict[int, Any] = {}
+        for rec in frontends or []:
+            for tree in hierarchy_trees(rec.tree):
+                found.setdefault(int(FrontendTracker._node_tree_pointer(tree)), tree)
+        return found
 
     def record_compiled_content(self, frontends: list[_ACEFrontendDiscovery]) -> None:
-        """Remember the content each frontend tree had when it was compiled."""
+        """Remember the content each tree had when it was compiled: the roots and the groups they use."""
         self._compiled_content_sigs = {
-            int(self._node_tree_pointer(rec.tree)): self._tree_content_signature(rec.tree)
-            for rec in (frontends or [])
-            if rec.tree is not None
+            ptr: self._tree_content_signature(tree) for ptr, tree in self._hierarchy_trees(frontends).items()
         }
 
     def _dirty_trees_unchanged(self, discovered_by_uid: Dict[str, _ACEFrontendDiscovery], membership_changed: bool) -> bool:
@@ -415,23 +406,15 @@ class FrontendTracker:
 
         A compile writes proxy data; every tree reading a proxy is then re-evaluated and reported
         by the depsgraph like a user edit. Without this check that report recompiles again,
-        forever, every ~0.4 s.
+        forever, every ~0.4 s. Marks are by tree, groups included: a tree the last compile did not
+        read counts as changed.
         """
         if self._forced_recompile or self._pending_scene_rebuild or membership_changed or not self.engine.graphs:
             return False
-        trees_by_ptr = {
-            int(self._node_tree_pointer(rec.tree)): rec.tree
-            for rec in discovered_by_uid.values()
-            if rec.tree is not None
-        }
         dirty_ptrs = {int(p) for p in self._dirty_tree_ptrs}
-        for uid in self._dirty_frontend_uids:
-            rec = discovered_by_uid.get(str(uid))
-            if rec is None or rec.tree is None:
-                return False
-            dirty_ptrs.add(int(self._node_tree_pointer(rec.tree)))
         if not dirty_ptrs:
             return False
+        trees_by_ptr = self._hierarchy_trees(discovered_by_uid.values())
         for ptr in dirty_ptrs:
             tree = trees_by_ptr.get(ptr)
             recorded = self._compiled_content_sigs.get(ptr)

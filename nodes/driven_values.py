@@ -9,7 +9,7 @@ muted nodes and the modifier's own inputs. Anything else is unknown.
 import math
 import bpy  # type: ignore
 from .. import utils
-from .identity import is_ace_node, node_id
+from .identity import instance_node_id, is_ace_node, node_id, node_kind
 
 _MAX_DEPTH = 64
 
@@ -18,18 +18,53 @@ class _Unknown(Exception):
     """The chain holds something that cannot be computed here."""
 
 
+class WalkContext:
+    """Where a node is used: the group nodes entered from the root, the root's modifier, the root's key.
+
+    A link from a group's Group Input then reads what that use of the group receives.
+    """
+
+    def __init__(self, chain=(), modifier=None, root_key: str = ""):
+        self.chain = tuple(chain or ())
+        self.modifier = modifier
+        self.root_key = str(root_key or "")
+
+    def ref(self):
+        """Plain data to find the context again on a later frame."""
+        modifier = None
+        if self.modifier is not None:
+            modifier = (str(self.modifier.id_data.name), str(self.modifier.name))
+        return ([node_ref(node) for node in self.chain], modifier, self.root_key)
+
+    @classmethod
+    def from_ref(cls, ref):
+        if not ref:
+            return None
+        chain_refs, modifier_ref, root_key = ref
+        chain = [node_from_ref(r) for r in chain_refs or ()]
+        if any(node is None for node in chain):
+            return None
+        modifier = None
+        if modifier_ref:
+            obj = bpy.data.objects.get(modifier_ref[0])
+            modifier = obj.modifiers.get(modifier_ref[1]) if obj is not None else None
+        return cls(chain, modifier, root_key)
+
+
 class _Walk:
     """Where the computation is: the scene, and the node groups entered on the way up."""
 
-    def __init__(self, scene):
+    def __init__(self, scene, context: WalkContext | None = None):
         self.scene = scene
-        self.groups: list = []
+        self.groups: list = list(context.chain) if context is not None else []
+        self.modifier = context.modifier if context is not None else None
+        self.root_key = context.root_key if context is not None else ""
 
 
-def linked_value(socket, scene=None) -> float | None:
+def linked_value(socket, scene=None, context: WalkContext | None = None) -> float | None:
     """The value reaching input *socket* (its own value when unlinked), or None if it cannot be computed."""
     try:
-        value = _input_value(socket, _Walk(scene), 0)
+        value = _input_value(socket, _Walk(scene, context), 0)
     except _Unknown:
         return None
     except Exception as exc:  # noqa: BLE001 boundary: a node layout we do not know is just unknown
@@ -38,14 +73,18 @@ def linked_value(socket, scene=None) -> float | None:
     return value if math.isfinite(value) else None
 
 
+_EMBEDDED_OWNERS = (("material", "materials"), ("world", "worlds"), ("light", "lights"))
+
+
 def node_ref(node) -> tuple[str, str, str] | None:
     """(owner kind, owner name, node name): finds *node* again without holding a reference to it."""
     tree = node.id_data
     if bpy.data.node_groups.get(tree.name) == tree:
         return ("group", tree.name, node.name)
-    for material in bpy.data.materials:
-        if material.node_tree == tree:
-            return ("material", material.name, node.name)
+    for kind, collection in _EMBEDDED_OWNERS:
+        for owner in getattr(bpy.data, collection):
+            if getattr(owner, "node_tree", None) == tree:
+                return (kind, owner.name, node.name)
     return None
 
 
@@ -56,8 +95,9 @@ def node_from_ref(ref):
     if kind == "group":
         tree = bpy.data.node_groups.get(owner_name)
     else:
-        material = bpy.data.materials.get(owner_name)
-        tree = material.node_tree if material is not None else None
+        collection = dict(_EMBEDDED_OWNERS).get(kind, "materials")
+        owner = getattr(bpy.data, collection).get(owner_name)
+        tree = getattr(owner, "node_tree", None) if owner is not None else None
     return tree.nodes.get(node_name) if tree is not None else None
 
 
@@ -79,7 +119,7 @@ def _socket(sockets, identifier: str):
 
 def _output_value(node, output, walk: _Walk, depth: int) -> float:
     if is_ace_node(node):
-        return _audio_value(node, output, walk.scene)
+        return _audio_value(node, output, walk)
     if node.mute:
         through = next((l for l in node.internal_links if l.to_socket == output), None)
         if through is None:
@@ -156,7 +196,7 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
             walk.groups.pop()
     if kind == "NodeGroupInput":
         if not walk.groups:
-            return _modifier_input(node.id_data, output.identifier, walk.scene)
+            return _modifier_input(node.id_data, output.identifier, walk.scene, walk.modifier)
         outer = walk.groups.pop()  # the value comes from outside the group entered above
         try:
             return _input_value(_socket(outer.inputs, output.identifier), walk, depth)
@@ -165,20 +205,30 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
     raise _Unknown
 
 
-def _audio_value(node, output, scene) -> float:
-    """The latest value an audio operator produced on *output*."""
+def _audio_value(node, output, walk: _Walk) -> float:
+    """The latest value an audio operator produced on *output*, in the use of the group the walk is in."""
     from ..core.engine.engine import ACEAudioEngine
 
-    engine = ACEAudioEngine.get_instance(scene or bpy.context.scene)
+    engine = ACEAudioEngine.get_instance(walk.scene or bpy.context.scene)
     index = next((i for i, s in enumerate(node.outputs) if s.identifier == output.identifier), -1)
-    value = getattr(engine, "latest_values", {}).get(f"{node_id(node)}:{index}")
+    if walk.root_key:
+        category, node_type = node_kind(node)
+        used = instance_node_id(category, node_type, walk.root_key, [g.name for g in walk.groups], node.name)
+    else:
+        used = node_id(node)
+    value = getattr(engine, "latest_values", {}).get(f"{used}:{index}")
     if value is None:
         raise _Unknown  # not computed yet
     return float(value)
 
 
-def _modifier_input(tree, identifier: str, scene) -> float:
-    """The value a modifier gives the tree's input. Several objects may: the active one wins."""
+def _modifier_input(tree, identifier: str, scene, modifier=None) -> float:
+    """The value a modifier gives the tree's input: *modifier*'s when known, else the active object's wins."""
+    if modifier is not None and modifier.node_group == tree:
+        entry = getattr(modifier.properties.inputs, identifier, None)
+        if entry is None or getattr(entry, "type", "VALUE") != "VALUE":
+            raise _Unknown
+        return float(entry.value)
     objects = list(scene.objects if scene is not None else bpy.data.objects)
     active = getattr(getattr(bpy.context, "view_layer", None), "objects", None)
     active = getattr(active, "active", None)
