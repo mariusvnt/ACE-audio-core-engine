@@ -975,6 +975,7 @@ def _check_world_and_instanced_trees_are_found(addon_key, scene, engine):
     collection.objects.link(inner)
     inner_tree = bpy.data.node_groups.new("ACE_Smoke_Instanced_GN", "GeometryNodeTree")
     inner_tree.is_modifier = True
+    blender_helpers.add_geometry_passthrough(inner_tree)
     inner.modifiers.new("ACE", "NODES").node_group = inner_tree
     empty = bpy.data.objects.new("ACE_Smoke_Instancer", None)
     empty.instance_type = "COLLECTION"
@@ -1169,9 +1170,7 @@ def _check_source_node_outputs_tempo(addon_key, scene, engine):
         bpy.ops.audiocore.add_audio_source()
         source = ace.audio_sources[count]
         ace.active_audio_source_index = count
-        tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-        tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
-        group_in, group_out = tree.nodes.new("NodeGroupInput"), tree.nodes.new("NodeGroupOutput")
+        group_in, group_out = tree.nodes["Group Input"], tree.nodes["Group Output"]
         node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
         loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
         tree.links.new(node.outputs["Audio"], loud.inputs["Audio"])
@@ -1706,6 +1705,7 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     scene.collection.objects.link(obj)
     tree = bpy.data.node_groups.new("ACE_Smoke_Audio_GN", "GeometryNodeTree")
     tree.is_modifier = True
+    blender_helpers.add_geometry_passthrough(tree)
     obj.modifiers.new("ACE Smoke Audio", "NODES").node_group = tree
 
     source_node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
@@ -1887,6 +1887,7 @@ def main():
         scene.collection.objects.link(frontend_obj)
 
         frontend_gn_tree = bpy.data.node_groups.new("ACE_Smoke_GN", "GeometryNodeTree")
+        blender_helpers.add_geometry_passthrough(frontend_gn_tree)
         _add_ace_node(addon_key, frontend_gn_tree, "stream", "loudness", "Loudness")
         try:
             frontend_gn_tree.is_modifier = True

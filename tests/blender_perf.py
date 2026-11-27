@@ -30,7 +30,7 @@ from array import array
 import bpy  # type: ignore
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from blender_helpers import find_addon_key  # noqa: E402
+from blender_helpers import add_geometry_passthrough, find_addon_key  # noqa: E402
 
 ADDON = find_addon_key()
 NODE_TYPES = (
@@ -90,6 +90,7 @@ def _build_scene(n_nodes, wav_path):
     scene.collection.objects.link(obj)
     tree = bpy.data.node_groups.new("ACE_Perf_GN", "GeometryNodeTree")
     tree.is_modifier = True
+    add_geometry_passthrough(tree)
     obj.modifiers.new("ACE Perf", "NODES").node_group = tree
     source = smoke._add_ace_node(ADDON, tree, "source_mngmt", "src", "Source")
     for i in range(n_nodes):

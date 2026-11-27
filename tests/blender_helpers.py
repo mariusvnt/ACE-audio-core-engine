@@ -81,12 +81,26 @@ def sink_names(addon_key, node) -> dict:
     return importlib.import_module(f"{addon_key}.nodes.identity").sink_names(node)
 
 
+def add_geometry_passthrough(tree):
+    """Geometry in, Geometry out, linked: a modifier tree Blender evaluates without warning.
+
+    A modifier whose tree has no Group Output logs "Node group must have a group output
+    node" on every evaluation, thousands of lines over a test run.
+    """
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    group_in, group_out = tree.nodes.new("NodeGroupInput"), tree.nodes.new("NodeGroupOutput")
+    tree.links.new(group_in.outputs["Geometry"], group_out.inputs["Geometry"])
+    return group_in, group_out
+
+
 def _new_gn_tree(scene, name):
     mesh = bpy.data.meshes.new(f"{name}_Mesh")
     obj = bpy.data.objects.new(f"{name}_Object", mesh)
     scene.collection.objects.link(obj)
     tree = bpy.data.node_groups.new(name, "GeometryNodeTree")
     tree.is_modifier = True
+    add_geometry_passthrough(tree)
     obj.modifiers.new(name, "NODES").node_group = tree
     return obj, tree
 
