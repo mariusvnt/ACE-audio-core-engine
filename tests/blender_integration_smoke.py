@@ -864,6 +864,8 @@ def _check_instances_through_groups(addon_key, scene, engine):
         source_group.links.new(gi2.outputs["Proxy"], inner_source.inputs["Proxy Object"])
         inner_loud = _add_ace_node(addon_key, source_group, "stream", "loudness", "Inner Loudness", mode="rms")
         source_group.links.new(inner_source.outputs["Audio"], inner_loud.inputs["Audio"])
+        inner_acc = _add_ace_node(addon_key, source_group, "utilities", "stream_accumulator", "Inner Accumulator")
+        source_group.links.new(inner_loud.outputs[0], inner_acc.inputs["Value"])
         proxy_mod = importlib.import_module(f"{addon_key}.core.proxy.manager").ACEProxyManager
         for src in (first, second):
             use = tree.nodes.new("GeometryNodeGroup")
@@ -878,6 +880,11 @@ def _check_instances_through_groups(addon_key, scene, engine):
         window_sink = blender_helpers.sink_names(addon_key, loud)[0]
         clash = [c for c in engine.sink_conflicts if c["sink_name"] == window_sink]
         _assert(len(clash) == 1 and len(clash[0]["dropped"]) == 1, f"The sink conflict is not listed: {engine.sink_conflicts}")
+        # A value node reached from two sources writes one name on ACE_Values: listed too.
+        acc_sink = blender_helpers.sink_names(addon_key, inner_acc)[0]
+        clash = [c for c in engine.sink_conflicts if c["sink_name"] == acc_sink]
+        _assert(len(clash) == 1 and clash[0]["target"] == "ACE_Values",
+                f"The value node conflict is not listed: {engine.sink_conflicts}")
         roots = sorted(sorted(n.root_sources) for n in _abstract_nodes(engine, "loudness", "Inner Loudness"))
         _assert(roots == sorted([[first.stable_id], [second.stable_id]]), f"Each use did not read its source: {roots}")
         for src in (first, second):
@@ -1006,6 +1013,17 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         acc_task, rms_task = graph.tasks[acc_signal], graph.tasks[rms_signal]
         total = float(acc_task._accumulator.sum())
         _assert(total > 0.0, f"The accumulator did not run: {total}")
+        # A value node has no source to carry a proxy: its values go to ACE_Values, which its group reads.
+        _assert("Proxy Object" not in acc.inputs, "The accumulator still has a Proxy Object socket")
+        values_obj = bpy.data.objects.get("ACE_Values")
+        reader = acc.node_tree.nodes.get("ACE Values")
+        _assert(values_obj is not None and reader is not None and reader.inputs["Object"].default_value == values_obj,
+                "The accumulator's group does not read ACE_Values")
+        acc_name = blender_helpers.sink_names(addon_key, acc)[0]
+        acc_attr = values_obj.data.attributes.get(acc_name)
+        _assert(acc_attr is not None and abs(float(acc_attr.data[0].value) - total) < 1e-3 * max(1.0, total),
+                f"ACE_Values does not hold the accumulated value: {acc_attr and acc_attr.data[0].value} vs {total}")
+        _assert(acc_name not in graph.get_proxy_object().data.attributes, "The accumulator wrote the source's proxy")
         digest = engine.parallel.ir_digests.get(graph.parallel_graph_uid)
         signature = graph.signal_signature
 

@@ -6,6 +6,7 @@ import json
 from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
 from ..frontend import remember_group_inputs
+from ..identity import VALUE_NODE_KINDS
 
 
 class ACEDummyNodeFactory:
@@ -100,14 +101,16 @@ class ACEDummyNodeFactory:
         if node_type == "preview_sink":
             # Sink: one Audio input, no outputs required.
             return "Audio" not in inputs
-        if node_type == "util_rolling_avg":
-            required_inputs = {"Value", "Window", "Attribute ID", "Proxy Object"}
-            required_outputs = {"Rolling Avg"}
-            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
-        if node_type == "stream_accumulator":
-            required_inputs = {"Value", "Attribute ID", "Proxy Object"}
-            required_outputs = {"Accumulated"}
-            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
+        if node_type in ("util_rolling_avg", "stream_accumulator"):
+            # No Proxy Object input: the group reads ACE_Values (a group with one is out of date).
+            required_inputs = {"Value", "Attribute ID"} | ({"Window"} if node_type == "util_rolling_avg" else set())
+            required_outputs = {"Rolling Avg"} if node_type == "util_rolling_avg" else {"Accumulated"}
+            return (
+                not required_inputs.issubset(inputs)
+                or not required_outputs.issubset(outputs)
+                or "Proxy Object" in inputs
+                or not _reads_values_object(ng)
+            )
         stream_nodes = (
             ACE_NODES.get("stream", {}).get("nodes", {})
             if isinstance(ACE_NODES.get("stream", {}), dict)
@@ -366,13 +369,7 @@ class ACEDummyNodeFactory:
                     ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
                     ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
 
-                attr_id_idx = len(inputs_def)  # 2: after Value (0) and Number of Frames (1)
-
-                # Explicit proxy Object input, filled at creation, so the node does not depend on Self Object.
-                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
-                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
-
-                proxy_obj_idx = len(inputs_def) + 1  # 3: after Attribute ID (2)
+                attr_id_idx = len(inputs_def)  # 2: after Value (0) and Window (1)
 
                 # (Value + Number of Frames) * 0: both inputs are consumed and the index stays 0.
                 math_add = ng.nodes.new('ShaderNodeMath')
@@ -403,8 +400,9 @@ class ACEDummyNodeFactory:
                 sample_idx.domain = 'POINT'
                 sample_idx.location = (150, 0)
 
-                # A. Group Input (Proxy Object) → Object Info (Object)
-                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                # A. ACE_Values → Object Info (Object)
+                obj_info.name = VALUES_READER_NODE
+                bind_values_object(ng)
                 # B. Object Info (Geometry) → Sample Index (Geometry)
                 ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
                 # C. Group Input (Attribute ID) → Named Attribute (Name)
@@ -424,12 +422,6 @@ class ACEDummyNodeFactory:
                     ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
 
                 attr_id_idx = len(inputs_def)  # 1: after Value (0)
-
-                # Proxy Object input — the source proxy mesh to read the attribute from.
-                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
-                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
-
-                proxy_obj_idx = len(inputs_def) + 1  # 2: after Attribute ID (1)
 
                 # Consume Value so the input is active, then force index 0 sampling.
                 math_mul = ng.nodes.new('ShaderNodeMath')
@@ -453,8 +445,9 @@ class ACEDummyNodeFactory:
                 sample_idx.domain = 'POINT'
                 sample_idx.location = (150, 0)
 
-                # A. Group Input (Proxy Object) → Object Info (Object)
-                ng.links.new(input_node.outputs[proxy_obj_idx], obj_info.inputs['Object'])
+                # A. ACE_Values → Object Info (Object)
+                obj_info.name = VALUES_READER_NODE
+                bind_values_object(ng)
                 # B. Object Info (Geometry) → Sample Index (Geometry)
                 ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
                 # C. Group Input (Attribute ID) → Named Attribute (Name)
@@ -475,6 +468,50 @@ class ACEDummyNodeFactory:
                 ng.links.new(input_node.outputs[i], reroute.inputs[0])
                 if i < len(outputs_def):
                     ng.links.new(reroute.outputs[0], output_node.inputs[i])
+
+
+VALUES_READER_NODE = "ACE Values"
+
+
+def _values_reader(ng):
+    node = ng.nodes.get(VALUES_READER_NODE)
+    return node if str(getattr(node, "bl_idname", "") or "") == "GeometryNodeObjectInfo" else None
+
+
+def _reads_values_object(ng) -> bool:
+    return _values_reader(ng) is not None
+
+
+def bind_values_object(ng, values_obj=None) -> bool:
+    """Point a value node's group at ACE_Values (created when missing); True when it changed.
+
+    The group is ACE's own; the user's trees only hold nodes using it.
+    """
+    reader = _values_reader(ng)
+    if reader is None:
+        return False
+    if values_obj is None:
+        from ...core.proxy.manager import ACEProxyManager
+
+        try:
+            values_obj = ACEProxyManager.ensure_values_object()
+        except AttributeError:
+            return False  # restricted data access (registration): bound at the first compile
+    sock = reader.inputs.get("Object")
+    if sock is None or sock.default_value == values_obj:
+        return False
+    sock.default_value = values_obj
+    return True
+
+
+def bind_all_values_objects(values_obj) -> int:
+    """Point every value node group at *values_obj*; how many changed."""
+    changed = 0
+    for category, node_type in sorted(VALUE_NODE_KINDS):
+        ng = bpy.data.node_groups.get(ACEDummyNodeFactory.get_group_name(category, node_type))
+        if ng is not None and bind_values_object(ng, values_obj):
+            changed += 1
+    return changed
 
 
 def register():

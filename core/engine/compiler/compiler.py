@@ -130,6 +130,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self.engine.signal_of = dict(signal_set.signal_of)
         self.engine.abstract_tree_ref = abstract_tree
         self.engine.writer = ACEProxyManager(abstract_tree)
+        self._prepare_values_object(blender_scene, abstract_tree, sink_writes_allowed)
         manual_preview_winner_id, has_manual_preview = self._resolve_preview_winner(abstract_tree)
         ctx = _CompileContext(
             abstract_tree=abstract_tree,
@@ -163,8 +164,27 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         )
         if self.engine.writer is not None and sink_writes_allowed:
             self._prune_stale_scene_properties(blender_scene, sources)
+            with utils.logged_errors("compiler.GraphCompiler.layout_values_object"):
+                self.engine.writer.layout_values_object(list(self.engine.graphs.values()))
 
         self._last_compile_time = time.time()
+
+    def _prepare_values_object(self, scene, signal_tree, writes_allowed: bool) -> None:
+        """ACE_Values, when a value node needs it or it exists, and the value groups reading it."""
+        from ....nodes.geometry.factory import bind_all_values_objects
+        from ....nodes.identity import VALUE_NODE_KINDS, VALUES_OBJECT_NAME
+
+        obj = bpy.data.objects.get(VALUES_OBJECT_NAME)
+        needed = any(
+            (node.category, node.type) in VALUE_NODE_KINDS and node.frontend_kind != FRONTEND_KIND_SHADER
+            for node in signal_tree.nodes.values()
+        )
+        if writes_allowed and (needed or obj is not None):
+            with utils.logged_errors("compiler.GraphCompiler._prepare_values_object"):
+                obj = ACEProxyManager.ensure_values_object(scene)
+                bind_all_values_objects(obj)
+        if obj is not None:
+            self.engine.writer.values_object_name = str(obj.name)
 
     def _resolve_sources(self, blender_scene, sources, fallback_sr, engine_settings, fps, timeslice_mode):
         """Proxy name, sample rate and block size per source, and a lookup by uid and proxy name."""

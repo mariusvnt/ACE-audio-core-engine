@@ -3,6 +3,7 @@
 from ...vars import ACE_NODES
 from ... import utils
 from ..geometry.factory import ACEDummyNodeFactory
+from ..identity import VALUE_NODE_KINDS
 
 
 class ShaderGroupInterface:
@@ -80,16 +81,8 @@ class ShaderGroupInterface:
             return tuple(specs)
         if category == "source_mngmt" and node_type == "src":
             return (("NodeSocketString", "Proxy Object", ""),)
-        if category == "utilities" and node_type == "util_rolling_avg":
-            return (
-                ("NodeSocketString", "Attribute ID", "ACE_undefined"),
-                ("NodeSocketString", "Proxy Object", ""),
-            )
-        if category == "utilities" and node_type == "stream_accumulator":
-            return (
-                ("NodeSocketString", "Attribute ID", "ACE_undefined"),
-                ("NodeSocketString", "Proxy Object", ""),
-            )
+        if (category, node_type) in VALUE_NODE_KINDS:
+            return (("NodeSocketString", "Attribute ID", "ACE_undefined"),)
         return ()
 
     @classmethod

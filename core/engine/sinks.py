@@ -9,11 +9,16 @@ order. That is one write, after which the names are stable.
 - **Geometry Nodes** values go to an attribute of the source's proxy mesh.
 - **Shader** values go to a scene property (one global value per sink), which
   the node's sink group reads with View Layer Attribute nodes.
+- **Value nodes** (Rolling Average, Stream Accumulator) are fed a value, not audio,
+  so no bundle carries a proxy to them: their values go to one mesh, ACE_Values,
+  which their groups read. Two uses of one such node on different sources write
+  one name there: a conflict (``signals.resolve_sink_conflicts``).
 """
 
 import bpy
 from typing import Dict, List, Optional
 from ... import utils
+from ...nodes.identity import VALUE_NODE_KINDS, VALUES_OBJECT_NAME
 from ..abstract_tree import ACEAbstractNode, ACEAbstractTree
 from ..tasks.graph import ACEAudioGraph, ACESinkBinding
 from .common import FRONTEND_KIND_SHADER
@@ -92,12 +97,16 @@ class SinkResolver:
                 sinks = [(node.id, name, str(getattr(node, "frontend_kind", "") or ""))] if name else []
             attr_type = str(info.get("type", "FLOAT") or "FLOAT")
             pulse = str(info.get("output_name", "") or "").lower() == "transient"
+            # A node fed a value has no source of its own to carry a proxy: its values go to ACE_Values.
+            values_target = ""
+            if (str(node.category), str(node.type)) in VALUE_NODE_KINDS:
+                values_target = str(getattr(self.engine.writer, "values_object_name", "") or "") or VALUES_OBJECT_NAME
             seen: set = set()
             for instance_id, sink_name, frontend_kind in sinks:
                 if frontend_kind == FRONTEND_KIND_SHADER:
                     kind, target = "SCENE_PROPERTY", scene_name
                 else:
-                    kind, target = "PROXY_ATTRIBUTE", proxy_name
+                    kind, target = "PROXY_ATTRIBUTE", values_target or proxy_name
                 if (kind, target, sink_name) in seen:
                     continue
                 seen.add((kind, target, sink_name))

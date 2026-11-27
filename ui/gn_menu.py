@@ -91,12 +91,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         for out_idx, output_name in outputs:
             names[out_idx] = new_sink_name(output_name, set(names.values()))
         write_sink_names(node, category, node_type, names)
-        if (category, node_type) in (("utilities", "util_rolling_avg"), ("utilities", "stream_accumulator")):
-            proxy_name = cls._resolve_active_proxy_name(context)
-            proxy_obj = bpy.data.objects.get(proxy_name) if proxy_name else None
-            proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-            if proxy_sock is not None and proxy_obj is not None:
-                cls._set_socket_default_value(proxy_sock, proxy_obj)
 
     @staticmethod
     def _set_socket_default_value(sock, value) -> bool:
