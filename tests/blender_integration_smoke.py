@@ -1741,7 +1741,8 @@ def _check_render_reads_bake_or_streams_once(engine, scene, graph, entry, tmp_di
     try:
         _render_and_check("baked render")
         _assert(not engine.render_notes, f"A baked render reported {engine.render_notes}")
-        engine.bake._clear_bake_cache()
+        engine.bake.clear_source(str(graph.source_uid))
+        _assert(not graph.baked_attr_keys, "A cleared bake is still laid out")
         _render_and_check("unbaked render")
         _assert(any("not baked" in note for note in engine.render_notes), f"No note on the unbaked source: {engine.render_notes}")
     finally:
@@ -1752,9 +1753,117 @@ def _check_render_reads_bake_or_streams_once(engine, scene, graph, entry, tmp_di
     print("[ACE smoke] render: one graph run per frame; baked and unbaked renders match the bake")
 
 
+_READ_WITHOUT_ACE = '''
+import bpy, json, sys
+scene = bpy.context.scene
+probe = bpy.data.objects["ACE_Smoke_Probe"]
+out = {"addons": sorted(bpy.context.preferences.addons.keys()), "gn": {}, "shader": {}}
+for frame in FRAMES:
+    scene.frame_set(frame)
+    dg = bpy.context.evaluated_depsgraph_get()
+    attr = probe.evaluated_get(dg).data.attributes.get("ace_probe")
+    out["gn"][frame] = attr.data[0].value if attr is not None else None
+    out["shader"][frame] = scene.evaluated_get(dg).get(PROP)
+print("ACE_PROBE " + json.dumps(out))
+'''
+
+
+def _check_bake_renders_without_ace(addon_key, engine, scene, src, tmp_dir):
+    """A baked .blend, opened by a Blender without ACE, reads the baked values (FUTURE.md 1.3).
+
+    A Geometry Nodes RMS stored on a probe point, and the scene property its shader twin
+    reads, are evaluated frame by frame in another Blender started with factory settings.
+    """
+    import json
+    import subprocess
+
+    mesh = bpy.data.meshes.new("ACE_Smoke_Probe_Mesh")
+    mesh.vertices.add(1)
+    probe = bpy.data.objects.new("ACE_Smoke_Probe", mesh)
+    scene.collection.objects.link(probe)
+    tree = bpy.data.node_groups.new("ACE_Smoke_Probe_GN", "GeometryNodeTree")
+    tree.is_modifier = True
+    group_in, group_out = blender_helpers.add_geometry_passthrough(tree)
+    probe.modifiers.new("ACE Probe", "NODES").node_group = tree
+    source_node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+    rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
+    tree.links.new(source_node.outputs["Audio"], rms.inputs["Audio"])
+    store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+    store.data_type = "FLOAT"
+    store.domain = "POINT"
+    store.inputs["Name"].default_value = "ace_probe"
+    tree.links.new(group_in.outputs["Geometry"], store.inputs["Geometry"])
+    tree.links.new(rms.outputs["Loudness"], store.inputs["Value"])
+    tree.links.new(store.outputs["Geometry"], group_out.inputs["Geometry"])
+    material = bpy.data.materials.new("ACE_Smoke_Probe_Material")
+    material.use_nodes = True
+    probe.data.materials.append(material)
+    s_source = _add_ace_node(addon_key, material.node_tree, "source_mngmt", "src", "Source")
+    s_rms = _add_ace_node(addon_key, material.node_tree, "stream", "loudness", "RMS", mode="rms")
+    material.node_tree.links.new(s_source.outputs["Audio"], s_rms.inputs["Audio"])
+
+    engine.compiler.compile_scene_frontends(scene)
+    _assert(engine.bake.bake_source_to_cache(src, scene=scene, keys=None), "The probe bake did not start")
+    import time
+    deadline = time.monotonic() + 60.0
+    while str(src.get("ace_bake_status", "")) == "baking" and time.monotonic() < deadline:
+        engine.bake.flush_bake_results()
+        time.sleep(0.05)
+    engine.bake.flush_bake_results()
+    graph = next(iter(engine.graphs.values()))
+    view = engine.bake.store.read(str(graph.source_uid))
+    rms_id = blender_helpers.node_id(addon_key, rms)
+    key = next((k for k in graph.output_attr_keys
+                if any(use_id == rms_id for use_id, _sink, _kind in (engine.writer.output_defs.get(k) or {}).get("sinks", []))), None)
+    _assert(key is not None and key in view.series, f"The probe RMS is not baked: {key} {sorted(view.series)}")
+    prop = next((b.target_data_name for b in graph.sink_bindings_by_attr.get(key, []) if b.sink_kind == "SCENE_PROPERTY"), None)
+    _assert(prop, f"The probe RMS has no shader sink: {graph.sink_bindings_by_attr.get(key)}")
+
+    frames = [1, 2, 17, 40, 72]
+    path = os.path.join(tmp_dir, "baked_without_ace.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=path, copy=True)
+    code = _READ_WITHOUT_ACE.replace("FRAMES", repr(frames)).replace("PROP", repr(prop))
+    run = subprocess.run(
+        [bpy.app.binary_path, "--factory-startup", "-b", path, "--python-expr", code],
+        capture_output=True, text=True, timeout=180,
+    )
+    line = next((ln for ln in run.stdout.splitlines() if ln.startswith("ACE_PROBE ")), None)
+    _assert(line is not None, f"The Blender without ACE printed nothing:\n{run.stdout[-2000:]}\n{run.stderr[-2000:]}")
+    seen = json.loads(line[len("ACE_PROBE "):])
+    _assert(not any(k.endswith("audio_core_engine") for k in seen["addons"]), f"ACE was enabled: {seen['addons']}")
+    expected = {frame: float(view.series[key][frame - view.frame_start]) for frame in frames}
+    for kind in ("gn", "shader"):
+        got = {int(f): v for f, v in seen[kind].items()}
+        bad = {f: (got.get(f), expected[f]) for f in frames if got.get(f) is None or abs(float(got[f]) - expected[f]) > 1e-6}
+        _assert(not bad, f"Without ACE, {kind} reads other values than the bake (frame: got, baked): {bad}")
+    print(f"[ACE smoke] a baked .blend renders without ACE: Geometry Nodes and shader values match on {len(frames)} frames")
+
+    # Live and back: the store stays, the layout goes and comes back.
+    proxy = bpy.data.objects.get(graph.proxy_name)
+    baked_points = len(proxy.data.vertices)
+    src["ace_bake_use"] = False
+    engine.bake.layout()
+    adt = scene.animation_data
+    _assert(not graph.baked_attr_keys and len(proxy.data.vertices) == 1, "Switched to live, the proxy is still baked")
+    _assert(adt is None or adt.nla_tracks.get("ACE Bake") is None, "Switched to live, the scene is still animated by the bake")
+    _assert(engine.bake.store.read(str(graph.source_uid)) is not None, "Switching to live deleted the bake")
+    src["ace_bake_use"] = True
+    engine.bake.layout()
+    _assert(key in graph.baked_attr_keys and len(proxy.data.vertices) == baked_points, "Switched back, the bake is not laid out")
+    _assert(scene.animation_data.nla_tracks.get("ACE Bake") is not None, "Switched back, the scene curves are missing")
+
+    bpy.data.objects.remove(probe, do_unlink=True)
+    bpy.data.meshes.remove(mesh)
+    bpy.data.node_groups.remove(tree)
+    bpy.data.materials.remove(material)
+    engine.compiler.compile_scene_frontends(scene)
+
+
 def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io"):
     """A file source wired to RMS, LUFS and a splitter writes values that follow the audio, and bakes."""
     scene.audiocore.engine_settings.ace_parallel_mode = parallel_mode
+    # A bake is Blender data and outlives the run before: start without one.
+    engine.bake.store.clear(str(src.stable_id))
     tmp_dir = tempfile.mkdtemp(prefix="ace_smoke_audio_")
     wav_path = os.path.join(tmp_dir, "tone.wav")
     _write_test_wav(wav_path)
@@ -1887,8 +1996,10 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     # computed. With worker processes, only main-thread values are exact (worker values may be
     # up to 50 ms old).
     graph = next(iter(engine.graphs.values()))
-    entry = engine.bake._bake_cache.get(str(getattr(graph, "source_uid", "")))
-    _assert(entry is not None, "The bake left no cache entry")
+    view = engine.bake.store.read(str(getattr(graph, "source_uid", "")))
+    _assert(view is not None, "The bake left no store")
+    _assert(set(graph.output_attr_keys) <= set(graph.baked_attr_keys), f"Outputs not laid out as baked: {graph.baked_attr_keys}")
+    entry = {"values": view.series, "frame_start": view.frame_start}
     keys = list(graph.output_attr_keys)
     if parallel_mode == "processes_dsp":
         keys = [k for k in keys if k not in set(getattr(graph, "parallel_offload_attr_keys", []) or [])]
@@ -1911,6 +2022,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     print(f"[ACE smoke] {parallel_mode}: bake matches playback on {compared} values")
     if parallel_mode == "processes_dsp":
         _check_render_reads_bake_or_streams_once(engine, scene, graph, entry, tmp_dir)
+    else:
+        _check_bake_renders_without_ace(addon_key, engine, scene, src, tmp_dir)
 
     bpy.data.objects.remove(obj, do_unlink=True)
     bpy.data.node_groups.remove(tree)

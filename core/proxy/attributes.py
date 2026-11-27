@@ -10,6 +10,11 @@ from ... import utils
 # A source's tempo, on its proxy mesh for the GN Source node's BPM and Beats per Bar outputs.
 SOURCE_TEMPO_ATTRS = {"ACE_bpm": "FLOAT", "ACE_beats_per_bar": "INT"}
 
+# The scene frame of point 0 of a baked proxy mesh (one point per frame). The node groups sample
+# point floor(frame) - ACE_frame0, clamped: a live proxy has one point, so they read it whatever
+# the frame (FUTURE.md 1.3).
+FRAME0_ATTR = "ACE_frame0"
+
 
 def write_source_tempo(proxy, bpm: float, beats_per_bar: int) -> bool:
     """Write a source's tempo on its proxy mesh; True when a value changed."""
@@ -89,6 +94,7 @@ class AttributeSinks:
         return not (
             attr_name in required
             or attr_name in SOURCE_TEMPO_ATTRS
+            or attr_name == FRAME0_ATTR
             or attr_name == "position"
             or attr_name.startswith(".")
         )

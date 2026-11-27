@@ -260,12 +260,10 @@ class ACE_OT_remove_audio_source(bpy.types.Operator):
 
         engine = ACEAudioEngine.get_instance(context.scene)
         if engine:
-            # Free this source's bake cache now instead of at the next compile.
+            # The source's bake goes with it.
             if src_uid:
-                entry = engine.bake._bake_cache.pop(src_uid, None)
-                if isinstance(entry, dict):
-                    with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute#3"):
-                        engine.bake._cleanup_bake_entry(entry)
+                with utils.logged_errors("n_panel_operators.ACE_OT_remove_audio_source.execute#3"):
+                    engine.bake.store.clear(src_uid)
             engine._shutdown_graphs()
 
         _refresh_source_list(context.scene)
@@ -705,6 +703,52 @@ class ACE_OT_bake_active_source(bpy.types.Operator):
     def cancel(self, context):
         self._finish_modal(context)
 
+def _active_file_source(context):
+    from ..utils import _get_active_source
+
+    _, source = _get_active_source(context)
+    return source if source is not None and getattr(source, "source_type", "") == 'FILE' else None
+
+
+class ACE_OT_clear_source_bake(bpy.types.Operator):
+    """Delete the active source's bake: its outputs are computed live again."""
+    bl_idname = "audiocore.clear_source_bake"
+    bl_label = "Clear Bake"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        source = _active_file_source(context)
+        from ..core.bake_store import store_name
+
+        return source is not None and bpy.data.meshes.get(store_name(str(source.stable_id))) is not None
+
+    def execute(self, context):
+        source = _active_file_source(context)
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        engine.bake.clear_source(str(source.stable_id))
+        source["ace_bake_status"] = ""
+        return {'FINISHED'}
+
+
+class ACE_OT_toggle_source_bake(bpy.types.Operator):
+    """Read the active source's bake, or compute its outputs live while keeping the bake."""
+    bl_idname = "audiocore.toggle_source_bake"
+    bl_label = "Use Bake"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _active_file_source(context) is not None
+
+    def execute(self, context):
+        source = _active_file_source(context)
+        source["ace_bake_use"] = not bool(source.get("ace_bake_use", True))
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        engine.bake.layout()
+        return {'FINISHED'}
+
+
 classes = (
     ACE_OT_reset_audio_engine,
     ACE_OT_add_audio_sources_from_files,
@@ -720,6 +764,8 @@ classes = (
     ACE_OT_set_node_source,
     ACE_OT_toggle_preview_sink,
     ACE_OT_bake_active_source,
+    ACE_OT_clear_source_bake,
+    ACE_OT_toggle_source_bake,
 )
 
 def register():

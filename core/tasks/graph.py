@@ -39,6 +39,7 @@ class ACEAudioGraph:
         self.output_slot_specs: List[Tuple[str, str, int]] = []
         self.output_slot_specs_by_subset: Dict[Tuple[str, ...], List[Tuple[str, str, int]]] = {}
         self.proxy_lookup_fn: Optional[Callable[[str], Any]] = None
+        self.baked_attr_keys: set = set()  # outputs laid out from the bake store (core/bake_store.py)
 
     def get_proxy_object(self):
         resolver = getattr(self, "proxy_lookup_fn", None)

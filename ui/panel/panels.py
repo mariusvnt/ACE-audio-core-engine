@@ -585,7 +585,7 @@ class ACE_PT_information_streams_description(bpy.types.Panel):
 
 
 class ACE_PT_capture_influx(bpy.types.Panel):
-    """Panel providing bake controls for writing stream outputs to f-curves."""
+    """Bake controls: a file source's outputs, baked into Blender data (core/bake_store.py)."""
 
     bl_label = "Baking"
     bl_idname = "ACE_PT_capture_influx"

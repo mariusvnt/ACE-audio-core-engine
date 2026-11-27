@@ -159,13 +159,12 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 "WARNING",
                 min_interval=5.0,
             )
-        self.engine.bake._prune_bake_cache(
-            sources, {uid: graph.signal_signature for uid, graph in self.engine.graphs.items()}
-        )
         if self.engine.writer is not None and sink_writes_allowed:
             self._prune_stale_scene_properties(blender_scene, sources)
             with utils.logged_errors("compiler.GraphCompiler.layout_values_object"):
                 self.engine.writer.layout_values_object(list(self.engine.graphs.values()))
+            # The bakes, laid out onto what the frontends read (core/bake_store.py).
+            self.engine.bake.after_compile(sources)
 
         self._last_compile_time = time.time()
 

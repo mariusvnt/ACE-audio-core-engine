@@ -466,21 +466,18 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             self.engine._last_attr_sync_frame[graph_key] = int(self.engine.current_frame)
 
     def _write_baked_results(self, graph, graph_key, ctx):
-        """Write baked values when the bake covers this frame; True means done."""
-        geometry_proxy_names = ctx.geometry_proxy_names
-        baked_results = self.engine.bake._get_baked_frame_results(graph, self.engine.current_frame)
-        if baked_results is not None:
-            try:
-                t0 = time.perf_counter()
-                self.engine.latest_values.update(baked_results)
-                touched = self.engine.writer.commit_results(graph, baked_results, active_keys=set(graph.output_attr_keys))
-                self.engine.diagnostics._perf_add("proxy_write", time.perf_counter() - t0)
-                if isinstance(touched, set):
-                    geometry_proxy_names.update({str(v) for v in touched if str(v)})
-            except Exception as e:
-                utils.log_throttled(f"attr_write_baked:{graph_key}", f"Baked attribute write failed for '{graph_key}': {e}", "ERROR", min_interval=2.0)
-            return True
-        return False
+        """Baked outputs are in Blender data already: note their values; True when every output is.
+
+        Blender reads them with no Python (core/bake_store.py), so nothing is written. The
+        outputs not baked are computed and written as usual.
+        """
+        baked = getattr(graph, "baked_attr_keys", None)
+        if not baked:
+            return False
+        values = self.engine.bake._get_baked_frame_results(graph, self.engine.current_frame)
+        if values:
+            self.engine.latest_values.update(values)
+        return set(graph.output_attr_keys) <= set(baked)
 
     def _graph_sources_ready(self, graph, graph_key):
         """False while a live source is not ready or a file source failed."""
@@ -671,6 +668,9 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         try:
             # Stage C (main thread only): commit numeric results into resolved sinks.
             t0 = time.perf_counter()
+            baked = getattr(graph, "baked_attr_keys", None)
+            if baked:
+                results = {k: v for k, v in results.items() if k not in baked}
             self.engine.latest_values.update(results)
             touched = self.engine.writer.commit_results(graph, results, active_keys=set(graph.output_attr_keys))
             self.engine.diagnostics._perf_add("proxy_write", time.perf_counter() - t0)

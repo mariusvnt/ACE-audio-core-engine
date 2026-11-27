@@ -458,6 +458,28 @@ def _draw_render_notes(layout, context):
         row.label(text=note, icon="ERROR")
 
 
+def _draw_bake_state(layout, context, source):
+    """How much of the source is baked, and whether its bake is read or it runs live."""
+    engine = ACEAudioEngine.get_instance(context.scene)
+    uid = str(getattr(source, "stable_id", "") or "")
+    view = engine.bake.store.read(uid) if engine is not None and uid else None
+    if view is None:
+        return
+    graph = engine.graphs.get(uid) if engine is not None else None
+    outputs = list(getattr(graph, "output_attr_keys", []) or []) if graph is not None else []
+    baked = sum(1 for key in outputs if key in view.series)
+    use = bool(source.get("ace_bake_use", True))
+    box = layout.box()
+    row = box.row()
+    row.label(text=f"Baked: {baked} of {len(outputs)} outputs, frames {view.frame_start} -> {view.frame_end}",
+              icon="CHECKMARK" if outputs and baked == len(outputs) else "INFO")
+    if outputs and baked < len(outputs):
+        box.label(text="Outputs changed since the bake are computed live. Bake again to include them.", icon="ERROR")
+    row = box.row(align=True)
+    row.operator("audiocore.toggle_source_bake", text="Using Bake" if use else "Live", icon="CHECKBOX_HLT" if use else "CHECKBOX_DEHLT", depress=use)
+    row.operator("audiocore.clear_source_bake", text="Clear Bake", icon="TRASH")
+
+
 def _draw_bake_controls(layout, context):
     from ...utils import _get_active_source
 
@@ -477,6 +499,7 @@ def _draw_bake_controls(layout, context):
     except Exception as exc:
         utils.note_swallowed("selection._draw_bake_controls", exc)
         status = ""
+    _draw_bake_state(layout, context, active_source)
     if not status:
         layout.label(text="Bake stream outputs over the scene frame range.", icon="INFO")
         return

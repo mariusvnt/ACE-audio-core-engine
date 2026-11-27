@@ -84,7 +84,12 @@ def read_node_outputs(engine) -> dict:
                 attr = attrs.get(str(getattr(binding, "target_data_name", "") or "")) if attrs is not None else None
                 if attr is None or len(attr.data) == 0:
                     continue
-                item = attr.data[0]
+                # A baked proxy holds one point per frame from ACE_frame0 on, as the node groups read it.
+                frame0 = attrs.get("ACE_frame0")
+                index = 0
+                if frame0 is not None and len(attr.data) > 1:
+                    index = min(max(int(bpy.context.scene.frame_current) - int(frame0.data[0].value), 0), len(attr.data) - 1)
+                item = attr.data[index]
                 value = tuple(item.vector) if hasattr(item, "vector") else float(item.value)
                 sink_name = str(getattr(binding, "target_data_name", "") or "")
                 for instance_id, sink, _kind in info.get("sinks") or [(info.get("node_id", ""), sink_name, "")]:
@@ -267,7 +272,12 @@ def record(addon_key, scene, last_nodes, n_frames, first_offset=0, bake_source=N
     with a jump. With *bake_source*, the source is baked first and the frames read the bake.
     """
     engine = fresh_engine(addon_key, scene)
-    if bake_source is not None:
+    if bake_source is None:
+        # A bake is Blender data and outlives a file load: a pass that streams starts without one.
+        for source in scene.audiocore.audio_sources:
+            engine.bake.store.clear(str(source.stable_id))
+        engine.bake.layout()
+    else:
         if not engine.bake.bake_source_to_cache(bake_source, scene=scene):
             raise AssertionError("The bake did not start")
         wait_for_bake(engine, bake_source)

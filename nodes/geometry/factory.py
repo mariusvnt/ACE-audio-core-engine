@@ -24,7 +24,7 @@ class ACEDummyNodeFactory:
     @staticmethod
     def _ace_nodes_hash() -> str:
         try:
-            serialized = json.dumps(ACE_NODES, sort_keys=True, default=str).encode("utf-8")
+            serialized = json.dumps([ACE_NODES, INTERNALS_VERSION], sort_keys=True, default=str).encode("utf-8")
             return hashlib.blake2b(serialized, digest_size=8).hexdigest()
         except Exception as exc:
             utils.note_swallowed("factory.ACEDummyNodeFactory._ace_nodes_hash", exc)
@@ -52,6 +52,13 @@ class ACEDummyNodeFactory:
                         ng.nodes.clear()
                         ng.interface.clear()
                         ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
+                    elif ACEDummyNodeFactory._internals_outdated(ng, cat_key, type_key):
+                        # Only the inside changed: the interface stays, so the links of the
+                        # nodes using the group in the user's trees stay too.
+                        ng.nodes.clear()
+                        ACEDummyNodeFactory._create_dummy_internals(
+                            ng, node_def.get('inputs', []), node_def.get('outputs', []), cat_key, type_key
+                        )
                     ACEDummyNodeFactory._ensure_attr_interface_visible(ng, cat_key, type_key)
                     continue
                 else:
@@ -84,6 +91,12 @@ class ACEDummyNodeFactory:
             ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
         
         ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
+
+    @staticmethod
+    def _internals_outdated(ng, category: str, node_type: str) -> bool:
+        """True when a value-reading group was built by an older version of its internals."""
+        reads_values = category == "stream" or (category, node_type) in VALUE_NODE_KINDS
+        return reads_values and ng.get("ace_internals") != INTERNALS_VERSION
 
     @staticmethod
     def _node_group_needs_refresh(ng, node_type: str) -> bool:
@@ -327,6 +340,7 @@ class ACEDummyNodeFactory:
 
             if len(inputs_def) > 0:
                 ng.links.new(input_node.outputs[0], sep_bundle.inputs[0])
+            frame_index = _frame_index_socket(ng, sep_bundle.outputs[0], index_driver_socket, (-220, -420))
 
             for out_idx in range(min(len(outputs_def), len(output_node.inputs))):
                 sock_type = str(outputs_def[out_idx][0] or "") if out_idx < len(outputs_def) else ""
@@ -346,14 +360,14 @@ class ACEDummyNodeFactory:
                 sample_idx.location = (220, 200 - (out_idx * 220))
                 sample_idx.data_type = target_type
                 sample_idx.domain = 'POINT'
+                sample_idx.clamp = True
 
                 ng.links.new(sep_bundle.outputs[0], sample_idx.inputs['Geometry'])
                 attr_socket_idx = attr_id_start_idx + out_idx
                 if attr_socket_idx < len(input_node.outputs):
                     ng.links.new(input_node.outputs[attr_socket_idx], named_attr.inputs['Name'])
                 ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                if index_driver_socket is not None:
-                    ng.links.new(index_driver_socket, sample_idx.inputs['Index'])
+                ng.links.new(frame_index, sample_idx.inputs['Index'])
                 ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
         # CASE D: UTILITIES
@@ -398,6 +412,7 @@ class ACEDummyNodeFactory:
                 sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
                 sample_idx.data_type = 'FLOAT'
                 sample_idx.domain = 'POINT'
+                sample_idx.clamp = True
                 sample_idx.location = (150, 0)
 
                 # A. ACE_Values → Object Info (Object)
@@ -409,8 +424,9 @@ class ACEDummyNodeFactory:
                 ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
                 # D. Named Attribute → Sample Index (Value)
                 ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                # E. (Value + Number of Frames) × 0 → Sample Index (Index) — always 0
-                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
+                # E. The frame's point ((Value + Window) × 0 keeps both inputs in use)
+                frame_index = _frame_index_socket(ng, obj_info.outputs['Geometry'], math_mul.outputs[0], (-100, -360))
+                ng.links.new(frame_index, sample_idx.inputs['Index'])
                 # F. Sample Index (Value) → Group Output (Rolling Avg)
                 if len(outputs_def) > 0:
                     ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
@@ -443,6 +459,7 @@ class ACEDummyNodeFactory:
                 sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
                 sample_idx.data_type = 'FLOAT'
                 sample_idx.domain = 'POINT'
+                sample_idx.clamp = True
                 sample_idx.location = (150, 0)
 
                 # A. ACE_Values → Object Info (Object)
@@ -454,8 +471,9 @@ class ACEDummyNodeFactory:
                 ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
                 # D. Named Attribute → Sample Index (Value)
                 ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                # E. Value × 0 → Sample Index (Index) — always 0
-                ng.links.new(math_mul.outputs[0], sample_idx.inputs['Index'])
+                # E. The frame's point (Value × 0 keeps the input in use)
+                frame_index = _frame_index_socket(ng, obj_info.outputs['Geometry'], math_mul.outputs[0], (-100, -360))
+                ng.links.new(frame_index, sample_idx.inputs['Index'])
                 # F. Sample Index (Value) → Group Output (Accumulated)
                 if len(outputs_def) > 0:
                     ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
@@ -468,6 +486,52 @@ class ACEDummyNodeFactory:
                 ng.links.new(input_node.outputs[i], reroute.inputs[0])
                 if i < len(outputs_def):
                     ng.links.new(reroute.outputs[0], output_node.inputs[i])
+        ng["ace_internals"] = INTERNALS_VERSION
+
+
+# Version of what the value-reading groups hold inside; a group built by another one is rebuilt
+# (internals only). 2: they sample the frame's point of a baked proxy (FUTURE.md 1.3).
+INTERNALS_VERSION = 2
+
+
+def _frame_index_socket(ng, geometry_socket, driver_socket, location):
+    """The point to sample: floor(scene frame) - ACE_frame0 of the geometry (+ driver, which is 0).
+
+    A live proxy has one point and the Sample Index nodes clamp, so they read it at any frame;
+    a baked proxy has one point per frame from ACE_frame0 on.
+    """
+    from ...core.proxy.attributes import FRAME0_ATTR
+
+    x, y = location
+    scene_time = ng.nodes.new('GeometryNodeInputSceneTime')
+    scene_time.location = (x - 400, y)
+    floor = ng.nodes.new('ShaderNodeMath')
+    floor.operation = 'FLOOR'
+    floor.location = (x - 200, y)
+    frame0_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+    frame0_attr.data_type = 'INT'
+    frame0_attr.inputs['Name'].default_value = FRAME0_ATTR
+    frame0_attr.location = (x - 400, y - 160)
+    frame0 = ng.nodes.new('GeometryNodeSampleIndex')
+    frame0.data_type = 'INT'
+    frame0.domain = 'POINT'
+    frame0.location = (x - 200, y - 160)
+    offset = ng.nodes.new('ShaderNodeMath')
+    offset.operation = 'SUBTRACT'
+    offset.location = (x, y)
+    ng.links.new(scene_time.outputs['Frame'], floor.inputs[0])
+    ng.links.new(geometry_socket, frame0.inputs['Geometry'])
+    ng.links.new(frame0_attr.outputs[0], frame0.inputs['Value'])
+    ng.links.new(floor.outputs[0], offset.inputs[0])
+    ng.links.new(frame0.outputs['Value'], offset.inputs[1])
+    if driver_socket is None:
+        return offset.outputs[0]
+    plus_driver = ng.nodes.new('ShaderNodeMath')
+    plus_driver.operation = 'ADD'
+    plus_driver.location = (x + 180, y)
+    ng.links.new(offset.outputs[0], plus_driver.inputs[0])
+    ng.links.new(driver_socket, plus_driver.inputs[1])
+    return plus_driver.outputs[0]
 
 
 VALUES_READER_NODE = "ACE Values"
