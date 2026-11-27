@@ -1,8 +1,18 @@
 name: ACE CI
 
+# Pull requests run everything. A push runs only lint and the minimal unit tests, and
+# runs nothing when the branch has an open pull request, since that run covers it.
+# Run the workflow by hand (Actions tab) to get every job on any branch.
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push to the same branch or pull request cancels the run it replaces.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # Blender 5.2 runs Python 3.13 and bundles NumPy 2.3.4; tests outside Blender use the same.
@@ -11,14 +21,34 @@ env:
   BLENDER_VERSION: "5.2.0"
 
 jobs:
+  open-pr:
+    # On a push, finds whether the branch has an open pull request.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      found: ${{ steps.check.outputs.found }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # If the lookup fails, count it as no pull request so the push still gets tested.
+          n=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq length) || n=0
+          if [ "${n:-0}" -gt 0 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
+
   tests:
+    needs: open-pr
+    # Runs unless this is a push to a branch whose open pull request already runs it.
+    if: ${{ !cancelled() && needs.open-pr.outputs.found != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         # minimal: NumPy only, the fallbacks ACE uses when no optional library loads.
-        # bundled: the Linux wheels the extension ships (tools/wheels.txt).
-        deps: [minimal, bundled]
+        # bundled: the Linux wheels the extension ships (tools/wheels.txt), not run on a push.
+        deps: ${{ fromJSON(github.event_name == 'push' && '["minimal"]' || '["minimal", "bundled"]') }}
     # Perf gates are skipped here (no ACE_PERF); they run in the perf job below.
     steps:
       - uses: actions/checkout@v7
@@ -42,6 +72,7 @@ jobs:
 
       - name: Run each test file on its own
         # Catches tests that only pass because another file set up shared state.
+        if: github.event_name != 'push'
         working-directory: tests
         run: |
           status=0
@@ -51,6 +82,8 @@ jobs:
           exit $status
 
   lint:
+    needs: open-pr
+    if: ${{ !cancelled() && needs.open-pr.outputs.found != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -61,6 +94,7 @@ jobs:
       - run: ruff check .
 
   perf:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     env:
       ACE_PERF: "1"
@@ -82,6 +116,7 @@ jobs:
 
   blender:
     # The extension as users install it: built for Linux, installed with its wheels, run headless.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -140,6 +175,7 @@ jobs:
 
   reference-crosscheck:
     # The committed curves against independent tools (librosa, pyloudnorm). No Blender.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
