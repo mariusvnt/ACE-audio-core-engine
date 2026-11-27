@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"  # Blender 5.x bundles Python 3.11
+line-length = 140
+extend-exclude = ["wheels", "dist", "tests/artifacts"]
+
+[tool.ruff.lint]
+# E9: syntax errors; F: pyflakes; E722: bare except; S110: try/except/pass.
+# Broad handlers must record what they absorb (utils.note_swallowed /
+# utils.logged_errors) or be marked "# noqa: BLE001 boundary"; that rule is
+# checked by tests/test_error_handling.py, since ruff cannot see the helpers.
+select = ["E9", "F", "E722", "S110"]
+# Blender property annotations (name: bpy.props.X(...)) read as string
+# annotations, which F722 reports.
+ignore = ["F722"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test cleanup blocks may ignore teardown failures.
+"tests/*" = ["S110", "F841"]

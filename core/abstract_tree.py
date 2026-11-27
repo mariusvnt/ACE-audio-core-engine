@@ -1,16 +1,11 @@
-"""
-Structure of the 'AbstractTree' object, which is an abstract representation of
-scene frontends.
-"""
+"""Structure of the 'AbstractTree' object, which is an abstract representation of scene frontends."""
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
 @dataclass
 class ACEAbstractSocket:
-    """
-    Represents an input or output connection point.
-    """
+    """Represents an input or output connection point."""
     id: str  # Unique ID for the socket (useful for UI mapping)
     name: str # The internal name (e.g., "Value", "Vector")
     socket_idx: int
@@ -51,9 +46,7 @@ class ACEConsumerIntent:
 
 @dataclass
 class ACEAbstractNode:
-    """
-    Represents a processing unit.
-    """
+    """Represents a processing unit."""
     id: str
     name: str
     category: str
@@ -69,24 +62,46 @@ class ACEAbstractNode:
     frontend_uid: str = ""
     frontend_kind: str = ""
     source_binding_id: str = ""
+    # In a signal tree (core/engine/compiler/signals.py): the uses this node stands for, and
+    # the sinks of their outputs, as {output index: [(use id, sink name, frontend kind)]}.
+    instance_ids: List[str] = field(default_factory=list)
+    # Where the use is: the tree holding the node (pointer and name), and the group nodes
+    # entered from the root to reach it ("" chain at the root).
+    definition_ptr: int = 0
+    definition_tree: str = ""
+    use_chain: tuple = ()
+    instance_sinks: Dict[int, List[tuple]] = field(default_factory=dict)
 
 @dataclass
 class ACEAbstractLink:
-    """
-    Represents data flow between two sockets.
-    """
+    """Represents data flow between two sockets."""
     source_node_id: str
     target_node_id: str
     
     source_socket_idx: int
     target_socket_idx: int
 
+def audio_links(abstract_tree):
+    """The links the DSP wires between tasks.
+
+    A splitter's split frequencies are not among them: they are values computed from the link on
+    the main side, so even one fed by the splitter's own band cannot make a task depend on itself.
+    """
+    nodes = getattr(abstract_tree, "nodes", {}) or {}
+    for link in getattr(abstract_tree, "links", []) or []:
+        target = nodes.get(link.target_node_id)
+        if (
+            int(link.target_socket_idx) > 0
+            and getattr(target, "category", "") == "delta"
+            and getattr(target, "type", "") == "frequency_splitter"
+        ):
+            continue
+        yield link
+
+
 @dataclass
 class ACEAbstractOutputLink:
-    """
-    Represents an ACE output socket that is connected to the GN Group Output.
-    Used to derive default preview-monitor branches.
-    """
+    """Represents an ACE output socket that is connected to the GN Group Output."""
     source_node_id: str
     source_socket_idx: int
     target_socket_idx: int
@@ -96,9 +111,7 @@ class ACEAbstractOutputLink:
 
 @dataclass
 class ACEAbstractTree:
-    """
-    The complete graph container.
-    """
+    """The complete graph container."""
     nodes: Dict[str, ACEAbstractNode] = field(default_factory=dict)
     links: List[ACEAbstractLink] = field(default_factory=list)
     group_output_links: List[ACEAbstractOutputLink] = field(default_factory=list)

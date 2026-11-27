@@ -1,98 +1,102 @@
-AudioCore Engine (ACE)
-======================
+Audio Core Engine (ACE)
+=======================
 
-**AudioCore Engine (ACE)** is a Blender 5.0+ add-on designed to convert continuous audio streams---whether from file playback or live microphone/device input---into per-frame numeric outputs. These outputs are consumed by Geometry Nodes and object-bound shader materials, enabling fully procedural, audio-reactive animation without the need for keyframes.
+Audio Core Engine is a Blender extension that turns audio into per-frame values for
+Geometry Nodes and shader materials. A sound file or a live input is analysed as
+the timeline plays, and the results (loudness, pitch, brightness, transients,
+stereo image, tempo and more) drive procedural animation without keyframes.
 
-🏛️ Architectural Philosophy: The 3-Layer Model
------------------------------------------------
+Requirements
+------------
 
-ACE is built on a strict philosophy of separation of concerns. The architecture is divided into three independent runtime layers:
+- Blender 5.2 or later, on Windows (x64), macOS (Apple silicon, macOS 12 or
+  later) or Linux (x64).
+- Nothing else to install. The libraries ACE uses ship inside the extension:
+  - Numba: faster filters.
+  - SoundDevice: live capture and preview playback. On Linux it needs the
+    PortAudio system library (`libportaudio2` on Debian and Ubuntu).
 
-#### Layer 1: The Facade (UI & Routing)
+  Audio files are read by Blender itself, so every format Blender opens works:
+  WAV, MP3, FLAC, Ogg, AAC, AIFF and more.
 
-Blender-facing frontends (Geometry Node groups and Shader node groups) act purely as **interface contracts**. They declare routing, analysis intent, and output destinations, but they **do not** perform any DSP or mathematical calculation.
+Installation
+------------
 
-### Layer 2: The Data Engine (Backend DSP & Scene Compile)
+1. Download the zip for your platform, for example
+   `audio_core_engine-0.5.0-windows_x64.zip`.
+2. In Blender, open *Edit > Preferences > Get Extensions*, open the menu at the
+   top right and choose *Install from Disk*, then pick the zip. Installing
+   needs no network connection.
+3. The extension's preferences list each library and whether it loaded. Two
+   switches turn off Numba (applies after restarting Blender) and SoundDevice
+   (live input and preview) if either causes trouble on your machine.
 
-The analysis core of the add-on. The engine compiles the frontends into abstract graphs, then into per-source runtime task graphs. It executes spectral and temporal analysis (using tools like `audioflux`, `numba`, and `scipy`) entirely isolated from the Blender API.
+Quick start
+-----------
 
-### Layer 3: The Acoustic Monitor (Time-Domain Preview)
+1. In the 3D View sidebar, open the *Audio Core Engine* tab and, under *Audio
+   Inputs*, add an input: a file, or a live input (sound device or UDP stream).
+   Adding an input creates no object and no node tree.
+2. In a Geometry Nodes tree, open *Add > Audio Core Engine* and add the *Source*
+   node, then the analysis nodes you need. The Source node reads the active
+   input; with several, choose another in the node's settings.
+3. Connect them. Each output appears as a value the tree can use, refreshed
+   every frame during playback.
+4. To drive a material, a light or the World, add the same nodes to its
+   shader tree.
 
-An optional, lazily-evaluated preview playback system. When an audio preview sink exists, ACE builds a completely separate time-domain filter chain for audible monitoring. It is deliberately isolated from the Layer 2 spectral-analysis pipeline---**no frequency-domain reconstruction (iFFT/iBFT) is ever performed here.**
+ACE nodes also work inside your own node groups, at any depth. A group used
+several times computes each use with the values and the source it is given,
+and uses that compute the same thing share the work.
 
-⚙️ Runtime Execution Flow
--------------------------
+Nodes
+-----
 
-1. **Initialization:** Blender loads `__init__.py`, which registers properties, core modules, node factories, UI, handlers, and timers. Settings are stored in `Scene.audiocore`.
+- **Source**: a reference to one of the scene's audio sources. It also
+  outputs the source's BPM and Beats per Bar. For a file they
+  are detected when the file is chosen; a value typed in the sidebar is kept,
+  and *Auto Detect BPM / BPB* detects again.
+- **Frequency Splitter** splits the audio into frequency bands before
+  analysis. A split frequency can be driven by other nodes, audio operator
+  outputs included: Value, Integer, Math, Clamp, Map Range, Mix, Switch, Float
+  Curve, Float to Integer, Scene Time, node groups and modifier inputs are
+  followed.
+- **Stream** nodes measure the audio each frame, inside its band behind a
+  splitter: Loudness (RMS by default, LUFS or Peak, 0..1 between -70 dB and
+  0 dB), Stereo (width or balance), a stereo vector, Brightness (the spectral
+  centroid, in Hz), Pitch and Transient. The method of a node is switched in
+  the sidebar's *Operators* panel.
+- **Utilities**: a rolling average over a time window, an accumulator and a
+  preview sink for listening to a branch.
 
-2. **Authoring:** Users place ACE nodes in Geometry or Shader trees. `nodes/dummy_tree.py` and `nodes/shader_tree.py` parse these into an `ACEAbstractTree`.
+The sidebar's *Active ACE Instances* panel lists every ACE node: where it is
+used, the source each use reads, and which uses share one computation. It also
+flags uses of one node that compute different values: they share the node's
+output name, so only one of them is written.
 
-3. **Compilation (Stage A):** `core/audio_engine.py` (Main Thread) compiles the abstract tree into executable runtime audio graphs.
+Files saved with earlier versions are not converted: nodes removed or renamed
+since no longer work in them.
 
-4. **Ingestion:** `core/audio_influx.py` captures and routes file or live audio data.
+Preview and bake
+----------------
 
-5. **Execution (Stage B):** `core/parallel_dsp.py` offloads heavy DSP tasks to `bpy`-free worker processes to prevent UI stalling.
+- **Preview**: during playback, the audio reaching a preview sink, a Viewer
+  node (or else the tree's audio output) can be heard through the preview device.
+- **Bake**: a file source can be analysed over the scene's frame range ahead
+  of time; playback then reads the stored values.
 
-6. **Commit (Stage C):** `core/proxy_management.py` (Main Thread) writes computed scalar/vector results back to Blender proxy attributes and object custom properties.
+Development
+-----------
 
-7. **Consumption:** Geometry Nodes and shader materials passively consume the updated numeric values to drive animations.
+`ARCHITECTURE.md` describes how the extension is built, `FUTURE.md` what is
+planned.
 
-📂 Repository Structure
------------------------
-
-### Core Backend (`core/`)
-
-- **`audio_engine.py`**: Main orchestrator for compiling, frame execution, worker offload, and scene-scoped engine lifetime.
-
-- **`abstract_tree.py`**: Defines the abstract IR used between frontend readers and the runtime compiler.
-
-- **`audio_tasks_registry.py`**: DSP registry defining tasks, delta/splitter behavior, stream outputs, and preview processing.
-
-- **`parallel_dsp.py`**: `bpy`-free worker-side execution of serialized graph IR.
-
-- **`proxy_management.py`**: Stage-C commit bridge writing DSP outputs to Blender proxy attributes and object properties.
-
-- **`audio_influx.py`**: Unified audio input boundary (files, sounddevice live capture, UDP routes).
-
-- **`id_management.py`**: Deterministic 24-bit `blake2b` naming generation for nodes, sources, and attributes.
-
-### Node Frontends (`nodes/`)
-
-- **`dummy_tree.py`**: Geometry Nodes frontend factory and tree reader.
-
-- **`shader_tree.py`**: Shader frontend factory mapping outputs to property readers.
-
-- **`dynamic_audio_operators.py`**: Maintains dynamic splitter and audio-math node-group variants.
-
-### User Interface (`ui/`)
-
-- **`n_panel_ui.py` & `n_panel_operators.py`**: Main 3D View sidebar UI and operator actions.
-
-- **`gn_menu.py`**: Node Editor add-menu integration.
-
-- **`prefs_panel_ui.py` & `prefs_library_manager.py`**: Preferences and vendor dependency management.
-
-### Tests (`tests/`)
-
-ACE maintains a rigorous testing structure mirroring the product architecture:
-
-- **Unit & DSP Tests**: `test_audio_tasks_registry.py`, `test_audio_influx.py`
-
-- **Concurrency & Execution Guards**: `test_parallel_dsp.py`, `test_parallel_offload_policy.py`
-
-- **Integration & Regression**: `test_multi_frontend_compile.py`, `test_blender_integration_smoke.py`, `test_proxy_management.py`
-
-- **Performance Harnesses**: Evaluates task-stack efficiency and threaded IO vs. process-based DSP.
-
-🚧 Strict Development Guardrails
---------------------------------
-
-If you are contributing to ACE, the following non-negotiable architectural rules apply:
-
-1. **`bpy` Is Main-Thread Only:** `bpy.data`, `bpy.context`, node trees, and handler registrations are strictly forbidden outside the main thread. Worker processes in `parallel_dsp.py` must remain completely `bpy`-free.
-
-2. **Render Safety:** Blender's `use_lock_interface` must be strictly respected during Stage C commits.
-
-3. **No Layer Contamination:** Time-domain preview logic (Layer 3) must never attempt inverse BFT/FFT reconstruction. It relies strictly on time-domain biquad filters mapped from Layer 2 metadata.
-
-4. **Deterministic Signatures:** Proxy attribute names and tree signatures must use `hashlib.blake2b` hashing. `ace_id` is frontend-scoped and unique per node instance.
+- Build: `python tools/fetch_wheels.py` downloads the pinned wheels
+  (`tools/wheels.txt`) and lists them in `blender_manifest.toml`; then
+  `blender --command extension build --split-platforms --output-dir dist`.
+- Unit tests: `python -m unittest discover -s tests`. The perf gates are skipped
+  unless `ACE_PERF=1` is set.
+- In Blender, headless: `python tests/run_in_blender.py --package` builds and
+  installs the zip for this platform and runs the smoke test. With
+  `--script tests/reference/blender_reference.py` it compares every node's
+  output with the reference curves.

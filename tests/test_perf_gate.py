@@ -31,126 +31,82 @@ def _strict_mode_enabled() -> bool:
     return ci_raw in {"1", "true", "yes", "on"}
 
 
+# A baseline is only comparable on the machine that produced it, so it lives
+# in the gitignored artifacts folder (written by perf_harness.py) and the
+# comparison is skipped when it is missing.
+BASELINE_PATH = Path(__file__).parent / "artifacts" / "perf_baseline_report.json"
+
+
+# Perf runs are opt-in (ACE_PERF=1): they are slow and measure the machine as
+# much as the code, so the default unit run leaves them out.
+@unittest.skipUnless(os.environ.get("ACE_PERF") == "1", "perf gates run with ACE_PERF=1")
 class TestPerfGate(unittest.TestCase):
-    @unittest.skipIf(np is None, "numpy unavailable in this environment")
+    @classmethod
+    def setUpClass(cls):
+        if np is None:
+            raise unittest.SkipTest("numpy unavailable in this environment")
+        with tempfile.TemporaryDirectory(prefix="ace_perf_") as tmp_dir:
+            cls.current = generate_baseline_report(frames=180, output_path=Path(tmp_dir) / "perf_current.json")
+
     def test_perf_harness_generates_required_scenarios(self):
-        fd, tmp_path = tempfile.mkstemp(
-            prefix="ace_perf_smoke_",
-            suffix=".json",
-            dir=str(Path(__file__).parent),
-        )
-        os.close(fd)
-        out_path = Path(tmp_path)
-        try:
-            report = generate_baseline_report(frames=180, output_path=out_path)
-            scenarios = report.get("scenarios", {})
-            required = required_scenario_ids()
-            for sid in required:
-                self.assertIn(sid, scenarios)
-            for sid in required:
-                for stage in PERF_REQUIRED_STAGES:
-                    self.assertIn(stage, scenarios[sid], msg=f"missing stage={stage} in scenario={sid}")
-        finally:
-            try:
-                if out_path.exists():
-                    out_path.unlink()
-            except Exception:
-                pass
-
-    @unittest.skipIf(np is None, "numpy unavailable in this environment")
-    def test_perf_gate_warning_mode_or_strict_threshold(self):
-        strict = _strict_mode_enabled()
-        baseline_path = Path(__file__).with_name("perf_baseline_report.json")
-        fd, tmp_path = tempfile.mkstemp(
-            prefix="ace_perf_current_",
-            suffix=".json",
-            dir=str(Path(__file__).parent),
-        )
-        os.close(fd)
-        current_path = Path(tmp_path)
-        current = generate_baseline_report(frames=180, output_path=current_path)
-
-        try:
-            if not baseline_path.exists():
-                self.skipTest("Baseline report missing; run perf harness first")
-
-            # Initial rollout is warning-only unless strict mode is enabled.
-            if not strict:
-                return
-
-            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-            baseline_scenarios = dict(baseline.get("scenarios", {}) or {})
-            required = required_scenario_ids()
-            for sid in required:
-                self.assertIn(sid, baseline_scenarios, msg=f"Baseline missing required scenario={sid}")
-                for stage in PERF_REQUIRED_STAGES:
-                    self.assertIn(
-                        stage,
-                        baseline_scenarios[sid],
-                        msg=f"Baseline missing required stage={stage} for scenario={sid}",
-                    )
-                    self.assertGreater(
-                        float(current["scenarios"][sid][stage].get("count", 0.0) or 0.0),
-                        0.0,
-                        msg=f"Current strict perf metric has zero count sid={sid} stage={stage}",
-                    )
-                    self.assertGreater(
-                        float(current["scenarios"][sid][stage].get("p95_ms", 0.0) or 0.0),
-                        0.0,
-                        msg=f"Current strict perf metric invalid/placeholder sid={sid} stage={stage}",
-                    )
-
-            for sid in required:
-                for stage in PERF_REQUIRED_STAGES:
-                    cur_p95 = float(current["scenarios"][sid][stage]["p95_ms"])
-                    base_p95 = float(baseline["scenarios"][sid][stage]["p95_ms"])
-                    allowed = max(
-                        base_p95 * float(PERF_STRICT_P95_REGRESSION_RATIO),
-                        float(PERF_STRICT_P95_REGRESSION_FLOOR_MS),
-                    )
-                    self.assertLessEqual(
-                        cur_p95,
-                        allowed,
-                        msg=(
-                            f"Perf regression sid={sid} stage={stage}: "
-                            f"p95={cur_p95:.3f}ms baseline={base_p95:.3f}ms allowed={allowed:.3f}ms"
-                        ),
-                    )
-            for sid in tuple(str(v) for v in PERF_STRICT_PREVIEW_SCENARIOS):
-                preview_p95 = float(current["scenarios"][sid]["preview"]["p95_ms"])
-                self.assertLessEqual(
-                    preview_p95,
-                    float(PERF_STRICT_PREVIEW_P95_MS),
-                    msg=(
-                        f"Realtime preview gate failed sid={sid}: "
-                        f"preview p95={preview_p95:.3f}ms > {float(PERF_STRICT_PREVIEW_P95_MS):.3f}ms"
-                    ),
+        scenarios = self.current.get("scenarios", {})
+        for sid in required_scenario_ids():
+            self.assertIn(sid, scenarios)
+            for stage in PERF_REQUIRED_STAGES:
+                self.assertIn(stage, scenarios[sid], msg=f"missing stage={stage} in scenario={sid}")
+                self.assertGreater(
+                    float(scenarios[sid][stage].get("count", 0.0) or 0.0),
+                    0.0,
+                    msg=f"zero sample count sid={sid} stage={stage}",
                 )
-                diag = dict(current["scenarios"][sid].get("realtime", {}) or {})
-                underrun_rate = float(diag.get("preview_underrun_rate", 0.0) or 0.0)
-                queue_drop_rate = float(diag.get("preview_queue_drop_rate", 0.0) or 0.0)
-                self.assertLessEqual(
-                    underrun_rate,
-                    float(PERF_STRICT_PREVIEW_UNDERRUN_RATE_MAX),
-                    msg=(
-                        f"Realtime underrun gate failed sid={sid}: "
-                        f"underrun_rate={underrun_rate:.4f} > {float(PERF_STRICT_PREVIEW_UNDERRUN_RATE_MAX):.4f}"
-                    ),
+
+    def test_p95_within_local_baseline(self):
+        if not _strict_mode_enabled():
+            self.skipTest("perf gate in warning mode")
+        if not BASELINE_PATH.exists():
+            self.skipTest(f"no local baseline at {BASELINE_PATH}")
+        baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        for sid in required_scenario_ids():
+            for stage in PERF_REQUIRED_STAGES:
+                cur_p95 = float(self.current["scenarios"][sid][stage]["p95_ms"])
+                base_p95 = float(baseline["scenarios"][sid][stage]["p95_ms"])
+                allowed = max(
+                    base_p95 * float(PERF_STRICT_P95_REGRESSION_RATIO),
+                    float(PERF_STRICT_P95_REGRESSION_FLOOR_MS),
                 )
                 self.assertLessEqual(
-                    queue_drop_rate,
-                    float(PERF_STRICT_PREVIEW_QUEUE_DROP_RATE_MAX),
+                    cur_p95,
+                    allowed,
                     msg=(
-                        f"Realtime queue-drop gate failed sid={sid}: "
-                        f"queue_drop_rate={queue_drop_rate:.4f} > {float(PERF_STRICT_PREVIEW_QUEUE_DROP_RATE_MAX):.4f}"
+                        f"Perf regression sid={sid} stage={stage}: "
+                        f"p95={cur_p95:.3f}ms baseline={base_p95:.3f}ms allowed={allowed:.3f}ms"
                     ),
                 )
-        finally:
-            try:
-                if current_path.exists():
-                    current_path.unlink()
-            except Exception:
-                pass
+
+    def test_realtime_preview_limits(self):
+        if not _strict_mode_enabled():
+            self.skipTest("perf gate in warning mode")
+        for sid in tuple(str(v) for v in PERF_STRICT_PREVIEW_SCENARIOS):
+            scenario = self.current["scenarios"][sid]
+            preview_p95 = float(scenario["preview"]["p95_ms"])
+            self.assertLessEqual(
+                preview_p95,
+                float(PERF_STRICT_PREVIEW_P95_MS),
+                msg=f"preview p95={preview_p95:.3f}ms > {float(PERF_STRICT_PREVIEW_P95_MS):.3f}ms sid={sid}",
+            )
+            diag = dict(scenario.get("realtime", {}) or {})
+            underrun_rate = float(diag.get("preview_underrun_rate", 0.0) or 0.0)
+            queue_drop_rate = float(diag.get("preview_queue_drop_rate", 0.0) or 0.0)
+            self.assertLessEqual(
+                underrun_rate,
+                float(PERF_STRICT_PREVIEW_UNDERRUN_RATE_MAX),
+                msg=f"underrun_rate={underrun_rate:.4f} sid={sid}",
+            )
+            self.assertLessEqual(
+                queue_drop_rate,
+                float(PERF_STRICT_PREVIEW_QUEUE_DROP_RATE_MAX),
+                msg=f"queue_drop_rate={queue_drop_rate:.4f} sid={sid}",
+            )
 
 
 if __name__ == "__main__":

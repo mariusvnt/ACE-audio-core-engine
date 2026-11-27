@@ -1,6 +1,4 @@
-"""
-vars.py include all the hard-coded information of the add-on, especially the registry of all available audio nodes.
-"""
+"""vars.py include all the hard-coded information of the add-on, especially the registry of all available audio nodes."""
 from typing import TypedDict
 
 # Global Parameters
@@ -11,35 +9,6 @@ ACE_COLLECTION_NAME = "ACE_Sources_&_Streams"
 ACE_PROXY_PREFIX = "ACE_"
 ACE_BLUE = (79 / 255.0, 146 / 255.0, 254 / 255.0, 1.0)
 ACE_LOGO_FILENAME = "ACE_Logo.png"
-
-# Required external libraries
-REQUIRED_LIBRARIES = {
-    "numpy": {
-        "name": "NumPy",
-        "default": True,
-        "desc": "Core numeric processing (bundled with Blender)"
-    },
-    "audioflux": {
-        "name": "AudioFlux",
-        "default": False,
-        "desc": "High-level audio analysis engine (spectrum, pitch, onset)"
-    },
-    "numba": {
-        "name": "NumBa (Optional)",
-        "default": False,
-        "desc": "Optional turbo-acceleration for DSP (envelope/filters).",
-    },
-    "soundfile": {
-        "name": "SoundFile",
-        "default": False,
-        "desc": "Robust audio file reader (WAV, FLAC, etc.)"
-    },
-    "sounddevice": {
-        "name": "SoundDevice",
-        "default": False,
-        "desc": "Real-time audio capture and preview output"
-    }
-}
 
 # Hierarchy of the available audio nodes
 class Meta(TypedDict):
@@ -72,9 +41,9 @@ ACE_NODES: dict[str, Category] = {
             "src": {
             "label": "Source",
             "icon": "",
-            "description": "Reference to an audio source.",
+            "description": "Reference to an audio source, with its tempo.",
             "inputs": [],
-            "outputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'BPM'), ('NodeSocketInt', 'Beats per Bar')],
             },
         },
     },
@@ -93,34 +62,6 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketBundle', 'Audio')], # template sockets, runtime variants are dynamic
             },
-            "midside_splitter": {
-            "label": "Mid/Side Splitter",
-            "icon": "",
-            "description": "Splits the incoming audio between the middle and side part of the stereo image.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'Mid'), ('NodeSocketBundle', 'Side')],
-            },
-            "attackrelease_splitter": {
-            "label": "Attack/Release Splitter",
-            "icon": "",
-            "description": "Splits the incoming audio between the rising and falling parts of the signal.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'Attack'), ('NodeSocketBundle', 'Release')],
-            },
-            "chromagram": {
-            "label": "Chromagram",
-            "icon": "",
-            "description": "Splits the incoming audio into 12 audios, each corresponing to the level of a particular note.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'C'), ('NodeSocketBundle', 'C#'), ('NodeSocketBundle', 'D'), ('NodeSocketBundle', 'D#'), ('NodeSocketBundle', 'E'), ('NodeSocketBundle', 'F'), ('NodeSocketBundle', 'F#'), ('NodeSocketBundle', 'G'), ('NodeSocketBundle', 'G#'), ('NodeSocketBundle', 'A'), ('NodeSocketBundle', 'A#'), ('NodeSocketBundle', 'B')],
-            },
-            "auto_component_splitter": {
-            "label": "Automatic Component Splitter",
-            "icon": "",
-            "description": "Automatically splits the incoming audio between its percussive and harmonics components (residual undefined elements are also outputted separately).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketBundle', 'Percussive'), ('NodeSocketBundle', 'Harmonics'), ('NodeSocketBundle', 'Residual')],
-            },
         },
     },
 
@@ -131,61 +72,37 @@ ACE_NODES: dict[str, Category] = {
             "description": "Nodes performing audio to float/vector operations."
         },
         "nodes": {
-            "rms": {
-            "label": "RMS",
-            "icon": "DRIVER_DISTANCE",
-            "description": "Short-term average loudness measured on the mono-converted signal.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'RMS')],
-            },
-            "lufs": {
-            "label": "Loudness (LUFS)",
+            "loudness": {
+            "label": "Loudness",
             "icon": "DRIVER_DISTANCE",
             "description": (
-                "Normalized loudness output in 0..1 "
-                "(0 = silence / -inf LUFS, 1 = 0 LUFS). "
-                "Window sets averaging time: larger values are smoother/slower, "
-                "smaller values react faster. "
-                "Overlap Ratio (0..1) controls update density: "
-                "0 = stepped window updates, 1 = maximally smooth updates."
+                "Loudness in 0..1: 1 at 0 dB, 0 at -70 dB (silence) and below, linear in dB "
+                "in between. Method: RMS (signal energy), LUFS (perceived loudness, "
+                "averaged over Window) or Peak (highest sample)."
             ),
-            "inputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'Window (s)'), ('NodeSocketFloat', 'Overlap Ratio')],
+            "inputs": [
+                ('NodeSocketBundle', 'Audio'),
+                ('NodeSocketFloat', 'Window (s)'),
+            ],
             "outputs": [('NodeSocketFloat', 'Loudness')],
+            "modes": [
+                ("rms", "RMS", "Root-mean-square energy of the frame, on the mono signal."),
+                ("lufs", "LUFS", "K-weighted perceived loudness averaged over Window (s)."),
+                ("peak", "Peak", "Highest K-weighted sample of the frame."),
+            ],
+            "default_mode": "rms",
             },
-            "peak": {
-            "label": "Peak",
-            "icon": "DRIVER_DISTANCE",
-            "description": "Normalized K-weighted peak level in 0..1 (0 = silence, 1 = 0 dB full scale).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Peak')],
-            },
-            "spectral_centroid": {
-            "label": "Spectral Centroid",
-            "icon": "CURVE_NCIRCLE",
-            "description": "Short-term Weighted mean frequency, perceived atmosphere in Hz from dark to bright.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Centroid')],
-            },
-            "spectral_flux": {
-            "label": "Spectral Flux",
-            "icon": "SEQ_HISTOGRAM",
-            "description": "Spectral change rate between the precedent and current frame.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Flux')],
-            },
-            "stereo_width": {
-            "label": "Stereo Width",
+            "stereo": {
+            "label": "Stereo",
             "icon": "ORIENTATION_GIMBAL",
-            "description": "Side-to-mid energy ratio (0 = mono, 1 = very wide).",
+            "description": "Stereo image. Width: side-to-mid energy (0 = mono, 1 = very wide). Balance: -1 = left, 0 = center, 1 = right.",
             "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Stereo Width')],
-            },
-            "stereo_balance": {
-            "label": "Stereo Balance",
-            "icon": "VIEW_PAN",
-            "description": "Stereo balance (-1 = left, 0 = center, 1 = right).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Stereo Balance')],
+            "outputs": [('NodeSocketFloat', 'Stereo')],
+            "modes": [
+                ("width", "Width", "Side-to-mid energy ratio (0 = mono, 1 = very wide)."),
+                ("balance", "Balance", "Left/right energy balance (-1 = left, 0 = center, 1 = right)."),
+            ],
+            "default_mode": "width",
             },
             "stereo_vector": {
             "label": "Stereo Vector",
@@ -194,6 +111,13 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketVector', 'Stereo Vector')],
             },
+            "brightness": {
+            "label": "Brightness",
+            "icon": "SEQ_HISTOGRAM",
+            "description": "Spectral centroid in Hz: where the energy of the frame sits, from dark to bright. Behind a Frequency Splitter, within the band.",
+            "inputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [('NodeSocketFloat', 'Brightness')],
+            },
             "pitch": {
             "label": "Pitch",
             "icon": "",
@@ -201,19 +125,12 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Pitch')],
             },
-            "onset": {
-            "label": "Onset",
+            "transient": {
+            "label": "Transient",
             "icon": "",
-            "description": "Sharp transient witness (0 = smooth, 1 = sharp transient).",
+            "description": "Sharp attacks in the audio (0 = smooth, 1 = sharp transient).",
             "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Onset')],
-            },
-            "zero_crossing_rate": {
-            "label": "Zero Crossing Rate",
-            "icon": "",
-            "description": "Measure of frequency activity (signal noisiness) (0 = no active frequency, 1 = every frequency is active).",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'ZCR')],
+            "outputs": [('NodeSocketFloat', 'Transient')],
             },
         },
     },
@@ -225,17 +142,6 @@ ACE_NODES: dict[str, Category] = {
             "description": "Helper nodes for graph monitoring and utility operations."
         },
         "nodes": {
-            "src_specs": {
-            "label": "Source Specs",
-            "icon": "",
-            "description": "Long-term specs and passing through the audio.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [
-                ('NodeSocketFloat', 'Frames per Beat'),
-                ('NodeSocketFloat', 'Beat Phase'),
-                ('NodeSocketBundle', 'Audio')
-            ],
-            },
             "preview_sink": {
             "label": "Audio Preview",
             "icon": "PLAY_SOUND",
@@ -243,18 +149,11 @@ ACE_NODES: dict[str, Category] = {
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [],
             },
-            "audio_math": {
-            "label": "Audio Math",
-            "icon": "",
-            "description": "Audio operations: add, subtract, multiply.",
-            "inputs": [('NodeSocketBundle', 'Audio')], # dynamic
-            "outputs": [('NodeSocketBundle', 'Audio')], # dynamic
-            },
             "util_rolling_avg": {
             "label": "Rolling Average",
             "icon": "",
-            "description": "Smooths a scalar attribute stream over a fixed number of scene frames.",
-            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketInt', 'Number of Frames')],
+            "description": "Smooths a scalar attribute stream over a time window.",
+            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Window')],
             "outputs": [('NodeSocketFloat', 'Rolling Avg')],
             },
             "stream_accumulator": {
@@ -267,3 +166,74 @@ ACE_NODES: dict[str, Category] = {
         },
     },
 }
+
+
+# Silence floor of every Loudness method: 0 at this level and below. Not user-editable.
+LOUDNESS_FLOOR_DB = -70.0
+
+
+def node_modes(category: str, node_type: str) -> list[tuple[str, str, str]]:
+    """Return the (id, label, description) modes of a node type, or [] if it has none."""
+    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(str(node_type or ""), {})
+    return [tuple(m) for m in (node_def.get("modes") or [])]  # type: ignore[misc]
+
+
+def resolve_node_mode(category: str, node_type: str, raw_mode=None) -> str:
+    """Return a valid mode id for a node type: *raw_mode* if known, else the default, else ""."""
+    typ = str(node_type or "")
+    modes = node_modes(category, typ)
+    if not modes:
+        return ""
+    ids = [m[0] for m in modes]
+    mode = str(raw_mode or "").strip().lower()
+    if mode in ids:
+        return mode
+    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(typ, {})
+    default = str(node_def.get("default_mode", "") or "")
+    return default if default in ids else ids[0]
+
+
+def node_mode_label(category: str, node_type: str, mode: str) -> str:
+    for mode_id, label, _desc in node_modes(category, node_type):
+        if mode_id == mode:
+            return label
+    return ""
+
+
+# Interface defaults and ranges for numeric controls: (default, min, max).
+SOCKET_RANGES: dict[tuple[str, str], dict[str, tuple[float, float, float]]] = {
+    ("stream", "loudness"): {
+        "Window (s)": (0.4, 0.05, 3.0),
+    },
+    ("utilities", "util_rolling_avg"): {
+        "Window": (0.25, 0.001, 60.0),
+    },
+}
+
+# Sockets whose field shows a unit: a time in seconds reads "250 ms".
+SOCKET_SUBTYPES: dict[tuple[str, str], dict[str, str]] = {
+    ("utilities", "util_rolling_avg"): {"Window": "TIME_ABSOLUTE"},
+}
+
+
+def apply_socket_ranges(ng, category: str, node_type: str) -> None:
+    """Set defaults and ranges on a group interface from SOCKET_RANGES."""
+    key = (str(category or ""), str(node_type or ""))
+    subtypes = SOCKET_SUBTYPES.get(key, {})
+    for item in list(getattr(getattr(ng, "interface", None), "items_tree", [])):
+        wanted = subtypes.get(str(getattr(item, "name", "") or ""))
+        if wanted and getattr(item, "in_out", None) == "INPUT" and getattr(item, "subtype", wanted) != wanted:
+            item.subtype = wanted
+    ranges = SOCKET_RANGES.get(key)
+    if not ranges:
+        return
+    for item in getattr(getattr(ng, "interface", None), "items_tree", []):
+        if getattr(item, "in_out", None) != "INPUT":
+            continue
+        spec = ranges.get(str(getattr(item, "name", "") or ""))
+        if spec is None:
+            continue
+        default, lo, hi = spec
+        for attr, value in (("min_value", lo), ("max_value", hi), ("default_value", default)):
+            if hasattr(item, attr):
+                setattr(item, attr, value)

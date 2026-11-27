@@ -1,0 +1,100 @@
+"""Frontend kinds shared by geometry and shader trees, and keeping group users' input values."""
+
+from .. import utils
+
+
+FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
+
+
+FRONTEND_KIND_SHADER = "SHADER_NODES"
+
+
+def _tree_pointer(tree) -> int:
+    try:
+        return int(tree.as_pointer())
+    except Exception as exc:
+        utils.note_swallowed("frontend._tree_pointer", exc)
+        return id(tree)
+
+
+# Group rebuilds (an ACE node's sockets changed) reset the input values of every node using
+# the group. Values are kept by socket name and put back once Blender has refreshed the
+# nodes' sockets, which happens on its next update, not during the rebuild.
+_pending_input_restores: list[tuple[str, str, str, str, dict]] = []
+_RESTORE_ATTEMPTS = 20
+
+
+def _group_users(ng):
+    import bpy  # type: ignore
+
+    for tree in bpy.data.node_groups:
+        for node in tree.nodes:
+            if getattr(node, "node_tree", None) == ng:
+                yield "group", tree.name, node
+    for material in bpy.data.materials:
+        tree = material.node_tree
+        if tree is None:
+            continue
+        for node in tree.nodes:
+            if getattr(node, "node_tree", None) == ng:
+                yield "material", material.name, node
+
+
+def _plain_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)) or hasattr(value, "bl_rna"):
+        return value
+    return tuple(value)
+
+
+def remember_group_inputs(ng) -> None:
+    """Call before rebuilding *ng*: its users' unlinked input values come back afterwards."""
+    for owner_kind, owner_name, node in _group_users(ng):
+        values = {
+            sock.name: _plain_value(sock.default_value)
+            for sock in node.inputs
+            if not sock.is_linked and hasattr(sock, "default_value")
+        }
+        if values:
+            _pending_input_restores.append((owner_kind, owner_name, node.name, ng.name, values))
+    _schedule_input_restore()
+
+
+def _schedule_input_restore() -> None:
+    import bpy  # type: ignore
+
+    if _pending_input_restores and not bpy.app.timers.is_registered(_restore_group_inputs):
+        _restore_group_inputs.attempts = 0
+        bpy.app.timers.register(_restore_group_inputs, first_interval=0.05)
+
+
+def _restore_group_inputs():
+    """Timer: restore remembered values on nodes whose sockets match their rebuilt group."""
+    import bpy  # type: ignore
+
+    with utils.logged_errors("frontend._restore_group_inputs"):
+        _restore_group_inputs.attempts += 1
+        waiting = []
+        for entry in _pending_input_restores:
+            owner_kind, owner_name, node_name, group_name, values = entry
+            owner = (bpy.data.node_groups if owner_kind == "group" else bpy.data.materials).get(owner_name)
+            tree = owner if owner_kind == "group" else getattr(owner, "node_tree", None)
+            node = tree.nodes.get(node_name) if tree is not None else None
+            group = bpy.data.node_groups.get(group_name)
+            if node is None or group is None or node.node_tree != group:
+                continue
+            expected = [i.name for i in group.interface.items_tree if getattr(i, "in_out", "") == "INPUT"]
+            if [sock.name for sock in node.inputs] != expected:
+                waiting.append(entry)
+                continue
+            for sock in node.inputs:
+                if sock.name in values and not sock.is_linked and hasattr(sock, "default_value"):
+                    with utils.logged_errors("frontend._restore_group_inputs#value"):
+                        sock.default_value = values[sock.name]
+        _pending_input_restores[:] = waiting
+        if waiting and _restore_group_inputs.attempts < _RESTORE_ATTEMPTS:
+            return 0.1
+    _pending_input_restores.clear()
+    return None
+
+
+_restore_group_inputs.attempts = 0

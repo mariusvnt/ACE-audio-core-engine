@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Dict, Any
@@ -10,7 +9,7 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
-from module_loader import load_module
+from module_loader import forget_modules, load_tasks
 
 
 PERF_CONTRACT_VERSION = "ace-perf-v1"
@@ -88,17 +87,11 @@ def _scenario_benchmark(atr, operator_count: int, frames: int = 180) -> Dict[str
     op_count = int(max(operator_count, 1))
     stream_factories = (
         lambda idx: atr.RMSTask(f"rms_node_{idx}", {}, block_size=block_size),
-        lambda idx: atr.ZeroCrossTask(f"zcr_node_{idx}", {}, block_size=block_size),
-        lambda idx: atr.SpectralCentroidTask(f"centroid_node_{idx}", {}, block_size=block_size),
+        lambda idx: atr.BrightnessTask(f"brightness_node_{idx}", {}, block_size=block_size),
         lambda idx: atr.StereoWidthTask(f"width_node_{idx}", {}, block_size=block_size),
         lambda idx: atr.StereoBalanceTask(f"balance_node_{idx}", {}, block_size=block_size),
     )
     stream_tasks = [stream_factories[idx % len(stream_factories)](idx) for idx in range(op_count)]
-    math_task_count = max(op_count // 12, 1)
-    math_tasks = [
-        atr.AudioMathTask(f"math_node_{idx}", {"op": "add" if (idx % 2) == 0 else "multiply"}, block_size=block_size)
-        for idx in range(math_task_count)
-    ]
     preview_task = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=block_size)
 
     stage_series = {
@@ -125,11 +118,6 @@ def _scenario_benchmark(atr, operator_count: int, frames: int = 180) -> Dict[str
         for task_idx, task in enumerate(stream_tasks):
             chunk = chunks[task_idx % len(chunks)]
             rms_values.append(float(task.process({0: chunk}) or 0.0))
-        for math_idx, math_task in enumerate(math_tasks):
-            left = chunks[math_idx % len(chunks)]
-            right = chunks[(math_idx + 1) % len(chunks)]
-            mix_out = math_task.process({0: left, 1: right})
-            rms_values.append(float(np.mean(np.abs(mix_out.mono))) if hasattr(mix_out, "mono") else 0.0)
         stage_series["dsp"].append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()
@@ -193,9 +181,8 @@ def generate_baseline_report(frames: int = 180, output_path: Path | None = None)
         raise RuntimeError("NumPy is required for perf harness")
     # Some smoke tests intentionally import modules with a fake NumPy object.
     # Drop cached registry modules so this harness always benchmarks the real stack.
-    sys.modules.pop("ace_addon_testpkg.audio_tasks_registry", None)
-    sys.modules.pop("ace_addon_testpkg.audio_influx", None)
-    atr = load_module("audio_tasks_registry")
+    forget_modules("core.tasks", "core.input")
+    atr = load_tasks()
     scenarios = PERF_REQUIRED_SCENARIOS
     report = {
         "contract": perf_contract(),
@@ -207,7 +194,8 @@ def generate_baseline_report(frames: int = 180, output_path: Path | None = None)
     }
     if _perf_strict_enabled():
         _validate_perf_report_strict(report)
-    target = output_path or Path(__file__).with_name("perf_baseline_report.json")
+    target = output_path or (Path(__file__).parent / "artifacts" / "perf_baseline_report.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 

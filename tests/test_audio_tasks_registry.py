@@ -1,7 +1,8 @@
+import types
 import unittest
 import warnings
 
-from module_loader import load_module
+from module_loader import load_module, load_tasks
 
 try:
     import numpy as np
@@ -9,7 +10,9 @@ except Exception:
     np = None
 
 try:
-    atr = load_module("audio_tasks_registry") if np is not None else None
+    atr = load_tasks() if np is not None else None
+    tasks_source = load_module("core.tasks.source") if np is not None else None
+    tasks_spectral = load_module("core.tasks.spectral") if np is not None else None
 except Exception:
     atr = None
 
@@ -68,101 +71,32 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertAlmostEqual(out[1].band_hz_bounds[0], 2000.0, places=3)
         self.assertAlmostEqual(out[1].band_hz_bounds[1], 4000.0, places=3)
 
-    def test_analyzer_resolves_hz_bounds_in_fft_domain(self):
-        analyzer = atr.AudioFluxAnalyzer(sample_rate=48000, block_size=750)
-        chunk = atr.AudioChunk(
-            np.zeros(750, dtype=np.float32),
-            None,
-            48000,
-            band_hz_bounds=(1000.0, 5000.0),
-            lineage=("src", "band"),
-        )
-        idx = analyzer._resolve_chunk_mask_indices(chunk)
-        self.assertIsNotNone(idx)
-        self.assertGreater(idx.size, 0)
-        freq = analyzer.freq_bins[idx]
-        self.assertGreaterEqual(float(freq.min()), 1000.0)
-        self.assertLess(float(freq.max()), 5000.0)
+    def test_band_bins_follow_hz_bounds_in_the_fft_domain(self):
+        chunk = atr.AudioChunk(np.zeros(750, dtype=np.float32), None, 48000, band_hz_bounds=(1000.0, 5000.0), lineage=("src", "band"))
+        freqs = np.fft.rfftfreq(1024, d=1.0 / 48000.0)[atr._band_bins(chunk, 1024, 750)]
+        self.assertGreater(freqs.size, 0)
+        self.assertGreaterEqual(float(freqs.min()), 1000.0)
+        self.assertLess(float(freqs.max()), 5000.0)
 
-    def test_analyzer_intersects_existing_indices_and_bounds(self):
-        analyzer = atr.AudioFluxAnalyzer(sample_rate=48000, block_size=256)
+    def test_band_bins_intersect_indices_and_bounds(self):
         base_indices = np.array([8, 9, 10, 11, 12, 13, 14], dtype=np.int64)
         chunk = atr.AudioChunk(
-            np.zeros(256, dtype=np.float32),
-            None,
-            48000,
-            band_indices=base_indices,
-            band_hz_bounds=(2000.0, 2500.0),
-            lineage=("src", "pre_masked"),
+            np.zeros(256, dtype=np.float32), None, 48000,
+            band_indices=base_indices, band_hz_bounds=(2000.0, 2500.0), lineage=("src", "pre_masked"),
         )
-        idx = analyzer._resolve_chunk_mask_indices(chunk)
-        self.assertIsNotNone(idx)
-        self.assertGreater(idx.size, 0)
-        self.assertTrue(set(idx.tolist()).issubset(set(base_indices.tolist())))
-        freq = analyzer.freq_bins[idx]
-        self.assertGreaterEqual(float(freq.min()), 2000.0)
-        self.assertLess(float(freq.max()), 2500.0)
+        idx = np.nonzero(atr._band_bins(chunk, 256, 256))[0]
+        self.assertEqual(idx.tolist(), [11, 12, 13])
 
-    def test_analyzer_remaps_foreign_fft_domain_indices(self):
-        analyzer = atr.AudioFluxAnalyzer(sample_rate=48000, block_size=750)
-        src_fft_size = 750
-        src_freqs = np.fft.rfftfreq(src_fft_size, d=1.0 / 48000.0)
-        src_idx = np.array([
-            int(np.argmin(np.abs(src_freqs - 1000.0))),
-            int(np.argmin(np.abs(src_freqs - 3500.0))),
-        ], dtype=np.int64)
+    def test_band_bins_remap_indices_of_another_fft_size(self):
+        src_freqs = np.fft.rfftfreq(750, d=1.0 / 48000.0)
+        src_idx = np.array([int(np.argmin(np.abs(src_freqs - f))) for f in (1000.0, 3500.0)], dtype=np.int64)
         chunk = atr.AudioChunk(
-            np.zeros(750, dtype=np.float32),
-            None,
-            48000,
-            band_indices=src_idx,
-            band_index_fft_size=src_fft_size,
-            lineage=("src",),
+            np.zeros(750, dtype=np.float32), None, 48000,
+            band_indices=src_idx, band_index_fft_size=750, lineage=("src",),
         )
-        idx = analyzer._resolve_chunk_mask_indices(chunk)
-        self.assertIsNotNone(idx)
-        self.assertGreater(idx.size, 0)
-        out_freqs = analyzer.freq_bins[idx]
+        out_freqs = np.fft.rfftfreq(1024, d=1.0 / 48000.0)[atr._band_bins(chunk, 1024, 750)]
         self.assertTrue(np.any(np.abs(out_freqs - 1000.0) < 40.0))
         self.assertTrue(np.any(np.abs(out_freqs - 3500.0) < 40.0))
-
-    def test_chunk_token_uses_lineage(self):
-        analyzer = atr.AudioFluxAnalyzer(sample_rate=44100, block_size=128)
-        mono = np.ones(128, dtype=np.float32)
-        a = atr.AudioChunk(mono, None, 44100, lineage=("src", "a"))
-        b = atr.AudioChunk(mono, None, 44100, lineage=("src", "b"))
-        token_a = analyzer._chunk_token(a)
-        token_b = analyzer._chunk_token(b)
-        self.assertNotEqual(token_a, token_b)
-
-    def test_chunk_token_prefers_explicit_spectrum_token(self):
-        analyzer = atr.AudioFluxAnalyzer(sample_rate=44100, block_size=128)
-        mono = np.ones(128, dtype=np.float32)
-        a = atr.AudioChunk(mono, None, 44100, lineage=("src", "a"), spectrum_token=("src", "shared"))
-        b = atr.AudioChunk(mono, None, 44100, lineage=("src", "b"), spectrum_token=("src", "shared"))
-        self.assertEqual(analyzer._chunk_token(a), analyzer._chunk_token(b))
-
-    def test_chunk_token_distinguishes_analysis_ops_for_shared_token(self):
-        analyzer = atr.AudioFluxAnalyzer(sample_rate=44100, block_size=128)
-        mono = np.ones(128, dtype=np.float32)
-        shared = ("src", "shared")
-        mid_chunk = atr.AudioChunk(
-            mono,
-            None,
-            44100,
-            lineage=("src", "mid"),
-            spectrum_token=shared,
-            analysis_ops=(("midside", "mid"),),
-        )
-        side_chunk = atr.AudioChunk(
-            mono,
-            None,
-            44100,
-            lineage=("src", "side"),
-            spectrum_token=shared,
-            analysis_ops=(("midside", "side"),),
-        )
-        self.assertNotEqual(analyzer._chunk_token(mid_chunk), analyzer._chunk_token(side_chunk))
 
     def test_frequency_splitter_preserves_parent_spectrum_token(self):
         splitter = atr.FrequencySplitterTask("splitter_node", {}, block_size=256)
@@ -177,153 +111,38 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertEqual(len(out), 3)
         self.assertTrue(all(c.spectrum_token == source.spectrum_token for c in out))
 
-    def test_midside_splitter_emits_metadata_only_branches(self):
-        n = 256
-        sr = 48000
+    def test_frequency_splitter_keeps_an_empty_band_for_coinciding_cuts(self):
+        n, sr = 2048, 48000
         t = np.arange(n, dtype=np.float32) / float(sr)
-        left = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
-        right = (-left).astype(np.float32)
-        stereo = np.stack([left, right], axis=0)
-        mono = np.mean(stereo, axis=0).astype(np.float32)
-        source = atr.AudioChunk(
-            mono,
-            stereo,
-            sr,
-            lineage=("src",),
-            spectrum_token=("src", "frame"),
-            band_hz_bounds=(100.0, 2000.0),
-        )
+        mono = (0.5 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32)
+        source = atr.AudioChunk(mono, np.stack([mono, mono]), sr, lineage=("src",), spectrum_token=("src", "frame"))
 
-        splitter = atr.MidsideSplitterTask("ms_node", {}, block_size=n)
-        mid_chunk, side_chunk = splitter.process({0: source})
+        for cuts, empty in (((1000.0, 1000.0), 1), ((1000.0, 1000.4), 1), ((0.0, 10.0), 0), ((0.0, 10.0), 1)):
+            out = atr.FrequencySplitterTask("split", {}, block_size=n).process({0: source, 1: cuts[0], 2: cuts[1]})
+            self.assertEqual(len(out), 3, cuts)
+            band = out[empty]
+            self.assertFalse(np.any(band.mono), cuts)
+            self.assertFalse(np.any(band.stereo), cuts)
+            self.assertEqual(band.lineage[-1], f"split:{empty}")
+            for task_cls in (atr.RMSTask, atr.RMSLoudnessTask, atr.LUFSTask, atr.PeakTask):
+                self.assertEqual(float(task_cls("m", {}, block_size=n).process({0: band})), 0.0, task_cls.__name__)
+            heard = atr.PreviewSinkTask("p", {"preview_enabled": True}, block_size=n).process({0: band})
+            self.assertFalse(np.any(heard.mono), cuts)
 
-        self.assertTrue(np.array_equal(mid_chunk.mono, source.mono))
-        self.assertTrue(np.array_equal(side_chunk.mono, source.mono))
-        self.assertEqual(mid_chunk.spectrum_token, source.spectrum_token)
-        self.assertEqual(side_chunk.spectrum_token, source.spectrum_token)
-        self.assertEqual(mid_chunk.band_hz_bounds, source.band_hz_bounds)
-        self.assertEqual(side_chunk.band_hz_bounds, source.band_hz_bounds)
-        self.assertEqual(mid_chunk.analysis_ops[-1], ("midside", "mid"))
-        self.assertEqual(side_chunk.analysis_ops[-1], ("midside", "side"))
+        # The bands around the empty one are unchanged.
+        low, none, high = atr.FrequencySplitterTask("split", {}, block_size=n).process({0: source, 1: 1000.0, 2: 1000.0})
+        self.assertEqual((low.band_hz_bounds, high.band_hz_bounds), ((20.0, 1000.0), (1000.0, 20000.0)))
+        np.testing.assert_allclose(high.mono, mono)
 
-    def test_attackrelease_splitter_emits_metadata_only_branches(self):
-        n = 64
-        sr = 48000
-        mono = np.array([0.0, 0.8, 0.2, 0.9, 0.3, 0.1, 0.7, 0.4], dtype=np.float32)
-        mono = np.tile(mono, n // mono.shape[0]).astype(np.float32)
-        source = atr.AudioChunk(
-            mono,
-            None,
-            sr,
-            lineage=("src",),
-            spectrum_token=("src", "frame"),
-            band_indices=np.array([1, 2, 3], dtype=np.int64),
-        )
-
-        splitter = atr.AttackReleaseSplitterTask("ar_node", {}, block_size=n)
-        attack_chunk, release_chunk = splitter.process({0: source})
-
-        self.assertTrue(np.array_equal(attack_chunk.mono, source.mono))
-        self.assertTrue(np.array_equal(release_chunk.mono, source.mono))
-        self.assertEqual(attack_chunk.spectrum_token, source.spectrum_token)
-        self.assertEqual(release_chunk.spectrum_token, source.spectrum_token)
-        self.assertTrue(np.array_equal(attack_chunk.band_indices, source.band_indices))
-        self.assertTrue(np.array_equal(release_chunk.band_indices, source.band_indices))
-        self.assertEqual(attack_chunk.analysis_ops[-1], ("attackrelease", "attack"))
-        self.assertEqual(release_chunk.analysis_ops[-1], ("attackrelease", "release"))
-
-    def test_audio_math_add_mode(self):
-        n = 8
-        a = atr.AudioChunk(np.full(n, 1.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-        out = task.process({0: a, 1: b})
-        self.assertTrue(np.allclose(out.mono, np.full(n, 3.0, dtype=np.float32)))
-
-    def test_audio_math_subtract_mode(self):
-        n = 8
-        a = atr.AudioChunk(np.full(n, 5.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        c = atr.AudioChunk(np.full(n, 1.0, dtype=np.float32), None, 48000, lineage=("src", "c"))
-        task = atr.AudioMathTask("math_node", {"op": "subtract"}, block_size=n)
-        out = task.process({0: a, 1: b, 2: c})
-        self.assertTrue(np.allclose(out.mono, np.full(n, 2.0, dtype=np.float32)))
-
-    def test_audio_math_multiply_mode(self):
-        n = 8
-        a = atr.AudioChunk(np.full(n, 3.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        task = atr.AudioMathTask("math_node", {"op": "multiply"}, block_size=n)
-        out = task.process({0: a, 1: b})
-        self.assertTrue(np.allclose(out.mono, np.full(n, 6.0, dtype=np.float32)))
-
-    def test_audio_math_add_mode_preserves_stereo(self):
-        n = 16
-        left_a = np.linspace(0.0, 1.0, n, dtype=np.float32)
-        right_a = np.linspace(1.0, 0.0, n, dtype=np.float32)
-        stereo_a = np.stack([left_a, right_a], axis=0).astype(np.float32, copy=False)
-        mono_a = np.mean(stereo_a, axis=0).astype(np.float32, copy=False)
-
-        left_b = np.linspace(0.5, -0.5, n, dtype=np.float32)
-        right_b = np.linspace(-0.25, 0.75, n, dtype=np.float32)
-        stereo_b = np.stack([left_b, right_b], axis=0).astype(np.float32, copy=False)
-        mono_b = np.mean(stereo_b, axis=0).astype(np.float32, copy=False)
-
-        a = atr.AudioChunk(mono_a, stereo_a, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(mono_b, stereo_b, 48000, lineage=("src", "b"))
-
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-        out = task.process({0: a, 1: b})
-
-        self.assertIsNotNone(out.stereo)
-        self.assertEqual(out.stereo.shape, (2, n))
-        self.assertTrue(np.allclose(out.stereo[0], left_a + left_b))
-        self.assertTrue(np.allclose(out.stereo[1], right_a + right_b))
-        self.assertTrue(np.allclose(out.mono, np.mean(out.stereo, axis=0)))
-
-    def test_audio_math_merges_mask_metadata_from_all_inputs(self):
-        n = 256
-        a = atr.AudioChunk(
-            np.ones(n, dtype=np.float32),
-            None,
-            48000,
-            lineage=("src", "a"),
-            band_indices=np.array([2, 4, 6], dtype=np.int64),
-            band_index_fft_size=n,
-            band_hz_bounds=(100.0, 1200.0),
-        )
-        b = atr.AudioChunk(
-            np.ones(n, dtype=np.float32) * 2.0,
-            None,
-            48000,
-            lineage=("src", "b"),
-            band_indices=np.array([6, 8, 10], dtype=np.int64),
-            band_index_fft_size=n,
-            band_hz_bounds=(900.0, 3200.0),
-        )
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-        out = task.process({0: a, 1: b})
-
-        self.assertTrue(np.array_equal(out.band_indices, np.array([2, 4, 6, 8, 10], dtype=np.int64)))
-        self.assertEqual(out.band_index_fft_size, n)
-        self.assertEqual(out.band_hz_bounds, (100.0, 3200.0))
-
-    def test_audio_math_handles_mismatched_input_lengths(self):
-        a = atr.AudioChunk(np.full(512, 1.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-        b = atr.AudioChunk(np.full(1024, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-        task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=1024)
-        out = task.process({0: a, 1: b})
-
-        self.assertEqual(out.mono.shape[0], 1024)
-        self.assertTrue(np.allclose(out.mono[:512], 3.0))
-        self.assertTrue(np.allclose(out.mono[512:], 2.0))
-
-    def test_zero_cross_task_uses_numpy_fallback(self):
-        signal = np.array([1.0, -1.0] * 16, dtype=np.float32)
-        chunk = atr.AudioChunk(signal, None, 48000, lineage=("src",))
-        task = atr.ZeroCrossTask("zcr_node", {}, block_size=signal.shape[0])
-        out = task.process({0: chunk})
-        self.assertGreater(out, 0.9)
+    def test_frequency_splitter_leaves_an_uncomputable_link_as_an_empty_band(self):
+        source = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
+        task = atr.FrequencySplitterTask("split", {"unknown_inputs": [1]}, block_size=256)
+        low, none, high = task.process({0: source, 2: 4000.0})
+        self.assertEqual((low.band_hz_bounds, high.band_hz_bounds), ((20.0, 4000.0), (4000.0, 20000.0)))
+        self.assertFalse(np.any(none.mono))
+        # An audio value arriving through the link is used.
+        low, mid, _high = task.process({0: source, 1: 500.0, 2: 4000.0})
+        self.assertEqual((low.band_hz_bounds, mid.band_hz_bounds), ((20.0, 500.0), (500.0, 4000.0)))
 
     def test_source_task_forwards_live_latency_to_reception(self):
         captured = {}
@@ -348,8 +167,8 @@ class TestAudioTasksRegistry(unittest.TestCase):
             def close(self):
                 return None
 
-        original_reception = atr.AudioReception
-        atr.AudioReception = DummyReception
+        original_reception = tasks_source.AudioReception
+        tasks_source.AudioReception = DummyReception
         try:
             class DummySource:
                 source_type = "LIVE"
@@ -364,7 +183,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
             task._load_source()
             task.close()
         finally:
-            atr.AudioReception = original_reception
+            tasks_source.AudioReception = original_reception
 
         self.assertEqual(captured["source_type"], "LIVE")
         self.assertEqual(captured["flow_id"], "3")
@@ -400,37 +219,32 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertIsNone(chunk)
         self.assertEqual(task.source_context.live_status, task.last_error)
 
-    def test_source_specs_outputs_frames_per_beat(self):
-        class DummyCtx:
-            source_type = "FILE"
-            filepath = ""
-            bpm = 120.0
-            beats_per_bar = 4
-            sample_rate = 48000
-            duration = 10.0
+    def test_source_outputs_its_tempo_after_the_audio(self):
+        """Outputs 1 and 2 of a Source node are BPM and Beats per Bar, for links into value nodes."""
+        task = atr.SourceTask("src", {}, 256)
+        task.source_context = types.SimpleNamespace(bpm=128.0, beats_per_bar=3)
+        self.assertEqual(task._extract_result(1), 128.0)
+        self.assertEqual(task._extract_result(2), 3)
+        task.source_context = None
+        self.assertEqual((task._extract_result(1), task._extract_result(2)), (120.0, 4))
 
-        class DummyEngine:
-            current_frame = 12
+    def test_rolling_average_covers_a_time_window(self):
+        task = atr.RollingAvgTask("rolling_node", {"in_1": 0.3}, block_size=128)  # 3 frames at 10 fps
+        task.scene_fps = 10.0
 
-        task = atr.SourceSpecsTask("specs_node", {}, block_size=256)
-        task.source_context = DummyCtx()
-        task.scene_fps = 24.0
-        task.engine_ref = DummyEngine()
+        def at(frame, value, window=None):
+            task._current_frame_request = frame
+            inputs = {0: value} if window is None else {0: value, 1: window}
+            return float(task.process(inputs))
 
-        chunk = atr.AudioChunk(np.ones(256, dtype=np.float32), None, 48000, lineage=("src",))
-        frames_per_beat, beat_phase, _ = task.process({0: chunk})
-
-        self.assertAlmostEqual(float(frames_per_beat), (60.0 * 24.0) / 120.0, places=6)
-        self.assertAlmostEqual(float(beat_phase), 0.25, places=6)
-
-    def test_rolling_average_uses_fixed_frame_count(self):
-        task = atr.RollingAvgTask("rolling_node", {"in_1": 3}, block_size=128)
-
-        self.assertAlmostEqual(float(task.process({0: 1.0})), 1.0, places=6)
-        self.assertAlmostEqual(float(task.process({0: 2.0})), 1.5, places=6)
-        self.assertAlmostEqual(float(task.process({0: 3.0})), 2.0, places=6)
-        self.assertAlmostEqual(float(task.process({0: 9.0})), (2.0 + 3.0 + 9.0) / 3.0, places=6)
-        self.assertAlmostEqual(float(task.process({0: 5.0, 1: 2})), 7.0, places=6)
+        self.assertAlmostEqual(at(1, 1.0), 1.0)
+        self.assertAlmostEqual(at(2, 2.0), 1.5)
+        self.assertAlmostEqual(at(3, 3.0), 2.0)
+        self.assertAlmostEqual(at(4, 9.0), (2.0 + 3.0 + 9.0) / 3.0)
+        self.assertAlmostEqual(at(4, 12.0), (2.0 + 3.0 + 12.0) / 3.0)  # the same frame again
+        self.assertAlmostEqual(at(6, 6.0), (12.0 + 6.0) / 2.0)  # a skipped frame: time still counts
+        self.assertAlmostEqual(at(7, 5.0, window=0.05), 5.0)  # shorter than a frame: this one only
+        self.assertAlmostEqual(at(2, 4.0), 4.0)  # rewound
 
     def test_stream_accumulator_persists_and_resets_on_timeline_rewind(self):
         task = atr.StreamAccumulatorTask("accum_node", {}, block_size=128)
@@ -459,61 +273,34 @@ class TestAudioTasksRegistry(unittest.TestCase):
         out_b = task.process({0: np.array([0.5, -1.0, 2.0], dtype=np.float32)})
         self.assertTrue(np.allclose(np.asarray(out_b, dtype=np.float32), np.array([1.5, 1.0, 5.0], dtype=np.float32)))
 
-    def test_stream_accumulator_state_roundtrip_preserves_running_sum(self):
-        task_a = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
-        task_a.scene_frame_start = 1
-        task_a._current_frame_request = 1
-        self.assertAlmostEqual(float(task_a.process({0: 1.0})), 1.0, places=6)
-        task_a._current_frame_request = 2
-        self.assertAlmostEqual(float(task_a.process({0: 2.0})), 3.0, places=6)
+    def test_band_rms_of_a_tone_inside_the_band_equals_its_rms(self):
+        sr, n = 48000, 2000
+        t = np.arange(3 * n, dtype=np.float64) / sr
+        signal = (0.5 * np.sin(2.0 * np.pi * 1000.0 * t)).astype(np.float32)
+        task = atr.RMSTask("rms_node", {}, block_size=n)
+        expected = 0.5 / np.sqrt(2.0)
+        for history in (None, signal[:2 * n]):
+            chunk = atr.AudioChunk(
+                signal[2 * n:], None, sr, band_hz_bounds=(500.0, 2000.0), lineage=("src",), history_mono=history,
+            )
+            self.assertAlmostEqual(float(task.process({0: chunk})), expected, delta=0.01 * expected)
 
-        snapshot = dict(task_a.export_state() or {})
-        self.assertIn("accumulator", snapshot)
-
-        task_b = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
-        task_b.scene_frame_start = 1
-        restored = task_b.import_state(snapshot)
-        self.assertTrue(restored)
-        task_b._current_frame_request = 3
-        self.assertAlmostEqual(float(task_b.process({0: 0.5})), 3.5, places=6)
-
-    def test_stream_accumulator_state_roundtrip_preserves_vector_sum(self):
-        task_a = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
-        task_a.scene_frame_start = 1
-        task_a._current_frame_request = 1
-        _ = task_a.process({0: np.array([1.0, 2.0], dtype=np.float32)})
-        task_a._current_frame_request = 2
-        _ = task_a.process({0: np.array([0.5, -1.0], dtype=np.float32)})
-
-        task_b = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
-        task_b.scene_frame_start = 1
-        self.assertTrue(task_b.import_state(dict(task_a.export_state() or {})))
-        task_b._current_frame_request = 3
-        out = np.asarray(task_b.process({0: np.array([0.25, 0.75], dtype=np.float32)}), dtype=np.float32)
-        self.assertTrue(np.allclose(out, np.array([1.75, 1.75], dtype=np.float32)))
-
-    def test_masked_rms_prefers_provider_feature_path(self):
-        calls = []
-
-        class DummyProvider:
-            def compute_feature(self, name, chunk):  # noqa: ARG002
-                calls.append(name)
-                if name == "rms":
-                    return 0.1234
-                return None
-
-        chunk = atr.AudioChunk(
-            np.ones(256, dtype=np.float32),
-            None,
-            48000,
-            provider=DummyProvider(),
-            band_hz_bounds=(100.0, 2000.0),
-            lineage=("src",),
-        )
-        task = atr.RMSTask("rms_node", {}, block_size=256)
-        out = task.process({0: chunk})
-        self.assertAlmostEqual(float(out), 0.1234, places=6)
-        self.assertIn("rms", calls)
+    def test_band_rms_counts_a_click_on_a_block_boundary_once(self):
+        sr, n = 48000, 2000
+        signal = np.zeros(4 * n, dtype=np.float32)
+        click = (0.8 * np.sin(2.0 * np.pi * 2000.0 * np.arange(96) / sr)).astype(np.float32)
+        task = atr.RMSTask("rms_node", {}, block_size=n)
+        for start in (2 * n, 2 * n - 48):  # just after a boundary, and across it
+            signal[:] = 0.0
+            signal[start:start + click.size] = click
+            energy = 0.0
+            for k in range(1, 4):
+                chunk = atr.AudioChunk(
+                    signal[k * n:(k + 1) * n], None, sr, band_hz_bounds=(20.0, 20000.0), lineage=("src",),
+                    history_mono=signal[:k * n], frame_index=k,
+                )
+                energy += float(task.process({0: chunk})) ** 2 * n
+            self.assertAlmostEqual(energy, float(np.sum(click ** 2)), delta=0.02 * float(np.sum(click ** 2)))
 
     def test_rms_paths_avoid_overflow_for_hot_float32_chunks(self):
         hot = np.full(256, 1.0e20, dtype=np.float32)
@@ -549,6 +336,16 @@ class TestAudioTasksRegistry(unittest.TestCase):
         loudness = task.process({0: chunk})
         self.assertAlmostEqual(float(loudness), 0.0, places=6)
 
+    def test_finite_copy_matches_nan_to_num_and_always_copies(self):
+        src = np.array([1.0, np.nan, np.inf, -np.inf, -2.5], dtype=np.float32)
+        out = atr._finite_copy(src)
+        self.assertTrue(np.array_equal(out, np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0)))
+        self.assertFalse(np.shares_memory(out, src))
+        clean = np.array([0.5, -0.5], dtype=np.float32)
+        self.assertFalse(np.shares_memory(atr._finite_copy(clean), clean))
+        self.assertEqual(atr._finite_copy(np.array([1.0], dtype=np.float64), dtype=None).dtype, np.float64)
+        self.assertEqual(atr._finite_copy([1, 2]).dtype, np.float32)
+
     def test_lufs_task_increases_with_signal_level(self):
         n = 2048
         sr = 48000
@@ -564,7 +361,23 @@ class TestAudioTasksRegistry(unittest.TestCase):
 
         self.assertGreater(float(high_lufs), float(low_lufs))
 
-    def test_lufs_task_accepts_window_and_overlap_inputs(self):
+    def test_lufs_follows_a_level_change_on_the_next_block(self):
+        n = 1024  # about one frame at 48 kHz / 47 fps
+        sr = 48000
+        t = np.arange(n, dtype=np.float32) / float(sr)
+        tone = np.sin(2.0 * np.pi * 1000.0 * t).astype(np.float32)
+        task = atr.LUFSTask("lufs_node", {}, block_size=n)
+        values = []
+        for frame in range(1, 9):
+            level = 0.05 if frame <= 4 else 0.5
+            task._current_frame_request = frame
+            values.append(float(task.process({0: atr.AudioChunk(level * tone, None, sr, lineage=("src", frame))})))
+        # Each block after the jump moves the output; nothing is held for a hop.
+        self.assertGreater(values[4], values[3])
+        self.assertGreater(values[5], values[4])
+        self.assertGreater(values[6], values[5])
+
+    def test_lufs_task_accepts_window_input(self):
         n = 1024
         sr = 44100
         t = np.arange(n, dtype=np.float32) / float(sr)
@@ -574,7 +387,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
             {
                 0: atr.AudioChunk(signal, None, sr, lineage=("src",)),
                 1: 0.8,   # window seconds
-                2: 0.2,   # overlap ratio (0..1)
             }
         )
         self.assertTrue(np.isfinite(float(loudness)))
@@ -649,46 +461,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         self.assertGreater(float(spec[idx_mid]), float(spec[low_idx]) * 1.8)
         self.assertGreater(float(spec[idx_high]), float(spec[low_idx]) * 1.8)
 
-    def test_splitter_then_chromagram_preview_respects_parent_band_with_variable_chunk_size(self):
-        sr = 48000
-        chunk_n = 960
-        task_block = 1024
-        t = np.arange(chunk_n, dtype=np.float32) / float(sr)
-        tone_low = np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32)   # A
-        tone_high = np.sin(2.0 * np.pi * 1760.0 * t).astype(np.float32)  # A one octave stack
-        mixed = (tone_low + tone_high).astype(np.float32)
-
-        src = atr.AudioChunk(mixed, None, sr, lineage=("src",))
-        splitter = atr.FrequencySplitterTask("split_node", {"in_1": 400.0}, block_size=task_block)
-        low_band = splitter.process({0: src})[0]
-
-        chroma = atr.ChromagramTask("chroma_node", {}, block_size=task_block)
-        chroma_a = chroma.process({0: low_band})[9]  # A pitch class
-
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=task_block)
-        out = preview.process({0: chroma_a})
-
-        freqs = np.fft.rfftfreq(chunk_n, d=1.0 / float(sr))
-        spec = np.abs(np.fft.rfft(out.mono))
-        low_idx = int(np.argmin(np.abs(freqs - 220.0)))
-        high_idx = int(np.argmin(np.abs(freqs - 1760.0)))
-        self.assertGreater(float(spec[low_idx]), float(spec[high_idx]) * 3.0)
-
-    def test_chromagram_fallback_keeps_sparse_mask_non_empty_in_coarse_band(self):
-        sr = 48000
-        chunk_n = 960
-        task_block = 1024
-        t = np.arange(chunk_n, dtype=np.float32) / float(sr)
-        signal = np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32)
-        src = atr.AudioChunk(signal, None, sr, lineage=("src",))
-        splitter = atr.FrequencySplitterTask("split_node", {"in_1": 400.0}, block_size=task_block)
-        low_band = splitter.process({0: src})[0]
-
-        chroma = atr.ChromagramTask("chroma_node", {}, block_size=task_block)
-        chroma_a = chroma.process({0: low_band})[9]
-        self.assertIsNotNone(chroma_a.band_indices)
-        self.assertGreater(int(chroma_a.band_indices.size), 0)
-
     def test_preview_sink_gain_staging_avoids_hard_clipping(self):
         sr = 48000
         n = 1024
@@ -703,105 +475,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         out = task.process({0: chunk})
         peak = float(np.max(np.abs(out.mono))) if out.mono.size > 0 else 0.0
         self.assertLessEqual(peak, 0.985)
-
-    def test_preview_sink_reconstructs_midside_branches_from_analysis_ops(self):
-        sr = 48000
-        n = 1024
-        t = np.arange(n, dtype=np.float32) / float(sr)
-        left = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
-        right = (-left).astype(np.float32)
-        stereo = np.stack([left, right], axis=0)
-        mono = np.mean(stereo, axis=0).astype(np.float32)
-        src = atr.AudioChunk(mono, stereo, sr, lineage=("src",), spectrum_token=("src", "frame"))
-
-        splitter = atr.MidsideSplitterTask("ms_node", {}, block_size=n)
-        mid_chunk, side_chunk = splitter.process({0: src})
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
-
-        mid_out = preview.process({0: mid_chunk})
-        side_out = preview.process({0: side_chunk})
-
-        self.assertLess(float(np.max(np.abs(mid_out.mono))), 1e-4)
-        self.assertGreater(float(np.max(np.abs(side_out.mono))), 0.2)
-        self.assertEqual(mid_out.analysis_ops, ())
-        self.assertEqual(side_out.analysis_ops, ())
-
-    def test_preview_sink_reconstructs_attackrelease_branches_from_analysis_ops(self):
-        n = 512
-        sr = 48000
-        pattern = np.array([0.0, 1.0, 0.3, 0.2, 0.9, 0.1, 0.8, 0.0], dtype=np.float32)
-        mono = np.tile(pattern, n // pattern.shape[0]).astype(np.float32)
-        src = atr.AudioChunk(mono, None, sr, lineage=("src",), spectrum_token=("src", "frame"))
-
-        splitter = atr.AttackReleaseSplitterTask("ar_node", {}, block_size=n)
-        attack_chunk, release_chunk = splitter.process({0: src})
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
-
-        attack_out = preview.process({0: attack_chunk})
-        release_out = preview.process({0: release_chunk})
-
-        recombined = attack_out.mono + release_out.mono
-        self.assertTrue(np.allclose(recombined, mono, atol=1e-6))
-        self.assertEqual(attack_out.analysis_ops, ())
-        self.assertEqual(release_out.analysis_ops, ())
-
-    def test_source_frontend_signed_smoothing_preserves_polarity_and_reduces_jitter(self):
-        processor = atr.SourceFrontendProcessor()
-        mono = np.array([1.0, -1.0] * 64, dtype=np.float32)
-        analysis_mono, analysis_stereo = processor.process(
-            mono=mono,
-            stereo=None,
-            sample_rate=48000,
-            frontend_config=(0.0, 0.0, 5.0, 50.0),
-        )
-
-        self.assertIsNone(analysis_stereo)
-        self.assertGreater(float(np.max(analysis_mono)), 0.0)
-        self.assertLess(float(np.min(analysis_mono)), 0.0)
-        self.assertLess(
-            float(np.mean(np.abs(np.diff(analysis_mono)))),
-            float(np.mean(np.abs(np.diff(mono)))),
-        )
-        self.assertGreater(atr._zero_crossing_rate(analysis_mono), 0.9)
-
-    def test_preview_sink_uses_raw_audio_track_when_analysis_frontend_is_present(self):
-        n = 256
-        sr = 48000
-        t = np.arange(n, dtype=np.float32) / float(sr)
-        raw_stereo = np.stack(
-            [
-                np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32),
-                np.sin(2.0 * np.pi * 330.0 * t).astype(np.float32),
-            ],
-            axis=0,
-        )
-        raw_mono = np.mean(raw_stereo, axis=0).astype(np.float32)
-        processor = atr.SourceFrontendProcessor()
-        analysis_mono, analysis_stereo = processor.process(
-            mono=raw_mono,
-            stereo=raw_stereo,
-            sample_rate=sr,
-            frontend_config=(120.0, 800.0, 10.0, 80.0),
-        )
-        chunk = atr.AudioChunk(
-            raw_mono,
-            raw_stereo,
-            sr,
-            analysis_mono=analysis_mono,
-            analysis_stereo=analysis_stereo,
-            frontend_config=(120.0, 800.0, 10.0, 80.0),
-            lineage=("src",),
-            spectrum_token=("src", "frame"),
-        )
-
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
-        preview_out = preview.process({0: chunk})
-        analysis_view, analysis_stereo_view = atr._analysis_signals_normalized(chunk)
-
-        self.assertTrue(np.allclose(preview_out.mono, raw_mono, atol=1e-6))
-        self.assertFalse(np.allclose(analysis_view, raw_mono, atol=1e-3))
-        self.assertIsNotNone(analysis_stereo_view)
-        self.assertLess(float(np.min(analysis_view)), -0.01)
 
     def test_source_task_hot_reload_on_runtime_config_change(self):
         load_calls = []
@@ -855,8 +528,8 @@ class TestAudioTasksRegistry(unittest.TestCase):
             def __setitem__(self, key, value):  # noqa: ARG002
                 return None
 
-        original_reception = atr.AudioReception
-        atr.AudioReception = DummyReception
+        original_reception = tasks_source.AudioReception
+        tasks_source.AudioReception = DummyReception
         task = None
         try:
             task = atr.SourceTask("src_node", {}, block_size=1024)
@@ -876,7 +549,7 @@ class TestAudioTasksRegistry(unittest.TestCase):
                 task.close()
             except Exception:
                 pass
-            atr.AudioReception = original_reception
+            tasks_source.AudioReception = original_reception
 
     def test_resolve_context_block_size_adaptive_handles_frame_jumps(self):
         sr = 48000
@@ -920,33 +593,12 @@ class TestAudioTasksRegistry(unittest.TestCase):
         mapped_idx = int(np.argmax(mask.astype(np.int32)))
         self.assertLess(abs(float(dst_freqs[mapped_idx]) - target_hz), 80.0)
 
-    def test_preview_sink_passthrough_without_masks_or_ops(self):
+    def test_preview_sink_passthrough_without_masks(self):
         n = 512
         chunk = atr.AudioChunk(np.linspace(-1.0, 1.0, n, dtype=np.float32), None, 48000, lineage=("src",))
         preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
         out = preview.process({0: chunk})
         self.assertIs(out, chunk)
-
-    def test_audio_math_caches_analysis_extraction_per_input(self):
-        original_extract = atr._analysis_signal_for_chunk
-        calls = {"count": 0}
-
-        def _counting_extract(chunk):
-            calls["count"] += 1
-            return original_extract(chunk)
-
-        atr._analysis_signal_for_chunk = _counting_extract
-        try:
-            n = 128
-            task = atr.AudioMathTask("math_node", {"op": "add"}, block_size=n)
-            a = atr.AudioChunk(np.full(n, 1.0, dtype=np.float32), None, 48000, lineage=("src", "a"))
-            b = atr.AudioChunk(np.full(n, 2.0, dtype=np.float32), None, 48000, lineage=("src", "b"))
-            c = atr.AudioChunk(np.full(n, 3.0, dtype=np.float32), None, 48000, lineage=("src", "c"))
-            out = task.process({0: a, 1: b, 2: c})
-            self.assertEqual(out.mono.shape[0], n)
-            self.assertEqual(calls["count"], 3)
-        finally:
-            atr._analysis_signal_for_chunk = original_extract
 
 
 if __name__ == "__main__":

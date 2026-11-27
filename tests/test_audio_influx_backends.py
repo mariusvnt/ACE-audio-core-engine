@@ -2,35 +2,35 @@ import sys
 import types
 import unittest
 
-from module_loader import load_module
+from module_loader import forget_modules, load_module
 
 
-def _load_audio_influx_with_fake_numpy():
+def _load_input_with_fake_numpy():
     # Keep this test hermetic: do not leak fake NumPy or fake-imported modules.
-    sys.modules.pop("ace_addon_testpkg.audio_influx", None)
+    forget_modules("core.input")
     had_numpy = "numpy" in sys.modules
     original_numpy = sys.modules.get("numpy")
     fake_np = types.ModuleType("numpy")
     fake_np.ndarray = object
     sys.modules["numpy"] = fake_np
     try:
-        module = load_module("audio_influx")
+        modules = load_module("core.input.reception"), load_module("core.input.device")
     finally:
         if had_numpy:
             sys.modules["numpy"] = original_numpy  # type: ignore[assignment]
         else:
             sys.modules.pop("numpy", None)
-    return module
+    return modules
 
 
 class TestAudioInfluxBackends(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.ai = _load_audio_influx_with_fake_numpy()
+        cls.ai, cls.device = _load_input_with_fake_numpy()
 
     @classmethod
     def tearDownClass(cls):
-        sys.modules.pop("ace_addon_testpkg.audio_influx", None)
+        forget_modules("core.input")
 
     def test_udp_flow_parser(self):
         cfg = self.ai.AudioReception._parse_udp_flow_identifier("udp:9000:2:48000")
@@ -107,10 +107,10 @@ class TestAudioInfluxBackends(unittest.TestCase):
                 return FakeStream(**kwargs)
 
         fake_sd = FakeSoundDevice()
-        original_available = self.ai.SOUNDDEVICE_AVAILABLE
-        original_sd = getattr(self.ai, "sd", None)
-        self.ai.SOUNDDEVICE_AVAILABLE = True
-        self.ai.sd = fake_sd
+        original_available = self.device.SOUNDDEVICE_AVAILABLE
+        original_sd = getattr(self.device, "sd", None)
+        self.device.SOUNDDEVICE_AVAILABLE = True
+        self.device.sd = fake_sd
         try:
             rec = self.ai.AudioReception("LIVE", flow_id="sd:")
             opened = rec._open_live_sounddevice({"device": None, "channels": 2})
@@ -120,11 +120,11 @@ class TestAudioInfluxBackends(unittest.TestCase):
             self.assertEqual(int(rec.channels), 1)
             rec.close()
         finally:
-            self.ai.SOUNDDEVICE_AVAILABLE = original_available
+            self.device.SOUNDDEVICE_AVAILABLE = original_available
             if original_sd is not None:
-                self.ai.sd = original_sd
+                self.device.sd = original_sd
             else:
-                delattr(self.ai, "sd")
+                delattr(self.device, "sd")
 
     def test_open_live_sounddevice_reports_backend_error(self):
         class FailingSoundDevice:
@@ -137,21 +137,21 @@ class TestAudioInfluxBackends(unittest.TestCase):
             def InputStream(self, **kwargs):  # noqa: ARG002
                 raise RuntimeError("device busy")
 
-        original_available = self.ai.SOUNDDEVICE_AVAILABLE
-        original_sd = getattr(self.ai, "sd", None)
-        self.ai.SOUNDDEVICE_AVAILABLE = True
-        self.ai.sd = FailingSoundDevice()
+        original_available = self.device.SOUNDDEVICE_AVAILABLE
+        original_sd = getattr(self.device, "sd", None)
+        self.device.SOUNDDEVICE_AVAILABLE = True
+        self.device.sd = FailingSoundDevice()
         try:
             rec = self.ai.AudioReception("LIVE", flow_id="sd:")
             opened = rec._open_live_sounddevice({"device": None, "channels": 2})
             self.assertFalse(opened)
             self.assertIn("device busy", rec.last_error)
         finally:
-            self.ai.SOUNDDEVICE_AVAILABLE = original_available
+            self.device.SOUNDDEVICE_AVAILABLE = original_available
             if original_sd is not None:
-                self.ai.sd = original_sd
+                self.device.sd = original_sd
             else:
-                delattr(self.ai, "sd")
+                delattr(self.device, "sd")
 
 
 if __name__ == "__main__":

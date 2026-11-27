@@ -34,7 +34,7 @@ class TestBlenderIntegrationSmoke(unittest.TestCase):
     def test_smoke_script_runs_when_addon_enabled(self):
         import bpy  # type: ignore
 
-        addon_keys = [k for k in bpy.context.preferences.addons.keys() if "AudioCore" in k]
+        addon_keys = [k for k in bpy.context.preferences.addons.keys() if "AudioCore" in k or k.endswith("audio_core_engine")]
         if not addon_keys:
             self.skipTest("AudioCore add-on is not enabled in this Blender session")
 

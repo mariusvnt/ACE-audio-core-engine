@@ -1,1 +1,1 @@
-# AudioCore Engine — core DSP sub-package
+# Audio Core Engine — core DSP sub-package

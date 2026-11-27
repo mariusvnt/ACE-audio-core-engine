@@ -6,14 +6,16 @@ import sys
 import time
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 try:
     import numpy as np
 except Exception:  # pragma: no cover
     np = None
 
-from module_loader import load_module, PKG_NAME
+from module_loader import PKG_NAME, ROOT, _ensure_package, forget_modules, load_module, load_tasks
+
+import fake_bpy
 
 
 ENGINE_PERF_CONTRACT_VERSION = "ace-engine-perf-v1"
@@ -85,9 +87,8 @@ def engine_perf_contract() -> Dict[str, Any]:
             "pass_total_latency_p95_ms": float(ENGINE_PERF_SLA_PASS_TOTAL_LATENCY_MS),
             "ideal_total_latency_p95_ms": float(ENGINE_PERF_SLA_IDEAL_TOTAL_LATENCY_MS),
             "topology": (
-                "3 sources -> specs -> 5-band splitters -> stream terminals; "
-                "cross-source multiply -> chromagram; "
-                "chroma[0] preview + all chroma outputs to streams"
+                "3 sources -> 5-band splitters -> stream terminals; "
+                "band 0 of the first source to preview"
             ),
             "machine_profile": dict(ENGINE_PERF_SLA_MACHINE_PROFILE),
         },
@@ -95,68 +96,15 @@ def engine_perf_contract() -> Dict[str, Any]:
 
 
 def _install_fake_bpy():
-    if "bpy" in sys.modules:
-        return
-
-    bpy_mod = types.ModuleType("bpy")
-    bpy_mod.__dict__["_ace_fake_bpy"] = True
-
-    handlers_mod = types.ModuleType("bpy.app.handlers")
-
-    def _persistent(fn):
-        return fn
-
-    handlers_mod.persistent = _persistent
-    for name in (
-        "load_post",
-        "undo_post",
-        "redo_post",
-        "frame_change_pre",
-        "frame_change_post",
-        "render_pre",
-        "render_post",
-        "render_cancel",
-        "depsgraph_update_post",
-    ):
-        setattr(handlers_mod, name, [])
-
-    timers_ns = types.SimpleNamespace(
-        is_registered=lambda _fn: False,
-        register=lambda *_args, **_kwargs: None,
-        unregister=lambda *_args, **_kwargs: None,
-    )
-    app_ns = types.SimpleNamespace(
-        handlers=handlers_mod,
-        timers=timers_ns,
-        is_job_running=lambda _name: False,
-    )
-    wm_ns = types.SimpleNamespace(windows=[])
-    bpy_mod.app = app_ns
-    bpy_mod.context = types.SimpleNamespace(scene=None, window_manager=wm_ns)
-    bpy_mod.data = types.SimpleNamespace(objects={})
-    bpy_mod.types = types.SimpleNamespace(
-        NodeTree=type("NodeTree", (), {}),
-        Object=type("Object", (), {}),
-        Scene=type("Scene", (), {}),
-    )
-
-    app_mod = types.ModuleType("bpy.app")
-    app_mod.handlers = handlers_mod
-    app_mod.timers = timers_ns
-    app_mod.is_job_running = app_ns.is_job_running
-
-    sys.modules["bpy"] = bpy_mod
-    sys.modules["bpy.app"] = app_mod
-    sys.modules["bpy.app.handlers"] = handlers_mod
+    return fake_bpy.install()
 
 
 def _install_engine_import_stubs():
-    core_pkg = types.ModuleType(f"{PKG_NAME}.core")
-    core_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules.setdefault(f"{PKG_NAME}.core", core_pkg)
-    nodes_pkg = types.ModuleType(f"{PKG_NAME}.nodes")
-    nodes_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules.setdefault(f"{PKG_NAME}.nodes", nodes_pkg)
+    # Real package paths, so the engine's own relative imports still resolve
+    # whichever test loads the harness first.
+    _ensure_package(PKG_NAME, ROOT)
+    _ensure_package(f"{PKG_NAME}.core", ROOT / "core")
+    _ensure_package(f"{PKG_NAME}.nodes", ROOT / "nodes")
 
     properties_mod = types.ModuleType(f"{PKG_NAME}.properties")
 
@@ -166,7 +114,8 @@ def _install_engine_import_stubs():
     properties_mod.ACEAudioSource = ACEAudioSource
     sys.modules[f"{PKG_NAME}.properties"] = properties_mod
 
-    dummy_tree_mod = types.ModuleType(f"{PKG_NAME}.nodes.dummy_tree")
+    reader_mod = types.ModuleType(f"{PKG_NAME}.nodes.geometry.reader")
+    frontend_mod = types.ModuleType(f"{PKG_NAME}.nodes.frontend")
 
     class ACEDummyTreeReader:  # pragma: no cover - compile path not used here
         def __init__(self, *_args, **_kwargs):
@@ -175,22 +124,21 @@ def _install_engine_import_stubs():
         def build(self):
             return None
 
-    dummy_tree_mod.ACEDummyTreeReader = ACEDummyTreeReader
-    dummy_tree_mod.ensure_frontend_uid = lambda tree, _kind, _existing: getattr(tree, "ace_frontend_uid", "")
-    dummy_tree_mod.FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
-    dummy_tree_mod.FRONTEND_KIND_SHADER = "SHADER_NODES"
-    sys.modules[f"{PKG_NAME}.nodes.dummy_tree"] = dummy_tree_mod
-    sys.modules[f"{PKG_NAME}.dummy_tree"] = dummy_tree_mod
+    reader_mod.ACEDummyTreeReader = ACEDummyTreeReader
+    frontend_mod.FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
+    frontend_mod.FRONTEND_KIND_SHADER = "SHADER_NODES"
+    sys.modules[f"{PKG_NAME}.nodes.geometry.reader"] = reader_mod
+    sys.modules[f"{PKG_NAME}.nodes.frontend"] = frontend_mod
 
-    shader_tree_mod = types.ModuleType(f"{PKG_NAME}.nodes.shader_tree")
+    shader_reader_mod = types.ModuleType(f"{PKG_NAME}.nodes.shader.reader")
 
     class ACEShaderTreeReader(ACEDummyTreeReader):
         pass
 
-    shader_tree_mod.ACEShaderTreeReader = ACEShaderTreeReader
-    sys.modules[f"{PKG_NAME}.nodes.shader_tree"] = shader_tree_mod
+    shader_reader_mod.ACEShaderTreeReader = ACEShaderTreeReader
+    sys.modules[f"{PKG_NAME}.nodes.shader.reader"] = shader_reader_mod
 
-    proxy_mod = types.ModuleType(f"{PKG_NAME}.core.proxy_management")
+    proxy_mod = types.ModuleType(f"{PKG_NAME}.core.proxy.manager")
 
     class ACEProxyManager:  # pragma: no cover - runtime harness uses a dedicated writer stub
         COLLECTION_NAME = "ACE_Internals"
@@ -225,28 +173,15 @@ def _install_engine_import_stubs():
             return None
 
     proxy_mod.ACEProxyManager = ACEProxyManager
-    sys.modules[f"{PKG_NAME}.core.proxy_management"] = proxy_mod
-    sys.modules[f"{PKG_NAME}.proxy_management"] = proxy_mod
+    sys.modules[f"{PKG_NAME}.core.proxy.manager"] = proxy_mod
 
 
 def _load_engine_stack():
     _install_fake_bpy()
     _install_engine_import_stubs()
-    for name in (
-        "core.audio_engine",
-        "core.audio_tasks_registry",
-        "core.parallel_dsp",
-        "core.audio_influx",
-        "core.abstract_tree",
-        "audio_engine",
-        "audio_tasks_registry",
-        "parallel_dsp",
-        "audio_influx",
-        "abstract_tree",
-    ):
-        sys.modules.pop(f"{PKG_NAME}.{name}", None)
-    ae = load_module("audio_engine")
-    atr = load_module("audio_tasks_registry")
+    forget_modules("core.engine", "core.worker", "core.tasks", "core.input", "core.abstract_tree", "abstract_tree")
+    ae = load_module("core.engine.engine")
+    atr = load_tasks()
     abs_mod = load_module("abstract_tree")
     return ae, atr, abs_mod
 
@@ -372,7 +307,7 @@ def _bench_source_task_cls(atr):
                 )
             finally:
                 engine = getattr(self, "engine_ref", None)
-                perf_add = getattr(engine, "_perf_add", None)
+                perf_add = getattr(getattr(engine, "diagnostics", None), "_perf_add", None)
                 if callable(perf_add):
                     perf_add("source_read", time.perf_counter() - t0)
 
@@ -410,10 +345,8 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     stream_types = (
         ("rms", atr.RMSTask),
         ("pitch", atr.PitchTask),
-        ("spectral_centroid", atr.SpectralCentroidTask),
-        ("spectral_flux", atr.SpectralFluxTask),
-        ("onset", atr.OnsetTask),
-        ("zero_crossing_rate", atr.ZeroCrossTask),
+        ("brightness", atr.BrightnessTask),
+        ("transient", atr.TransientTask),
         ("stereo_width", atr.StereoWidthTask),
         ("stereo_balance", atr.StereoBalanceTask),
     )
@@ -461,11 +394,11 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     engine.abstract_tree_ref = abstract_tree
     engine.graphs = {source.stable_id: graph}
     engine._last_attr_sync_frame[source.stable_id] = -10_000_000
-    engine._rebuild_graph_execution_order(graph)
-    engine._prepare_parallel_graph_ir(graph, abstract_tree)
+    engine.frame._rebuild_graph_execution_order(graph)
+    engine.parallel.prepare_graph_ir(graph, abstract_tree)
     proxy_obj = object()
     graph.get_proxy_object = lambda: proxy_obj  # type: ignore[method-assign]
-    engine._parallel_mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine)
+    engine.parallel.mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine.parallel)
 
     use_real_processes = str(os.environ.get("ACE_ENGINE_PERF_USE_REAL_PROCESSES", "")).strip().lower() in {
         "1",
@@ -475,21 +408,18 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     }
     if parallel_mode == "processes_dsp" and (not use_real_processes):
         def _ensure_parallel_pool_threaded(self, scene_obj):  # noqa: ANN001
-            if self._parallel_mode(scene_obj) != "processes_dsp":
-                self._shutdown_parallel_pool(wait=False)
+            if self.mode(scene_obj) != "processes_dsp":
+                self.shutdown_pool(wait=False)
                 return False
-            if self._parallel_pool_failed:
+            if self.pool.failed:
                 return False
-            if self._parallel_executor is not None:
-                return True
-            # The worker-side graph cache is process-isolated by design; when the
-            # harness emulates process mode with threads, keep it single-worker to
-            # avoid cross-thread reuse of mutable analysis state.
-            self._parallel_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            self._mark_parallel_ir_required_for_all_graphs()
+            if self.pool.executor is None:
+                # One thread: the worker graph cache is process-wide and not thread-safe.
+                self.pool.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                self.mark_ir_required_for_all_graphs()
             return True
 
-        engine._ensure_parallel_pool = types.MethodType(_ensure_parallel_pool_threaded, engine)
+        engine.parallel.ensure_pool = types.MethodType(_ensure_parallel_pool_threaded, engine.parallel)
 
     return engine, scene
 
@@ -516,7 +446,6 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     output_defs: Dict[str, Dict[str, Any]] = {}
     source_task_ids: List[str] = []
     file_source_task_ids: List[str] = []
-    specs_task_ids: List[str] = []
     split_freqs = (180.0, 420.0, 1200.0, 3600.0)
 
     for idx, source in enumerate(sources):
@@ -537,27 +466,10 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
             )
         )
 
-        specs_id = f"specs_{idx}"
-        specs_task = atr.SourceSpecsTask(specs_id, {}, block_size=graph.block_size)
-        specs_task.source_context = source
-        specs_task.connect_input(0, src_task, 0)
-        graph.tasks[specs_id] = specs_task
-        specs_task_ids.append(specs_id)
-        abstract_tree.add_node(
-            abs_mod.ACEAbstractNode(
-                id=specs_id,
-                name=specs_id,
-                category="utilities",
-                type="src_specs",
-                parameters={},
-            )
-        )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(src_node_id, specs_id, 0, 0))
-
         split_id = f"split_{idx}"
         split_params = {f"in_{i + 1}": float(freq) for i, freq in enumerate(split_freqs)}
         split_task = atr.FrequencySplitterTask(split_id, split_params, block_size=graph.block_size)
-        split_task.connect_input(0, specs_task, 3)
+        split_task.connect_input(0, src_task, 0)
         graph.tasks[split_id] = split_task
         abstract_tree.add_node(
             abs_mod.ACEAbstractNode(
@@ -568,7 +480,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
                 parameters=split_params,
             )
         )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, split_id, 3, 0))
+        abstract_tree.add_link(abs_mod.ACEAbstractLink(src_node_id, split_id, 0, 0))
 
         for band_idx in range(5):
             stream_id = f"src{idx}_band{band_idx}_rms"
@@ -589,75 +501,23 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
             )
             abstract_tree.add_link(abs_mod.ACEAbstractLink(split_id, stream_id, band_idx, 0))
 
-    math_id = "math_mul_3src"
-    math_task = atr.AudioMathTask(math_id, {"op": "multiply"}, block_size=graph.block_size)
-    for idx, specs_id in enumerate(specs_task_ids):
-        specs_task = graph.tasks.get(specs_id)
-        if specs_task is None:
-            continue
-        math_task.connect_input(idx, specs_task, 3)
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(specs_id, math_id, 3, idx))
-    graph.tasks[math_id] = math_task
-    abstract_tree.add_node(
-        abs_mod.ACEAbstractNode(
-            id=math_id,
-            name=math_id,
-            category="utilities",
-            type="audio_math",
-            parameters={"op": "multiply"},
-        )
-    )
-
-    chroma_id = "chroma_mix"
-    chroma_task = atr.ChromagramTask(chroma_id, {}, block_size=graph.block_size)
-    chroma_task.connect_input(0, math_task, 0)
-    graph.tasks[chroma_id] = chroma_task
-    abstract_tree.add_node(
-        abs_mod.ACEAbstractNode(
-            id=chroma_id,
-            name=chroma_id,
-            category="delta",
-            type="chromagram",
-            parameters={},
-        )
-    )
-    abstract_tree.add_link(abs_mod.ACEAbstractLink(math_id, chroma_id, 0, 0))
-
-    preview_id = "sla_preview_chroma0"
-    preview_task = atr.PreviewSinkTask(preview_id, {"preview_enabled": True}, block_size=graph.block_size)
-    preview_task.connect_input(0, chroma_task, 0)
-    graph.tasks[preview_id] = preview_task
-    graph.manual_preview_task_ids = [preview_id]
-    graph.preview_task_ids = [preview_id]
-    abstract_tree.add_node(
-        abs_mod.ACEAbstractNode(
-            id=preview_id,
-            name=preview_id,
-            category="utilities",
-            type="preview_sink",
-            parameters={"preview_enabled": True},
-        )
-    )
-    abstract_tree.add_link(abs_mod.ACEAbstractLink(chroma_id, preview_id, 0, 0))
-
-    for chroma_idx in range(12):
-        stream_id = f"chroma_{chroma_idx}_rms"
-        stream_task = atr.RMSTask(stream_id, {}, block_size=graph.block_size)
-        stream_task.connect_input(0, chroma_task, chroma_idx)
-        graph.tasks[stream_id] = stream_task
-        attr_key = f"{stream_id}:0"
-        output_attr_keys.append(attr_key)
-        output_defs[attr_key] = {"node_id": stream_id, "type": "FLOAT"}
-        abstract_tree.add_node(
-            abs_mod.ACEAbstractNode(
-                id=stream_id,
-                name=stream_id,
-                category="stream",
-                type="rms",
-                parameters={},
+        if idx == 0:
+            preview_id = "sla_preview_band0"
+            preview_task = atr.PreviewSinkTask(preview_id, {"preview_enabled": True}, block_size=graph.block_size)
+            preview_task.connect_input(0, split_task, 0)
+            graph.tasks[preview_id] = preview_task
+            graph.manual_preview_task_ids = [preview_id]
+            graph.preview_task_ids = [preview_id]
+            abstract_tree.add_node(
+                abs_mod.ACEAbstractNode(
+                    id=preview_id,
+                    name=preview_id,
+                    category="utilities",
+                    type="preview_sink",
+                    parameters={"preview_enabled": True},
+                )
             )
-        )
-        abstract_tree.add_link(abs_mod.ACEAbstractLink(chroma_id, stream_id, chroma_idx, 0))
+            abstract_tree.add_link(abs_mod.ACEAbstractLink(split_id, preview_id, 0, 0))
 
     graph.source_task_ids = source_task_ids
     graph.file_source_task_ids = file_source_task_ids
@@ -672,11 +532,11 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     engine.abstract_tree_ref = abstract_tree
     engine.graphs = {graph.source_uid: graph}
     engine._last_attr_sync_frame[graph.source_uid] = -10_000_000
-    engine._rebuild_graph_execution_order(graph)
-    engine._prepare_parallel_graph_ir(graph, abstract_tree)
+    engine.frame._rebuild_graph_execution_order(graph)
+    engine.parallel.prepare_graph_ir(graph, abstract_tree)
     proxy_obj = object()
     graph.get_proxy_object = lambda: proxy_obj  # type: ignore[method-assign]
-    engine._parallel_mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine)
+    engine.parallel.mode = types.MethodType(lambda _self, _scene_or_settings=None, _mode=parallel_mode: str(_mode), engine.parallel)
 
     use_real_processes = str(os.environ.get("ACE_ENGINE_PERF_USE_REAL_PROCESSES", "")).strip().lower() in {
         "1",
@@ -686,21 +546,18 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
     }
     if parallel_mode == "processes_dsp" and (not use_real_processes):
         def _ensure_parallel_pool_threaded(self, scene_obj):  # noqa: ANN001
-            if self._parallel_mode(scene_obj) != "processes_dsp":
-                self._shutdown_parallel_pool(wait=False)
+            if self.mode(scene_obj) != "processes_dsp":
+                self.shutdown_pool(wait=False)
                 return False
-            if self._parallel_pool_failed:
+            if self.pool.failed:
                 return False
-            if self._parallel_executor is not None:
-                return True
-            # The worker-side graph cache is process-isolated by design; when the
-            # harness emulates process mode with threads, keep it single-worker to
-            # avoid cross-thread reuse of mutable analysis state.
-            self._parallel_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            self._mark_parallel_ir_required_for_all_graphs()
+            if self.pool.executor is None:
+                # One thread: the worker graph cache is process-wide and not thread-safe.
+                self.pool.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                self.mark_ir_required_for_all_graphs()
             return True
 
-        engine._ensure_parallel_pool = types.MethodType(_ensure_parallel_pool_threaded, engine)
+        engine.parallel.ensure_pool = types.MethodType(_ensure_parallel_pool_threaded, engine.parallel)
 
     return engine, scene
 
@@ -744,10 +601,10 @@ def _run_engine_benchmark(
     parallel_wait_samples: List[float] = []
     completion_counters = {"done": 0}
     completion_elapsed_samples: List[float] = []
-    seen_completed_futures: set[int] = set()
-    original_submit = engine._parallel_submit_graph_job
-    original_values_for_frame = engine._parallel_values_for_graph_frame
-    original_poll_futures = engine._parallel_poll_futures
+    seen_completed_futures: set = set()  # the futures: an id() is reused once one is freed
+    original_submit = engine.parallel.submit_graph_job
+    original_values_for_frame = engine.parallel.values_for_frame
+    original_poll_futures = engine.parallel.poll
 
     def _submit_instrumented(*args, **kwargs):
         submit_counters["attempts"] += 1
@@ -758,7 +615,7 @@ def _run_engine_benchmark(
 
     def _values_for_frame_instrumented(graph, graph_key, frame_index):
         result_counters["requests"] += 1
-        frame_map = engine._parallel_results.get(str(graph_key), {}) or {}
+        frame_map = engine.parallel.results.get(str(graph_key), {}) or {}
         if int(frame_index) in frame_map:
             result_counters["fresh"] += 1
         t0 = time.perf_counter()
@@ -767,16 +624,15 @@ def _run_engine_benchmark(
         return out
 
     def _poll_futures_instrumented(scene_obj, current_frame):  # noqa: ANN001
-        for fut in list(getattr(engine, "_parallel_future_meta", {}).keys()):
-            fut_key = id(fut)
-            if fut_key in seen_completed_futures or (not fut.done()):
+        for fut in list(getattr(getattr(engine, "parallel", None), "future_meta", {}).keys()):
+            if fut in seen_completed_futures or (not fut.done()):
                 continue
             try:
                 payload = fut.result(timeout=0.0)
             except Exception:
-                seen_completed_futures.add(fut_key)
+                seen_completed_futures.add(fut)
                 continue
-            seen_completed_futures.add(fut_key)
+            seen_completed_futures.add(fut)
             if isinstance(payload, dict) and (not bool(payload.get("needs_graph_ir", False))):
                 completion_counters["done"] += 1
                 elapsed_s = float(payload.get("elapsed_s", 0.0) or 0.0)
@@ -785,9 +641,9 @@ def _run_engine_benchmark(
         return original_poll_futures(scene_obj, current_frame)
 
     if mode == "processes_dsp":
-        engine._parallel_submit_graph_job = _submit_instrumented  # type: ignore[assignment]
-        engine._parallel_values_for_graph_frame = _values_for_frame_instrumented  # type: ignore[assignment]
-        engine._parallel_poll_futures = _poll_futures_instrumented  # type: ignore[assignment]
+        engine.parallel.submit_graph_job = _submit_instrumented  # type: ignore[assignment]
+        engine.parallel.values_for_frame = _values_for_frame_instrumented  # type: ignore[assignment]
+        engine.parallel.poll = _poll_futures_instrumented  # type: ignore[assignment]
 
     def _maybe_pace(next_due_ts: float) -> float:
         if frame_interval_s <= 0.0:
@@ -803,7 +659,7 @@ def _run_engine_benchmark(
         for _ in range(int(max(num_frames, 0))):
             frame_cursor += 1
             scene.frame_current = int(frame_cursor)
-            engine.execute_next_frame(scene, force=False)
+            engine.frame.execute_next_frame(scene, force=False)
             due = _maybe_pace(due)
         return due
 
@@ -811,14 +667,14 @@ def _run_engine_benchmark(
         if mode != "processes_dsp":
             return
         deadline = time.perf_counter() + max(float(drain_timeout_s), 0.1)
-        while bool(getattr(engine, "_parallel_future_meta", {})) and time.perf_counter() < deadline:
+        while bool(getattr(getattr(engine, "parallel", None), "future_meta", {})) and time.perf_counter() < deadline:
             try:
-                engine._parallel_poll_futures(scene, current_frame=int(scene.frame_current))
+                engine.parallel.poll(scene, current_frame=int(scene.frame_current))
             except Exception:
                 break
             time.sleep(0.001)
         try:
-            engine._parallel_poll_futures(scene, current_frame=int(scene.frame_current))
+            engine.parallel.poll(scene, current_frame=int(scene.frame_current))
         except Exception:
             pass
 
@@ -830,13 +686,15 @@ def _run_engine_benchmark(
         _ = _drive_frames(start_frame=0, num_frames=int(max(warmup_frames, 0)), next_due_ts=next_due)
 
         # Measure only post-warmup frames.
-        engine.get_perf_snapshot(reset=True)
-        engine.get_runtime_diagnostics(reset=True)
-        engine.get_dsp_node_profile_snapshot(reset=True)
+        engine.diagnostics.get_perf_snapshot(reset=True)
+        engine.diagnostics.get_runtime_diagnostics(reset=True)
+        engine.diagnostics.get_dsp_node_profile_snapshot(reset=True)
         submit_counters["attempts"] = 0
         submit_counters["success"] = 0
         result_counters["requests"] = 0
         result_counters["fresh"] = 0
+        completion_counters["done"] = 0
+        completion_elapsed_samples.clear()
 
         next_due = time.perf_counter()
         _drive_frames(
@@ -846,9 +704,9 @@ def _run_engine_benchmark(
         )
         _drain_parallel_futures()
 
-        perf = engine.get_perf_snapshot(reset=False)
-        diag = engine.get_runtime_diagnostics(reset=False)
-        dsp_profile = engine.get_dsp_node_profile_snapshot(reset=False)
+        perf = engine.diagnostics.get_perf_snapshot(reset=False)
+        diag = engine.diagnostics.get_runtime_diagnostics(reset=False)
+        dsp_profile = engine.diagnostics.get_dsp_node_profile_snapshot(reset=False)
         dsp_stage_source = "engine_dsp"
         if mode == "processes_dsp":
             dsp_stage = dict(perf.get("dsp", {}) or {})
@@ -915,13 +773,13 @@ def _run_engine_benchmark(
     finally:
         ae.ACEAudioEngine._is_animation_playing = original_is_animation_playing
         if mode == "processes_dsp":
-            engine._parallel_submit_graph_job = original_submit  # type: ignore[assignment]
-            engine._parallel_values_for_graph_frame = original_values_for_frame  # type: ignore[assignment]
-            engine._parallel_poll_futures = original_poll_futures  # type: ignore[assignment]
+            engine.parallel.submit_graph_job = original_submit  # type: ignore[assignment]
+            engine.parallel.values_for_frame = original_values_for_frame  # type: ignore[assignment]
+            engine.parallel.poll = original_poll_futures  # type: ignore[assignment]
         if bpy_mod is not None and hasattr(bpy_mod, "context"):
             bpy_mod.context.scene = prev_context_scene
         try:
-            engine._shutdown_graphs(wait_parallel_pool=True, clear_bake_cache=True)
+            engine._shutdown_graphs(stop_parallel_pool=True, clear_bake_cache=True)
         except Exception:
             pass
 
@@ -1024,7 +882,8 @@ def generate_engine_perf_report(
             "evaluation": sla_eval,
         },
     }
-    target = output_path or Path(__file__).with_name("engine_perf_report.json")
+    target = output_path or (Path(__file__).parent / "artifacts" / "engine_perf_report.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 

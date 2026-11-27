@@ -1,0 +1,32 @@
+{
+  "fixture_version": 1,
+  "recorded": "2026-11-27",
+  "blender": "5.2.0 LTS",
+  "ace": "0.5.0",
+  "features": {
+    "numba": true,
+    "scipy": false
+  },
+  "libraries": {
+    "numpy": "2.3.4",
+    "scipy": null,
+    "numba": "0.63.1",
+    "llvmlite": "0.46.0",
+    "soundfile": null,
+    "sounddevice": "0.5.5"
+  },
+  "fixtures": {
+    "click_track": "6628f706b595335807c178b81b99cb2eda96ce096a39eed048c1ffe68d02ddbb",
+    "music_synth": "67b27629a53a0cd1dc723051ab37306d2c0b9baead4e2fac7516eda7e9f0d001",
+    "pink_noise": "bfd7a4293b67bf6e8a1c08bd4cf7a68a887f730b8805699ef4522943db0550b9",
+    "sine_sweep": "70f8fa52e17809b7a3b8b512bde8963d4741eac07a6a68858e565a96fecdc322",
+    "sine_sweep_44k1": "00d9709740acd818fb252f4019bb0af7dd1e363a4c3dbcf0d7f5e9f85b6e308d",
+    "stereo_pan": "cc774bb3a2c015debce221f093153da7e9a876a904426621a31a7c53187ec9a7",
+    "sweep_96k": "dafa3071eddda7ecaa36f6f459652f2d78c3160cc0a9479f295db865a0ab491b"
+  },
+  "fps": [
+    24,
+    30,
+    60
+  ]
+}

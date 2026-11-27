@@ -8,7 +8,7 @@ except Exception:
     np = None
 
 try:
-    ai = load_module("audio_influx") if np is not None else None
+    ai = load_module("core.input.reception") if np is not None else None
 except Exception:
     ai = None
 

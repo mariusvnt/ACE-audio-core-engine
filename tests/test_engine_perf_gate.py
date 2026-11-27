@@ -1,4 +1,5 @@
 import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,12 +29,15 @@ def _strict_mode_enabled() -> bool:
     return ci_raw in {"1", "true", "yes", "on"}
 
 
+# Perf runs are opt-in (ACE_PERF=1): they are slow and measure the machine as
+# much as the code, so the default unit run leaves them out.
+@unittest.skipUnless(os.environ.get("ACE_PERF") == "1", "perf gates run with ACE_PERF=1")
 @unittest.skipIf(np is None, "numpy unavailable in this environment")
 class TestEnginePerfGate(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        out_path = Path(__file__).with_name("engine_perf_report.json")
-        cls.report = generate_engine_perf_report(output_path=out_path)
+        with tempfile.TemporaryDirectory(prefix="ace_engine_perf_") as tmp_dir:
+            cls.report = generate_engine_perf_report(output_path=Path(tmp_dir) / "engine_perf_report.json")
 
     def test_engine_perf_report_has_required_scenarios_and_modes(self):
         scenarios = dict(self.report.get("scenarios", {}) or {})
