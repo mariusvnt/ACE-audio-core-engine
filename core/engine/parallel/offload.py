@@ -49,6 +49,8 @@ class ParallelOffload:
         self.ir_required: set = set()
         # Worker pids that hold the current graph IR, per graph.
         self.ir_acks: Dict[str, set] = {}
+        # The IR digest each graph's workers were last sent: an unchanged IR is not sent again.
+        self.ir_digests: Dict[str, str] = {}
         self.last_submit_frame = _NO_FRAME
         self.result_accepts = 0
         self.stale_job_drops = 0
@@ -141,6 +143,7 @@ class ParallelOffload:
         self.disabled_sources.clear()
         self.ir_required.clear()
         self.ir_acks.clear()
+        self.ir_digests.clear()
         self.slots.frame_slots.clear()
         self.last_valid.clear()
         self.last_valid_frame.clear()
@@ -148,12 +151,32 @@ class ParallelOffload:
     # Graph IR
 
     def prepare_graph_ir(self, graph: ACEAudioGraph, abstract_tree: Optional[ACEAbstractTree]):
+        """Build the graph's worker IR; workers get it again only when its digest changed.
+
+        Results already received stay usable: they are keyed by signal, and a signal computes
+        the same value in any IR.
+        """
         writer = self.engine.writer
         tree = abstract_tree if writer is not None else None
         output_defs = writer.output_defs if writer is not None else {}
-        self.ir_required.discard(ir.graph_uid(graph))
-        if ir.build_graph_ir(graph, tree, output_defs, self.engine._current_scene_fps):
-            self.require_ir(graph.parallel_graph_uid)
+        uid = ir.graph_uid(graph)
+        if not ir.build_graph_ir(graph, tree, output_defs, self.engine._current_scene_fps):
+            self.ir_required.discard(uid)
+            self.ir_digests.pop(uid, None)
+            return
+        if self.ir_digests.get(uid) != graph.parallel_ir_digest:
+            self.ir_digests[uid] = graph.parallel_ir_digest
+            self.require_ir(uid)
+
+    def forget_graphs(self, kept_uids):
+        """After a compile: drop what the offload holds for graphs no longer compiled."""
+        kept = {str(v) for v in kept_uids}
+        for store in (self.results, self.last_valid, self.last_valid_frame, self.ir_acks, self.ir_digests):
+            for uid in [k for k in store if k not in kept]:
+                store.pop(uid, None)
+        self.ir_required.intersection_update(kept)
+        self.failures.clear()
+        self.disabled_sources.clear()
 
     def require_ir(self, graph_key: str):
         self.ir_required.add(graph_key)

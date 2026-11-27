@@ -13,7 +13,7 @@ from ..tasks.graph import ACEAudioGraph
 from ..tasks.source import _clear_file_open_locks
 from ..tasks.tempo import TempoService
 from ..proxy.manager import ACEProxyManager
-from .common import FRONTEND_KIND_SHADER
+from .common import FRONTEND_KIND_SHADER, close_task
 from .bake import BakeManager
 from .compiler.compiler import GraphCompiler
 from .diagnostics import EngineDiagnostics
@@ -39,7 +39,12 @@ class ACEAudioEngine:
         self.current_frame = 0
         self.last_scene_frame = -1
         self.writer: Optional[ACEProxyManager] = None
+        # The compiled signals (one node per distinct computation, core/engine/compiler/signals.py)
+        # and the uses they stand for; abstract_tree_ref is the signal tree.
         self.abstract_tree_ref: Optional[ACEAbstractTree] = None
+        self.instance_tree_ref: Optional[ACEAbstractTree] = None
+        self.signal_of: Dict[str, str] = {}
+        self.sink_conflicts: list = []
         self.effective_sample_rate: int = SAMPLE_RATE
         self._last_attr_sync_frame: Dict[str, int] = {}
         self._bootstrap_retry_at: float = 0.0
@@ -80,8 +85,15 @@ class ACEAudioEngine:
             utils.note_swallowed("engine.ACEAudioEngine._scene_name", exc)
             return ""
 
+    def signal_id(self, instance_id: str) -> str:
+        """The signal computing the node use *instance_id*; "" when it was not compiled."""
+        return str(self.signal_of.get(str(instance_id), "") or "")
+
     def _clear_blender_runtime_refs(self) -> None:
         self.abstract_tree_ref = None
+        self.instance_tree_ref = None
+        self.signal_of = {}
+        self.sink_conflicts = []
         self.compiler._compiled_tree_ref = None
         self.compiler._compiled_tree_ptr = 0
         self.compiler._compiled_tree_frontend_uid = ""
@@ -219,18 +231,22 @@ class ACEAudioEngine:
         scene = scene_or_engine_settings
         return getattr(getattr(scene, "audiocore", None), "engine_settings", None)
 
-    def _shutdown_graphs(self, stop_parallel_pool: bool = False, clear_bake_cache: bool = False):
+    def _shutdown_graphs(self, stop_parallel_pool: bool = False, clear_bake_cache: bool = False, keep_tasks: bool = False):
+        """Drop the graphs; returns them.
+
+        With *keep_tasks* (a recompile), tasks stay open and the workers keep their graphs: the
+        compiler takes over the tasks whose signals remain and closes the others itself.
+        """
+        previous = dict(self.graphs)
         self.preview._stop_preview_worker()
         if stop_parallel_pool:
             self.parallel.shutdown_pool(wait=True)
-        else:
+        elif not keep_tasks:
             self.parallel.reset_generation()
-        for graph in self.graphs.values():
-            for task in graph.tasks.values():
-                close_fn = getattr(task, "close", None)
-                if callable(close_fn):
-                    with utils.logged_errors("engine.ACEAudioEngine._shutdown_graphs"):
-                        close_fn()
+        if not keep_tasks:
+            for graph in self.graphs.values():
+                for task in graph.tasks.values():
+                    close_task(task)
         self.graphs.clear()
         self.frame._block_size_state.clear()
         self._clear_blender_runtime_refs()
@@ -253,6 +269,7 @@ class ACEAudioEngine:
             pass
         except Exception as exc:
             utils.note_swallowed("engine.ACEAudioEngine._shutdown_graphs#2", exc)
+        return previous
 
     def invalidate_runtime_caches(self):
         writer = self.writer

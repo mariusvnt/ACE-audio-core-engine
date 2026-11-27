@@ -74,8 +74,8 @@ def read_node_outputs(engine) -> dict:
     for graph in engine.graphs.values():
         for attr_key, bindings in dict(getattr(graph, "sink_bindings_by_attr", {}) or {}).items():
             info = engine.writer.output_defs.get(attr_key) or {}
-            node_id = str(info.get("node_id", "") or "")
             name = str(info.get("output_name", "") or f"out{int(info.get('socket_idx', 0) or 0)}")
+            # One output of a signal stands for several node uses: each one reads its own sink.
             for binding in bindings:
                 if str(getattr(binding, "sink_kind", "")) != "PROXY_ATTRIBUTE":
                     continue
@@ -86,8 +86,10 @@ def read_node_outputs(engine) -> dict:
                     continue
                 item = attr.data[0]
                 value = tuple(item.vector) if hasattr(item, "vector") else float(item.value)
-                out.setdefault(node_id, {})[name] = value
-                break
+                sink_name = str(getattr(binding, "target_data_name", "") or "")
+                for instance_id, sink, _kind in info.get("sinks") or [(info.get("node_id", ""), sink_name, "")]:
+                    if sink == sink_name:
+                        out.setdefault(str(instance_id), {})[name] = value
     return out
 
 
@@ -205,8 +207,9 @@ def fresh_engine(addon_key, scene):
     # A compile writes into the user tree; the next frame change sends that
     # write through the depsgraph, and it asks for one more compile after a
     # quiet window. Let that happen here, with the frame held at frame_start,
-    # so it never lands in the middle of a pass; then compile once more so
-    # every task starts with no history.
+    # so it never lands in the middle of a pass; then drop the tasks (a compile
+    # keeps every task whose signal remains, with its history) and compile once
+    # more so every task starts with none.
     # A fresh engine also probes the file again on a thread, and the result
     # forces a compile when it lands.
     compiles = []
@@ -241,6 +244,7 @@ def fresh_engine(addon_key, scene):
     finally:
         engine.compiler.compile_scene_frontends = original
     _clear_spectrum_cache(addon_key)
+    engine._shutdown_graphs()  # what the panel's engine reset does
     engine.compiler.compile_scene_frontends(scene)
     return engine
 

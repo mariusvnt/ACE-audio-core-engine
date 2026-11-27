@@ -125,3 +125,13 @@ def engine_settings(scene_or_engine_settings=None):
         return scene_or_engine_settings
     scene = scene_or_engine_settings
     return getattr(getattr(scene, "audiocore", None), "engine_settings", None)
+
+
+def close_task(task) -> None:
+    """Close *task* (files, streams, threads), when it has anything to close."""
+    from ... import utils
+
+    close_fn = getattr(task, "close", None)
+    if callable(close_fn):
+        with utils.logged_errors("common.close_task"):
+            close_fn()

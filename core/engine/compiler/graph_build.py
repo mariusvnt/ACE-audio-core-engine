@@ -11,6 +11,7 @@ from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
 from ...tasks.stream import create_stream_task
 from ...tasks.utility import RollingAvgTask, StreamAccumulatorTask
+from .signals import graph_signature
 
 
 class GraphBuild:
@@ -30,8 +31,22 @@ class GraphBuild:
         self._index_source_tasks(graph)
         self._register_graph(ctx, runtime, graph)
 
+    @staticmethod
+    def _take_previous_task(ctx, src_uid, task_id, block_size):
+        """The task the graph being replaced ran for this signal, with its state; None for a new one.
+
+        A task whose block size moved since (adaptive time slices) starts again.
+        """
+        task = ctx.previous_tasks.pop((str(src_uid or ""), str(task_id)), None)
+        if task is None or int(getattr(task, "block_size", 0) or 0) != int(block_size):
+            if task is not None:
+                ctx.previous_tasks[(str(src_uid or ""), str(task_id))] = task  # closed by the compiler
+            return None
+        task.inputs.clear()  # wired again from this compile's links
+        return task
+
     def _create_graph_tasks(self, ctx, runtime, required_node_ids):
-        """A graph for the source with one task per required node (accumulator state restored)."""
+        """A graph for the source with one task per required signal: the previous task when it remains."""
         abstract_tree = ctx.abstract_tree
         blender_scene = ctx.blender_scene
         fps = ctx.fps
@@ -39,7 +54,6 @@ class GraphBuild:
         scheduler_mode = ctx.scheduler_mode
         timeslice_mode = ctx.timeslice_mode
         source_context_lookup = ctx.source_context_lookup
-        stream_accumulator_state = ctx.stream_accumulator_state
         source = runtime["source"]
         src_uid = runtime["src_uid"]
         src_proxy_name = runtime["src_proxy_name"]
@@ -49,6 +63,7 @@ class GraphBuild:
         graph = ACEAudioGraph(source, src_proxy_name)
         graph.source_uid = src_uid
         graph.block_size = block_size
+        graph.sample_rate = int(source_sr or 0)
         graph.scheduler_mode = scheduler_mode
         graph.timeslice_mode = timeslice_mode
         graph.proxy_lookup_fn = self.engine.sinks._lookup_proxy_object
@@ -56,25 +71,11 @@ class GraphBuild:
             node = abstract_tree.nodes.get(node_id)
             if node is None:
                 continue
-            task = self._create_task_for_node(node, block_size)
+            task = self._take_previous_task(ctx, src_uid, node_id, block_size)
+            if task is None:
+                task = self._create_task_for_node(node, block_size)
             if task:
                 graph.tasks[node_id] = task
-                if isinstance(task, StreamAccumulatorTask):
-                    restore_source_keys = [
-                        str(src_uid or ""),
-                        str(src_proxy_name or ""),
-                    ]
-                    for restore_source_key in restore_source_keys:
-                        if not restore_source_key:
-                            continue
-                        state = stream_accumulator_state.get((restore_source_key, str(node_id)))
-                        if not state:
-                            continue
-                        import_fn = getattr(task, "import_state", None)
-                        if callable(import_fn):
-                            with utils.logged_errors("graph_build.GraphBuild._create_graph_tasks"):
-                                import_fn(state)
-                        break
                 task.engine_ref = self.engine
                 task.undo_generation = int(getattr(self.engine, "undo_generation", 0) or 0)
                 task.resolve_block_size_fn = self._block_size_resolver(fps, source_sr, source_type, graph)
@@ -179,7 +180,9 @@ class GraphBuild:
                 auto_task_id = f"__ace_auto_preview__{upstream_node_id}_{int(upstream_sock_idx)}"
                 if auto_task_id in graph.tasks:
                     continue
-                preview_task = PreviewSinkTask(auto_task_id, {"preview_enabled": True}, int(preview_block_size))
+                preview_task = self._take_previous_task(ctx, src_uid, auto_task_id, int(preview_block_size))
+                if preview_task is None:
+                    preview_task = PreviewSinkTask(auto_task_id, {"preview_enabled": True}, int(preview_block_size))
                 preview_task.engine_ref = self.engine
                 preview_task.resolve_block_size_fn = self._block_size_resolver(fps, source_sr, source_type, graph)
                 preview_task.scene_fps = fps
@@ -228,6 +231,7 @@ class GraphBuild:
         # prepare_graph_ir() reads BPM/beats-per-bar from this source
         # context, so it must be set before the IR is built.
         graph.source_context = source
+        graph.signal_signature = graph_signature(graph)
         self.engine.parallel.prepare_graph_ir(graph, abstract_tree)
         self.engine.graphs[src_uid] = graph
         self.engine._attr_schema_dirty.add(src_uid)  # mark for first-frame schema sync

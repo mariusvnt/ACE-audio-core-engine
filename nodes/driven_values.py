@@ -216,7 +216,9 @@ def _audio_value(node, output, walk: _Walk) -> float:
         used = instance_node_id(category, node_type, walk.root_key, [g.name for g in walk.groups], node.name)
     else:
         used = node_id(node)
-    value = getattr(engine, "latest_values", {}).get(f"{used}:{index}")
+    # Values are kept per signal: the task computing this use may compute others too.
+    signal = engine.signal_id(used) if engine is not None else ""
+    value = getattr(engine, "latest_values", {}).get(f"{signal or used}:{index}")
     if value is None:
         raise _Unknown  # not computed yet
     return float(value)

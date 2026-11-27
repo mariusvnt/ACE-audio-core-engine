@@ -48,7 +48,12 @@ class BakeManager:
                 if os.path.isfile(npz_path):
                     os.remove(npz_path)
 
-    def _prune_bake_cache(self, sources, tree_signature):
+    def _prune_bake_cache(self, sources, signatures):
+        """Drop the bakes of sources gone, and of sources whose graph computes something else now.
+
+        *signatures* maps a source uid to its graph's signal signature: an edit that leaves a
+        source's signals as they were (a sink renamed, another source's branch) keeps its bake.
+        """
         valid_ids: set[str] = set()
         existing_ids = [getattr(s, "stable_id", "") for s in sources if getattr(s, "stable_id", "")]
         for src in sources or []:
@@ -60,7 +65,7 @@ class BakeManager:
 
         for sid in list(self._bake_cache.keys()):
             entry = self._bake_cache.get(sid, {})
-            if sid not in valid_ids or entry.get("tree_signature") != tree_signature:
+            if sid not in valid_ids or entry.get("signal_signature") != signatures.get(sid):
                 self._cleanup_bake_entry(entry if isinstance(entry, dict) else None)
                 self._bake_cache.pop(sid, None)
 
@@ -71,7 +76,7 @@ class BakeManager:
         entry = self._bake_cache.get(source_uid)
         if not entry:
             return None
-        if entry.get("tree_signature") != self.engine.compiler._last_tree_signature:
+        if entry.get("signal_signature") != str(getattr(graph, "signal_signature", "") or ""):
             return None
         if int(entry.get("block_size", -1)) != int(getattr(graph, "block_size", 0)):
             return None
@@ -171,7 +176,7 @@ class BakeManager:
                         "source_uid": str(src_uid or ""),
                         "frame_start": int(frame_start),
                         "frame_end": int(frame_end),
-                        "tree_signature": self.engine.compiler._last_tree_signature,
+                        "signal_signature": str(getattr(graph, "signal_signature", "") or ""),
                     },
                     sort_keys=True,
                     default=str,
@@ -193,7 +198,7 @@ class BakeManager:
                 utils.log_throttled("bake_spill", f"Could not spill bake cache to disk: {e}", "WARNING", min_interval=0.0)
 
         self._bake_cache[str(src_uid)] = {
-            "tree_signature": self.engine.compiler._last_tree_signature,
+            "signal_signature": str(getattr(graph, "signal_signature", "") or ""),
             "block_size": int(getattr(graph, "block_size", 0)),
             "frame_start": frame_start,
             "frame_end": frame_end,

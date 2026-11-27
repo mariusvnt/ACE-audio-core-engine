@@ -166,24 +166,26 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
     def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):
         """Ensure all concrete sink targets for *graph* exist."""
         utils.assert_main_thread("ensure_sink_layout")
-        proxy_keys_by_object: Dict[str, Set[str]] = {}
+        required_by_object: Dict[str, Dict[str, str]] = {}
         scene_bindings: Dict[str, list[Any]] = {}
-        keys = set(self.output_defs.keys()) if active_keys is None else set(active_keys)
+        bindings_by_attr = getattr(graph, "sink_bindings_by_attr", {}) or {}
+        keys = set(bindings_by_attr) if active_keys is None else set(active_keys)
         for attr_key in keys:
-            for binding in list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or []):
+            for binding in list(bindings_by_attr.get(attr_key, []) or []):
                 sink_kind = str(getattr(binding, "sink_kind", "") or "")
                 target_obj_name = str(getattr(binding, "target_object_name", "") or "")
-                if sink_kind == "PROXY_ATTRIBUTE" and target_obj_name:
-                    proxy_keys_by_object.setdefault(target_obj_name, set()).add(attr_key)
+                name = str(getattr(binding, "target_data_name", "") or "")[:63]
+                if sink_kind == "PROXY_ATTRIBUTE" and target_obj_name and name:
+                    required_by_object.setdefault(target_obj_name, {})[name] = str(binding.attr_type or "FLOAT")
                 elif sink_kind == "SCENE_PROPERTY" and target_obj_name:
                     scene_bindings.setdefault(target_obj_name, []).append(binding)
 
         geometry_proxy_names: set[str] = set()
-        for proxy_name, attr_keys in proxy_keys_by_object.items():
+        for proxy_name, required in required_by_object.items():
             proxy = bpy.data.objects.get(proxy_name)
             if proxy is None:
                 continue
-            self.ensure_attributes_exist(proxy, self.abstract_tree, active_keys=set(attr_keys), prune_existing=True)
+            self.ensure_attributes_exist(proxy, required, prune_existing=True)
             geometry_proxy_names.add(str(proxy_name))
         for scene_name, bindings in scene_bindings.items():
             self.ensure_scene_property_sinks(scene_name, bindings)
@@ -194,6 +196,7 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
         utils.assert_main_thread("commit_results")
         keys = set(results.keys()) if active_keys is None else set(active_keys)
         proxy_results: Dict[str, Dict[str, Any]] = {}
+        proxy_pulses: Dict[str, Set[str]] = {}
         object_prop_values: Dict[str, Dict[str, Any]] = {}
         object_prop_types: Dict[str, Dict[str, str]] = {}
         for attr_key in keys:
@@ -206,7 +209,12 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
                 if not object_name:
                     continue
                 if sink_kind == "PROXY_ATTRIBUTE":
-                    proxy_results.setdefault(object_name, {})[attr_key] = value
+                    name = str(getattr(binding, "target_data_name", "") or "")[:63]
+                    if not name:
+                        continue
+                    proxy_results.setdefault(object_name, {})[name] = value
+                    if getattr(binding, "pulse", False):
+                        proxy_pulses.setdefault(object_name, set()).add(name)
                 elif sink_kind == "SCENE_PROPERTY":
                     prop_name = str(getattr(binding, "target_data_name", "") or "")
                     if not prop_name:
@@ -219,7 +227,7 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
             proxy = bpy.data.objects.get(proxy_name)
             if proxy is None:
                 continue
-            self.update_proxy_object(proxy, proxy_values, active_keys=set(proxy_values.keys()))
+            self.update_proxy_object(proxy, proxy_values, pulses=proxy_pulses.get(proxy_name, set()))
             geometry_proxy_names.add(str(proxy_name))
         for scene_name, prop_values in object_prop_values.items():
             self.update_scene_property_sinks(scene_name, prop_values, object_prop_types.get(scene_name, {}))

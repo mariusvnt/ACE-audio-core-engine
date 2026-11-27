@@ -8,13 +8,13 @@ from .... import utils
 from ....nodes.geometry.reader import ACEDummyTreeReader
 from ....properties import ACEAudioSource
 from ...abstract_tree import ACEAbstractTree
-from ...tasks.utility import StreamAccumulatorTask
 from ...id_management import ACEIdManager
 from ...proxy.manager import ACEProxyManager
-from ..common import FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot
+from ..common import FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, close_task
 from .graph_build import GraphBuild
 from .required_nodes import RequiredNodes
 from .sample_rates import SampleRates
+from .signals import build_signals, resolve_sink_conflicts
 
 
 @dataclass
@@ -30,7 +30,7 @@ class _CompileContext:
     preview_block_size: Any
     single_source_mode: Any
     source_context_lookup: Any
-    stream_accumulator_state: Any
+    previous_tasks: Any  # {(source uid, task id): task} of the graphs being replaced
     manual_preview_winner_id: Any
     has_manual_preview: Any
     sink_writes_allowed: Any
@@ -54,7 +54,13 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self._compiled_tree_bl_idname: str = ""
 
     def compile(self, abstract_tree: ACEAbstractTree, blender_scene):
-        """Build one ACEAudioGraph per audio source from the abstract tree."""
+        """Build one ACEAudioGraph per audio source from the instance tree.
+
+        A compile is a difference: the uses are merged into signals (``signals.py``), a task
+        whose signal remains is kept with its state, new signals get new tasks, and the
+        tasks of signals gone are closed. A source whose signals are unchanged keeps its
+        worker graph and its bake.
+        """
         utils.assert_main_thread("compile")
         self.engine.scene_key = self.engine._scene_key(blender_scene)
         self.engine.scene_name = self.engine._scene_name(blender_scene)
@@ -62,17 +68,32 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self.engine.frontends._pending_tree_ptr = 0
         self.engine.frontends._pending_tree_bl_idname = ""
         self.engine.frontends._pending_scene_rebuild = False
-        stream_accumulator_state = self._export_stream_accumulator_state()
-        self.engine._shutdown_graphs()
+        previous_graphs = self.engine._shutdown_graphs(keep_tasks=True)
+        previous_tasks = {
+            (str(getattr(graph, "source_uid", "") or key), str(task_id)): task
+            for key, graph in previous_graphs.items()
+            for task_id, task in graph.tasks.items()
+        }
+        try:
+            self._compile_signals(abstract_tree, blender_scene, previous_tasks)
+        finally:
+            kept = {id(task) for graph in self.engine.graphs.values() for task in graph.tasks.values()}
+            for task in previous_tasks.values():
+                if id(task) not in kept:
+                    close_task(task)
+            self.engine.parallel.forget_graphs({str(g.parallel_graph_uid) for g in self.engine.graphs.values()})
+
+    def _compile_signals(self, instance_tree: ACEAbstractTree, blender_scene, previous_tasks):
         self.engine.graphs.clear()
         self.engine._last_attr_sync_frame.clear()
         self.engine._attr_schema_dirty.clear()
         self.engine.frame._block_size_state.clear()
-        self.engine.abstract_tree_ref = abstract_tree
+        self.engine.instance_tree_ref = instance_tree
+        self.engine.abstract_tree_ref = instance_tree
 
-        self.engine.writer = ACEProxyManager(abstract_tree)
+        self.engine.writer = ACEProxyManager(instance_tree)
         sink_writes_allowed = not self.engine._unsafe_for_handler_writes(blender_scene)
-        tree_signature = self.engine.frontends._compute_tree_signature(abstract_tree)
+        tree_signature = self.engine.frontends._compute_tree_signature(instance_tree)
         self._last_tree_signature = tree_signature
         if not hasattr(blender_scene, "audiocore"):
             return
@@ -89,7 +110,6 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         preview_block_size = self.engine.preview._preview_block_size(engine_settings)
         sources = list(getattr(getattr(blender_scene, "audiocore", None), "audio_sources", []) or [])
         single_source_mode = len(sources) <= 1
-        self.engine.bake._prune_bake_cache(sources, tree_signature)
 
         self.engine.effective_sample_rate = self._collect_sample_rate_floor(
             sources,
@@ -100,6 +120,16 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         fallback_sr = self.engine.effective_sample_rate
 
         source_runtime, source_context_lookup = self._resolve_sources(blender_scene, sources, fallback_sr, engine_settings, fps, timeslice_mode)
+        source_keys = {
+            str(rt["src_uid"]): (int(rt["source_sr"]), int(rt["block_size"]), round(float(fps), 6))
+            for rt in source_runtime
+            if rt["src_uid"]
+        }
+        signal_set = build_signals(instance_tree, source_keys)
+        abstract_tree = signal_set.tree
+        self.engine.signal_of = dict(signal_set.signal_of)
+        self.engine.abstract_tree_ref = abstract_tree
+        self.engine.writer = ACEProxyManager(abstract_tree)
         manual_preview_winner_id, has_manual_preview = self._resolve_preview_winner(abstract_tree)
         ctx = _CompileContext(
             abstract_tree=abstract_tree,
@@ -111,7 +141,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             preview_block_size=preview_block_size,
             single_source_mode=single_source_mode,
             source_context_lookup=source_context_lookup,
-            stream_accumulator_state=stream_accumulator_state,
+            previous_tasks=previous_tasks,
             manual_preview_winner_id=manual_preview_winner_id,
             has_manual_preview=has_manual_preview,
             sink_writes_allowed=sink_writes_allowed,
@@ -119,37 +149,22 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         for runtime in source_runtime:
             self._build_source_graph(ctx, runtime)
 
+        self.engine.sink_conflicts = resolve_sink_conflicts(self.engine.graphs)
+        for conflict in self.engine.sink_conflicts:
+            utils.log_throttled(
+                f"sink_conflict:{conflict['sink_name']}",
+                f"ACE: sink '{conflict['sink_name']}' is written by uses computing different values; "
+                f"'{conflict['kept']}' keeps it, {', '.join(conflict['dropped'])} do not write it.",
+                "WARNING",
+                min_interval=5.0,
+            )
+        self.engine.bake._prune_bake_cache(
+            sources, {uid: graph.signal_signature for uid, graph in self.engine.graphs.items()}
+        )
         if self.engine.writer is not None and sink_writes_allowed:
             self._prune_stale_scene_properties(blender_scene, sources)
 
         self._last_compile_time = time.time()
-
-    def _export_stream_accumulator_state(self):
-        """Stream Accumulator state of the current graphs, keyed by (source, node), to restore after the rebuild."""
-        stream_accumulator_state: Dict[tuple[str, str], Dict[str, Any]] = {}
-        for graph_key, graph in dict(getattr(self.engine, "graphs", {}) or {}).items():
-            source_key = str(
-                getattr(graph, "source_uid", "")
-                or graph_key
-                or getattr(graph, "proxy_name", "")
-                or ""
-            )
-            if not source_key:
-                continue
-            for node_id, task in dict(getattr(graph, "tasks", {}) or {}).items():
-                if not isinstance(task, StreamAccumulatorTask):
-                    continue
-                export_fn = getattr(task, "export_state", None)
-                if not callable(export_fn):
-                    continue
-                try:
-                    state = dict(export_fn() or {})
-                except Exception as exc:
-                    utils.note_swallowed("compiler.GraphCompiler._export_stream_accumulator_state", exc)
-                    state = {}
-                if state:
-                    stream_accumulator_state[(source_key, str(node_id))] = state
-        return stream_accumulator_state
 
     def _resolve_sources(self, blender_scene, sources, fallback_sr, engine_settings, fps, timeslice_mode):
         """Proxy name, sample rate and block size per source, and a lookup by uid and proxy name."""

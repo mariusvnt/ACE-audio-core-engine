@@ -15,6 +15,7 @@ class ACEAudioGraph:
         self.output_attr_keys: List[str] = []
         self.sink_bindings_by_attr: Dict[str, List["ACESinkBinding"]] = {}
         self.parallel_graph_uid: str = ""
+        self.signal_signature: str = ""  # what the graph computes (signals.graph_signature)
         self.parallel_ir: Dict[str, Any] = {}
         self.parallel_ir_digest: str = ""
         self.parallel_offload_attr_keys: List[str] = []
@@ -29,6 +30,7 @@ class ACEAudioGraph:
         self.live_source_task_ids: List[str] = []
         self.file_source_task_ids: List[str] = []
         self.block_size: int = 0
+        self.sample_rate: int = 0  # the source's working rate when compiled
         self.source_uid: str = ""
         self.scheduler_mode: str = "legacy"
         self.timeslice_mode: str = "fixed"
@@ -57,3 +59,5 @@ class ACESinkBinding:
     target_object_name: str
     target_data_name: str
     attr_type: str = "FLOAT"
+    instance_id: str = ""  # the node use whose sink this is
+    pulse: bool = False  # written every frame, even when unchanged

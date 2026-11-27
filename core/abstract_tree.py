@@ -62,6 +62,10 @@ class ACEAbstractNode:
     frontend_uid: str = ""
     frontend_kind: str = ""
     source_binding_id: str = ""
+    # In a signal tree (core/engine/compiler/signals.py): the uses this node stands for, and
+    # the sinks of their outputs, as {output index: [(use id, sink name, frontend kind)]}.
+    instance_ids: List[str] = field(default_factory=list)
+    instance_sinks: Dict[int, List[tuple]] = field(default_factory=dict)
 
 @dataclass
 class ACEAbstractLink:

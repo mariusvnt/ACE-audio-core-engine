@@ -60,45 +60,6 @@ class StreamAccumulatorTask(ACEAudioTask):
         self._last_frame_request: Optional[int] = None
         self._manual_reset_latched: bool = False
 
-    def export_state(self) -> Dict[str, Any]:
-        """Return a serializable snapshot of the current accumulator state."""
-        if self._accumulator is None:
-            return {}
-        try:
-            acc = np.asarray(self._accumulator, dtype=np.float64).reshape(-1)
-        except Exception as exc:
-            utils.note_swallowed("utility.StreamAccumulatorTask.export_state", exc)
-            return {}
-        if acc.size <= 0:
-            return {}
-        return {
-            "accumulator": acc.copy(),
-            "last_frame_request": (
-                int(self._last_frame_request) if self._last_frame_request is not None else None
-            ),
-            "manual_reset_latched": bool(self._manual_reset_latched),
-        }
-
-    def import_state(self, state: Dict[str, Any]) -> bool:
-        """Restore accumulator state from ``export_state()`` data."""
-        if not isinstance(state, dict):
-            return False
-        raw_acc = state.get("accumulator")
-        if raw_acc is None:
-            return False
-        acc = self._coerce_input_array(raw_acc)
-        if int(acc.size) <= 0:
-            return False
-        self._accumulator = np.asarray(acc, dtype=np.float64).copy()
-        raw_last = state.get("last_frame_request")
-        try:
-            self._last_frame_request = int(raw_last) if raw_last is not None else None
-        except Exception as exc:
-            utils.note_swallowed("utility.StreamAccumulatorTask.import_state", exc)
-            self._last_frame_request = None
-        self._manual_reset_latched = bool(state.get("manual_reset_latched", False))
-        return True
-
     @staticmethod
     def _coerce_input_array(raw_value: Any) -> np.ndarray:
         if raw_value is None:

@@ -72,32 +72,44 @@ class SinkResolver:
         proxy_name: str,
         single_source_mode: bool,
     ) -> Dict[str, List[ACESinkBinding]]:
-        """For each output of *graph*: the sinks its value goes to, named by the user's tree."""
+        """For each output of *graph*: the sinks its value goes to, named by the user's tree.
+
+        One output of a signal has the sinks of every use it stands for: two uses with
+        different names write both, two uses of one name write it once.
+        """
         bindings_by_attr: Dict[str, List[ACESinkBinding]] = {}
         scene_name = str(getattr(self.engine, "scene_name", "") or "")
         for attr_key in list(getattr(graph, "output_attr_keys", []) or []):
             info = self.engine.writer.output_defs.get(attr_key, {}) if self.engine.writer else {}
             node = abstract_tree.nodes.get(str(info.get("node_id", "") or ""))
-            sink_name = str(info.get("attr_id", "") or "").strip()
-            if node is None or not sink_name:
-                bindings_by_attr[attr_key] = []
+            bindings: List[ACESinkBinding] = []
+            if node is None:
+                bindings_by_attr[attr_key] = bindings
                 continue
+            sinks = list(info.get("sinks") or [])
+            if not sinks:
+                name = str(info.get("attr_id", "") or "").strip()
+                sinks = [(node.id, name, str(getattr(node, "frontend_kind", "") or ""))] if name else []
             attr_type = str(info.get("type", "FLOAT") or "FLOAT")
-            if str(getattr(node, "frontend_kind", "") or "") == FRONTEND_KIND_SHADER:
-                binding = ACESinkBinding(
-                    sink_kind="SCENE_PROPERTY",
-                    target_object_name=scene_name,
-                    target_data_name=sink_name,
+            pulse = str(info.get("output_name", "") or "").lower() == "transient"
+            seen: set = set()
+            for instance_id, sink_name, frontend_kind in sinks:
+                if frontend_kind == FRONTEND_KIND_SHADER:
+                    kind, target = "SCENE_PROPERTY", scene_name
+                else:
+                    kind, target = "PROXY_ATTRIBUTE", proxy_name
+                if (kind, target, sink_name) in seen:
+                    continue
+                seen.add((kind, target, sink_name))
+                bindings.append(ACESinkBinding(
+                    sink_kind=kind,
+                    target_object_name=target,
+                    target_data_name=str(sink_name),
                     attr_type=attr_type,
-                )
-            else:
-                binding = ACESinkBinding(
-                    sink_kind="PROXY_ATTRIBUTE",
-                    target_object_name=proxy_name,
-                    target_data_name=sink_name,
-                    attr_type=attr_type,
-                )
-            bindings_by_attr[attr_key] = [binding]
+                    instance_id=str(instance_id),
+                    pulse=pulse,
+                ))
+            bindings_by_attr[attr_key] = bindings
         return bindings_by_attr
 
     def repair_sink_names(self, trees, scene) -> int:

@@ -4,7 +4,6 @@ import bpy # type: ignore
 import numpy as np
 from typing import Dict, Set, Any
 from ..id_management import ACEIdManager
-from ..abstract_tree import ACEAbstractTree
 from ... import utils
 
 
@@ -69,6 +68,8 @@ class AttributeSinks:
                     "output_name": sock.name,
                     "attr_id": attr_id,
                     "attr_custom": attr_custom,
+                    # Every use's sink of this output (a signal tree node stands for several uses).
+                    "sinks": list((getattr(node, "instance_sinks", {}) or {}).get(sock.socket_idx, [])),
                     "frontend_uid": str(getattr(node, "frontend_uid", "") or ""),
                     "frontend_kind": str(getattr(node, "frontend_kind", "") or ""),
                 }
@@ -82,14 +83,6 @@ class AttributeSinks:
             attr_type = 'FLOAT_COLOR'
         return attr_type
 
-    def _select_attr_name(self, proxy_name: str, info: Dict[str, Any]) -> str:
-        """The mesh attribute an output is written to: its sink name, as the node's Attribute ID holds it.
-
-        "" for an output without a name (nothing reads it).
-        """
-        custom = info.get("attr_id")
-        return custom.strip()[:63] if isinstance(custom, str) else ""
-
     @staticmethod
     def _is_prunable(attr_name: str, required) -> bool:
         """An attribute of a proxy mesh that no output writes any more (proxies are ACE's own meshes)."""
@@ -100,57 +93,26 @@ class AttributeSinks:
             or attr_name.startswith(".")
         )
 
-    def ensure_attributes_exist(
-        self,
-        proxy: bpy.types.Object,
-        abstract_tree: ACEAbstractTree | None = None,
-        active_keys: Set[str] | None = None,
-        prune_existing: bool = False,
-    ):
-        """Create or repair named point-domain attributes on the proxy mesh."""
+    def ensure_attributes_exist(self, proxy: bpy.types.Object, required: Dict[str, str], prune_existing: bool = True):
+        """Create or repair the point attributes *required* names ({name: type}) on the proxy mesh.
+
+        With *prune_existing*, attributes no output writes any more go.
+        """
         utils.assert_main_thread("ensure_attributes_exist")
         mesh = getattr(proxy, "data", None)
         if not mesh:
             return
-
-        if abstract_tree and abstract_tree is not self.abstract_tree:
-            self.set_abstract_tree(abstract_tree)
         attrs_changed = False
-
-        # Optional strict mode: empty active set means no ACE attributes should remain.
-        if active_keys is not None and len(active_keys) == 0:
-            if prune_existing:
-                for attr in list(mesh.attributes):
-                    if self._is_prunable(attr.name, ()):
-                        mesh.attributes.remove(attr)
-                        attrs_changed = True
-            if attrs_changed:
-                self._attr_cache.pop(mesh.name, None)
-                self._last_values.pop(mesh.name, None)
-                self._write_buffer_cache.pop(mesh.name, None)
-            return
-
-        required: Dict[str, str] = {}
-        keys = self.output_defs.keys() if active_keys is None else active_keys
-        for attr_key in keys:
-            info = self.output_defs.get(attr_key)
-            if not info:
-                continue
-            name = self._select_attr_name(proxy.name, info)
-            if not name:
-                continue
-            required[name] = info["type"]
+        for name, attr_type in required.items():
             attr = mesh.attributes.get(name)
-            if attr and attr.data_type == info["type"]:
+            if attr and attr.data_type == attr_type:
                 continue
             if attr:
                 mesh.attributes.remove(attr)
-                attrs_changed = True
-            mesh.attributes.new(name=name, type=info["type"], domain='POINT')
+            mesh.attributes.new(name=name, type=attr_type, domain='POINT')
             attrs_changed = True
 
-        # Full syncs always prune, and compile-time scoped syncs may opt-in.
-        if active_keys is None or prune_existing:
+        if prune_existing:
             for attr in list(mesh.attributes):
                 if self._is_prunable(attr.name, required):
                     mesh.attributes.remove(attr)
@@ -196,23 +158,17 @@ class AttributeSinks:
                 return False
         return prev == curr
 
-    def update_proxy_object(self, proxy: bpy.types.Object, results: Dict[str, Any], active_keys: Set[str] | None = None):
-        """Write DSP result values into the proxy mesh's named attributes."""
+    def update_proxy_object(self, proxy: bpy.types.Object, values: Dict[str, Any], pulses: Set[str] = frozenset()):
+        """Write values ({attribute name: value}) into the proxy mesh's attributes.
+
+        Names in *pulses* are written every frame, even when unchanged (pulse outputs reset).
+        """
         utils.assert_main_thread("update_proxy_object")
         mesh = getattr(proxy, "data", None)
         if not mesh:
             return
 
-        keys = results.keys() if active_keys is None else active_keys
-
-        for attr_key in keys:
-            if attr_key not in results:
-                continue
-            value = results[attr_key]
-            info = self.output_defs.get(attr_key)
-            if not info:
-                continue
-            attr_name = self._select_attr_name(proxy.name, info)
+        for attr_name, value in values.items():
             if not attr_name:
                 continue
             attr = None
@@ -227,9 +183,7 @@ class AttributeSinks:
                 continue
             last_vals = self._last_values.setdefault(mesh.name, {})
             dtype = attr.data_type
-            # Pulse outputs reset every frame, so an unchanged value must still be written.
-            _output_name = str(info.get("output_name", "") or "").lower()
-            _is_transient = _output_name == "transient"
+            _is_transient = attr_name in pulses
             if dtype == 'FLOAT':
                 try:
                     val = float(value)

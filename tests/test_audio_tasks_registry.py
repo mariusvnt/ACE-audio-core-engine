@@ -273,39 +273,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         out_b = task.process({0: np.array([0.5, -1.0, 2.0], dtype=np.float32)})
         self.assertTrue(np.allclose(np.asarray(out_b, dtype=np.float32), np.array([1.5, 1.0, 5.0], dtype=np.float32)))
 
-    def test_stream_accumulator_state_roundtrip_preserves_running_sum(self):
-        task_a = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
-        task_a.scene_frame_start = 1
-        task_a._current_frame_request = 1
-        self.assertAlmostEqual(float(task_a.process({0: 1.0})), 1.0, places=6)
-        task_a._current_frame_request = 2
-        self.assertAlmostEqual(float(task_a.process({0: 2.0})), 3.0, places=6)
-
-        snapshot = dict(task_a.export_state() or {})
-        self.assertIn("accumulator", snapshot)
-
-        task_b = atr.StreamAccumulatorTask("accum_state_node", {}, block_size=64)
-        task_b.scene_frame_start = 1
-        restored = task_b.import_state(snapshot)
-        self.assertTrue(restored)
-        task_b._current_frame_request = 3
-        self.assertAlmostEqual(float(task_b.process({0: 0.5})), 3.5, places=6)
-
-    def test_stream_accumulator_state_roundtrip_preserves_vector_sum(self):
-        task_a = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
-        task_a.scene_frame_start = 1
-        task_a._current_frame_request = 1
-        _ = task_a.process({0: np.array([1.0, 2.0], dtype=np.float32)})
-        task_a._current_frame_request = 2
-        _ = task_a.process({0: np.array([0.5, -1.0], dtype=np.float32)})
-
-        task_b = atr.StreamAccumulatorTask("accum_state_vec_node", {}, block_size=64)
-        task_b.scene_frame_start = 1
-        self.assertTrue(task_b.import_state(dict(task_a.export_state() or {})))
-        task_b._current_frame_request = 3
-        out = np.asarray(task_b.process({0: np.array([0.25, 0.75], dtype=np.float32)}), dtype=np.float32)
-        self.assertTrue(np.allclose(out, np.array([1.75, 1.75], dtype=np.float32)))
-
     def test_band_rms_of_a_tone_inside_the_band_equals_its_rms(self):
         sr, n = 48000, 2000
         t = np.arange(3 * n, dtype=np.float64) / sr

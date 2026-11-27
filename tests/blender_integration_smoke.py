@@ -9,6 +9,7 @@ import types
 import bpy  # type: ignore
 import importlib
 import os
+import shutil
 import sys
 import tempfile
 import wave
@@ -24,6 +25,11 @@ def _nid(node):
 
 def _sid(node):
     return blender_helpers.node_source(find_addon_key(), node)
+
+
+def _signal(engine, node):
+    """The signal (task id) computing the node's use: uses that compute the same share one."""
+    return engine.signal_id(_nid(node))
 
 
 def _assert(condition, message):
@@ -262,7 +268,7 @@ def _check_viewer_previews_audio(addon_key, scene, engine):
         _assert(previews() == [], "An unconnected Viewer previews")
         tree.links.new(split.outputs[0], viewer.inputs[0])
         _assert(viewer.inputs[0].type == "BUNDLE", f"Viewer socket type: {viewer.inputs[0].type}")
-        _assert(previews() == [(_nid(split), 0)], f"Viewer on the low band: {previews()}")
+        _assert(previews() == [(_signal(engine, split), 0)], f"Viewer on the low band: {previews()}")
 
         sync._find_active_node_tree = lambda _context, **_kw: tree
         sync._sync_ui_dummy_tree(bpy.context, force=True)
@@ -468,7 +474,7 @@ def _check_driven_splits(addon_key, scene, engine):
 
         def task_params():
             return next(task.parameters for graph in engine.graphs.values() for node_id, task in graph.tasks.items()
-                        if node_id == _nid(split))
+                        if node_id == _signal(engine, split))
 
         def states():
             return [(None if v is None else round(v), s) for _sock, v, s in split_freqs.split_freq_states(split, scene)]
@@ -482,7 +488,7 @@ def _check_driven_splits(addon_key, scene, engine):
         value.outputs[0].default_value = 100.0
         split_freqs.refresh_driven_splits(engine.graphs.values(), scene)
         _assert(task_params()["in_1"] == 1000.0, f"Engine did not follow: {task_params()['in_1']}")
-        _assert(any(g.param_overrides.get(_nid(split), {}).get("in_1") == 1000.0 for g in engine.graphs.values()),
+        _assert(any(g.param_overrides.get(_signal(engine, split), {}).get("in_1") == 1000.0 for g in engine.graphs.values()),
                 "Workers are not told about the new value")
         _assert(splitter.splitter_band_widths(split, scene)[0] > narrow[0] + 0.3, "The strip did not follow")
         engine.frame.execute_next_frame(scene, force=True)
@@ -502,13 +508,13 @@ def _check_driven_splits(addon_key, scene, engine):
         tree.links.new(loud.outputs[0], scale.inputs[0])
         tree.links.new(scale.outputs[0], split.inputs[2])
         engine.compiler.compile_scene_frontends(scene)
-        engine.latest_values[f"{_nid(loud)}:0"] = 0.5
+        engine.latest_values[f"{_signal(engine, loud)}:0"] = 0.5
         _assert(states()[1] == (2000, "linked"), f"Audio-driven link: {states()}")
         split_freqs.refresh_driven_splits(engine.graphs.values(), scene)
         _assert(task_params().get("in_2") == 2000.0, f"Engine audio-driven value: {task_params()}")
         engine.latest_values.clear()
         engine.frame.execute_next_frame(scene, force=True)
-        _assert(f"{_nid(loud)}:0" in engine.latest_values, "The frame did not record operator values")
+        _assert(f"{_signal(engine, loud)}:0" in engine.latest_values, "The frame did not record operator values")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
@@ -868,6 +874,10 @@ def _check_instances_through_groups(addon_key, scene, engine):
         windows = sorted(round(float(n.parameters.get(f"in_{window_idx}", -1.0)), 3)
                          for n in _abstract_nodes(engine, "loudness", "Loudness"))
         _assert(windows == [0.8, 1.6], f"The group's two uses did not get their windows: {windows}")
+        # Both uses write the group node's one sink name with different values: listed, one kept.
+        window_sink = blender_helpers.sink_names(addon_key, loud)[0]
+        clash = [c for c in engine.sink_conflicts if c["sink_name"] == window_sink]
+        _assert(len(clash) == 1 and len(clash[0]["dropped"]) == 1, f"The sink conflict is not listed: {engine.sink_conflicts}")
         roots = sorted(sorted(n.root_sources) for n in _abstract_nodes(engine, "loudness", "Inner Loudness"))
         _assert(roots == sorted([[first.stable_id], [second.stable_id]]), f"Each use did not read its source: {roots}")
         for src in (first, second):
@@ -944,6 +954,99 @@ def _check_world_and_instanced_trees_are_found(addon_key, scene, engine):
         bpy.data.worlds.remove(world)
 
 
+def _check_signals_are_shared_and_kept(addon_key, scene, engine):
+    """The same RMS in two trees is one task writing both sinks; a recompile keeps the tasks whose signals remain."""
+    ace = scene.audiocore
+    count, first_index = len(ace.audio_sources), ace.active_audio_source_index
+    settings = ace.engine_settings
+    parallel_mode = settings.ace_parallel_mode
+    settings.ace_parallel_mode = "threads_io"  # values computed on this thread, frame by frame
+    tmp_dir = tempfile.mkdtemp(prefix="ace_smoke_signals_")
+    wav_path = os.path.join(tmp_dir, "tone.wav")
+    _write_test_wav(wav_path)
+    obj_a, tree_a = _new_gn_tree(scene, "ACE_Smoke_Signals_A")
+    obj_b, tree_b = _new_gn_tree(scene, "ACE_Smoke_Signals_B")
+    try:
+        bpy.ops.audiocore.add_audio_source()
+        ace.active_audio_source_index = count
+        src = ace.audio_sources[count]
+        src.source_type = "FILE"
+        src.filepath = wav_path
+        sources, uses = [], []
+        for tree in (tree_a, tree_b):
+            source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+            rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
+            tree.links.new(source.outputs["Audio"], rms.inputs["Audio"])
+            sources.append(source)
+            uses.append(rms)
+        acc = _add_ace_node(addon_key, tree_a, "utilities", "stream_accumulator", "Accumulator")
+        tree_a.links.new(uses[0].outputs[0], acc.inputs["Value"])
+
+        engine.compiler.compile_scene_frontends(scene)
+        signals = {_signal(engine, rms) for rms in uses}
+        _assert(len(signals) == 1 and "" not in signals, f"The two RMS nodes are not one signal: {signals}")
+        rms_signal = signals.pop()
+        graph = engine.graphs[src.stable_id]
+        loudness_tasks = [t for t in graph.tasks if t.startswith("S_stream_loudness_")]
+        _assert(loudness_tasks == [rms_signal], f"Loudness tasks: {loudness_tasks}")
+        _assert(len([t for t in graph.tasks if t.startswith("S_source_mngmt_src_")]) == 1, "The source is read twice")
+        names = [blender_helpers.sink_names(addon_key, rms)[0] for rms in uses]
+        for frame in (1, 2, 3, 4, 5):
+            scene.frame_set(frame)
+        values = _proxy_values(engine)
+        _assert(names[0] in values and names[1] in values and values[names[0]] == values[names[1]] > 0.0,
+                f"Both sinks do not get the shared value: {names} {values}")
+
+        # The first compile ran before the file was probed: its sample rate makes new signals once.
+        engine.compiler.compile_scene_frontends(scene)
+        for frame in (6, 7, 8):
+            scene.frame_set(frame)
+        graph = engine.graphs[src.stable_id]
+        acc_signal, rms_signal = _signal(engine, acc), _signal(engine, uses[0])
+        acc_task, rms_task = graph.tasks[acc_signal], graph.tasks[rms_signal]
+        total = float(acc_task._accumulator.sum())
+        _assert(total > 0.0, f"The accumulator did not run: {total}")
+        digest = engine.parallel.ir_digests.get(graph.parallel_graph_uid)
+        signature = graph.signal_signature
+
+        # A renamed sink changes no signal: same tasks, same state, same worker graph.
+        uses[1].inputs["Attribute ID"].default_value = "ACE_Smoke_Renamed"
+        engine.compiler.compile_scene_frontends(scene)
+        graph = engine.graphs[src.stable_id]
+        _assert(graph.tasks.get(acc_signal) is acc_task and graph.tasks.get(rms_signal) is rms_task,
+                f"A sink rename replaced the tasks: signals {(acc_signal, rms_signal)} -> "
+                f"{(_signal(engine, acc), _signal(engine, uses[0]))}, block sizes "
+                f"{(acc_task.block_size, rms_task.block_size)} -> {graph.block_size}")
+        _assert(float(acc_task._accumulator.sum()) == total, "The accumulator lost its sum")
+        _assert(engine.parallel.ir_digests.get(graph.parallel_graph_uid) == digest and graph.signal_signature == signature,
+                f"A sink rename changed the worker graph or the bake key: "
+                f"{digest} -> {engine.parallel.ir_digests.get(graph.parallel_graph_uid)}, "
+                f"{signature} -> {graph.signal_signature}")
+        attrs = {a.name for a in graph.get_proxy_object().data.attributes}
+        _assert("ACE_Smoke_Renamed" in attrs and names[1] not in attrs and names[0] in attrs,
+                f"The proxy attributes did not follow the rename: {sorted(attrs)}")
+
+        # A new signal keeps the others running.
+        peak = _add_ace_node(addon_key, tree_b, "stream", "loudness", "Peak", mode="peak")
+        tree_b.links.new(sources[1].outputs["Audio"], peak.inputs["Audio"])
+        engine.compiler.compile_scene_frontends(scene)
+        graph = engine.graphs[src.stable_id]
+        _assert(graph.tasks.get(acc_signal) is acc_task and graph.tasks.get(rms_signal) is rms_task,
+                "A new node elsewhere replaced the tasks")
+        _assert(_signal(engine, peak) in graph.tasks and graph.signal_signature != signature, "The new node is not compiled")
+        _assert(float(acc_task._accumulator.sum()) == total, "The accumulator lost its sum")
+    finally:
+        settings.ace_parallel_mode = parallel_mode
+        for obj, tree in ((obj_a, tree_a), (obj_b, tree_b)):
+            bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.node_groups.remove(tree)
+        while len(ace.audio_sources) > count:
+            ace.active_audio_source_index = len(ace.audio_sources) - 1
+            bpy.ops.audiocore.remove_audio_source()
+        ace.active_audio_source_index = first_index
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _check_source_nodes(addon_key, scene, engine):
     """Source nodes are the user's: none is added or removed by a compile; each picks its source."""
     ops = importlib.import_module(f"{addon_key}.ui.n_panel_operators")
@@ -985,7 +1088,7 @@ def _check_source_nodes(addon_key, scene, engine):
         _assert(_sid(node) == second.stable_id and node.label == second.name, "The node did not switch")
         _assert(ace.active_audio_source_index == count + 1, "The list did not follow the node")
         engine.compiler.compile_scene_frontends(scene)
-        _assert(any(_nid(loud) in graph.tasks and graph.source_uid == second.stable_id
+        _assert(any(_signal(engine, loud) in graph.tasks and graph.source_uid == second.stable_id
                     for graph in engine.graphs.values()), "The branch is not computed for the chosen input")
     finally:
         ops._resolve_panel_selected_node = original_selected
@@ -1767,6 +1870,7 @@ def main():
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)
     _check_instances_through_groups(addon_key, scene, engine)
+    _check_signals_are_shared_and_kept(addon_key, scene, engine)
     _check_world_and_instanced_trees_are_found(addon_key, scene, engine)
     _check_file_formats_decode(addon_key)
     _check_operator_list_follows_tree(addon_key, scene)

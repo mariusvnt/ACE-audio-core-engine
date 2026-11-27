@@ -62,8 +62,8 @@ class TestProxyManagement(unittest.TestCase):
         manager = self.proxy_mod.ACEProxyManager(None)
         calls = []
 
-        def _ensure_attributes_exist(proxy, _tree, active_keys=None, prune_existing=False):
-            calls.append((proxy.name, tuple(sorted(active_keys or ())), bool(prune_existing)))
+        def _ensure_attributes_exist(proxy, required, prune_existing=False):
+            calls.append((proxy.name, dict(required), bool(prune_existing)))
 
         manager.ensure_attributes_exist = _ensure_attributes_exist
         graph = types.SimpleNamespace(
@@ -87,7 +87,7 @@ class TestProxyManagement(unittest.TestCase):
 
         touched = manager.ensure_sink_layout(graph, active_keys={"attr_a"})
 
-        self.assertEqual(calls, [("ACE_PROXY_src", ("attr_a",), True)])
+        self.assertEqual(calls, [("ACE_PROXY_src", {"ace_attr_a": "FLOAT"}, True)])
         self.assertEqual(touched, {"ACE_PROXY_src"})
         self.assertIn("ace_prop_a", consumer_obj)
         self.assertEqual(consumer_obj["ace_prop_a"], 0.0)
@@ -114,8 +114,8 @@ class TestProxyManagement(unittest.TestCase):
         manager = self.proxy_mod.ACEProxyManager(None)
         proxy_updates = []
 
-        def _update_proxy_object(proxy, results, active_keys=None):
-            proxy_updates.append((proxy.name, dict(results or {}), tuple(sorted(active_keys or ()))))
+        def _update_proxy_object(proxy, values, pulses=frozenset()):
+            proxy_updates.append((proxy.name, dict(values or {}), tuple(sorted(pulses))))
 
         manager.update_proxy_object = _update_proxy_object
         graph = types.SimpleNamespace(
@@ -133,6 +133,14 @@ class TestProxyManagement(unittest.TestCase):
                         target_data_name="ace_prop_a",
                         attr_type="FLOAT",
                     ),
+                    # A second use of the same signal, under a name of its own.
+                    self.tasks_mod.ACESinkBinding(
+                        sink_kind="PROXY_ATTRIBUTE",
+                        target_object_name="ACE_PROXY_src",
+                        target_data_name="ace_attr_b",
+                        attr_type="FLOAT",
+                        pulse=True,
+                    ),
                 ]
             }
         )
@@ -142,7 +150,7 @@ class TestProxyManagement(unittest.TestCase):
         self.assertEqual(touched, {"ACE_PROXY_src"})
         self.assertEqual(
             proxy_updates,
-            [("ACE_PROXY_src", {"attr_a": 2.5}, ("attr_a",))],
+            [("ACE_PROXY_src", {"ace_attr_a": 2.5, "ace_attr_b": 2.5}, ("ace_attr_b",))],
         )
         self.assertEqual(consumer_obj["ace_prop_a"], 2.5)
 

@@ -11,6 +11,7 @@ from ...abstract_tree import ACEAbstractNode, ACEAbstractTree, audio_links
 from ...tasks.chunk import SAMPLE_RATE
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.source import SourceTask
+from ..compiler.signals import worker_params
 
 
 def is_offload_candidate(node: Optional[ACEAbstractNode]) -> bool:
@@ -97,9 +98,13 @@ def _upstream_nodes(start_ids, reverse_adj, graph_task_ids) -> set:
 def _source_ir(graph: ACEAudioGraph, node_id: str) -> Dict[str, Any]:
     task = graph.tasks.get(node_id)
     ctx = getattr(task, "source_context", None) if isinstance(task, SourceTask) else None
+    # The compile-time rate, not the task's: a task kept from the last compile has opened its
+    # file and knows another one, which would send an unchanged graph again. Jobs carry each
+    # chunk's own rate; this is the fallback.
     sample_rate = int(
-        (getattr(task, "sample_rate", 0) if isinstance(task, SourceTask) else 0)
+        getattr(graph, "sample_rate", 0)
         or getattr(ctx, "sample_rate", 0)
+        or (getattr(task, "sample_rate", 0) if isinstance(task, SourceTask) else 0)
         or SAMPLE_RATE
     )
     return {"sample_rate": max(sample_rate, 1), "lineage": [node_id], "spectrum_token": [node_id]}
@@ -112,7 +117,8 @@ def _nodes_ir(graph, abstract_tree, node_ids, fps):
         node = abstract_tree.nodes.get(node_id)
         if node is None:
             continue
-        params = {str(k): sanitize(v) for k, v in dict(getattr(node, "parameters", {}) or {}).items()}
+        # No sink names and no editor order: renaming a sink does not change the graph.
+        params = {str(k): sanitize(v) for k, v in worker_params(node).items()}
         nodes_ir[node_id] = {
             "category": str(getattr(node, "category", "") or ""),
             "type": str(getattr(node, "type", "") or ""),
