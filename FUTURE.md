@@ -10,8 +10,6 @@ Planned changes that aren't built yet, in the order they should be done. Nothing
 
 The extension packaging, the reference-curve tests, the fixes and removals, and the instance model (definitions, uses and shared signals) are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13, §10, §8, §1 and §3). The reference curves of the nodes that remain must stay unchanged through the work below.
 
-The latency items in [AI_Code_Review.md](AI_Code_Review.md) (stale-job budget, duplicated work on the main thread, process vs thread offload) come first: tasks are now shared and kept across compiles, which makes them simpler.
-
 ## 1. Time model: render, bake, live
 
 ### Why define time
