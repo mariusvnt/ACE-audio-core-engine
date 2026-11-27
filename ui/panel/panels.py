@@ -655,6 +655,41 @@ class ACE_PT_active_instances(bpy.types.Panel):
                 row.label(text=f"'{conflict['sink_name']}' gets different values: one use keeps it", icon='ERROR')
 
 
+class ACE_PT_live_session(bpy.types.Panel):
+    """A live session: playback that never drops or wraps a frame (core/live.py), and how it keeps up."""
+
+    bl_label = "Live"
+    bl_idname = "ACE_PT_live_session"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Audio Core Engine"
+    bl_order = 6
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
+
+    def draw(self, context):
+        layout = self.layout
+        engine = ACEAudioEngine.get_instance(context.scene)
+        session = getattr(engine, "live_session", None) if engine is not None else None
+        if session is None:
+            layout.operator("audiocore.live_start", icon="PLAY")
+            layout.label(text="Plays every frame, never wraps; stop to restore.", icon="INFO")
+            return
+        layout.operator("audiocore.live_stop", icon="SNAP_FACE")
+        col = layout.column(align=True)
+        col.label(text=f"{session.measured_fps:.1f} of {session.fps:g} fps, {session.frames} frames")
+        row = col.row()
+        row.alert = session.late_frames > 0
+        row.label(text=f"Late frames: {session.late_frames}")
+        drift = session.drift_s()
+        row = col.row()
+        row.alert = drift > 0.1
+        row.label(text=f"Behind real time: {drift:.2f} s")
+
+
 classes = (
     ACE_UL_source_list,
     ACE_UL_dummy_tree,
@@ -671,6 +706,7 @@ classes = (
     ACE_PT_information_streams_description,
     ACE_PT_capture_influx,
     ACE_PT_active_instances,
+    ACE_PT_live_session,
 )
 
 

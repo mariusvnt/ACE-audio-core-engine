@@ -137,6 +137,17 @@ def _maintain_downstream_bakes(scene) -> None:
 
 
 @persistent
+def animation_playback_post_handler(scene, *_args):
+    """bpy.app.handlers.animation_playback_post: playback stopped, so a live session ends."""
+    engine = ACEAudioEngine.get_instance(scene)
+    if engine is not None and engine.live_session is not None:
+        from ..live import stop as stop_live
+
+        with utils.logged_errors("handlers.animation_playback_post_handler"):
+            stop_live(engine, scene, stop_playback=False)
+
+
+@persistent
 def render_init_handler(scene):
     """bpy.app.handlers.render_init: start a render's bookkeeping, and say what won't render exactly."""
     engine = ACEAudioEngine.get_instance(scene)
@@ -389,6 +400,8 @@ def register_handlers():
         bpy.app.handlers.frame_change_pre.append(frame_change_handler)
     if not _ace_handler_registered(bpy.app.handlers.frame_change_post, frame_change_post_handler):
         bpy.app.handlers.frame_change_post.append(frame_change_post_handler)
+    if not _ace_handler_registered(bpy.app.handlers.animation_playback_post, animation_playback_post_handler):
+        bpy.app.handlers.animation_playback_post.append(animation_playback_post_handler)
     if not _ace_handler_registered(bpy.app.handlers.render_init, render_init_handler):
         bpy.app.handlers.render_init.append(render_init_handler)
     if not _ace_handler_registered(bpy.app.handlers.render_complete, render_complete_handler):
@@ -415,6 +428,7 @@ def unregister_handlers():
     _ace_handler_remove_all(bpy.app.handlers.redo_post, _undo_redo_invalidate_engine_caches)
     _ace_handler_remove_all(bpy.app.handlers.frame_change_pre, frame_change_handler)
     _ace_handler_remove_all(bpy.app.handlers.frame_change_post, frame_change_post_handler)
+    _ace_handler_remove_all(bpy.app.handlers.animation_playback_post, animation_playback_post_handler)
     _ace_handler_remove_all(bpy.app.handlers.render_init, render_init_handler)
     _ace_handler_remove_all(bpy.app.handlers.render_complete, render_complete_handler)
     _ace_handler_remove_all(bpy.app.handlers.render_pre, render_pre_handler)

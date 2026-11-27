@@ -749,6 +749,60 @@ class ACE_OT_toggle_source_bake(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ACE_OT_live_start(bpy.types.Operator):
+    """Start a live session: playback that never drops or wraps a frame, until you stop it."""
+    bl_idname = "audiocore.live_start"
+    bl_label = "Go Live"
+    bl_options = {'REGISTER'}
+
+    from_start: bpy.props.BoolProperty(  # type: ignore
+        name="From the Start",
+        description="Start at the scene's first frame, where simulations reset; otherwise continue from the current frame",
+        default=True,
+    )
+    disable_simulation_cache: bpy.props.BoolProperty(  # type: ignore
+        name="No Simulation Cache",
+        description="Do not keep simulated frames in memory during the session (restored after)",
+        default=True,
+    )
+    solid_viewports: bpy.props.BoolProperty(  # type: ignore
+        name="Solid 3D Views",
+        description="Drop the 3D views to solid shading during the session, to leave the GPU to the show (restored after)",
+        default=False,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        engine = ACEAudioEngine.get_instance(context.scene)
+        return engine is None or engine.live_session is None
+
+    def execute(self, context):
+        from ..core import live
+
+        engine = ACEAudioEngine.ensure_instance(context.scene)
+        live.start(engine, context.scene, from_start=self.from_start,
+                   disable_simulation_cache=self.disable_simulation_cache, solid_viewports=self.solid_viewports)
+        return {'FINISHED'}
+
+
+class ACE_OT_live_stop(bpy.types.Operator):
+    """End the live session and restore the scene's playback settings."""
+    bl_idname = "audiocore.live_stop"
+    bl_label = "Stop Live"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        engine = ACEAudioEngine.get_instance(context.scene)
+        return engine is not None and engine.live_session is not None
+
+    def execute(self, context):
+        from ..core import live
+
+        live.stop(ACEAudioEngine.get_instance(context.scene), context.scene)
+        return {'FINISHED'}
+
+
 classes = (
     ACE_OT_reset_audio_engine,
     ACE_OT_add_audio_sources_from_files,
@@ -765,6 +819,8 @@ classes = (
     ACE_OT_toggle_preview_sink,
     ACE_OT_bake_active_source,
     ACE_OT_clear_source_bake,
+    ACE_OT_live_start,
+    ACE_OT_live_stop,
     ACE_OT_toggle_source_bake,
 )
 

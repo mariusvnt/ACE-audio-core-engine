@@ -1953,6 +1953,29 @@ def _check_downstream_bake_node(addon_key, engine, scene, src):
     engine.compiler.compile_scene_frontends(scene)
 
 
+def _check_live_session(addon_key, engine, scene):
+    """A live session plays every frame over the longest range, counts its frames, and restores it all."""
+    clock = importlib.import_module(f"{addon_key}.core.clock")
+    handlers = importlib.import_module(f"{addon_key}.core.engine.handlers")
+    live = importlib.import_module(f"{addon_key}.core.live")
+    saved = (scene.sync_mode, scene.frame_end, scene.simulation_frame_end)
+    _assert(bpy.ops.audiocore.live_start(from_start=True) == {"FINISHED"}, "Go Live failed")
+    session = engine.live_session
+    _assert(session is not None and clock.current_clock(engine) is clock.Clock.LIVE, "The clock is not live")
+    _assert(scene.sync_mode == "NONE" and scene.frame_end == live.MAX_FRAME, "The scene is not set up for a live session")
+    for frame in range(scene.frame_start + 1, scene.frame_start + 11):
+        scene.frame_set(frame)
+    _assert(session.frames >= 10, f"The session counted {session.frames} frames")
+    # Playback stops (the user's Esc or stop button); animation_playback_post ends the session.
+    live._play(False)
+    if engine.live_session is not None:
+        handlers.animation_playback_post_handler(scene)
+    _assert(not engine._is_animation_playing(), "Playback still runs after the session")
+    _assert(engine.live_session is None, "Stopping playback did not end the session")
+    _assert((scene.sync_mode, scene.frame_end, scene.simulation_frame_end) == saved, "The session did not restore the scene")
+    print(f"[ACE smoke] live session: {session.frames} frames, {session.late_frames} late; scene restored")
+
+
 def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io"):
     """A file source wired to RMS, LUFS and a splitter writes values that follow the audio, and bakes."""
     scene.audiocore.engine_settings.ace_parallel_mode = parallel_mode
@@ -2225,6 +2248,7 @@ def main():
 
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io")
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="processes_dsp")
+    _check_live_session(addon_key, engine, scene)
     _check_shader_values_reach_scene(addon_key, scene, engine, src)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)

@@ -40,7 +40,7 @@ class ACEAudioEngine:
         self.render_active: bool = False
         self.render_frames_done: set = set()
         self.render_notes: list = []
-        self.live_session = None  # set while a live session runs (core/clock.py, Clock.LIVE)
+        self.live_session = None  # a core.live.LiveSession while one runs (core/clock.py, Clock.LIVE)
         self.current_frame = 0
         self.last_scene_frame = -1
         self.writer: Optional[ACEProxyManager] = None

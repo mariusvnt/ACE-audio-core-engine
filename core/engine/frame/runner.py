@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, Optional
 from .... import utils
 from ...clock import Clock, Method, current_clock, method_for
+from ...live import MAX_FRAME as LIVE_LAST_FRAME
 from ...tasks.chunk import AudioChunk, SAMPLE_RATE
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
@@ -92,12 +93,20 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         scene_frame = getattr(scene, "frame_current", None)
         if scene_frame is None:
             scene_frame = self.engine.current_frame + 1
-        if current_clock(self.engine) is Clock.RENDER:
+        frame_clock = current_clock(self.engine)
+        if frame_clock is Clock.RENDER:
             # render_pre, frame_change_pre and frame_change_post all ask for the rendered
             # frame: it is computed once, so stateful nodes step once per frame.
             if int(scene_frame) in self.engine.render_frames_done:
                 return
             self.engine.render_frames_done.add(int(scene_frame))
+        elif frame_clock is Clock.LIVE and int(scene_frame) != int(self.engine.last_scene_frame):
+            session = self.engine.live_session
+            session.on_frame(int(scene_frame))
+            if int(scene_frame) >= LIVE_LAST_FRAME:
+                from ...live import stop as stop_live
+
+                stop_live(self.engine, scene)  # the end of the longest range: stop cleanly
 
         prev_scene_frame = int(self.engine.last_scene_frame)
         if (
