@@ -75,49 +75,6 @@ def _check_loaded_files_get_current_node_groups(addon_key):
     _assert(not _stale_ace_groups(addon_key), "ACE groups still stale after load")
 
 
-def _check_old_stream_nodes_migrate(addon_key, scene):
-    """A saved per-method node (here LUFS) becomes a Loudness node in LUFS mode, keeping links and values."""
-    modes = importlib.import_module(f"{addon_key}.nodes.modes")
-    reader_mod = importlib.import_module(f"{addon_key}.nodes.geometry.reader")
-    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Migrate")
-    try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        old_group = bpy.data.node_groups.new(".ACE_stream_lufs_smoke", "GeometryNodeTree")
-        old_group.interface.new_socket("Audio", in_out="INPUT", socket_type="NodeSocketBundle")
-        old_group.interface.new_socket("Window (s)", in_out="INPUT", socket_type="NodeSocketFloat")
-        old_group.interface.new_socket("Loudness", in_out="OUTPUT", socket_type="NodeSocketFloat")
-        old_group.interface.new_socket("Attribute ID", in_out="INPUT", socket_type="NodeSocketString")
-        old = tree.nodes.new("GeometryNodeGroup")
-        old.node_tree = old_group
-        old["ace_id"] = "ACE_stream_lufs_abc123"
-        old.label = old.name = "Loudness (LUFS)"
-        old.inputs["Window (s)"].default_value = 1.25
-        old.inputs["Attribute ID"].default_value = "ACE_smoke_attr"
-        math = tree.nodes.new("ShaderNodeMath")
-        tree.links.new(source.outputs["Audio"], old.inputs["Audio"])
-        tree.links.new(old.outputs["Loudness"], math.inputs[0])
-
-        _assert(modes.migrate_legacy_stream_nodes() >= 1, "No old stream node was migrated")
-        node = next(n for n in tree.nodes if str(n.get("ace_id", "")).endswith("_abc123"))
-        _assert(node.get("ace_id") == "ACE_stream_loudness_abc123", f"Migrated id: {node.get('ace_id')}")
-        _assert(node.node_tree.name == ".ACE_stream_loudness", f"Migrated group: {node.node_tree.name}")
-        _assert(node.get("ace_mode") == "lufs", f"Migrated mode: {node.get('ace_mode')}")
-        _assert(node.label == "Loudness (LUFS)", f"Migrated label: {node.label}")
-        _assert(abs(node.inputs["Window (s)"].default_value - 1.25) < 1e-6, "Window value lost")
-        _assert(node.inputs["Attribute ID"].default_value == "ACE_smoke_attr", "Attribute ID lost")
-        _assert(node.inputs["Audio"].is_linked, "Audio input link lost")
-        _assert(any(l.to_node == math for l in node.outputs[0].links), "Output link lost")
-        abstract = reader_mod.ACEDummyTreeReader(tree).build()
-        read = abstract.nodes.get("ACE_stream_loudness_abc123")
-        _assert(read is not None and read.parameters.get("mode") == "lufs", "Reader misses the migrated node")
-    finally:
-        bpy.data.objects.remove(obj, do_unlink=True)
-        bpy.data.node_groups.remove(tree)
-        group = bpy.data.node_groups.get(".ACE_stream_lufs_smoke")
-        if group is not None:
-            bpy.data.node_groups.remove(group)
-
-
 def _check_operator_list_follows_tree(addon_key, scene):
     """Active Operators: a folded tree that follows edits (without compiling), selects both ways, renames."""
     sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
@@ -208,16 +165,12 @@ def _check_operator_list_follows_tree(addon_key, scene):
         src.active_ui_node_index = lufs_row
         _assert(src.active_ui_node_id == loud["ace_id"], "Clicking another row did not select it")
 
-        # Splitter band strip: band widths on the log axis; the old ramp editor group is removed.
+        # Splitter band strip: band widths on the log axis.
         splitter_mod = importlib.import_module(f"{addon_key}.ui.panel.splitter")
         split.inputs[1].default_value = 632.46  # geometric middle of 20 Hz .. 20 kHz
         widths = splitter_mod.splitter_band_widths(split, scene)
         _assert(len(widths) == 2 and abs(sum(widths) - 1.0) < 1e-6, f"Band widths: {widths}")
         _assert(abs(widths[0] - 0.5) < 0.01, f"Band widths do not follow the log axis: {widths}")
-        old_ramp = bpy.data.node_groups.new(splitter_mod._SPLITTER_RAMP_NODETREE_NAME, "ShaderNodeTree")
-        old_ramp.nodes.new("ShaderNodeValToRGB")
-        splitter_mod.remove_legacy_ramp_group()
-        _assert(bpy.data.node_groups.get(splitter_mod._SPLITTER_RAMP_NODETREE_NAME) is None, "Old ramp group kept")
         socket_color = tuple(split.inputs[0].draw_color(bpy.context, split))[:3]
         _assert(all(abs(a - b) < 1e-4 for a, b in zip(socket_color, selection._BUNDLE_SOCKET_COLOR)),
                 f"Bundle socket colour is {socket_color}")
@@ -837,8 +790,6 @@ def _check_status_and_inputs(addon_key, scene):
 def _check_titles_units_and_info(addon_key, scene):
     """The buffer field's unit, the Info panel and the Rolling Average window."""
     panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
-    factory = importlib.import_module(f"{addon_key}.nodes.geometry.factory").ACEDummyNodeFactory
-    frontend = importlib.import_module(f"{addon_key}.nodes.frontend")
     ace = scene.audiocore
     count, first_index = len(ace.audio_sources), ace.active_audio_source_index
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Titles")
@@ -864,25 +815,11 @@ def _check_titles_units_and_info(addon_key, scene):
         span = f"Frame Span: {scene.frame_start} - {scene.frame_start + frames - 1} ({frames} frames)"
         _assert("Duration: 2 min 5 s" in labels and span in labels, f"Info: {labels}")
 
-        # An old frame-counting Rolling Average group is converted in place: links and value survive.
+        # A new Rolling Average takes its window as a time.
         node = _add_ace_node(addon_key, tree, "utilities", "util_rolling_avg", "Rolling")
-        ng = node.node_tree
-        item = next(i for i in ng.interface.items_tree if i.name == "Window")
+        item = next(i for i in node.node_tree.interface.items_tree if i.name == "Window")
         _assert(abs(node.inputs["Window"].default_value - 0.25) < 1e-6 and item.subtype == "TIME_ABSOLUTE",
                 f"New Rolling Average window: {node.inputs['Window'].default_value}")
-        item.socket_type = "NodeSocketInt"
-        next(i for i in ng.interface.items_tree if i.name == "Window").name = "Number of Frames"
-        node.inputs["Number of Frames"].default_value = 6
-        value = tree.nodes.new("ShaderNodeValue")
-        sink = tree.nodes.new("ShaderNodeMath")
-        tree.links.new(value.outputs[0], node.inputs["Value"])
-        tree.links.new(node.outputs[0], sink.inputs[0])
-        frontend.convert_rolling_average_groups()  # what registration and a file load run
-        factory._NODES_CONTENT_HASH = ""
-        factory.ensure_node_groups_exist()
-        _assert("Window" in node.inputs and "Number of Frames" not in node.inputs, f"{[s.name for s in node.inputs]}")
-        _assert(abs(node.inputs["Window"].default_value - 6.0 / fps) < 1e-6, f"Window: {node.inputs['Window'].default_value}")
-        _assert(node.inputs["Value"].is_linked and node.outputs[0].is_linked, "Converting lost the links")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
@@ -1503,7 +1440,6 @@ def main():
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io")
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="processes_dsp")
     _check_file_formats_decode(addon_key)
-    _check_old_stream_nodes_migrate(addon_key, scene)
     _check_operator_list_follows_tree(addon_key, scene)
     _check_splitter_sliders(addon_key, scene)
     _check_every_splitter_lists_its_bands(addon_key, scene)

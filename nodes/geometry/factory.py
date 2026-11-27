@@ -5,7 +5,7 @@ import hashlib
 import json
 from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
-from ..frontend import remember_group_inputs, rolling_frames_to_window
+from ..frontend import remember_group_inputs
 
 
 class ACEDummyNodeFactory:
@@ -46,8 +46,6 @@ class ACEDummyNodeFactory:
                 ng = bpy.data.node_groups.get(group_name)
 
                 if ng:
-                    if type_key == "util_rolling_avg":
-                        rolling_frames_to_window(ng)
                     if ACEDummyNodeFactory._node_group_needs_refresh(ng, type_key):
                         remember_group_inputs(ng)
                         ng.nodes.clear()

@@ -5,7 +5,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 from .filters import NUMBA_AVAILABLE, SCIPY_AVAILABLE, scipy_lfilter
 from ... import utils
-from ...vars import LEGACY_STREAM_TYPES, LOUDNESS_FLOOR_DB, resolve_node_mode
+from ...vars import LOUDNESS_FLOOR_DB, resolve_node_mode
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk
 from .filters import _biquad_filter_block
@@ -490,10 +490,9 @@ _STREAM_TASKS: Dict[str, Dict[str, type]] = {
 
 
 def create_stream_task(node_id: str, node_type: str, params: Dict[str, Any], block_size: int) -> Optional[ACEAudioTask]:
-    """Task for a stream node, chosen by its type and mode; old types resolve to their mode."""
+    """Task for a stream node, chosen by its type and mode."""
     typ = str(node_type or "")
-    shell_type = LEGACY_STREAM_TYPES.get(typ, (typ, ""))[0]
-    by_mode = _STREAM_TASKS.get(shell_type)
+    by_mode = _STREAM_TASKS.get(typ)
     if not by_mode:
         return None
     mode = resolve_node_mode("stream", typ, (params or {}).get("mode"))

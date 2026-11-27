@@ -52,8 +52,8 @@ class TestParallelDSP(unittest.TestCase):
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
                 "src_b": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "rms_a": {"category": "stream", "type": "rms", "parameters": {}},
-                "rms_b": {"category": "stream", "type": "rms", "parameters": {}},
+                "rms_a": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
+                "rms_b": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
             },
             "links": [
                 ("src_a", 0, "rms_a", 0),
@@ -74,7 +74,7 @@ class TestParallelDSP(unittest.TestCase):
         return {
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "rms": {"category": "stream", "type": "rms", "parameters": {}},
+                "rms": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
                 "bright": {"category": "stream", "type": "brightness", "parameters": {}},
             },
             "links": [
@@ -97,8 +97,8 @@ class TestParallelDSP(unittest.TestCase):
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
                 "lufs": {
                     "category": "stream",
-                    "type": "lufs",
-                    "parameters": {"window_size": 0.4},
+                    "type": "loudness",
+                    "parameters": {"mode": "lufs", "window_size": 0.4},
                 },
             },
             "links": [
@@ -117,7 +117,7 @@ class TestParallelDSP(unittest.TestCase):
         return {
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "peak": {"category": "stream", "type": "peak", "parameters": {}},
+                "peak": {"category": "stream", "type": "loudness", "parameters": {"mode": "peak"}},
             },
             "links": [
                 ("src_a", 0, "peak", 0),
@@ -136,7 +136,7 @@ class TestParallelDSP(unittest.TestCase):
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
                 "split": {"category": "delta", "type": "frequency_splitter", "parameters": {}},
-                "rms": {"category": "stream", "type": "rms", "parameters": {}},
+                "rms": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
             },
             "links": [
                 ("src_a", 0, "split", 0),
@@ -155,7 +155,7 @@ class TestParallelDSP(unittest.TestCase):
         return {
             "nodes": {
                 "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "rms": {"category": "stream", "type": "rms", "parameters": {}},
+                "rms": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
                 "accum": {"category": "utilities", "type": "stream_accumulator", "parameters": {}},
             },
             "links": [
@@ -300,6 +300,14 @@ class TestParallelDSP(unittest.TestCase):
         ir["links"][0] = ("src_a", 3, "split", 0)  # Source has outputs 0..2
         with self.assertRaisesRegex(ValueError, "has 3 output"):
             self.pds.evaluate_parallel_job(self._job_for(ir, "digest_bad_socket"))
+
+    def test_worker_warm_up_builds_every_stream_task(self):
+        """A failed warm-up is swallowed by the pool initializer, so check it here."""
+        self.pds._warm_evaluation()
+        create_stream_task = load_module("core.tasks.stream").create_stream_task
+        for node_type, mode in self.pds._WARMUP_STREAM_TYPES:
+            task = create_stream_task("n", node_type, {"mode": mode} if mode else {}, 256)
+            self.assertIsNotNone(task, f"{node_type}/{mode}")
 
     def test_worker_rejects_link_to_unknown_node(self):
         ir = self._splitter_stream_graph_ir()

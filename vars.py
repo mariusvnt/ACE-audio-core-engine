@@ -168,16 +168,6 @@ ACE_NODES: dict[str, Category] = {
 }
 
 
-# Stream node types folded into mode nodes: old type -> (node type, mode).
-# Files saved with the old types are migrated on load; the engine also accepts them.
-LEGACY_STREAM_TYPES: dict[str, tuple[str, str]] = {
-    "rms": ("loudness", "rms"),
-    "lufs": ("loudness", "lufs"),
-    "peak": ("loudness", "peak"),
-    "stereo_width": ("stereo", "width"),
-    "stereo_balance": ("stereo", "balance"),
-}
-
 # Silence floor of every Loudness method: 0 at this level and below. Not user-editable.
 LOUDNESS_FLOOR_DB = -70.0
 
@@ -191,9 +181,6 @@ def node_modes(category: str, node_type: str) -> list[tuple[str, str, str]]:
 def resolve_node_mode(category: str, node_type: str, raw_mode=None) -> str:
     """Return a valid mode id for a node type: *raw_mode* if known, else the default, else ""."""
     typ = str(node_type or "")
-    legacy = LEGACY_STREAM_TYPES.get(typ) if str(category or "") == "stream" else None
-    if legacy is not None:
-        return legacy[1]
     modes = node_modes(category, typ)
     if not modes:
         return ""

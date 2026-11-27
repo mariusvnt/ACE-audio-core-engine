@@ -938,11 +938,6 @@ def _ui_sync_timer():
         # Every tick: the sync itself only rebuilds when the tree signature changed.
         t0 = time.perf_counter()
         _sync_ui_dummy_tree(context, force=key_changed)
-        _, active_source = utils._get_active_source(context)
-        if tree is not None and active_source is not None:
-            with utils.logged_errors("sync._ui_sync_timer#ramp"):
-                from .splitter import remove_legacy_ramp_group
-                remove_legacy_ramp_group()
         with utils.logged_errors("sync._ui_sync_timer#usage"):
             latencies = _engine_latency_metrics(context)
             if usage.sample(extra={key: float(latencies[key]) for key in _LATENCY_KEYS}):

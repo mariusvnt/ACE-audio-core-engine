@@ -41,12 +41,6 @@ class TestStreamModes(unittest.TestCase):
         self.assertIs(type(stream.create_stream_task("n", "loudness", {"mode": "bogus"}, 256)), stream.RMSLoudnessTask)
         self.assertIs(type(stream.create_stream_task("n", "stereo", {}, 256)), stream.StereoWidthTask)
 
-    def test_old_type_names_resolve_to_their_mode(self):
-        for old_type, (node_type, mode) in ace_vars.LEGACY_STREAM_TYPES.items():
-            old = stream.create_stream_task("n", old_type, {}, 256)
-            new = stream.create_stream_task("n", node_type, {"mode": mode}, 256)
-            self.assertIs(type(old), type(new), old_type)
-
     def test_every_mode_node_is_declared_with_its_default(self):
         for node_type in ("loudness", "stereo"):
             modes = [m[0] for m in ace_vars.node_modes("stream", node_type)]

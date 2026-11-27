@@ -5,7 +5,7 @@ import json
 import bpy  # type: ignore
 from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
-from ..frontend import remember_group_inputs, rolling_frames_to_window
+from ..frontend import remember_group_inputs
 from ...core.id_management import ACEIdManager
 from .helpers import HelperAttributeNodes
 from .interface import ShaderGroupInterface
@@ -468,27 +468,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         cls._build_group_content(ng, node_def, cat_key, type_key)
 
     @classmethod
-    def _cleanup_legacy_drivers(cls):
-        """Strip stale driver FCurves from ACE shader node groups."""
-        try:
-            node_groups = bpy.data.node_groups
-        except AttributeError:
-            return
-        for ng in node_groups:
-            name = str(getattr(ng, "name", "") or "")
-            if not name.startswith(".ACE_SHADER_"):
-                continue
-            anim_data = getattr(ng, "animation_data", None)
-            if anim_data is None:
-                continue
-            drivers = getattr(anim_data, "drivers", None)
-            if drivers is None or len(drivers) == 0:
-                continue
-            for fc in list(drivers):
-                with utils.logged_errors("factory.ACEShaderNodeFactory._cleanup_legacy_drivers"):
-                    drivers.remove(fc)
-
-    @classmethod
     def ensure_node_groups_exist(cls):
         try:
             _ = bpy.data.node_groups
@@ -498,7 +477,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         current_hash = cls._ace_nodes_hash()
         if current_hash and current_hash == cls._NODES_CONTENT_HASH:
             return
-        cls._cleanup_legacy_drivers()
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category.get("nodes", {}).items():
                 group_name = cls.get_group_name(cat_key, type_key)
@@ -511,8 +489,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                         ng = None
                     else:
                         ng = None
-                if type_key == "util_rolling_avg" and ng is not None:
-                    rolling_frames_to_window(ng)
                 if ng is None:
                     ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
                 elif cls._node_group_needs_refresh(ng, node_def, cat_key, type_key):

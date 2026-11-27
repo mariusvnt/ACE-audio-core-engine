@@ -1,6 +1,5 @@
 """Frequency splitter display: band bounds and the band strip."""
 
-import bpy  # type: ignore
 from ...nodes.split_freqs import split_freq_states
 
 
@@ -8,10 +7,6 @@ _SPLITTER_LOW_HZ = 20.0
 
 
 _SPLITTER_HIGH_HZ = 20000.0
-
-
-# Hidden ramp editor group made by earlier versions; removed when found.
-_SPLITTER_RAMP_NODETREE_NAME = ".ACE_SplitterRampUI"
 
 
 def _splitter_hz_to_norm(hz: float, low_hz: float = _SPLITTER_LOW_HZ, high_hz: float = _SPLITTER_HIGH_HZ) -> float:
@@ -52,10 +47,3 @@ def splitter_band_widths(node, scene) -> list[float]:
     ]
     edges = [0.0] + sorted(cuts) + [1.0]
     return [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
-
-
-def remove_legacy_ramp_group() -> None:
-    """Files from earlier versions hold a hidden ramp editor group (with leaked nodes): drop it."""
-    tree = bpy.data.node_groups.get(_SPLITTER_RAMP_NODETREE_NAME)
-    if tree is not None:
-        bpy.data.node_groups.remove(tree)

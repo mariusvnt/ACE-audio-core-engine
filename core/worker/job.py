@@ -231,10 +231,10 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# Old type names resolve to every mode of the current nodes, so each task class warms up.
+# Every stream task class, as (node type, mode), so each one warms up.
 _WARMUP_STREAM_TYPES = (
-    "rms", "lufs", "peak", "pitch", "brightness",
-    "onset", "stereo_width", "stereo_balance", "stereo_vector",
+    ("loudness", "rms"), ("loudness", "lufs"), ("loudness", "peak"), ("pitch", ""), ("brightness", ""),
+    ("onset", ""), ("stereo", "width"), ("stereo", "balance"), ("stereo_vector", ""),
 )
 
 
@@ -252,10 +252,10 @@ def _warm_evaluation():
     nodes["split"] = {"category": "delta", "type": "frequency_splitter", "parameters": {}}
     links = [("src", 0, "split", 0)]
     output_specs = {}
-    wiring = [("src", t) for t in _WARMUP_STREAM_TYPES] + [("split", "rms")]
-    for parent, node_type in wiring:
-        node_id = f"{parent}_{node_type}"
-        nodes[node_id] = {"category": "stream", "type": node_type, "parameters": {}}
+    wiring = [("src", t) for t in _WARMUP_STREAM_TYPES] + [("split", ("loudness", "rms"))]
+    for parent, (node_type, mode) in wiring:
+        node_id = f"{parent}_{node_type}_{mode}"
+        nodes[node_id] = {"category": "stream", "type": node_type, "parameters": {"mode": mode} if mode else {}}
         links.append((parent, 0, node_id, 0))
         output_specs[node_id] = {"node_id": node_id, "socket_idx": 0, "attr_type": "FLOAT"}
     graph = _compile_worker_graph(
