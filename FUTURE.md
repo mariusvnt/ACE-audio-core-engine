@@ -97,7 +97,7 @@ ACE measures audio, but every measurement describes the current frame, so whatev
 
 - **Any node can feed them**: Math, Map Range, Float Curve, other ACE outputs. What reaches the input is what Blender computes.
 - **Each use has its own state**, per modifier and per group path, so two objects using one tree don't share a controller.
-- **Times are in seconds**, and each step uses the zone's Delta Time: results don't depend on fps. Each step is an exact discretization (a one-pole filter uses `1 − e^(−dt/τ)`), so a step input defined in seconds gives the same curve at 24 and 48 fps.
+- **Times are in seconds**, and results don't depend on fps. A step lasts as long as the Scene Time that passed since the last step, which the zone keeps in its state. The zone's own Delta Time won't do: it is one frame long even when playback skipped frames or the timeline jumped ahead (probed on 5.2). Each step is an exact discretization (a one-pole filter uses `1 − e^(−dt/τ)`), so a step input defined in seconds gives the same curve at 24 and 48 fps.
 - **Blender's simulation cache and Bake record them**, as they record any simulation.
 - Their inputs take single values only (`structure_type` `SINGLE`). A field linked to one is drawn as an invalid link by Blender itself.
 
@@ -108,7 +108,7 @@ This is a deliberate exception to "frontends compute nothing" (ARCHITECTURE.md �
 **Envelope** replaces Rolling Average. Its **Mode** is a menu on the node, with Follow as the default. Inputs used by one mode only are greyed out in the other.
 
 - **Follow:** rises with Attack and falls with Release. Hold keeps the value at its peak for Hold seconds before it starts to fall. With Attack at 0, this is a peak hold, and fed a Gate's Hit it gives a hit-then-decay shape.
-- **Spring:** the output follows the input like a weight on a spring. It speeds up toward the input, overshoots and settles. Speed (Hz) sets how fast it follows. Bounce sets how much it overshoots: 0 means not at all, 1 means it barely stops. Each step is the exact solution of the spring over Delta Time, so it is stable at any fps. The overshoot isn't clamped: clamping would flatten the bounce.
+- **Spring:** the output follows the input like a weight on a spring. It speeds up toward the input, overshoots and settles. Speed (Hz) sets how fast it follows. Bounce sets how much it overshoots: 0 means not at all, 1 means it barely stops. Each step is the exact solution of the spring over the step's duration, so it is stable at any fps. The overshoot isn't clamped: clamping would flatten the bounce.
 - It starts at rest on its first input, so there is no ramp up from 0.
 
 **Running Total** replaces Stream Accumulator. Its input is a rate and its output is the total over time (value × seconds), for a scalar:
@@ -134,7 +134,7 @@ Shader trees have no Simulation Zone. For a controller in a material, the World 
 
 A node that exists only in shaders (a texture, Light Path, Fresnel) can't be copied: the link it feeds is ignored, so it is shown as invalid (see Ignored links).
 
-This rests on a probe: that a scene property written after the frame is evaluated is seen on that same frame, in the viewport and in a render, and what the second evaluation costs. If it fails, controllers exist only in Geometry Nodes. A material on an object can still read one through Store Named Attribute and an Attribute node.
+Probed on 5.2: in `frame_change_post`, the evaluated object holds that frame's value, in the viewport and in a render's own depsgraph. A scene property written there, followed by `update_tag`, is in that same frame of a Cycles or Eevee render, and the tag brings no extra depsgraph update. A material on an object could also read a controller through Store Named Attribute and an Attribute node, without ACE.
 
 ### Ignored links
 
@@ -146,12 +146,12 @@ This rests on a probe: that a scene property written after the frame is evaluate
 - a Split Freq fed by a chain ACE can't compute;
 - an Audio input reached through a Switch.
 
-**Every link ACE ignores becomes an invalid link**, drawn red by Blender (`NodeLink.is_valid`). The reason is in the N-panel: on the selected node's box, and in a list of the ignored links of the edited tree. Blender then evaluates the input with its default value, as ACE does.
+**Every link ACE ignores becomes an invalid link**, drawn red by Blender (`NodeLink.is_valid`). The reason is in the N-panel: on the selected node's box, and in a list of the ignored links of the edited tree.
 
-- Blender checks links again whenever a tree changes, so ACE marks them again after each tree update, undo and file load. The flag is not part of a tree's content signature, so marking a link never recompiles.
+- **The flag only shows.** Probed on 5.2: Geometry Nodes and Cycles still evaluate through a link marked invalid. For most of these inputs that changes nothing, since an ACE group only declares them and ACE computes the value. For a linked Attribute ID or Proxy Object, the group does read the link, so the node shows something other than what ACE writes until the link is fixed; the reason says so.
+- **The flag is reset** when the tree's nodes or links change, and when the file is reloaded (it holds across frame changes and other updates). So ACE marks the links again after each tree update, undo and file load. The flag is not part of a tree's content signature, so marking a link never recompiles.
 - Marking a link is the second thing a compile writes into user trees, after the repair of sink names. It is a flag, not content.
 - A link fed by an ACE output that has no value yet is not ignored: it is only waiting.
-- This rests on a probe: that the flag holds between tree updates, and that Geometry Nodes and both render engines then use the default. If it doesn't, ACE removes the ignored link instead, and the N-panel lists what it removed.
 
 ### Design rules
 
@@ -175,23 +175,28 @@ The Source node outputs only what musical time depends on: **BPM, Beats per Bar 
 ### State and timeline
 
 - **Measurements** keep the time model: a stateful one gives the same value on a frame whether that frame is reached by playing or by jumping (ARCHITECTURE.md §3, Time).
-- **Controllers** follow Blender's simulation rules:
-  - A frame in the simulation cache, or in a bake, is exact.
-  - Playing from the start computes every frame in order, and so does rendering an animation.
-  - What a jump to a frame outside the cache gives is to be probed. So is a frame skipped in playback, and a single render of a frame that isn't cached. The Baking panel says so when a scene has controllers whose simulation isn't cached or baked.
+- **Controllers** follow Blender's simulation rules (probed on 5.2):
+  - A frame in the simulation cache, or in a bake, is exact. Playing from the start fills the cache in order.
+  - A jump ahead past the cache, or a frame skipped in playback, takes one step from the last state. With the step measured in Scene Time, that step covers the time that passed.
+  - Without the cache, a jump back starts again from the first frame's state.
+  - **A render reads the viewport's simulation.** Frames that are cached render exactly. Frames past the cache render frozen on the last state, or at the start state if nothing was played. So an exact render needs the controllers' simulations cached over the range or baked. ACE's **Bake** also bakes the simulations of the objects that use controllers, after the sources they read. `render_init` notes any controller that isn't baked, in the Baking panel.
   - A live session carries their state on, with the simulation cache on or off.
 - **Recompiles** don't touch controllers: they hold no backend state.
 
 ### Core set order
 
-1. Probes on Blender 5.2: a Simulation Zone inside an ACE group used twice and nested in a user group (state per use); jumps, skipped frames and a render without a cache; a Menu socket on a group; a `SINGLE` input fed a field; the `is_valid` flag; and, for shaders, the read-back after a frame.
+1. Probes on Blender 5.2, done:
+   - a Simulation Zone inside a group keeps one state per use, nested groups included;
+   - a Menu socket on a group is set per node, and the inputs the chosen mode doesn't use are greyed out;
+   - a `SINGLE` input fed a field is flagged invalid by Blender;
+   - plus the jumps, renders, `is_valid` flag and shader read-back described above.
 2. Registry traits and the four categories, every check on a category removed, and the add menu. Values don't change.
 3. Ignored links shown as invalid, with their reasons in the N-panel.
 4. The merged Stereo node, and Pitch and Brightness on 0..1.
 5. Rolling Average, Stream Accumulator and `ACE_Values` removed; the native controller groups, and Envelope.
 6. Running Total and Gate.
 7. The Downbeat estimate and the beat-grid fit.
-8. Controllers in shaders, if the probe allows it.
+8. Controllers in shaders, through the generated Geometry Nodes tree.
 
 Measurements get reference curves (ARCHITECTURE.md §10). Controllers are checked against a Python reference of the same equations, on a step and an impulse at 24 and 48 fps.
 
