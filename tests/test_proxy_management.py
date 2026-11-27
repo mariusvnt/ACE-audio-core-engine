@@ -33,16 +33,8 @@ class _TrackingObject(fake_bpy.TruthyDict):
         self.write_count += 1
         super().__setitem__(key, value)
 
-
-class _FaultyObject(_TrackingObject):
-    def __setitem__(self, key, value):
-        if value not in (0.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]):
-            raise RuntimeError("simulated property write failure")
-        super().__setitem__(key, value)
-
-
-class _TrackingMeshData(fake_bpy.TruthyDict):
-    pass
+    def update_tag(self):
+        self.tags = getattr(self, "tags", 0) + 1
 
 
 class TestProxyManagement(unittest.TestCase):
@@ -61,13 +53,11 @@ class TestProxyManagement(unittest.TestCase):
     def setUp(self):
         self.bpy.data.objects = {}
 
-    def test_ensure_sink_layout_batches_proxy_and_object_sinks(self):
+    def test_ensure_sink_layout_batches_proxy_and_scene_sinks(self):
         proxy_obj = _TrackingObject("ACE_PROXY_src")
-        consumer_obj = _TrackingObject("Cube")
-        self.bpy.data.objects = {
-            "ACE_PROXY_src": proxy_obj,
-            "Cube": consumer_obj,
-        }
+        consumer_obj = _TrackingObject("Scene")
+        self.bpy.data.objects = {"ACE_PROXY_src": proxy_obj}
+        self.bpy.data.scenes = {"Scene": consumer_obj}
 
         manager = self.proxy_mod.ACEProxyManager(None)
         calls = []
@@ -86,8 +76,8 @@ class TestProxyManagement(unittest.TestCase):
                         attr_type="FLOAT",
                     ),
                     self.tasks_mod.ACESinkBinding(
-                        sink_kind="OBJECT_PROPERTY",
-                        target_object_name="Cube",
+                        sink_kind="SCENE_PROPERTY",
+                        target_object_name="Scene",
                         target_data_name="ace_prop_a",
                         attr_type="FLOAT",
                     ),
@@ -102,50 +92,24 @@ class TestProxyManagement(unittest.TestCase):
         self.assertIn("ace_prop_a", consumer_obj)
         self.assertEqual(consumer_obj["ace_prop_a"], 0.0)
 
-    def test_update_object_property_sinks_suppresses_redundant_writes(self):
-        consumer_obj = _TrackingObject("Cube")
-        self.bpy.data.objects = {"Cube": consumer_obj}
+    def test_update_scene_property_sinks_suppresses_redundant_writes(self):
+        consumer_obj = _TrackingObject("Scene")
+        self.bpy.data.scenes = {"Scene": consumer_obj}
         manager = self.proxy_mod.ACEProxyManager(None)
 
-        manager.update_object_property_sinks("Cube", {"ace_prop": 1.25}, {"ace_prop": "FLOAT"})
+        manager.update_scene_property_sinks("Scene", {"ace_prop": 1.25}, {"ace_prop": "FLOAT"})
         first_writes = consumer_obj.write_count
-        manager.update_object_property_sinks("Cube", {"ace_prop": 1.25}, {"ace_prop": "FLOAT"})
+        manager.update_scene_property_sinks("Scene", {"ace_prop": 1.25}, {"ace_prop": "FLOAT"})
 
         self.assertEqual(first_writes, 1)
         self.assertEqual(consumer_obj.write_count, 1)
         self.assertEqual(consumer_obj["ace_prop"], 1.25)
 
-    def test_update_object_property_sinks_skips_mesh_data_mirroring_by_default(self):
-        consumer_obj = _TrackingObject("Cube")
-        consumer_obj.data = _TrackingMeshData()
-        self.bpy.data.objects = {"Cube": consumer_obj}
-        manager = self.proxy_mod.ACEProxyManager(None)
-
-        manager.update_object_property_sinks("Cube", {"ace_prop": 1.25}, {"ace_prop": "FLOAT"})
-
-        self.assertEqual(consumer_obj["ace_prop"], 1.25)
-        self.assertNotIn("ace_prop", consumer_obj.data)
-
-    def test_update_object_property_sinks_falls_back_to_zero_on_failure(self):
-        faulty_obj = _FaultyObject("Cube")
-        self.bpy.data.objects = {"Cube": faulty_obj}
-        manager = self.proxy_mod.ACEProxyManager(None)
-
-        manager.update_object_property_sinks(
-            "Cube",
-            {"ace_prop": [9.0, 8.0, 7.0]},
-            {"ace_prop": "FLOAT_VECTOR"},
-        )
-
-        self.assertEqual(faulty_obj["ace_prop"], [0.0, 0.0, 0.0])
-
-    def test_commit_results_fans_out_proxy_and_object_property_writes(self):
+    def test_commit_results_fans_out_proxy_and_scene_property_writes(self):
         proxy_obj = _TrackingObject("ACE_PROXY_src")
-        consumer_obj = _TrackingObject("Cube")
-        self.bpy.data.objects = {
-            "ACE_PROXY_src": proxy_obj,
-            "Cube": consumer_obj,
-        }
+        consumer_obj = _TrackingObject("Scene")
+        self.bpy.data.objects = {"ACE_PROXY_src": proxy_obj}
+        self.bpy.data.scenes = {"Scene": consumer_obj}
 
         manager = self.proxy_mod.ACEProxyManager(None)
         proxy_updates = []
@@ -164,8 +128,8 @@ class TestProxyManagement(unittest.TestCase):
                         attr_type="FLOAT",
                     ),
                     self.tasks_mod.ACESinkBinding(
-                        sink_kind="OBJECT_PROPERTY",
-                        target_object_name="Cube",
+                        sink_kind="SCENE_PROPERTY",
+                        target_object_name="Scene",
                         target_data_name="ace_prop_a",
                         attr_type="FLOAT",
                     ),
@@ -184,19 +148,17 @@ class TestProxyManagement(unittest.TestCase):
 
     def test_stage_c_sink_writers_require_main_thread(self):
         proxy_obj = _TrackingObject("ACE_PROXY_src")
-        consumer_obj = _TrackingObject("Cube")
-        self.bpy.data.objects = {
-            "ACE_PROXY_src": proxy_obj,
-            "Cube": consumer_obj,
-        }
+        consumer_obj = _TrackingObject("Scene")
+        self.bpy.data.objects = {"ACE_PROXY_src": proxy_obj}
+        self.bpy.data.scenes = {"Scene": consumer_obj}
 
         manager = self.proxy_mod.ACEProxyManager(None)
         graph = types.SimpleNamespace(
             sink_bindings_by_attr={
                 "attr_a": [
                     self.tasks_mod.ACESinkBinding(
-                        sink_kind="OBJECT_PROPERTY",
-                        target_object_name="Cube",
+                        sink_kind="SCENE_PROPERTY",
+                        target_object_name="Scene",
                         target_data_name="ace_prop_a",
                         attr_type="FLOAT",
                     )
@@ -224,16 +186,16 @@ class TestProxyManagement(unittest.TestCase):
         self.assertIn("ensure_sink_layout", str(errors[0]))
 
     def test_stage_c_commit_results_requires_main_thread(self):
-        consumer_obj = _TrackingObject("Cube")
-        self.bpy.data.objects = {"Cube": consumer_obj}
+        consumer_obj = _TrackingObject("Scene")
+        self.bpy.data.scenes = {"Scene": consumer_obj}
 
         manager = self.proxy_mod.ACEProxyManager(None)
         graph = types.SimpleNamespace(
             sink_bindings_by_attr={
                 "attr_a": [
                     self.tasks_mod.ACESinkBinding(
-                        sink_kind="OBJECT_PROPERTY",
-                        target_object_name="Cube",
+                        sink_kind="SCENE_PROPERTY",
+                        target_object_name="Scene",
                         target_data_name="ace_prop_a",
                         attr_type="FLOAT",
                     )

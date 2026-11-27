@@ -6,8 +6,8 @@ import time
 from typing import Any, Dict, Optional
 from ... import utils
 from ..abstract_tree import ACEAbstractTree, ACEFrontendRef
-from ..id_management import ACEIdManager
 from ..proxy.manager import ACEProxyManager
+from ...nodes.identity import is_ace_group, is_ace_node, node_kind, tree_key
 from .common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot, _ACEFrontendDiscovery
 
 
@@ -44,51 +44,25 @@ class FrontendTracker:
 
     @staticmethod
     def _tree_frontend_uid(tree) -> str:
+        """The tree's frontend uid for this session, computed: nothing is stored on the tree."""
         if tree is None:
             return ""
-        try:
-            return str(tree.get("ace_frontend_uid", "") or "")
-        except Exception as exc:
-            utils.note_swallowed("frontends.FrontendTracker._tree_frontend_uid", exc)
-            return ""
+        kind = "shader" if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree" else "geometry"
+        return f"ACE_FRONTEND_{kind}_{tree_key(tree)}"
 
     @staticmethod
     def _tree_is_internal_ace_group(tree) -> bool:
-        if tree is None:
-            return False
-        name = str(getattr(tree, "name", "") or "")
-        return bool(name.startswith(".ACE_"))
+        return tree is not None and is_ace_group(tree)
 
     @classmethod
     def _tree_is_ace_managed(cls, tree) -> bool:
-        return bool(cls._tree_frontend_uid(tree) or cls._tree_has_ace_nodes(tree))
+        return bool(cls._tree_has_ace_nodes(tree))
 
     @staticmethod
     def _tree_has_ace_nodes(tree: bpy.types.NodeTree | None) -> bool:
         if not tree:
             return False
-        with utils.logged_errors("frontends.FrontendTracker._tree_has_ace_nodes"):
-            if bool(tree.get("ace_frontend_uid", "")):
-                return True
-        try:
-            for node in getattr(tree, "nodes", []) or []:
-                get_prop = getattr(node, "get", lambda _k, d=None: d)
-                if bool(get_prop("ace_id")):
-                    return True
-                source_id = str(get_prop("ace_source_id", "") or "")
-                if source_id and ACEIdManager.parse_node_id(source_id):
-                    return True
-                if str(getattr(node, "type", "") or "") != "GROUP":
-                    continue
-                group = getattr(node, "node_tree", None)
-                group_name = str(getattr(group, "name", "") or "")
-                norm_group_name = group_name.lstrip(".")
-                if group_name.startswith(".ACE_") or norm_group_name.startswith("ACE_"):
-                    return True
-            return False
-        except Exception as exc:
-            utils.note_swallowed("frontends.FrontendTracker._tree_has_ace_nodes#2", exc)
-            return False
+        return any(is_ace_node(node) for node in getattr(tree, "nodes", []) or [])
 
     @staticmethod
     def _frontend_membership_signature(frontends: list[_ACEFrontendDiscovery]) -> tuple[Any, ...]:
@@ -148,7 +122,6 @@ class FrontendTracker:
 
     def discover_scene_frontends(self, scene) -> list[_ACEFrontendDiscovery]:
         """Discover managed ACE frontends used by the scene."""
-        from ...nodes.frontend import ensure_frontend_uid as _ensure_frontend_uid
         from ...nodes.shader.reader import ACEShaderTreeReader
 
         utils.assert_main_thread("discover_scene_frontends")
@@ -227,15 +200,10 @@ class FrontendTracker:
                 )
 
         discovered: list[_ACEFrontendDiscovery] = []
-        existing_uids: list[str] = []
         for rec in sorted(by_ptr.values(), key=_frontend_record_sort_key):
             tree = rec.get("tree")
             frontend_kind = str(rec.get("frontend_kind", "") or "")
-            frontend_uid = _ensure_frontend_uid(tree, frontend_kind, existing_uids)
-            if not frontend_uid:
-                continue
-            if frontend_uid not in existing_uids:
-                existing_uids.append(frontend_uid)
+            frontend_uid = self._tree_frontend_uid(tree)
             owner_keys = tuple(sorted(str(v) for v in rec.get("owner_keys", set()) if str(v)))
             consumer_keys = tuple(sorted(str(v) for v in rec.get("consumer_keys", set()) if str(v)))
             discovered.append(
@@ -294,13 +262,13 @@ class FrontendTracker:
             return sonar_ace
         if target_fallback:
             utils.log(
-                f"ACE: target tree resolved via gn_target_object fallback (no ace_id nodes) → '{target_fallback.name}'",
+                f"ACE: target tree resolved via gn_target_object fallback (no ACE nodes) → '{target_fallback.name}'",
                 "DEBUG",
             )
             return target_fallback
         if sonar_fallback:
             utils.log(
-                f"ACE: target tree resolved via Sonar fallback (no ace_id nodes) → '{sonar_fallback.name}'",
+                f"ACE: target tree resolved via Sonar fallback (no ACE nodes) → '{sonar_fallback.name}'",
                 "DEBUG",
             )
         return sonar_fallback
@@ -394,7 +362,8 @@ class FrontendTracker:
     def _tree_content_signature(cls, tree) -> str:
         """Hash of what a compile reads from *tree*: ACE nodes, their settings and inputs, links, interface.
 
-        Node positions, names, labels and selection are left out: changing them needs no recompile.
+        Node positions, labels and selection are left out: changing them needs no recompile. An
+        ACE node's name is in: it is the node's identity.
         """
         tokens: list = []
         for item in getattr(getattr(tree, "interface", None), "items_tree", []) or []:
@@ -405,7 +374,9 @@ class FrontendTracker:
             values: tuple = ()
             get_keys = getattr(node, "keys", None)
             keys = list(get_keys()) if callable(get_keys) else []
-            if "ace_id" in keys or "ace_source_id" in keys:
+            ace_name = ""
+            if node_kind(node)[0]:
+                ace_name = str(getattr(node, "name", "") or "")
                 ace_props = tuple(sorted((k, repr(node[k])) for k in keys if str(k).startswith("ace_")))
                 vals = []
                 for sock in getattr(node, "inputs", []) or []:
@@ -419,7 +390,7 @@ class FrontendTracker:
             tokens.append((
                 "n", cls._node_tree_pointer(node), str(getattr(node, "bl_idname", "")),
                 str(getattr(getattr(node, "node_tree", None), "name", "") or ""),
-                bool(getattr(node, "mute", False)), ace_props, values,
+                bool(getattr(node, "mute", False)), ace_name, ace_props, values,
                 len(getattr(node, "outputs", []) or []),
             ))
         for link in getattr(tree, "links", []) or []:
@@ -493,32 +464,6 @@ class FrontendTracker:
         membership_sig = self._frontend_membership_signature(discovered_frontends)
         membership_changed = membership_sig != getattr(self.engine.compiler, "_last_frontend_membership_signature", ())
         if not self._dirty_frontend_uids and not self._pending_scene_rebuild and not membership_changed:
-            return False
-        shader_frontend_uids = {
-            str(rec.frontend_ref.uid or "")
-            for rec in (discovered_frontends or [])
-            if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
-        }
-        touches_shader_frontends = bool(
-            any(
-                str(self._dirty_tree_bl_idnames.get(int(tree_ptr), "") or "") == "ShaderNodeTree"
-                for tree_ptr in (self._dirty_tree_ptrs or set())
-            )
-            or str(getattr(self, "_pending_tree_bl_idname", "") or "") == "ShaderNodeTree"
-            or bool(shader_frontend_uids.intersection({str(uid) for uid in (self._dirty_frontend_uids or set())}))
-            or ((self._pending_scene_rebuild or membership_changed) and bool(shader_frontend_uids))
-        )
-        if touches_shader_frontends and not self.engine._structural_tree_writes_allowed(
-            scene,
-            frontend_kind=FRONTEND_KIND_SHADER,
-            tree_bl_idname="ShaderNodeTree",
-        ):
-            utils.log_throttled(
-                "shader_tree_preview_deferred",
-                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
-                "WARNING",
-                min_interval=5.0,
-            )
             return False
         # Rebuild after a quiet window, or after 2 s of continuous edits.
         first_dirty = getattr(self, "_first_dirty_time", 0.0)

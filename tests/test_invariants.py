@@ -239,25 +239,62 @@ class _Node(fake_bpy.TruthyDict):
         return id(self)
 
 
+class _Tree:
+    def __init__(self, uid):
+        self.session_uid = uid
+        self.nodes = []
+
+
 class TestNodeIdentity(unittest.TestCase):
+    """A node's kind comes from its group, its id from its tree and name; nothing is stored on it."""
+
     @classmethod
     def setUpClass(cls):
         _purge_testpkg_modules()
         fake_bpy.install()
-        cls.dummy_tree = load_module("nodes.geometry.reader")
+        cls.identity = load_module("nodes.identity")
 
-    def test_deterministic_seed_ignores_node_name(self):
-        group = types.SimpleNamespace(name=".ACE_stream_rms")
-        tree = types.SimpleNamespace(name="ACE Scene", nodes=[], links=[], bl_idname="GeometryNodeTree")
-        reader = self.dummy_tree.ACEDummyTreeReader(tree, frontend_uid="frontend_a")
-        sockets = ([("Audio", "NodeSocketBundle")], [("RMS", "NodeSocketFloat")])
-        node_a = _Node("RMS", group, *sockets)
-        node_b = _Node("RMS.001 renamed by the user", group, *sockets)
-        seed_a = reader._build_deterministic_node_seed(node_a, "stream", "rms", root_id="src_a")
-        seed_b = reader._build_deterministic_node_seed(node_b, "stream", "rms", root_id="src_a")
-        self.assertEqual(seed_a, seed_b)
-        seed_other_root = reader._build_deterministic_node_seed(node_a, "stream", "rms", root_id="src_b")
-        self.assertNotEqual(seed_a, seed_other_root)
+    def _node(self, name, group_name, tree):
+        node = _Node(name, types.SimpleNamespace(name=group_name, get=lambda _k, d=None: d), [], [])
+        node.id_data = tree
+        tree.nodes.append(node)
+        return node
+
+    def test_kind_comes_from_the_group_name_and_variants(self):
+        tree = _Tree(1)
+        cases = {
+            ".ACE_stream_loudness": ("stream", "loudness"),
+            ".ACE_SHADER_stream_stereo": ("stream", "stereo"),
+            ".ACE_stream_stereo_vector": ("stream", "stereo_vector"),
+            ".ACE_delta_frequency_splitter_4": ("delta", "frequency_splitter"),
+            ".ACE_stream_loudness.001": ("stream", "loudness"),
+            "My Group": ("", ""),
+        }
+        for group_name, kind in cases.items():
+            self.assertEqual(self.identity.node_kind(self._node("N", group_name, tree)), kind, group_name)
+
+    def test_id_follows_tree_and_name_and_nothing_is_written(self):
+        tree_a, tree_b = _Tree(1), _Tree(2)
+        node = self._node("Loudness", ".ACE_stream_loudness", tree_a)
+        twin = self._node("Loudness", ".ACE_stream_loudness", tree_b)
+        node_id = self.identity.node_id(node)
+        self.assertTrue(node_id.startswith("ACE_stream_loudness_"))
+        self.assertEqual(node_id, self.identity.node_id(node))
+        self.assertNotEqual(node_id, self.identity.node_id(twin))
+        self.assertIs(self.identity.find_node(tree_a, node_id), node)
+        node.name = "Kick"
+        self.assertNotEqual(node_id, self.identity.node_id(node))
+        self.assertEqual(dict(node), {})
+
+    def test_new_sink_names_avoid_taken_ones(self):
+        taken = set()
+        for _ in range(50):
+            name = self.identity.new_sink_name("RMS", taken)
+            self.assertTrue(name.startswith("ACE_rms_"))
+            self.assertNotIn(name, taken)
+            taken.add(name)
+        self.assertFalse(self.identity.usable_sink_name("ACE_undefined"))
+        self.assertFalse(self.identity.usable_sink_name(""))
 
 
 class TestFileFormats(unittest.TestCase):

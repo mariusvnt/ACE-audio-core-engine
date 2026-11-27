@@ -63,51 +63,5 @@ class TestBakePollFirstSource(unittest.TestCase):
         self.assertFalse(poll(self._context(-1, [_Source()])))
 
 
-class _HelperNode(fake_bpy.TruthyDict):
-    bl_idname = "ShaderNodeAttribute"
-
-    def __init__(self):
-        super().__init__()
-        self.name = ""
-        self.label = ""
-        self.location = (0.0, 0.0)
-        self.parent = None
-        self.attribute_name = ""
-        self.attribute_type = "GEOMETRY"
-        self.hide = False
-        self.outputs = []
-        self.inputs = []
-
-
-class _Nodes(list):
-    def new(self, _bl_idname):
-        node = _HelperNode()
-        self.append(node)
-        return node
-
-    def remove(self, node):
-        list.remove(self, node)
-
-
-class TestShaderHelperOutputZero(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        _purge_testpkg_modules()
-        fake_bpy.install()
-        cls.factory = load_module("nodes.shader.factory").ACEShaderNodeFactory
-
-    def test_helper_for_output_zero_is_found_and_not_rewritten(self):
-        tree = types.SimpleNamespace(nodes=_Nodes(), links=[])
-        owner = types.SimpleNamespace(location=(0.0, 0.0), name="owner", parent=None)
-        node, _ = self.factory._ensure_helper_attr_node(tree, owner, "node_a", 0, "RMS")
-        self.assertIsNotNone(node)
-        found = self.factory._find_helper_attr_nodes(tree, "node_a")
-        self.assertIs(found.get(0), node)
-        again, changed = self.factory._ensure_helper_attr_node(tree, owner, "node_a", 0, "RMS")
-        self.assertIs(again, node)
-        self.assertFalse(changed)
-        self.assertEqual(len(tree.nodes), 1)
-
-
 if __name__ == "__main__":
     unittest.main()

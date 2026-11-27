@@ -83,19 +83,21 @@ class AttributeSinks:
         return attr_type
 
     def _select_attr_name(self, proxy_name: str, info: Dict[str, Any]) -> str:
-        """Choose the mesh attribute name for a given output definition."""
+        """The mesh attribute an output is written to: its sink name, as the node's Attribute ID holds it.
+
+        "" for an output without a name (nothing reads it).
+        """
         custom = info.get("attr_id")
-        custom_is_explicit = bool(info.get("attr_custom", False))
-        if custom_is_explicit and isinstance(custom, str) and custom.strip():
-            name = custom.strip()
-            if not name.startswith(ACEIdManager.PREFIX):
-                name = ACEIdManager.PREFIX + ACEIdManager._clean_string(name)
-            return name[:63]
-        return ACEIdManager.generate_compact_attr_name(
-            proxy_name,
-            str(info.get("node_id", "") or ""),
-            str(info.get("output_name", "") or ""),
-            int(info.get("socket_idx", 0) or 0),
+        return custom.strip()[:63] if isinstance(custom, str) else ""
+
+    @staticmethod
+    def _is_prunable(attr_name: str, required) -> bool:
+        """An attribute of a proxy mesh that no output writes any more (proxies are ACE's own meshes)."""
+        return not (
+            attr_name in required
+            or attr_name in SOURCE_TEMPO_ATTRS
+            or attr_name == "position"
+            or attr_name.startswith(".")
         )
 
     def ensure_attributes_exist(
@@ -119,7 +121,7 @@ class AttributeSinks:
         if active_keys is not None and len(active_keys) == 0:
             if prune_existing:
                 for attr in list(mesh.attributes):
-                    if attr.name.startswith(ACEIdManager.PREFIX) and attr.name not in SOURCE_TEMPO_ATTRS:
+                    if self._is_prunable(attr.name, ()):
                         mesh.attributes.remove(attr)
                         attrs_changed = True
             if attrs_changed:
@@ -135,6 +137,8 @@ class AttributeSinks:
             if not info:
                 continue
             name = self._select_attr_name(proxy.name, info)
+            if not name:
+                continue
             required[name] = info["type"]
             attr = mesh.attributes.get(name)
             if attr and attr.data_type == info["type"]:
@@ -148,7 +152,7 @@ class AttributeSinks:
         # Full syncs always prune, and compile-time scoped syncs may opt-in.
         if active_keys is None or prune_existing:
             for attr in list(mesh.attributes):
-                if attr.name.startswith(ACEIdManager.PREFIX) and attr.name not in required and attr.name not in SOURCE_TEMPO_ATTRS:
+                if self._is_prunable(attr.name, required):
                     mesh.attributes.remove(attr)
                     attrs_changed = True
 
@@ -209,6 +213,8 @@ class AttributeSinks:
             if not info:
                 continue
             attr_name = self._select_attr_name(proxy.name, info)
+            if not attr_name:
+                continue
             attr = None
             cache = self._attr_cache.setdefault(mesh.name, {})
             if attr_name in cache:

@@ -2,7 +2,7 @@
 
 import hashlib
 from collections import deque
-from typing import Optional, Any
+from typing import Optional
 from ...vars import ACE_NODES, resolve_node_mode
 from ...core.abstract_tree import (
     ACEAbstractTree,
@@ -17,24 +17,18 @@ from ...core.id_management import ACEIdManager
 from ... import utils
 from ..split_freqs import capture_driven_splits
 from ..frontend import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _tree_pointer
-from .factory import ACEDummyNodeFactory
-from .identity import NodeIdentity
+from ..identity import node_id, node_kind, sink_names
+from ..source_nodes import node_source_id
 
 
-class ACEDummyTreeReader(NodeIdentity):
-    """Parse an active Blender GeometryNodeTree into an ACEAbstractTree."""
-
-    # Group name -> (category, type), rebuilt when the node registry changes.
-    _GROUP_NAME_LOOKUP: dict[str, tuple[str, str]] = {}
-    _ACE_NODES_LOOKUP_HASH: str = ""
-    FACTORY_CLS = ACEDummyNodeFactory
+class ACEDummyTreeReader:
+    """Parse a Blender node tree into an ACEAbstractTree. Reads only: nothing is written to the tree."""
 
     def __init__(
         self,
         blender_node_tree,
         frontend_uid: str = "",
         frontend_kind: str = FRONTEND_KIND_GEOMETRY,
-        reserved_node_ids: set[str] | None = None,
         consumer_keys: tuple[str, ...] = (),
     ):
         self.bl_tree = blender_node_tree
@@ -46,13 +40,6 @@ class ACEDummyTreeReader(NodeIdentity):
             self._node_pointer(node): idx
             for idx, node in enumerate(getattr(blender_node_tree, "nodes", []) or [])
         }
-        # Track which source roots have already visited a Blender node
-        self.visited_blender_nodes: dict[Any, set[str]] = {}
-        # Track ACE ID ownership inside this read pass so duplicated Blender
-        # nodes (Shift+D) cannot collapse to one abstract/task node.
-        self._ace_id_owner: dict[str, int] = {}
-        self._node_id_by_ptr: dict[int, str] = {}
-        self._reserved_node_ids = reserved_node_ids if reserved_node_ids is not None else set()
         if self.frontend_uid:
             self.abstract_tree.add_frontend(
                 ACEFrontendRef(
@@ -111,7 +98,7 @@ class ACEDummyTreeReader(NodeIdentity):
 
     def _emit_consumer_intents(self):
         sink_kind = (
-            "OBJECT_PROPERTY"
+            "SCENE_PROPERTY"
             if self.frontend_kind == FRONTEND_KIND_SHADER
             else "PROXY_ATTRIBUTE"
         )
@@ -135,31 +122,28 @@ class ACEDummyTreeReader(NodeIdentity):
                             socket_idx=int(getattr(sock, "socket_idx", 0) or 0),
                             sink_kind=sink_kind,
                             source_token=str(source_token or ""),
-                            consumer_keys=self.consumer_keys if sink_kind == "OBJECT_PROPERTY" else (),
+                            consumer_keys=self.consumer_keys if sink_kind == "SCENE_PROPERTY" else (),
                             output_name=str(getattr(sock, "name", "") or ""),
                             explicit_name=explicit_name,
                         )
                     )
 
+    @staticmethod
+    def _node_pointer(node) -> int:
+        try:
+            return int(node.as_pointer())
+        except Exception as exc:
+            utils.note_swallowed("reader.ACEDummyTreeReader._node_pointer", exc)
+            return id(node)
+
     def _find_source_nodes(self):
-        """Return all managed source placeholder nodes in the Blender tree."""
+        """The Source nodes of the tree that read a source; the others start no graph."""
         sources = []
         for node in self.bl_tree.nodes:
-            root_id = self._resolve_root_id(node)
-            ace_id = self._ensure_ace_id(node, root_id=root_id)
-            if not ace_id: continue
-            
-            parsed = ACEIdManager.parse_node_id(ace_id)
-            if parsed and parsed['category'] == 'source_mngmt' and parsed['type'] == 'src':
-                # Ignore ad-hoc source nodes; only managed placeholders carry a source binding.
-                source_id = ""
-                try:
-                    source_id = str(node.get("ace_source_id", "") or "")
-                except Exception as exc:
-                    utils.note_swallowed("reader.ACEDummyTreeReader._find_source_nodes", exc)
-                    source_id = ""
-                if not source_id or not ACEIdManager.parse_node_id(source_id):
-                    continue
+            if node_kind(node) != ("source_mngmt", "src"):
+                continue
+            parsed = ACEIdManager.parse_node_id(self._resolve_root_id(node))
+            if parsed and parsed["category"] == "source_mngmt" and parsed["type"] == "src":
                 sources.append(node)
         return sources
 
@@ -386,26 +370,8 @@ class ACEDummyTreeReader(NodeIdentity):
         return target_socket_idx
 
     def _resolve_root_id(self, bl_node) -> str:
-        """Try to derive a stable source identifier from the source node: prefer explicit ace_source_id, then the proxy object name, else the node ace_id."""
-        root_id = ""
-        try:
-            root_id = bl_node.get("ace_source_id", "")
-        except Exception as exc:
-            utils.note_swallowed("reader.ACEDummyTreeReader._resolve_root_id", exc)
-            root_id = ""
-        if not root_id:
-            try:
-                proxy_sock = next((s for s in bl_node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-                if proxy_sock and getattr(proxy_sock, "default_value", None):
-                    proxy_value = proxy_sock.default_value
-                    if isinstance(proxy_value, str):
-                        root_id = str(proxy_value or "").strip()
-                    else:
-                        root_id = getattr(proxy_value, "name", "") or ""
-            except Exception as exc:
-                utils.note_swallowed("reader.ACEDummyTreeReader._resolve_root_id#2", exc)
-                root_id = ""
-        return root_id
+        """The stable id of the source a Source node reads."""
+        return node_source_id(bl_node)
 
     @staticmethod
     def _attribute_socket_to_output_index(sock_name: str) -> Optional[int]:
@@ -421,13 +387,10 @@ class ACEDummyTreeReader(NodeIdentity):
         return None
 
     def _parse_node(self, bl_node, root_id: str) -> Optional[ACEAbstractNode]:
-        ace_id = self._ensure_ace_id(bl_node, root_id=root_id)
+        ace_id = node_id(bl_node, self.bl_tree)
         if not ace_id:
             return None
-        parsed = ACEIdManager.parse_node_id(ace_id)
-        if not parsed: return None
-        
-        cat, typ = parsed['category'], parsed['type']
+        cat, typ = node_kind(bl_node)
         
         # Splitter Handling
         if cat == 'delta' and typ == 'frequency_splitter':
@@ -474,15 +437,10 @@ class ACEDummyTreeReader(NodeIdentity):
                 if val is not None:
                      params[f"in_{i}"] = val
 
-            attr_out_idx = self._attribute_socket_to_output_index(sock.name)
-            if attr_out_idx is not None:
-                val = getattr(sock, 'default_value', None)
-                if isinstance(val, str):
-                    attr_name = val.strip()
-                    if attr_name:
-                        params[f"attr_id_out_{attr_out_idx}"] = attr_name
-                    is_custom = bool(attr_name)
-                    params[f"attr_id_custom_out_{attr_out_idx}"] = bool(is_custom)
+
+        for out_idx, attr_name in sink_names(bl_node).items():
+            params[f"attr_id_out_{out_idx}"] = attr_name
+            params[f"attr_id_custom_out_{out_idx}"] = True
 
         mode = resolve_node_mode(cat, typ, bl_node.get("ace_mode"))
         if mode:
@@ -523,9 +481,5 @@ class ACEDummyTreeReader(NodeIdentity):
             root_sources={root_id} if root_id else set(),
             frontend_uid=self.frontend_uid,
             frontend_kind=self.frontend_kind,
-            source_binding_id=(
-                str(getattr(bl_node, "get", lambda *_: "")("ace_source_id", "") or "")
-                if cat == "source_mngmt" and typ == "src"
-                else ""
-            ),
+            source_binding_id=root_id if cat == "source_mngmt" and typ == "src" else "",
         )

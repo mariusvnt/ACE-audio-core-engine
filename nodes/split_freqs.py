@@ -1,12 +1,11 @@
 """Frequency splitter split frequencies: edited by the panel's sliders, kept in ascending order."""
 
 import bpy  # type: ignore
-from ..core.id_management import ACEIdManager
+from .identity import node_kind
 from .. import utils
 from . import driven_values
 
 
-_SPLITTER_ID_PREFIX = f"{ACEIdManager.PREFIX}delta_frequency_splitter_"
 
 MAX_HZ = 20000.0
 
@@ -104,6 +103,6 @@ def sort_all_split_freqs() -> None:
     trees += [m.node_tree for m in bpy.data.materials if m.library is None and m.node_tree is not None]
     for tree in trees:
         for node in list(tree.nodes):
-            if str(node.get("ace_id", "") or "").startswith(_SPLITTER_ID_PREFIX):
+            if node_kind(node) == ("delta", "frequency_splitter"):
                 with utils.logged_errors("split_freqs.sort_all_split_freqs"):
                     sort_split_freqs(node)

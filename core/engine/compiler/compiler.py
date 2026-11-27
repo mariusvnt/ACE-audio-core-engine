@@ -11,8 +11,7 @@ from ...abstract_tree import ACEAbstractTree
 from ...tasks.utility import StreamAccumulatorTask
 from ...id_management import ACEIdManager
 from ...proxy.manager import ACEProxyManager
-from ....nodes.source_nodes import refresh_source_nodes
-from ..common import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot
+from ..common import FRONTEND_KIND_SHADER, _ACECompiledFrontendSnapshot
 from .graph_build import GraphBuild
 from .required_nodes import RequiredNodes
 from .sample_rates import SampleRates
@@ -121,7 +120,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             self._build_source_graph(ctx, runtime)
 
         if self.engine.writer is not None and sink_writes_allowed:
-            self._prune_stale_consumer_properties()
+            self._prune_stale_scene_properties(blender_scene, sources)
 
         self._last_compile_time = time.time()
 
@@ -164,6 +163,8 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             src_uid = ACEIdManager.ensure_source_uid(source, existing_ids=existing_ids)
             if src_uid and src_uid not in existing_ids:
                 existing_ids.append(src_uid)
+            if proxy_obj is not None and src_uid:
+                ACEProxyManager._mark_proxy(proxy_obj, src_uid)
             src_proxy_name = getattr(source, "proxy_object_name", "") or (proxy_obj.name if proxy_obj else "")
             if not src_proxy_name:
                 src_proxy_name = ACEIdManager.generate_source_proxy_name(
@@ -214,22 +215,21 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             )
         return manual_preview_winner_id, has_manual_preview
 
-    def _prune_stale_consumer_properties(self):
-        """Remove ACE_* custom properties that no graph writes any more."""
+    def _prune_stale_scene_properties(self, scene, sources):
+        """Remove the ACE_* scene properties that no shader sink writes any more."""
         # Runs after every graph's sink bindings are resolved; the caller checks
         # that a writer exists and sink writes are allowed.
-        with utils.logged_errors("compiler.GraphCompiler._prune_stale_consumer_properties"):
-            active_props_by_object: Dict[str, Set[str]] = {}
+        from ....nodes.identity import source_tempo_props
+
+        with utils.logged_errors("compiler.GraphCompiler._prune_stale_scene_properties"):
+            active: Set[str] = set()
             for g in self.engine.graphs.values():
                 for bindings in getattr(g, "sink_bindings_by_attr", {}).values():
                     for binding in (bindings or []):
-                        if str(getattr(binding, "sink_kind", "") or "") != "OBJECT_PROPERTY":
-                            continue
-                        obj_name = str(getattr(binding, "target_object_name", "") or "")
-                        prop_name = str(getattr(binding, "target_data_name", "") or "")
-                        if obj_name and prop_name:
-                            active_props_by_object.setdefault(obj_name, set()).add(prop_name)
-            self.engine.writer.prune_consumer_objects(active_props_by_object)
+                        if str(getattr(binding, "sink_kind", "") or "") == "SCENE_PROPERTY":
+                            active.add(str(getattr(binding, "target_data_name", "") or ""))
+            keep = {name for s in sources for name in source_tempo_props(str(getattr(s, "stable_id", "") or ""))}
+            self.engine.writer.prune_scene_properties(scene, active, keep=keep)
 
     def _block_size_resolver(self, fps, source_sr, source_type, graph):
         eng = self.engine
@@ -253,38 +253,10 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         frontends = self.engine.frontends.discover_scene_frontends(scene)
         membership_signature = self.engine.frontends._frontend_membership_signature(frontends)
         self._last_frontend_membership_signature = membership_signature
-        has_shader_frontends = any(
-            str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
-            for rec in (frontends or [])
-        )
-        if has_shader_frontends and not self.engine._structural_tree_writes_allowed(
-            scene,
-            tree=preferred_tree,
-            frontend_kind=FRONTEND_KIND_SHADER,
-        ):
-            target_tree = preferred_tree
-            if str(getattr(target_tree, "bl_idname", "") or "") != "ShaderNodeTree":
-                target_tree = next(
-                    (
-                        rec.tree
-                        for rec in (frontends or [])
-                        if str(getattr(rec.frontend_ref, "kind", "") or "") == FRONTEND_KIND_SHADER
-                    ),
-                    None,
-                )
-            self.engine.frontends.request_recompile(target_tree)
-            utils.log_throttled(
-                "shader_tree_preview_deferred",
-                "Deferring ACE shader-tree rebuild while a live material/rendered viewport preview is active.",
-                "WARNING",
-                min_interval=5.0,
-            )
-            return
-        # The sources the user's Source nodes read get a proxy object before the frontends are
-        # read (shader driver bindings need its name); the others get nothing.
+        # Reading writes nothing into the user's trees. The one exception: sink names that
+        # are missing or claimed twice are repaired once, before reading.
         with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends"):
-            refresh_source_nodes([record.tree for record in frontends if record.tree], scene)
-        reserved_node_ids: set[str] = set()
+            self.engine.sinks.repair_sink_names([record.tree for record in frontends], scene)
         merged_tree = ACEAbstractTree()
 
         for frontend in frontends:
@@ -294,20 +266,12 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             if not tree or not frontend_uid:
                 continue
 
-            if frontend_kind == FRONTEND_KIND_GEOMETRY:
-                with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#2"):
-                    from ....nodes.geometry.factory import ACEDummyNodeFactory
-                    removed = ACEDummyNodeFactory.prune_orphaned_ace_nodes(tree, scene)
-                    if removed:
-                        utils.log(f"ACE: pruned {removed} orphaned source node(s) from tree '{tree.name}'", "INFO")
-
             if frontend_kind == FRONTEND_KIND_SHADER:
                 from ....nodes.shader.reader import ACEShaderTreeReader
                 reader = ACEShaderTreeReader(
                     tree,
                     frontend_uid=frontend_uid,
                     frontend_kind=frontend_kind,
-                    reserved_node_ids=reserved_node_ids,
                     consumer_keys=frontend.consumer_object_names,
                 )
             else:
@@ -315,24 +279,10 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                     tree,
                     frontend_uid=frontend_uid,
                     frontend_kind=frontend_kind,
-                    reserved_node_ids=reserved_node_ids,
                     consumer_keys=frontend.consumer_object_names,
                 )
 
             partial_tree = reader.build()
-            changed = False
-            changed_node_ids: set[str] = set()
-            try:
-                if frontend_kind == FRONTEND_KIND_SHADER:
-                    changed, changed_node_ids = self.engine.sinks._sync_shader_output_ids(tree, partial_tree, scene)
-                else:
-                    changed, changed_node_ids = self.engine.sinks._sync_auto_attr_ids(tree, partial_tree, scene)
-            except Exception as exc:
-                utils.note_swallowed("compiler.GraphCompiler.compile_scene_frontends#4", exc)
-                changed = False
-                changed_node_ids = set()
-            if changed:
-                self.engine.sinks._refresh_abstract_attr_params_from_tree(partial_tree, tree, changed_node_ids)
             self._refresh_consumer_intents_from_nodes(partial_tree)
             partial_tree.frontends[frontend_uid] = frontend.frontend_ref
             merged_tree.merge_from(partial_tree)
@@ -359,7 +309,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self._compiled_tree_bl_idname = str(getattr(resolved_preferred_tree, "bl_idname", "") or "")
         self.engine.frontends._pending_scene_rebuild = False
         self.engine.frontends._dirty_frontend_uids.clear()
-        # After this compile's own writes (attribute ids, proxy sockets), so they don't count as edits.
+        # After the name repair, so its writes don't count as edits.
         self.engine.frontends.record_compiled_content(frontends)
 
     def compile_from_blender_tree(

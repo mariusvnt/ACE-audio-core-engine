@@ -38,20 +38,20 @@ def _write_test_wav(path, seconds=4.0, sample_rate=48000):
 def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
     """Add an ACE group node the way the Add menu does (that operator needs a node editor)."""
     gn_menu = importlib.import_module(f"{addon_key}.ui.gn_menu")
-    dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
     dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
-    id_management = importlib.import_module(f"{addon_key}.core.id_management")
+    shader = tree.bl_idname == "ShaderNodeTree"
     if (category, node_type) == ("delta", "frequency_splitter"):
         group = dynamic.ACESplitterManager.get_or_create_variant(2, tree)
     else:
-        factory = dummy_tree.ACEDummyNodeFactory
+        if shader:
+            factory = importlib.import_module(f"{addon_key}.nodes.shader.factory").ACEShaderNodeFactory
+        else:
+            factory = importlib.import_module(f"{addon_key}.nodes.geometry.factory").ACEDummyNodeFactory
         if factory.get_group_name(category, node_type) not in bpy.data.node_groups:
             factory.rebuild_node_group(category, node_type)  # built on first use, as by the menu
         group = bpy.data.node_groups[factory.get_group_name(category, node_type)]
-    node = tree.nodes.new("GeometryNodeGroup")
+    node = tree.nodes.new("ShaderNodeGroup" if shader else "GeometryNodeGroup")
     node.node_tree = group
-    existing = [n.get("ace_id") for n in tree.nodes if n.get("ace_id")]
-    node["ace_id"] = id_management.ACEIdManager.generate_node_id(category, node_type, existing_ids=existing)
     node.label = node.name = label
     if (category, node_type) == ("delta", "frequency_splitter"):
         node["ace_band_count"] = 2
@@ -62,9 +62,23 @@ def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
     if importlib.import_module(f"{addon_key}.vars").node_modes(category, node_type):
         modes.apply_node_mode(node, category, node_type, mode)
         node.name = label
-    op._initialize_auto_attr_ids(node, bpy.context)
+    op._initialize_sink_names(node, category, node_type, bpy.context)
     op._show_attr_id_socket_values(node)
     return node
+
+
+def node_id(addon_key, node) -> str:
+    """The node's id, as ACE computes it (nothing is stored on the node)."""
+    return importlib.import_module(f"{addon_key}.nodes.identity").node_id(node)
+
+
+def node_source(addon_key, node) -> str:
+    """The stable id of the source a Source node reads."""
+    return importlib.import_module(f"{addon_key}.nodes.source_nodes").node_source_id(node)
+
+
+def sink_names(addon_key, node) -> dict:
+    return importlib.import_module(f"{addon_key}.nodes.identity").sink_names(node)
 
 
 def _new_gn_tree(scene, name):

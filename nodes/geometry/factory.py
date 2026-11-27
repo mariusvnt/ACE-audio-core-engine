@@ -61,13 +61,8 @@ class ACEDummyNodeFactory:
             from ..dynamic_audio_operators import ACESplitterManager
             ACESplitterManager.refresh_existing_variants("GeometryNodeTree")
 
-        # A registry change also invalidates the reader's group-name lookup.
         if current_hash:
-            from .reader import ACEDummyTreeReader
-
             ACEDummyNodeFactory._NODES_CONTENT_HASH = current_hash
-            ACEDummyTreeReader._GROUP_NAME_LOOKUP.clear()
-            ACEDummyTreeReader._ACE_NODES_LOOKUP_HASH = ""
 
     @staticmethod
     def rebuild_node_group(cat_key: str, type_key: str):
@@ -88,36 +83,6 @@ class ACEDummyNodeFactory:
             ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
         
         ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
-
-    @staticmethod
-    def prune_orphaned_ace_nodes(tree, scene) -> int:
-        """Remove nodes from *tree* whose 'ace_source_id' property no longer corresponds to any active audio source in the scene."""
-        if tree is None:
-            return 0
-        ace = getattr(scene, "audiocore", None)
-        if ace is None:
-            return 0
-        live_source_ids: set[str] = set()
-        for src in getattr(ace, "audio_sources", []):
-            sid = getattr(src, "stable_id", "")
-            if sid:
-                live_source_ids.add(sid)
-        removed = 0
-        try:
-            for node in list(getattr(tree, "nodes", [])):
-                source_id = getattr(node, "get", lambda k, d=None: None)("ace_source_id")
-                if not source_id:
-                    continue
-                from ...core.id_management import ACEIdManager
-                ace_id = getattr(node, "get", lambda k, d=None: None)("ace_id")
-                parsed = ACEIdManager.parse_node_id(str(ace_id or ""))
-                if parsed and parsed.get("category") == "source_mngmt" and parsed.get("type") == "src":
-                    if source_id not in live_source_ids:
-                        tree.nodes.remove(node)
-                        removed += 1
-        except Exception as exc:
-            utils.log(f"ACE: orphan pruning failed: {exc}", "WARNING")
-        return removed
 
     @staticmethod
     def _node_group_needs_refresh(ng, node_type: str) -> bool:

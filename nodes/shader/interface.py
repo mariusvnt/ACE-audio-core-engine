@@ -120,29 +120,12 @@ class ShaderGroupInterface:
         return tuple(indices)
 
     @classmethod
-    def _helper_input_name(cls, output_idx: int) -> str:
-        if int(output_idx) <= 0:
-            return cls._HELPER_INPUT_PREFIX
-        return f"{cls._HELPER_INPUT_PREFIX} {int(output_idx + 1)}"
-
-    @classmethod
-    def _helper_input_specs(cls, node_def) -> tuple[tuple[int, str, str], ...]:
-        specs: list[tuple[int, str, str]] = []
-        for output_idx, (sock_type, _sock_name) in enumerate(node_def.get("outputs", [])):
-            if "Bundle" in str(sock_type or ""):
-                continue
-            specs.append((int(output_idx), str(sock_type or "NodeSocketFloat"), cls._helper_input_name(int(output_idx))))
-        return tuple(specs)
-
-    @classmethod
     def _expected_interface_names(cls, node_def, category: str, node_type: str) -> tuple[set[str], set[str]]:
         input_names = {str(name) for _sock_type, name in node_def.get("inputs", [])}
         output_names = {str(name) for _sock_type, name in node_def.get("outputs", [])}
         for sock_type, extra_name, _default_value in cls._extra_inputs(category, node_type):
             if cls._shader_interface_supports(sock_type):
                 input_names.add(str(extra_name))
-        for _output_idx, _sock_type, helper_name in cls._helper_input_specs(node_def):
-            input_names.add(str(helper_name))
         return input_names, output_names
 
     @classmethod
@@ -161,8 +144,6 @@ class ShaderGroupInterface:
         for sock_type, sock_name, _default_value in cls._extra_inputs(category, node_type):
             if cls._shader_interface_supports(sock_type):
                 input_types[str(sock_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
-        for _output_idx, sock_type, helper_name in cls._helper_input_specs(node_def):
-            input_types[str(helper_name)] = cls._shader_socket_type(str(sock_type or "NodeSocketFloat"))
         return input_types, output_types
 
     @classmethod
@@ -200,20 +181,18 @@ class ShaderGroupInterface:
             return ("int" in act) or ("float" in act) or ("value" in act)
         return exp == act
 
-    @staticmethod
-    def _shader_node_def(category: str, node_type: str, node_def):
-        """The definition a shader group is built from: the Source node keeps only its Audio output.
+    @classmethod
+    def _expected_value_names(cls, ng, category: str, node_type: str) -> dict[int, str]:
+        from ..identity import SINK_NAMES_KEY, SOURCE_ID_KEY
 
-        Its BPM and Beats per Bar come to shaders with the View Layer values (FUTURE.md section 1).
-        """
-        if (category, node_type) != ("source_mngmt", "src"):
-            return node_def
-        outputs = [spec for spec in node_def.get("outputs", []) if "Bundle" in str(spec[0])]
-        return dict(node_def, outputs=outputs)
+        return cls._value_names(
+            category, node_type,
+            sink_names=[str(v) for v in ng.get(SINK_NAMES_KEY, [])],
+            source_id=str(ng.get(SOURCE_ID_KEY, "") or ""),
+        )
 
     @classmethod
     def _node_group_needs_refresh(cls, ng, node_def, category: str, node_type: str) -> bool:
-        node_def = cls._shader_node_def(category, node_type, node_def)
         expected_inputs, expected_outputs = cls._expected_interface_names(node_def, category, node_type)
         expected_input_types, expected_output_types = cls._expected_interface_types(node_def, category, node_type)
         try:
@@ -275,7 +254,21 @@ class ShaderGroupInterface:
                         if from_type in ("BUNDLE", "CUSTOM"):
                             return True
 
-            # Every non-bundle output of a property node must be driven by its helper input.
+            # Values come from scene properties: View Layer Attribute nodes reading the group's names.
+            readers = sorted(
+                str(getattr(node, "attribute_name", "") or "")
+                for node in ng.nodes
+                if str(getattr(node, "bl_idname", "") or "") == "ShaderNodeAttribute"
+            )
+            if readers != sorted(cls._expected_value_names(ng, category, node_type).values()):
+                return True
+            if any(
+                str(getattr(node, "attribute_type", "")) != "VIEW_LAYER"
+                for node in ng.nodes
+                if str(getattr(node, "bl_idname", "") or "") == "ShaderNodeAttribute"
+            ):
+                return True
+            # Every non-bundle output of a property node must be driven by its value.
             is_property_node = cls._is_property_output_node(category, node_type)
             if is_property_node:
                 for node in ng.nodes:

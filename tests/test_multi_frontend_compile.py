@@ -45,13 +45,11 @@ class _EngineStub(types.SimpleNamespace):
 
 
 class _FakeTree(fake_bpy.TruthyDict):
-    def __init__(self, name: str, bl_idname: str, ptr: int, ace_frontend_uid: str = ""):
+    def __init__(self, name: str, bl_idname: str, ptr: int, ace_nodes: bool = False):
         super().__init__()
         self.name = name
         self.bl_idname = bl_idname
-        self.nodes = []
-        if ace_frontend_uid:
-            self["ace_frontend_uid"] = ace_frontend_uid
+        self.nodes = [_FakeAceNode("Loudness")] if ace_nodes else []
         self._ptr = int(ptr)
 
     def as_pointer(self):
@@ -113,94 +111,23 @@ class _FakeSocket:
         self.is_output = bool(is_output)
 
 
-class _FakeGroupNode(fake_bpy.TruthyDict):
-    def __init__(self, name: str, node_tree, ace_source_id: str):
+class _FakeAceGroup(fake_bpy.TruthyDict):
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+
+
+class _FakeAceNode(fake_bpy.TruthyDict):
+    """A node using an ACE group: what makes a tree an ACE frontend."""
+
+    def __init__(self, name: str, group_name: str = ".ACE_stream_loudness"):
         super().__init__()
         self.type = "GROUP"
         self.name = name
         self.label = name
-        self.node_tree = node_tree
+        self.node_tree = _FakeAceGroup(group_name)
         self.inputs = []
-        self.outputs = [_FakeSocket("Audio", socket_idx=0, is_output=True, data_type="NodeSocketBundle")]
-        self["ace_source_id"] = ace_source_id
-
-    def as_pointer(self):
-        return id(self)
-
-
-class _FakeAttrNode(fake_bpy.TruthyDict):
-    def __init__(self, ace_id: str, input_names=None, output_names=None):
-        super().__init__()
-        self.type = "GROUP"
-        self.name = ace_id
-        self.label = ace_id
-        self.id_data = None
-        self.inputs = [
-            _FakeSocket(str(name), socket_idx=idx, is_output=False, data_type="NodeSocketString")
-            for idx, name in enumerate(input_names or [])
-        ]
-        self.outputs = [
-            _FakeSocket(str(name), socket_idx=idx, is_output=True, data_type="NodeSocketFloat")
-            for idx, name in enumerate(output_names or [])
-        ]
-        self["ace_id"] = ace_id
-
-    def as_pointer(self):
-        return id(self)
-
-
-class _FakeLayoutNode(fake_bpy.TruthyDict):
-    def __init__(self, bl_idname: str, node_type: str, ace_id: str = "", output_names=None):
-        super().__init__()
-        self.bl_idname = bl_idname
-        self.type = node_type
-        self.name = bl_idname
-        self.label = bl_idname
-        self.location = (0.0, 0.0)
-        self.dimensions = (0.0, 0.0)
-        self.parent = None
-        self.hide = False
-        self.width_hidden = 0.0
-        self.shrink = False
-        self.inputs = []
-        self.outputs = [
-            _FakeSocket(str(name), socket_idx=idx, is_output=True, data_type="NodeSocketFloat")
-            for idx, name in enumerate(output_names or [])
-        ]
-        if ace_id:
-            self["ace_id"] = ace_id
-
-
-class _FakeLayoutNodes(list):
-    def __init__(self, tree):
-        super().__init__()
-        self._tree = tree
-
-    def new(self, bl_idname: str):
-        if bl_idname == "NodeFrame":
-            node = _FakeLayoutNode("NodeFrame", "FRAME")
-        elif bl_idname == "ShaderNodeAttribute":
-            node = _FakeLayoutNode(
-                "ShaderNodeAttribute",
-                "ATTRIBUTE",
-                output_names=["Factor", "Vector", "Color"],
-            )
-            node.attribute_type = "GEOMETRY"
-            node.attribute_name = ""
-        else:  # pragma: no cover - only the helper layout node types are used here
-            raise ValueError(f"Unsupported fake node type: {bl_idname}")
-        node.id_data = self._tree
-        self.append(node)
-        return node
-
-    def remove(self, node):
-        super().remove(node)
-
-
-class _FakeLayoutTree(_FakeTree):
-    def __init__(self, name: str, bl_idname: str, ptr: int):
-        super().__init__(name, bl_idname, ptr)
-        self.nodes = _FakeLayoutNodes(self)
+        self.outputs = []
 
 
 class TestMultiFrontendCompile(unittest.TestCase):
@@ -338,104 +265,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
         with self.assertRaises(ValueError):
             merged.merge_from(dup_node)
 
-    def test_frontend_uid_persistence_and_duplicate_repair_are_deterministic(self):
-        engine = self._engine_shell()
-        gn_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 101, ace_frontend_uid="ACE_FRONTEND_dup")
-        sh_tree = _FakeTree("ACE_Shader", "ShaderNodeTree", 202, ace_frontend_uid="ACE_FRONTEND_dup")
-        scene = _FakeScene(
-            [
-                _FakeObject("Speaker", modifiers=[_FakeModifier("ACE GN", gn_tree)]),
-                _FakeObject(
-                    "Receiver",
-                    material_slots=[_FakeMaterialSlot(_FakeMaterial("ACE Mat", sh_tree))],
-                ),
-            ]
-        )
-
-        frontends_a = engine.frontends.discover_scene_frontends(scene)
-        frontends_b = engine.frontends.discover_scene_frontends(scene)
-
-        self.assertEqual(len(frontends_a), 2)
-        self.assertEqual([rec.frontend_ref.uid for rec in frontends_a], [rec.frontend_ref.uid for rec in frontends_b])
-        self.assertEqual(gn_tree["ace_frontend_uid"], "ACE_FRONTEND_dup")
-        self.assertNotEqual(sh_tree["ace_frontend_uid"], "ACE_FRONTEND_dup")
-        self.assertTrue(sh_tree["ace_frontend_uid"].startswith("ACE_FRONTEND_"))
-
-    def test_frontend_uid_duplicate_repair_is_canonical_across_scene_order(self):
-        engine = self._engine_shell()
-
-        def _build_scene(reverse: bool):
-            gn_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 101, ace_frontend_uid="ACE_FRONTEND_dup")
-            sh_tree = _FakeTree("ACE_Shader", "ShaderNodeTree", 202, ace_frontend_uid="ACE_FRONTEND_dup")
-            objects = [
-                _FakeObject("Speaker", modifiers=[_FakeModifier("ACE GN", gn_tree)]),
-                _FakeObject(
-                    "Receiver",
-                    material_slots=[_FakeMaterialSlot(_FakeMaterial("ACE Mat", sh_tree))],
-                ),
-            ]
-            if reverse:
-                objects.reverse()
-            return _FakeScene(objects), gn_tree, sh_tree
-
-        scene_a, gn_tree_a, sh_tree_a = _build_scene(reverse=False)
-        scene_b, gn_tree_b, sh_tree_b = _build_scene(reverse=True)
-
-        frontends_a = engine.frontends.discover_scene_frontends(scene_a)
-        frontends_b = engine.frontends.discover_scene_frontends(scene_b)
-
-        mapping_a = {rec.frontend_ref.tree_name: rec.frontend_ref.uid for rec in frontends_a}
-        mapping_b = {rec.frontend_ref.tree_name: rec.frontend_ref.uid for rec in frontends_b}
-
-        self.assertEqual(mapping_a, mapping_b)
-        self.assertEqual(gn_tree_a["ace_frontend_uid"], gn_tree_b["ace_frontend_uid"])
-        self.assertEqual(sh_tree_a["ace_frontend_uid"], sh_tree_b["ace_frontend_uid"])
-        self.assertEqual(len(set(mapping_a.values())), 2)
-        self.assertEqual(mapping_a["ACE_GN"], "ACE_FRONTEND_dup")
-        self.assertNotEqual(mapping_a["ACE_Shader"], "ACE_FRONTEND_dup")
-
-    def test_shared_shader_frontend_is_deduped_before_uid_repair(self):
-        engine = self._engine_shell()
-        shared_tree = _FakeTree("ACE_Shader_Shared", "ShaderNodeTree", 303, ace_frontend_uid="ACE_FRONTEND_shared")
-        shared_mat = _FakeMaterial("ACE Shared Mat", shared_tree)
-        scene = _FakeScene(
-            [
-                _FakeObject("Cube", material_slots=[_FakeMaterialSlot(shared_mat)]),
-                _FakeObject("Sphere", material_slots=[_FakeMaterialSlot(shared_mat)]),
-            ]
-        )
-
-        frontends_a = engine.frontends.discover_scene_frontends(scene)
-        tree_uid_after_a = shared_tree.get("ace_frontend_uid")
-        frontends_b = engine.frontends.discover_scene_frontends(scene)
-
-        self.assertEqual(len(frontends_a), 1)
-        self.assertEqual(len(frontends_b), 1)
-        self.assertEqual(frontends_a[0].frontend_ref.uid, "ACE_FRONTEND_shared")
-        self.assertEqual(frontends_b[0].frontend_ref.uid, "ACE_FRONTEND_shared")
-        self.assertEqual(tree_uid_after_a, "ACE_FRONTEND_shared")
-        self.assertEqual(shared_tree.get("ace_frontend_uid"), "ACE_FRONTEND_shared")
-        self.assertEqual(frontends_a[0].frontend_ref.owner_keys, ("Cube", "Sphere"))
-        self.assertEqual(frontends_a[0].consumer_object_names, ("Cube", "Sphere"))
-
-    def test_source_node_identity_is_separated_from_source_binding_id(self):
-        source_id = self.idm.ACEIdManager.generate_node_id("source_mngmt", "src")
-        source_group = _FakeTree(".ACE_source_mngmt_src", "GeometryNodeTree", 303)
-        source_node = _FakeGroupNode("Managed Source", source_group, source_id)
-        tree = _FakeTree("ACE Scene", "GeometryNodeTree", 404)
-        tree.nodes = [source_node]
-        reader = self.dummy_tree.ACEDummyTreeReader(tree, frontend_uid="frontend_scene")
-
-        ace_id = reader._ensure_ace_id(source_node, root_id=source_id)
-        abstract_node = reader._parse_node(source_node, root_id=source_id)
-
-        self.assertTrue(ace_id)
-        self.assertNotEqual(ace_id, source_id)
-        self.assertEqual(source_node.get("ace_id"), ace_id)
-        self.assertEqual(abstract_node.id, ace_id)
-        self.assertEqual(abstract_node.source_binding_id, source_id)
-        self.assertEqual(abstract_node.frontend_uid, "frontend_scene")
-
     def test_scene_signature_is_stable_across_frontend_and_intent_order(self):
         node_a = self.abs_mod.ACEAbstractNode(
             id="node_a",
@@ -482,7 +311,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
             frontend_uid="frontend_b",
             node_id="node_b",
             socket_idx=0,
-            sink_kind="OBJECT_PROPERTY",
+            sink_kind="SCENE_PROPERTY",
             source_token="src_a",
             consumer_keys=("Cube",),
             output_name="RMS",
@@ -507,7 +336,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
                     frontend_uid="frontend_b",
                     node_id="node_b",
                     socket_idx=0,
-                    sink_kind="OBJECT_PROPERTY",
+                    sink_kind="SCENE_PROPERTY",
                     source_token="src_b",
                     consumer_keys=("Cube",),
                     output_name="RMS",
@@ -662,309 +491,40 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertFalse(compiled)
         self.assertFalse(engine.frontends._pending_scene_rebuild)
 
-    def test_sink_binding_resolution_supports_mixed_geometry_and_shader_consumers(self):
+    def test_sink_bindings_follow_the_sink_names_of_the_tree(self):
+        """GN values go to the proxy, shader values to one scene property, both under the node's own name."""
         engine = self._engine_shell()
+        engine.scene_name = "Scene"
         engine.writer.output_defs = {
-            "gn_attr": {"node_id": "node_gn", "socket_idx": 0, "type": "FLOAT", "output_name": "RMS"},
-            "shader_attr": {"node_id": "node_shader", "socket_idx": 0, "type": "FLOAT", "output_name": "RMS"},
+            "gn_attr": {"node_id": "node_gn", "socket_idx": 0, "type": "FLOAT", "attr_id": "ACE_rms_aaaaaa"},
+            "shader_attr": {"node_id": "node_shader", "socket_idx": 0, "type": "FLOAT", "attr_id": "ACE_rms_bbbbbb"},
+            "unnamed": {"node_id": "node_gn", "socket_idx": 1, "type": "FLOAT", "attr_id": ""},
         }
-        graph = types.SimpleNamespace(output_attr_keys=["gn_attr", "shader_attr"])
+        graph = types.SimpleNamespace(output_attr_keys=["gn_attr", "shader_attr", "unnamed"])
         tree = self.abs_mod.ACEAbstractTree(
             nodes={
                 "node_gn": self.abs_mod.ACEAbstractNode(
-                    id="node_gn",
-                    name="GN RMS",
-                    category="stream",
-                    type="rms",
-                    frontend_uid="frontend_gn",
-                    frontend_kind="GEOMETRY_NODES",
+                    id="node_gn", name="GN RMS", category="stream", type="loudness",
+                    frontend_uid="frontend_gn", frontend_kind="GEOMETRY_NODES",
                 ),
                 "node_shader": self.abs_mod.ACEAbstractNode(
-                    id="node_shader",
-                    name="Shader RMS",
-                    category="stream",
-                    type="rms",
-                    frontend_uid="frontend_shader",
-                    frontend_kind="SHADER_NODES",
+                    id="node_shader", name="Shader RMS", category="stream", type="loudness",
+                    frontend_uid="frontend_shader", frontend_kind="SHADER_NODES",
                 ),
             },
-            frontends={
-                "frontend_gn": self.abs_mod.ACEFrontendRef(
-                    uid="frontend_gn",
-                    kind="GEOMETRY_NODES",
-                    tree_name="GN",
-                    tree_bl_idname="GeometryNodeTree",
-                    owner_keys=("Cube:ACE GN",),
-                    tree_ptr=11,
-                ),
-                "frontend_shader": self.abs_mod.ACEFrontendRef(
-                    uid="frontend_shader",
-                    kind="SHADER_NODES",
-                    tree_name="Shader",
-                    tree_bl_idname="ShaderNodeTree",
-                    owner_keys=("Cube", "Sphere"),
-                    material_name="ACE Mat",
-                    tree_ptr=22,
-                ),
-            },
-            consumer_intents=[
-                self.abs_mod.ACEConsumerIntent(
-                    frontend_uid="frontend_gn",
-                    node_id="node_gn",
-                    socket_idx=0,
-                    sink_kind="PROXY_ATTRIBUTE",
-                    source_token="src_a",
-                    output_name="RMS",
-                ),
-                self.abs_mod.ACEConsumerIntent(
-                    frontend_uid="frontend_shader",
-                    node_id="node_shader",
-                    socket_idx=0,
-                    sink_kind="OBJECT_PROPERTY",
-                    source_token="src_a",
-                    consumer_keys=("Cube", "Sphere"),
-                    output_name="RMS",
-                ),
-            ],
         )
 
         bindings = engine.sinks._resolve_sink_bindings_for_graph(
-            graph,
-            tree,
-            source_uid="src_a",
-            proxy_name="ACE_PROXY_src_a",
-            single_source_mode=False,
+            graph, tree, source_uid="src_a", proxy_name="ACE_PROXY_src_a", single_source_mode=False,
         )
 
-        self.assertEqual(len(bindings["gn_attr"]), 1)
-        self.assertEqual(bindings["gn_attr"][0].sink_kind, "PROXY_ATTRIBUTE")
-        self.assertEqual(bindings["gn_attr"][0].target_object_name, "ACE_PROXY_src_a")
-        self.assertEqual(len(bindings["shader_attr"]), 2)
-        shader_targets = {b.target_object_name for b in bindings["shader_attr"]}
-        self.assertEqual(shader_targets, {"Cube", "Sphere"})
-        self.assertTrue(
-            all(binding.sink_kind == "OBJECT_PROPERTY" for binding in bindings["shader_attr"])
-        )
-
-    def test_shader_sink_bindings_resolve_to_consumer_objects_without_proxy(self):
-        engine = self._engine_shell()
-        engine.writer.output_defs = {
-            "shader_attr": {"node_id": "node_shader", "socket_idx": 0, "type": "FLOAT", "output_name": "RMS"},
-        }
-        graph = types.SimpleNamespace(output_attr_keys=["shader_attr"])
-        tree = self.abs_mod.ACEAbstractTree(
-            nodes={
-                "node_shader": self.abs_mod.ACEAbstractNode(
-                    id="node_shader",
-                    name="Shader RMS",
-                    category="stream",
-                    type="rms",
-                    frontend_uid="frontend_shader",
-                    frontend_kind="SHADER_NODES",
-                ),
-            },
-            frontends={
-                "frontend_shader": self.abs_mod.ACEFrontendRef(
-                    uid="frontend_shader",
-                    kind="SHADER_NODES",
-                    tree_name="Shader",
-                    tree_bl_idname="ShaderNodeTree",
-                    owner_keys=("Cube", "Sphere"),
-                    material_name="ACE Mat",
-                    tree_ptr=22,
-                ),
-            },
-            consumer_intents=[
-                self.abs_mod.ACEConsumerIntent(
-                    frontend_uid="frontend_shader",
-                    node_id="node_shader",
-                    socket_idx=0,
-                    sink_kind="OBJECT_PROPERTY",
-                    source_token="src_a",
-                    consumer_keys=("Cube", "Sphere"),
-                    output_name="RMS",
-                ),
-            ],
-        )
-
-        bindings = engine.sinks._resolve_sink_bindings_for_graph(
-            graph,
-            tree,
-            source_uid="src_a",
-            proxy_name="",
-            single_source_mode=False,
-        )
-
-        self.assertEqual(len(bindings["shader_attr"]), 2)
-        shader_targets = {b.target_object_name for b in bindings["shader_attr"]}
-        self.assertEqual(shader_targets, {"Cube", "Sphere"})
-
-    def test_shader_output_ids_use_source_roots_in_multi_source_scenes(self):
-        engine = self._engine_shell()
-        shader_node = _FakeAttrNode(
-            "node_shader",
-            input_names=["Attribute ID"],
-            output_names=["RMS"],
-        )
-        shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 505)
-        shader_tree.nodes = [shader_node]
-        shader_node.id_data = shader_tree
-        source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
-        source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
-        scene = types.SimpleNamespace(
-            audiocore=types.SimpleNamespace(audio_sources=[source_a, source_b])
-        )
-        abstract_tree = self.abs_mod.ACEAbstractTree(
-            nodes={
-                "node_shader": self.abs_mod.ACEAbstractNode(
-                    id="node_shader",
-                    name="Shader RMS",
-                    category="stream",
-                    type="rms",
-                    root_sources={"src_b"},
-                    outputs=[
-                        self.abs_mod.ACEAbstractSocket(
-                            id="node_shader_out_0",
-                            name="RMS",
-                            socket_idx=0,
-                            is_output=True,
-                            data_type="NodeSocketFloat",
-                        )
-                    ],
-                )
-            }
-        )
-
-        original_sync = self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings
-        self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = classmethod(
-            lambda cls, node, proxy_name="", scene=None, attr_names_by_idx=None: True
-        )
-        try:
-            changed, changed_node_ids = engine.sinks._sync_shader_output_ids(shader_tree, abstract_tree, scene)
-        finally:
-            self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
-
-        expected_topology = "[\"src_b\"]|[]"
-        # Shader sinks are one custom property per node instance, so their
-        # names leave out the topology signature (it is still stored).
-        expected_name = engine.sinks._build_auto_attr_name(
-            "ACE_PROXY_b",
-            "node_shader",
-            "RMS",
-            0,
-            topology_sig="",
-        )
-        self.assertTrue(changed)
-        self.assertEqual(changed_node_ids, {"node_shader"})
-        self.assertEqual(shader_node.inputs[0].default_value, expected_name)
-        self.assertEqual(shader_node.get("ace_auto_attr_topology_json"), expected_topology)
-
-    def test_shader_instance_group_sync_uses_existing_attr_ids_when_proxy_is_unresolved(self):
-        engine = self._engine_shell()
-        shader_node = _FakeAttrNode(
-            "node_shader",
-            input_names=["Attribute ID"],
-            output_names=["RMS"],
-        )
-        shader_node.inputs[0].default_value = "ACE_manual_attr"
-        shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 506)
-        shader_tree.nodes = [shader_node]
-        shader_node.id_data = shader_tree
-        source_a = types.SimpleNamespace(stable_id="src_a", proxy_object_name="ACE_PROXY_a")
-        source_b = types.SimpleNamespace(stable_id="src_b", proxy_object_name="ACE_PROXY_b")
-        scene = types.SimpleNamespace(
-            audiocore=types.SimpleNamespace(audio_sources=[source_a, source_b])
-        )
-        abstract_tree = self.abs_mod.ACEAbstractTree(
-            nodes={
-                "node_shader": self.abs_mod.ACEAbstractNode(
-                    id="node_shader",
-                    name="Shader RMS",
-                    category="stream",
-                    type="rms",
-                    root_sources=set(),
-                    outputs=[
-                        self.abs_mod.ACEAbstractSocket(
-                            id="node_shader_out_0",
-                            name="RMS",
-                            socket_idx=0,
-                            is_output=True,
-                            data_type="NodeSocketFloat",
-                        )
-                    ],
-                )
-            }
-        )
-
-        calls = []
-        original_sync = self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings
-
-        def _fake_sync(cls, node, proxy_name="", scene=None, attr_names_by_idx=None):
-            calls.append(
-                {
-                    "node": node,
-                    "proxy_name": proxy_name,
-                    "scene": scene,
-                    "attr_names_by_idx": attr_names_by_idx,
-                }
-            )
-            return True
-
-        self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = classmethod(_fake_sync)
-        try:
-            changed, changed_node_ids = engine.sinks._sync_shader_output_ids(shader_tree, abstract_tree, scene)
-        finally:
-            self.shader_tree_mod.ACEShaderNodeFactory.sync_node_instance_group_bindings = original_sync
-
-        self.assertTrue(changed)
-        self.assertEqual(changed_node_ids, {"node_shader"})
-        self.assertEqual(len(calls), 1)
-        self.assertIs(calls[0]["node"], shader_node)
-        self.assertEqual(calls[0]["proxy_name"], "")
-        self.assertIs(calls[0]["scene"], scene)
-        self.assertIsNone(calls[0]["attr_names_by_idx"])
-        self.assertEqual(shader_node.inputs[0].default_value, "ACE_manual_attr")
-
-    def test_shader_helper_layout_groups_helper_under_owner_in_frame(self):
-        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[])
-        tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1501)
-        owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
-        owner.location = (140.0, 320.0)
-        tree.nodes.append(owner)
-        helper = tree.nodes.new("ShaderNodeAttribute")
-
-        changed = self.shader_tree_mod.ACEShaderNodeFactory._sync_helper_node_layout(
-            tree,
-            owner,
-            helper,
-            ace_id,
-            0,
-        )
-
-        self.assertTrue(changed)
-        self.assertIsNotNone(owner.parent)
-        self.assertIs(owner.parent, helper.parent)
-        self.assertEqual(owner.parent.bl_idname, "NodeFrame")
-        self.assertEqual(owner.parent.get("ace_shader_helper_frame_owner"), ace_id)
-        self.assertTrue(owner.parent.shrink)
-        self.assertEqual(owner.location, (0.0, 0.0))
-        self.assertEqual(helper.location, (0.0, -146.0))
-        self.assertTrue(helper.hide)
-        self.assertEqual(helper.width_hidden, 150.0)
-
-    def test_cleanup_tree_helper_nodes_removes_empty_managed_helper_frame(self):
-        ace_id = self.idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[])
-        tree = _FakeLayoutTree("ACE Shader", "ShaderNodeTree", 1502)
-        owner = _FakeLayoutNode("ShaderNodeGroup", "GROUP", ace_id=ace_id)
-        tree.nodes.append(owner)
-        helper_frame = tree.nodes.new("NodeFrame")
-        helper_frame["ace_shader_helper_frame_owner"] = ace_id
-
-        changed = self.shader_tree_mod.ACEShaderNodeFactory.cleanup_tree_helper_nodes(tree)
-
-        self.assertTrue(changed)
-        self.assertIn(owner, tree.nodes)
-        self.assertNotIn(helper_frame, tree.nodes)
+        (gn,) = bindings["gn_attr"]
+        self.assertEqual((gn.sink_kind, gn.target_object_name, gn.target_data_name),
+                         ("PROXY_ATTRIBUTE", "ACE_PROXY_src_a", "ACE_rms_aaaaaa"))
+        (shader,) = bindings["shader_attr"]
+        self.assertEqual((shader.sink_kind, shader.target_object_name, shader.target_data_name),
+                         ("SCENE_PROPERTY", "Scene", "ACE_rms_bbbbbb"))
+        self.assertEqual(bindings["unnamed"], [])
 
     def test_depsgraph_handler_tracks_runtime_geometry_shader_and_object_updates(self):
         engine = _EngineStub(
@@ -976,8 +536,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
         settings = types.SimpleNamespace(auto_compile=True)
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
 
-        geometry_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 606, ace_frontend_uid="ACE_FRONTEND_GN")
-        shader_tree = _FakeTree("ACE_Shader", "ShaderNodeTree", 707, ace_frontend_uid="ACE_FRONTEND_SHADER")
+        geometry_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 606, ace_nodes=True)
+        shader_tree = _FakeTree("ACE_Shader", "ShaderNodeTree", 707, ace_nodes=True)
         material = _FakeMaterial("ACE Mat", shader_tree)
         # As in Blender: ID types carry their type in bl_rna, not bl_idname.
         material.bl_rna = types.SimpleNamespace(identifier="Material")
@@ -1083,53 +643,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
         finally:
             bpy_mod.context.window_manager.windows = original_windows
 
-    def test_maybe_compile_dirty_defers_shader_rebuild_during_viewport_preview(self):
-        engine = self._engine_shell()
-        shader_tree = _FakeTree("ACE Shader", "ShaderNodeTree", 909, ace_frontend_uid="ACE_FRONTEND_SHADER")
-        frontend_ref = self.abs_mod.ACEFrontendRef(
-            uid="ACE_FRONTEND_SHADER",
-            kind="SHADER_NODES",
-            tree_name="ACE Shader",
-            tree_bl_idname="ShaderNodeTree",
-            tree_ptr=shader_tree.as_pointer(),
-        )
-        compile_calls = []
-        log_calls = []
-        engine.frontends.discover_scene_frontends = lambda _scene: [
-            types.SimpleNamespace(
-                tree=shader_tree,
-                frontend_ref=frontend_ref,
-                consumer_object_names=(),
-            )
-        ]
-        engine.compiler._last_frontend_membership_signature = ()
-        engine.frontends._dirty_frontend_uids = {"ACE_FRONTEND_SHADER"}
-        engine.frontends._pending_scene_rebuild = False
-        engine.frontends._dirty_trees = [shader_tree]
-        engine.frontends._pending_tree = shader_tree
-        engine.frontends._last_dirty_time = 0.0
-        engine.compiler._last_compile_time = 0.0
-        engine.frontends._is_compiling = False
-        engine.frontends._first_dirty_time = 0.0
-        engine.frontends._dirty_tree_ptrs = {shader_tree.as_pointer()}
-        engine.frontends._dirty_tree_bl_idnames = {shader_tree.as_pointer(): "ShaderNodeTree"}
-        engine.frontends._pending_tree_ptr = shader_tree.as_pointer()
-        engine.frontends._pending_tree_bl_idname = "ShaderNodeTree"
-        engine._structural_tree_writes_allowed = lambda *_args, **_kwargs: False
-        engine.compiler.compile_scene_frontends = lambda *_args, **_kwargs: compile_calls.append(True)
-        orig_log = self.utils_mod.log_throttled
-        self.utils_mod.log_throttled = lambda *args, **kwargs: log_calls.append((args, kwargs))
-        try:
-            compiled = engine.frontends._maybe_compile_dirty(types.SimpleNamespace())
-        finally:
-            self.utils_mod.log_throttled = orig_log
-
-        self.assertFalse(compiled)
-        self.assertFalse(compile_calls)
-        self.assertEqual(engine.frontends._dirty_frontend_uids, {"ACE_FRONTEND_SHADER"})
-        self.assertEqual(engine.frontends._dirty_tree_ptrs, {shader_tree.as_pointer()})
-        self.assertTrue(log_calls)
-
     def test_begin_undo_recovery_clears_cached_frontend_refs_and_sets_recovery_window(self):
         engine = self._engine_shell()
         engine.abstract_tree_ref = object()
@@ -1186,7 +699,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         )
         settings = types.SimpleNamespace(auto_compile=True)
         scene = types.SimpleNamespace(audiocore=types.SimpleNamespace(engine_settings=settings, audio_sources=[]))
-        geometry_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 808, ace_frontend_uid="ACE_FRONTEND_GN")
+        geometry_tree = _FakeTree("ACE_GN", "GeometryNodeTree", 808, ace_nodes=True)
 
         orig_get = self.engine_mod.ACEAudioEngine.get_instance
         try:

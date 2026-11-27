@@ -60,11 +60,10 @@ def _adopt_source_name(source, wanted: str, scene) -> None:
         name, number = f"{wanted} {number}", number + 1
     source.name = name
     # The Source nodes already placed carry the source's name as their title.
-    trees = list(bpy.data.node_groups) + [m.node_tree for m in bpy.data.materials if m.node_tree is not None]
-    for tree in trees:
-        for node in tree.nodes:
-            if source.stable_id and node.get("ace_source_id") == source.stable_id and node.label == old:
-                node.label = node.name = name
+    from .nodes.source_nodes import editable_trees, source_nodes
+    for node, source_id in source_nodes(editable_trees()):
+        if source.stable_id and source_id == source.stable_id and node.label == old:
+            node.label = name
 
 
 def _adopt_live_name(source, scene) -> None:

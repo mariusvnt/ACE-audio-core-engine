@@ -125,7 +125,6 @@ def _install_engine_import_stubs():
             return None
 
     reader_mod.ACEDummyTreeReader = ACEDummyTreeReader
-    frontend_mod.ensure_frontend_uid = lambda tree, _kind, _existing: getattr(tree, "ace_frontend_uid", "")
     frontend_mod.FRONTEND_KIND_GEOMETRY = "GEOMETRY_NODES"
     frontend_mod.FRONTEND_KIND_SHADER = "SHADER_NODES"
     sys.modules[f"{PKG_NAME}.nodes.geometry.reader"] = reader_mod

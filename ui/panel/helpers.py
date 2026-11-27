@@ -3,7 +3,7 @@
 import bpy  # type: ignore
 from ...core.id_management import ACEIdManager
 from ...core.engine.engine import ACEAudioEngine
-from ...nodes.geometry.reader import ACEDummyTreeReader
+from ...nodes.identity import find_node, is_ace_node
 from ...vars import ACE_NODES
 from ... import utils
 
@@ -14,10 +14,7 @@ _ui_label_icon_ids: set[str] | None = None
 def _tree_has_ace_nodes(tree) -> bool:
     if tree is None:
         return False
-    for node in getattr(tree, "nodes", []) or []:
-        if node.get("ace_id"):
-            return True
-    return False
+    return any(is_ace_node(node) for node in getattr(tree, "nodes", []) or [])
 
 
 def _deal_breakers():
@@ -461,62 +458,12 @@ def _node_type_display(cat: str, typ: str) -> str:
     return cat_label
 
 
-def _find_tree_node_by_ace_id(tree, node_id: str):
-    """Find a Blender GN node in *tree* matching *node_id* via its ace_id property."""
-    parsed = ACEIdManager.parse_node_id(str(node_id or ""))
+def _find_tree_node_by_ace_id(tree, wanted_id: str):
+    """The node of *tree* whose (computed) id is *wanted_id*, and its parsed kind."""
+    parsed = ACEIdManager.parse_node_id(str(wanted_id or ""))
     if not tree or not parsed:
         return None, None
-
-    for candidate in getattr(tree, "nodes", []):
-        ace_id = ""
-        try:
-            ace_id = str(candidate.get("ace_id", "") or "")
-        except Exception as exc:
-            utils.note_swallowed("helpers._find_tree_node_by_ace_id", exc)
-            ace_id = ""
-        if ace_id == node_id:
-            return candidate, parsed
-    return None, parsed
-
-
-def _build_ui_node_lookup_ids(tree, reader=None) -> dict[str, str]:
-    """Map abstract tree node ids back to the real Blender node `ace_id` values."""
-    if not tree:
-        return {}
-
-    if reader is None:
-        try:
-            reader = ACEDummyTreeReader(tree)
-            reader.build()
-        except Exception as exc:
-            utils.note_swallowed("helpers._build_ui_node_lookup_ids", exc)
-            return {}
-
-    lookup_ids: dict[str, str] = {}
-    node_id_by_ptr = getattr(reader, "_node_id_by_ptr", {}) or {}
-    for candidate in getattr(tree, "nodes", []):
-        try:
-            node_ptr = int(candidate.as_pointer())
-        except Exception as exc:
-            utils.note_swallowed("helpers._build_ui_node_lookup_ids#2", exc)
-            node_ptr = id(candidate)
-        abstract_id = str(node_id_by_ptr.get(node_ptr, "") or "")
-        if not abstract_id:
-            continue
-        try:
-            blender_id = str(candidate.get("ace_id", "") or "")
-        except Exception as exc:
-            utils.note_swallowed("helpers._build_ui_node_lookup_ids#3", exc)
-            blender_id = ""
-        if blender_id and ACEIdManager.parse_node_id(blender_id):
-            lookup_ids[abstract_id] = blender_id
-    return lookup_ids
-
-
-def _ui_node_lookup_id(node_obj, lookup_ids: dict[str, str]) -> str:
-    abstract_id = str(getattr(node_obj, "id", "") or "")
-    resolved_id = str((lookup_ids or {}).get(abstract_id, "") or "")
-    return resolved_id or abstract_id
+    return find_node(tree, wanted_id), parsed
 
 
 def _tree_pointer(tree) -> int:

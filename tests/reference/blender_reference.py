@@ -39,6 +39,7 @@ for path in (HERE, TESTS):
 import fixtures  # noqa: E402
 import spec  # noqa: E402
 from blender_helpers import _add_ace_node, _new_gn_tree, find_addon_key  # noqa: E402
+import blender_helpers  # noqa: E402
 
 GOLDEN_DIR = os.path.join(HERE, "curves")
 META_PATH = os.path.join(GOLDEN_DIR, "meta.json")
@@ -68,7 +69,7 @@ def _parse_args():
 # ---------------------------------------------------------------------------
 
 def read_node_outputs(engine) -> dict:
-    """{ace_id: {output_name: value}} from the proxy attributes ACE committed this frame."""
+    """{node id: {output_name: value}} from the proxy attributes ACE committed this frame."""
     out: dict = {}
     for graph in engine.graphs.values():
         for attr_key, bindings in dict(getattr(graph, "sink_bindings_by_attr", {}) or {}).items():
@@ -261,7 +262,7 @@ def record(addon_key, scene, last_nodes, n_frames) -> dict:
                 dirty_since.setdefault(uid, scene.frame_current)
             values = read_node_outputs(engine)
             for case_id, node in last_nodes.items():
-                found = read_source_tempo(node) if case_id == spec.SOURCE_CASE else values.get(str(node.get("ace_id", "")), {})
+                found = read_source_tempo(node) if case_id == spec.SOURCE_CASE else values.get(blender_helpers.node_id(addon_key, node), {})
                 for name, value in found.items():
                     rows.setdefault(f"{case_id}/{name}", []).append(value)
     finally:

@@ -7,23 +7,21 @@ from ..id_management import ACEIdManager
 from ..abstract_tree import ACEAbstractTree
 from ... import utils
 from .attributes import AttributeSinks
-from .objects import ObjectPropertySinks
+from .objects import ScenePropertySinks
 
 
-class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
+class ACEProxyManager(AttributeSinks, ScenePropertySinks):
     """Manage concrete Stage-C sinks for compiled ACE outputs."""
 
     # "Pro" name for the invisible collection
     COLLECTION_NAME = "ACE_Internals"
     SONAR_OBJECT_NAME = "ACE_Sonar"  # made by earlier versions; still read as a frontend
-    _MIRROR_OBJECT_PROPERTIES_TO_MESH_DATA = False
 
     def __init__(self, abstract_tree: ACEAbstractTree | None = None):
         self.abstract_tree = abstract_tree
         self.output_defs: Dict[str, Dict[str, Any]] = {}
         self._attr_cache: Dict[str, Dict[str, Any]] = {}
         self._last_values: Dict[str, Dict[str, Any]] = {}
-        self._object_prop_cache: Dict[str, Any] = {}
         self._last_object_prop_values: Dict[str, Dict[str, Any]] = {}
         self._write_buffer_cache: Dict[str, Dict[str, np.ndarray]] = {}
         if abstract_tree:
@@ -87,6 +85,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
                 if source_prop.proxy_object_name != existing_obj.name:
                     source_prop.proxy_object_name = existing_obj.name
                 cls._move_to_internal_collection(existing_obj, scene=scene)
+                cls._mark_proxy(existing_obj, stable_id)
                 return existing_obj
 
         if proxy_name in bpy.data.objects:
@@ -95,6 +94,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
                 cls._move_to_internal_collection(obj, scene=scene)
                 if source_prop.proxy_object_name != obj.name:
                     source_prop.proxy_object_name = obj.name
+                cls._mark_proxy(obj, stable_id)
                 return obj
 
         mesh = bpy.data.meshes.new(f"{proxy_name}_Mesh")
@@ -110,8 +110,15 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
         obj.lock_scale = (True, True, True)
 
         source_prop.proxy_object_name = obj.name
+        cls._mark_proxy(obj, stable_id)
 
         return obj
+
+    @staticmethod
+    def _mark_proxy(obj, stable_id: str) -> None:
+        """The proxy carries its source's id: a Source node reading this proxy reads that source."""
+        if stable_id and str(obj.get("ace_source_id", "") or "") != stable_id:
+            obj["ace_source_id"] = stable_id
 
     @classmethod
     def _move_to_internal_collection(cls, obj, scene=None):
@@ -146,7 +153,6 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
         """Replace the active abstract tree and rebuild the output definition cache."""
         self.abstract_tree = abstract_tree
         self.output_defs.clear()
-        self._object_prop_cache.clear()
         self._last_object_prop_values.clear()
         self._cache_output_defs()
 
@@ -154,26 +160,14 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
         """Discard all cached RNA handles, last-written values, and write buffers."""
         self._attr_cache.clear()
         self._last_values.clear()
-        self._object_prop_cache.clear()
         self._last_object_prop_values.clear()
         self._write_buffer_cache.clear()
-
-    @staticmethod
-    def _mesh_data_idblock(obj):
-        if obj is None:
-            return None
-        data = getattr(obj, "data", None)
-        if data is None:
-            return None
-        if not hasattr(data, "keys"):
-            return None
-        return data
 
     def ensure_sink_layout(self, graph, active_keys: Set[str] | None = None):
         """Ensure all concrete sink targets for *graph* exist."""
         utils.assert_main_thread("ensure_sink_layout")
         proxy_keys_by_object: Dict[str, Set[str]] = {}
-        object_bindings: Dict[str, list[Any]] = {}
+        scene_bindings: Dict[str, list[Any]] = {}
         keys = set(self.output_defs.keys()) if active_keys is None else set(active_keys)
         for attr_key in keys:
             for binding in list(getattr(graph, "sink_bindings_by_attr", {}).get(attr_key, []) or []):
@@ -181,8 +175,8 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
                 target_obj_name = str(getattr(binding, "target_object_name", "") or "")
                 if sink_kind == "PROXY_ATTRIBUTE" and target_obj_name:
                     proxy_keys_by_object.setdefault(target_obj_name, set()).add(attr_key)
-                elif sink_kind == "OBJECT_PROPERTY" and target_obj_name:
-                    object_bindings.setdefault(target_obj_name, []).append(binding)
+                elif sink_kind == "SCENE_PROPERTY" and target_obj_name:
+                    scene_bindings.setdefault(target_obj_name, []).append(binding)
 
         geometry_proxy_names: set[str] = set()
         for proxy_name, attr_keys in proxy_keys_by_object.items():
@@ -191,8 +185,8 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
                 continue
             self.ensure_attributes_exist(proxy, self.abstract_tree, active_keys=set(attr_keys), prune_existing=True)
             geometry_proxy_names.add(str(proxy_name))
-        for object_name, bindings in object_bindings.items():
-            self.ensure_object_property_sinks(object_name, bindings, prune=True)
+        for scene_name, bindings in scene_bindings.items():
+            self.ensure_scene_property_sinks(scene_name, bindings)
         return geometry_proxy_names
 
     def commit_results(self, graph, results: Dict[str, Any], active_keys: Set[str] | None = None):
@@ -213,7 +207,7 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
                     continue
                 if sink_kind == "PROXY_ATTRIBUTE":
                     proxy_results.setdefault(object_name, {})[attr_key] = value
-                elif sink_kind == "OBJECT_PROPERTY":
+                elif sink_kind == "SCENE_PROPERTY":
                     prop_name = str(getattr(binding, "target_data_name", "") or "")
                     if not prop_name:
                         continue
@@ -227,8 +221,8 @@ class ACEProxyManager(AttributeSinks, ObjectPropertySinks):
                 continue
             self.update_proxy_object(proxy, proxy_values, active_keys=set(proxy_values.keys()))
             geometry_proxy_names.add(str(proxy_name))
-        for object_name, prop_values in object_prop_values.items():
-            self.update_object_property_sinks(object_name, prop_values, object_prop_types.get(object_name, {}))
+        for scene_name, prop_values in object_prop_values.items():
+            self.update_scene_property_sinks(scene_name, prop_values, object_prop_types.get(scene_name, {}))
         return geometry_proxy_names
 
     @staticmethod

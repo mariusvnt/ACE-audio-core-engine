@@ -7,7 +7,8 @@ from bpy_extras.io_utils import ImportHelper                                    
 from ..core.id_management import ACEIdManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager
 from ..nodes.split_freqs import sort_all_split_freqs, sort_split_freqs
-from ..nodes.source_nodes import bind_node
+from ..nodes.source_nodes import set_node_source
+from ..nodes.identity import find_node, node_id as ace_node_id, parsed_node
 from ..nodes.modes import apply_node_mode
 from ..vars import node_modes
 from .. import utils
@@ -31,11 +32,9 @@ def _resolve_panel_selected_node(context):
             return node, parsed
 
     node = getattr(context, "active_node", None)
-    if node and getattr(node, "type", "") == 'GROUP':
-        ace_id = str(node.get("ace_id", "") or "")
-        parsed = ACEIdManager.parse_node_id(ace_id) if ace_id else None
-        if parsed:
-            return node, parsed
+    parsed = parsed_node(node) if node is not None else None
+    if parsed:
+        return node, parsed
 
     try:
         from .panel.helpers import _find_active_node_tree
@@ -59,17 +58,10 @@ def _resolve_panel_selected_node(context):
     if not node_id:
         return None, None
 
-    for candidate in getattr(tree, "nodes", []):
-        try:
-            ace_id = str(candidate.get("ace_id", "") or "")
-        except Exception as exc:
-            utils.note_swallowed("n_panel_operators._resolve_panel_selected_node#4", exc)
-            ace_id = ""
-        if ace_id == node_id:
-            parsed = ACEIdManager.parse_node_id(ace_id)
-            if parsed:
-                return candidate, parsed
-            break
+    candidate = find_node(tree, node_id)
+    parsed = parsed_node(candidate) if candidate is not None else None
+    if parsed:
+        return candidate, parsed
     return None, None
 
 
@@ -413,6 +405,8 @@ class ACE_OT_set_node_mode(bpy.types.Operator):
             return {'CANCELLED'}
         apply_node_mode(node, parsed["category"], parsed["type"], self.mode)
         _refresh_node_instance(node)
+        # A node's custom property sends no depsgraph update: ask for the compile.
+        _queue_engine_recompile(context, tree=node.id_data)
         return {'FINISHED'}
 
 
@@ -549,9 +543,9 @@ class ACE_OT_set_node_source(bpy.types.Operator):
                 break
         else:
             return {'CANCELLED'}
-        node_id = str(node.get("ace_id", "") or "")
+        node_id = ace_node_id(node)
         tree = node.id_data
-        bind_node(node, source, context.scene)
+        set_node_source(node, source, context.scene)
         # The list shows one source's graph: follow the node to its new source.
         project.active_audio_source_index = index
         from .panel.sync import _sync_ui_dummy_tree

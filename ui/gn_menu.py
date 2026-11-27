@@ -1,13 +1,13 @@
 import bpy # type: ignore
 from ..vars import ACE_NODES, node_modes
 from ..nodes.modes import apply_node_mode
-from ..nodes.frontend import FRONTEND_KIND_SHADER, ensure_frontend_uid
 from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
-from ..core.id_management import ACEIdManager
+from ..nodes.identity import new_sink_name, value_outputs
+from ..core.engine.sinks import write_sink_names
 from ..core.proxy.manager import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager
-from ..nodes.source_nodes import bind_node
+from ..nodes.source_nodes import set_node_source
 from .. import utils
 
 _ALLOWED_CATEGORIES_BY_TREE_TYPE = {
@@ -73,140 +73,30 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         return getattr(source, "proxy_object_name", "") or ""
 
     @staticmethod
-    def _default_attr_name(proxy_name: str, node_id: str, output_name: str, socket_idx: int = 0) -> str:
-        if proxy_name:
-            return ACEIdManager.generate_compact_attr_name(proxy_name, node_id, output_name, socket_idx)
-        metric = ACEIdManager._clean_string(output_name or "out").lower()[:6] or "val"
-        sig = ACEIdManager._clean_string(f"{node_id}{socket_idx}").lower()[-3:] or "000"
-        return f"{ACEIdManager.PREFIX}{metric}_src{sig}"[:63]
-
-    @staticmethod
     def _initialize_source_binding(node, context):
+        """A new Source node reads the active source."""
         _, active_source = utils._get_active_source(context)
         if active_source is None:
             return
-        existing_ids = [
-            getattr(src, "stable_id", "")
-            for src in getattr(getattr(context.scene, "audiocore", None), "audio_sources", [])
-            if getattr(src, "stable_id", "")
-        ]
-        ACEIdManager.ensure_source_uid(active_source, existing_ids=existing_ids)
         with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding"):
-            bind_node(node, active_source, getattr(context, "scene", None))
-
-    @staticmethod
-    def _collect_scene_frontend_uids(scene) -> list[str]:
-        if scene is None:
-            return []
-        ordered: list[str] = []
-
-        def _push_uid(tree):
-            if tree is None:
-                return
-            uid = ""
-            try:
-                uid = str(tree.get("ace_frontend_uid", "") or "")
-            except Exception as exc:
-                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._collect_scene_frontend_uids._push_uid", exc)
-                uid = ""
-            if uid and uid not in ordered:
-                ordered.append(uid)
-
-        for obj in getattr(scene, "objects", []) or []:
-            for mod in getattr(obj, "modifiers", []) or []:
-                if getattr(mod, "type", None) != "NODES":
-                    continue
-                _push_uid(getattr(mod, "node_group", None))
-            for slot in getattr(obj, "material_slots", []) or []:
-                material = getattr(slot, "material", None)
-                tree = getattr(material, "node_tree", None) if material is not None else None
-                if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
-                    continue
-                _push_uid(tree)
-        return ordered
+            set_node_source(node, active_source, getattr(context, "scene", None))
 
     @classmethod
-    def _ensure_shader_frontend_uid(cls, tree, context):
-        if tree is None or str(getattr(tree, "bl_idname", "") or "") != "ShaderNodeTree":
-            return ""
-        existing_uids = cls._collect_scene_frontend_uids(getattr(context, "scene", None))
-        return ensure_frontend_uid(tree, FRONTEND_KIND_SHADER, existing_uids)
-
-    @staticmethod
-    def _initialize_auto_attr_ids(node, context):
-        parsed = ACEIdManager.parse_node_id(node.get("ace_id", ""))
-        if not parsed:
+    def _initialize_sink_names(cls, node, category: str, node_type: str, context):
+        """Name the values a new output node writes; the names stay as they are from then on."""
+        outputs = value_outputs(category, node_type)
+        if not outputs:
             return
-        is_stream = parsed.get("category") == "stream"
-        is_rolling_avg = parsed.get("category") == "utilities" and parsed.get("type") == "util_rolling_avg"
-        is_stream_accumulator = (
-            parsed.get("category") == "utilities" and parsed.get("type") == "stream_accumulator"
-        )
-        if not (is_stream or is_rolling_avg or is_stream_accumulator):
-            return
-
-        proxy_name = ACE_OT_add_node_group._resolve_active_proxy_name(context)
-        proxy_obj = None
-        if proxy_name:
-            try:
-                proxy_obj = bpy.data.objects.get(proxy_name)
-            except Exception as exc:
-                utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_auto_attr_ids", exc)
-                proxy_obj = None
-
-        if is_stream and len(node.outputs) > 0:
-            for out_idx, out_sock in enumerate(node.outputs):
-                auto_name = ACE_OT_add_node_group._default_attr_name(
-                    proxy_name,
-                    node["ace_id"],
-                    out_sock.name,
-                    out_idx,
-                )
-                socket_name = "Attribute ID" if out_idx == 0 else f"Attribute ID {int(out_idx + 1)}"
-                attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == socket_name), None)
-                if attr_sock:
-                    ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
-
-        if is_rolling_avg and len(node.outputs) > 0:
-            auto_name = ACE_OT_add_node_group._default_attr_name(
-                proxy_name,
-                node["ace_id"],
-                node.outputs[0].name,
-                0,
-            )
-            attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Attribute ID"), None)
-            if attr_sock:
-                ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
-
-        if is_stream_accumulator and len(node.outputs) > 0:
-            auto_name = ACE_OT_add_node_group._default_attr_name(
-                proxy_name,
-                node["ace_id"],
-                node.outputs[0].name,
-                0,
-            )
-            attr_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Attribute ID"), None)
-            if attr_sock:
-                ACE_OT_add_node_group._set_socket_default_value(attr_sock, auto_name)
-
-        if is_rolling_avg and proxy_obj:
+        names: dict[int, str] = {}
+        for out_idx, output_name in outputs:
+            names[out_idx] = new_sink_name(output_name, set(names.values()))
+        write_sink_names(node, category, node_type, names)
+        if (category, node_type) in (("utilities", "util_rolling_avg"), ("utilities", "stream_accumulator")):
+            proxy_name = cls._resolve_active_proxy_name(context)
+            proxy_obj = bpy.data.objects.get(proxy_name) if proxy_name else None
             proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-            if proxy_sock:
-                try:
-                    proxy_sock.default_value = proxy_obj
-                except Exception as exc:
-                    utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_auto_attr_ids#2", exc)
-                    if proxy_name:
-                        ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
-        if is_stream_accumulator and proxy_obj:
-            proxy_sock = next((s for s in node.inputs if getattr(s, "name", "") == "Proxy Object"), None)
-            if proxy_sock:
-                try:
-                    proxy_sock.default_value = proxy_obj
-                except Exception as exc:
-                    utils.note_swallowed("gn_menu.ACE_OT_add_node_group._initialize_auto_attr_ids#3", exc)
-                    if proxy_name:
-                        ACE_OT_add_node_group._set_socket_default_value(proxy_sock, proxy_name)
+            if proxy_sock is not None and proxy_obj is not None:
+                cls._set_socket_default_value(proxy_sock, proxy_obj)
 
     @staticmethod
     def _set_socket_default_value(sock, value) -> bool:
@@ -308,26 +198,9 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         node = tree.nodes.new(group_node_type)
         node.node_tree = group
         node.location = context.space_data.cursor_location
-        
-        # This ties the visual node to the backend logic
-        try:
-            # We pass existing IDs to ensure absolute uniqueness
-            existing_ids = [n.get('ace_id') for n in tree.nodes if n.get('ace_id')]
-            
-            new_id = ACEIdManager.generate_node_id(
-                self.category_key, 
-                self.node_type_key, 
-                existing_ids=existing_ids
-            )
-            
-            node['ace_id'] = new_id
-            node.label = ACE_NODES[self.category_key]['nodes'][self.node_type_key]['label']
-            node.name = node.label
-            
-        except ValueError as e:
-            self.report({'ERROR'}, f"ID Generation failed: {str(e)}")
-            tree.nodes.remove(node)
-            return {'CANCELLED'}
+        # The node's kind comes from its group and its identity from its name: nothing else is stored.
+        node.label = ACE_NODES[self.category_key]['nodes'][self.node_type_key]['label']
+        node.name = node.label
 
         if self.node_type_key == 'frequency_splitter':
             node['ace_band_count'] = max(2, min(int(node.get('ace_band_count', splitter_bands)), 8))
@@ -337,34 +210,17 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         if node_modes(self.category_key, self.node_type_key):
             apply_node_mode(node, self.category_key, self.node_type_key, None)
         if self.category_key == "source_mngmt" and self.node_type_key == "src":
-            if tree_type == "ShaderNodeTree":
-                self._ensure_shader_frontend_uid(tree, context)
             self._initialize_source_binding(node, context)
 
-        self._initialize_auto_attr_ids(node, context)
+        self._initialize_sink_names(node, self.category_key, self.node_type_key, context)
         self._show_attr_id_socket_values(node)
-        if tree_type == "ShaderNodeTree":
-            with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#3"):
-                from ..core.engine.engine import ACEAudioEngine
+        with utils.logged_errors("gn_menu.ACE_OT_add_node_group.execute#3"):
+            from ..core.engine.engine import ACEAudioEngine
 
-                scene = getattr(context, "scene", None)
-                if not ACEAudioEngine._structural_tree_writes_allowed(
-                    scene,
-                    tree=tree,
-                    frontend_kind="SHADER_NODES",
-                ):
-                    engine = ACEAudioEngine.get_instance(scene)
-                    if engine is None and scene is not None:
-                        engine = ACEAudioEngine.ensure_instance(scene)
-                    if engine is not None:
-                        engine.request_recompile(tree)
-                else:
-                    proxy_name = self._resolve_active_proxy_name(context)
-                    ACEShaderNodeFactory.sync_node_instance_group_bindings(
-                        node,
-                        proxy_name=proxy_name,
-                        scene=scene,
-                    )
+            scene = getattr(context, "scene", None)
+            engine = ACEAudioEngine.ensure_instance(scene) if scene is not None else None
+            if engine is not None:
+                engine.request_recompile(tree)
 
         for n in tree.nodes:
             n.select = False

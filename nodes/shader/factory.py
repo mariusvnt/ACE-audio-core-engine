@@ -1,4 +1,11 @@
-"""Shader node groups for ACE nodes: creation, content and refresh."""
+"""Shader node groups for ACE nodes: creation, content and refresh.
+
+A shader can't name an attribute at run time, so each shader node that writes
+values uses a group of its own, ``.ACE_sink_<name>``, whose Attribute nodes (View
+Layer mode) read the scene properties ACE writes. A Source node uses its
+source's group, ``.ACE_SHADER_source_<id>``, which reads that source's BPM and
+Beats per Bar the same way. Nothing is added to the user's material.
+"""
 
 import hashlib
 import json
@@ -6,31 +13,28 @@ import bpy  # type: ignore
 from ...vars import ACE_NODES, apply_socket_ranges
 from ... import utils
 from ..frontend import remember_group_inputs
-from ...core.id_management import ACEIdManager
-from .helpers import HelperAttributeNodes
+from ..identity import KIND_KEY, SINK_NAMES_KEY, SOURCE_ID_KEY, group_kind, source_tempo_props, value_outputs
 from .interface import ShaderGroupInterface
-from .layout import HelperNodeLayout
 
 
-class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttributeNodes):
+class ACEShaderNodeFactory(ShaderGroupInterface):
     """Create hidden ShaderNodeTree ACE groups for shader frontends."""
 
     _NODES_CONTENT_HASH: str = ""
-    _ATTR_NODE_OUTPUT_IDX_KEY = "ace_shader_output_idx"
-    _OUTPUT_NODE_KIND_KEY = "ace_shader_sink_kind"
-    _HELPER_NODE_OWNER_KEY = "ace_shader_helper_owner"
-    _HELPER_ATTR_NAME_KEY = "ace_shader_attr_name"
-    _HELPER_FRAME_OWNER_KEY = "ace_shader_helper_frame_owner"
-    _HELPER_FRAME_KIND_KEY = "ace_shader_helper_frame_kind"
-    _HELPER_INPUT_PREFIX = "ACE Property"
-    _HELPER_FALLBACK_OWNER_HEIGHT = 128.0
-    _HELPER_VERTICAL_GAP = 18.0
-    _HELPER_VERTICAL_STEP = 62.0
-    _HELPER_HIDDEN_WIDTH = 150.0
+    SINK_GROUP_PREFIX = ".ACE_sink_"
+    SOURCE_GROUP_PREFIX = ".ACE_SHADER_source_"
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
         return f".ACE_SHADER_{category}_{node_type}"
+
+    @classmethod
+    def sink_group_name(cls, names: list[str]) -> str:
+        return f"{cls.SINK_GROUP_PREFIX}{names[0] if names else 'unnamed'}"[:63]
+
+    @classmethod
+    def source_group_name(cls, source_id: str) -> str:
+        return f"{cls.SOURCE_GROUP_PREFIX}{str(source_id).rsplit('_', 1)[-1]}"[:63]
 
     @classmethod
     def _ace_nodes_hash(cls) -> str:
@@ -61,89 +65,14 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     return sock
         return outputs[0] if outputs else None
 
-    @classmethod
-    def _set_attr_node_defaults(cls, attr_node, attr_name: str) -> bool:
-        changed = False
-        if hasattr(attr_node, "attribute_type"):
-            for enum_token in ("OBJECT", "OBJECT_DATA"):
-                try:
-                    if str(getattr(attr_node, "attribute_type", "") or "") == enum_token:
-                        break
-                    attr_node.attribute_type = enum_token
-                    changed = True
-                    break
-                except Exception as exc:
-                    utils.note_swallowed("factory.ACEShaderNodeFactory._set_attr_node_defaults", exc)
-                    continue
-        name = str(attr_name or "").strip()
-        if not name:
-            return changed
-        prop_names = []
-        if hasattr(attr_node, "attribute_name"):
-            prop_names.append("attribute_name")
-        elif hasattr(attr_node, "name"):
-            prop_names.append("name")
-        for prop_name in prop_names:
-            if not hasattr(attr_node, prop_name):
-                continue
-            try:
-                current_name = str(getattr(attr_node, prop_name, "") or "")
-            except Exception as exc:
-                utils.note_swallowed("factory.ACEShaderNodeFactory._set_attr_node_defaults#2", exc)
-                current_name = ""
-            if current_name == name:
-                continue
-            with utils.logged_errors("factory.ACEShaderNodeFactory._set_attr_node_defaults#3"):
-                setattr(attr_node, prop_name, name)
-                changed = True
-        return changed
-
     @staticmethod
-    def _placeholder_attr_name(output_idx: int, output_name: str) -> str:
-        token = ACEIdManager._clean_string(str(output_name or f"out_{int(output_idx)}")).lower() or f"out{int(output_idx)}"
-        return f"{ACEIdManager.PREFIX}{token[:20]}_{int(output_idx)}"[:63]
-
-    @classmethod
-    def _find_group_output_node(cls, ng):
-        for node in getattr(ng, "nodes", []) or []:
-            if str(getattr(node, "type", "") or "") == "GROUP_OUTPUT":
-                return node
-        return None
-
-    @classmethod
-    def _create_output_sink_node(
-        cls,
-        ng,
-        output_node,
-        output_idx: int,
-        socket_type: str,
-        socket_name: str,
-    ):
-        if output_node is None or output_idx < 0 or output_idx >= len(getattr(output_node, "inputs", []) or []):
-            return None
-        try:
-            sink_node = ng.nodes.new("ShaderNodeAttribute")
-        except Exception as exc:
-            utils.note_swallowed("factory.ACEShaderNodeFactory._create_output_sink_node", exc)
-            return None
-        sink_kind = "ATTRIBUTE"
-        cls._set_attr_node_defaults(
-            sink_node,
-            cls._placeholder_attr_name(output_idx, socket_name),
-        )
-        out_sock = cls._shader_attr_output_socket(sink_node, socket_type)
-
-        sink_node.location = (300, -200 - (int(output_idx) * 150))
-        with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#2"):
-            sink_node[cls._ATTR_NODE_OUTPUT_IDX_KEY] = int(output_idx)
-        with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#3"):
-            sink_node[cls._OUTPUT_NODE_KIND_KEY] = str(sink_kind)
-        with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#4"):
-            sink_node["ace_shader_output_name"] = str(socket_name or "")
-        if out_sock is not None:
-            with utils.logged_errors("factory.ACEShaderNodeFactory._create_output_sink_node#5"):
-                ng.links.new(out_sock, output_node.inputs[int(output_idx)])
-        return sink_node
+    def _new_value_reader(ng, attr_name: str, location):
+        """An Attribute node reading the scene property *attr_name* (View Layer mode)."""
+        attr = ng.nodes.new("ShaderNodeAttribute")
+        attr.attribute_type = "VIEW_LAYER"
+        attr.attribute_name = str(attr_name or "")
+        attr.location = location
+        return attr
 
     @classmethod
     def _set_socket_default(cls, ng, socket_name: str, default_value: str):
@@ -222,12 +151,23 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             return False
 
     @classmethod
-    def _build_group_content(cls, ng, node_def, category: str, node_type: str):
-        node_def = cls._shader_node_def(category, node_type, node_def)
+    def _value_names(cls, category: str, node_type: str, sink_names=None, source_id: str = "") -> dict[int, str]:
+        """Output index -> the scene property its Attribute node reads ("" reads nothing)."""
+        if (category, node_type) == ("source_mngmt", "src"):
+            bpm, bpb = source_tempo_props(source_id) if source_id else ("", "")
+            return {1: bpm, 2: bpb}
+        names = list(sink_names or [])
+        return {
+            out_idx: (names[slot] if slot < len(names) else "")
+            for slot, (out_idx, _name) in enumerate(value_outputs(category, node_type))
+        }
+
+    @classmethod
+    def _build_group_content(cls, ng, node_def, category: str, node_type: str, sink_names=None, source_id: str = ""):
         base_inputs = list(node_def.get("inputs", []))
         base_outputs = list(node_def.get("outputs", []))
         extra_inputs = [spec for spec in cls._extra_inputs(category, node_type) if cls._shader_interface_supports(spec[0])]
-        helper_inputs = list(cls._helper_input_specs(node_def))
+        value_names = cls._value_names(category, node_type, sink_names, source_id)
 
         for sock_type_str, sock_name in base_inputs:
             cls._new_socket(ng, str(sock_name), "INPUT", str(sock_type_str))
@@ -241,11 +181,9 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         for sock_type_str, sock_name, default_value in extra_inputs:
             cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
             cls._set_socket_default(ng, sock_name, default_value)
-        for _out_idx, sock_type_str, helper_name in helper_inputs:
-            cls._new_socket(ng, helper_name, "INPUT", sock_type_str)
 
         # No bundle nodes inside shader groups: Cycles' shader inliner crashes on them.
-        # Bundles pass straight through; helper Attribute nodes live in the material tree.
+        # Bundles pass straight through.
         input_node = ng.nodes.new("NodeGroupInput")
         output_node = ng.nodes.new("NodeGroupOutput")
         input_node.location = (-760, 0)
@@ -254,9 +192,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         all_inputs = list(base_inputs) + [
             (sock_type_str, sock_name)
             for sock_type_str, sock_name, _default_value in extra_inputs
-        ] + [
-            (sock_type_str, helper_name)
-            for _out_idx, sock_type_str, helper_name in helper_inputs
         ]
         bundle_output_indices = [
             idx for idx, (sock_type, _name) in enumerate(base_outputs) if "Bundle" in str(sock_type or "")
@@ -269,13 +204,13 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
             if _sn and _sn not in input_sock_by_name:
                 input_sock_by_name[_sn] = _s
 
-        # Helper inputs: map output_idx → the named GroupInput socket
+        # Each value output reads its scene property.
         helper_source_by_idx: dict[int, object] = {}
-        for _out_idx, _sock_type, _helper_name in helper_inputs:
-            _s = input_sock_by_name.get(str(_helper_name))
-            if _s is not None:
-                helper_source_by_idx[int(_out_idx)] = _s
-        helper_socket_names = {str(_hn) for _oi, _st, _hn in helper_inputs}
+        for out_idx, attr_name in sorted(value_names.items()):
+            if out_idx >= len(base_outputs):
+                continue
+            reader = cls._new_value_reader(ng, attr_name, (180, 200 - out_idx * 150))
+            helper_source_by_idx[int(out_idx)] = cls._shader_attr_output_socket(reader, str(base_outputs[out_idx][0]))
 
         # First bundle input name (for passthrough and consume-skip logic)
         first_bundle_name: str | None = next(
@@ -296,8 +231,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
         for _ci, (socket_type, socket_name) in enumerate(all_inputs):
             _s = input_sock_by_name.get(str(socket_name))
             if _s is None:
-                continue
-            if str(socket_name) in helper_socket_names:
                 continue
             if "Bundle" in str(socket_type or ""):
                 # Primary bundle already handled above; others get a reroute.
@@ -386,60 +319,64 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
 
         cls._ensure_attr_interface_visible(ng, category, node_type)
 
-    @staticmethod
-    def _sanitize_explicit_name(raw_name: str) -> str:
-        name = str(raw_name or "").strip()
-        if not name:
-            return ""
-        if not name.startswith(ACEIdManager.PREFIX):
-            name = ACEIdManager.PREFIX + ACEIdManager._clean_string(name)
-        return name[:63]
-
-    @staticmethod
-    def _socket_name_to_output_idx(category: str, node_type: str) -> dict[str, int]:
-        cat = str(category or "")
-        typ = str(node_type or "")
-        if cat == "stream":
-            mapping: dict[str, int] = {"Attribute ID": 0}
-            stream_nodes = (
-                ACE_NODES.get("stream", {}).get("nodes", {})
-                if isinstance(ACE_NODES.get("stream", {}), dict)
-                else {}
-            )
-            node_def = stream_nodes.get(typ, {}) if isinstance(stream_nodes, dict) else {}
-            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
-            value_output_count = max(
-                1,
-                sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
-            )
-            for idx in range(1, int(value_output_count)):
-                mapping[f"Attribute ID {int(idx + 1)}"] = int(idx)
-            return mapping
-        if cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator"}:
-            return {"Attribute ID": 0}
-        return {}
+    @classmethod
+    def ensure_sink_group(cls, category: str, node_type: str, names: list[str]):
+        """The group a shader node writing to *names* (one per value output) uses."""
+        names = [str(n) for n in names]
+        name = cls.sink_group_name(names)
+        ng = bpy.data.node_groups.get(name)
+        if ng is not None and (
+            str(getattr(ng, "bl_idname", "")) != "ShaderNodeTree"
+            or group_kind(ng) != (category, node_type)
+            or [str(v) for v in ng.get(SINK_NAMES_KEY, [])] != names
+        ):
+            bpy.data.node_groups.remove(ng)
+            ng = None
+        if ng is None:
+            ng = bpy.data.node_groups.new(name, "ShaderNodeTree")
+            ng[KIND_KEY] = f"{category}:{node_type}"
+            ng[SINK_NAMES_KEY] = names
+            cls._build_group_content(ng, ACE_NODES[category]["nodes"][node_type], category, node_type, sink_names=names)
+        return ng
 
     @classmethod
-    def _ensure_shared_group_for_node(cls, node, category: str, node_type: str):
-        desired_name = cls.get_group_name(category, node_type)
-        current_group = getattr(node, "node_tree", None)
-        current_name = str(getattr(current_group, "name", "") or "")
-        if current_group is not None and current_name == desired_name:
-            return current_group, False
+    def ensure_source_group(cls, source):
+        """The group a shader Source node reading *source* uses."""
+        source_id = str(getattr(source, "stable_id", "") or "")
+        if not source_id:
+            return None
+        name = cls.source_group_name(source_id)
+        ng = bpy.data.node_groups.get(name)
+        if ng is not None and str(ng.get(SOURCE_ID_KEY, "")) != source_id:
+            bpy.data.node_groups.remove(ng)
+            ng = None
+        if ng is None:
+            ng = bpy.data.node_groups.new(name, "ShaderNodeTree")
+            ng[KIND_KEY] = "source_mngmt:src"
+            ng[SOURCE_ID_KEY] = source_id
+            cls._build_group_content(ng, ACE_NODES["source_mngmt"]["nodes"]["src"], "source_mngmt", "src", source_id=source_id)
+        return ng
 
-        group = bpy.data.node_groups.get(desired_name)
-        if group is None or str(getattr(group, "bl_idname", "") or "") != "ShaderNodeTree":
-            cls.rebuild_node_group(category, node_type)
-            group = bpy.data.node_groups.get(desired_name)
-        if group is None:
-            return None, False
+    @classmethod
+    def _rebuild_owned_group(cls, ng) -> None:
+        """Rebuild a sink or source group in place, keeping its names and its users' input values."""
+        category, node_type = group_kind(ng)
+        node_def = ACE_NODES[category]["nodes"][node_type]
+        remember_group_inputs(ng)
+        ng.nodes.clear()
+        ng.interface.clear()
+        cls._build_group_content(
+            ng, node_def, category, node_type,
+            sink_names=[str(v) for v in ng.get(SINK_NAMES_KEY, [])],
+            source_id=str(ng.get(SOURCE_ID_KEY, "") or ""),
+        )
 
-        changed = False
-        if current_group != group:
-            with utils.logged_errors("factory.ACEShaderNodeFactory._ensure_shared_group_for_node"):
-                node.node_tree = group
-                changed = True
-        return group, changed
+    @classmethod
+    def owned_groups(cls):
+        """The sink and source groups of the file: ACE groups with names of their own."""
+        for ng in list(bpy.data.node_groups):
+            if str(getattr(ng, "bl_idname", "")) == "ShaderNodeTree" and ng.get(KIND_KEY) and group_kind(ng)[0]:
+                yield ng
 
     @classmethod
     def rebuild_node_group(cls, cat_key: str, type_key: str):
@@ -499,16 +436,18 @@ class ACEShaderNodeFactory(ShaderGroupInterface, HelperNodeLayout, HelperAttribu
                     cls._ensure_attr_interface_visible(ng, cat_key, type_key)
                     continue
                 cls._build_group_content(ng, node_def, cat_key, type_key)
+        for ng in list(cls.owned_groups()):
+            if ng.library is not None:
+                continue
+            category, node_type = group_kind(ng)
+            if cls._node_group_needs_refresh(ng, ACE_NODES[category]["nodes"][node_type], category, node_type):
+                cls._rebuild_owned_group(ng)
         with utils.logged_errors("factory.ACEShaderNodeFactory.ensure_node_groups_exist#2"):
             from ..dynamic_audio_operators import ACESplitterManager
 
             ACESplitterManager.refresh_existing_variants("ShaderNodeTree")
         if current_hash:
-            from .reader import ACEShaderTreeReader
-
             cls._NODES_CONTENT_HASH = current_hash
-            ACEShaderTreeReader._GROUP_NAME_LOOKUP.clear()
-            ACEShaderTreeReader._ACE_NODES_LOOKUP_HASH = ""
 def register():
     try:
         ACEShaderNodeFactory.ensure_node_groups_exist()

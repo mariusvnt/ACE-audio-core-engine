@@ -18,7 +18,9 @@ from . import operator_tree
 from . import usage
 from ...nodes.split_freqs import split_freq_states
 from ...nodes.dynamic_audio_operators import is_automatic_count_label
-from .helpers import _build_ui_node_lookup_ids, _find_active_node_tree, _find_tree_node_by_ace_id, _tree_pointer, _ui_is_blocked
+from .helpers import _find_active_node_tree, _find_tree_node_by_ace_id, _tree_pointer, _ui_is_blocked
+from ...nodes.identity import node_id as ace_node_id
+from ...nodes.source_nodes import node_source_id
 
 
 _UI_SYNC_MIN_INTERVAL = 0.25
@@ -106,17 +108,9 @@ def _ui_tree_topology_signature(tree) -> str:
         source_id = ""
         op_value = ""
         preview_enabled = True
-        try:
-            ace_id = str(node.get("ace_id", "") or "")
-        except Exception as exc:
-            utils.note_swallowed("sync._ui_tree_topology_signature", exc)
-            ace_id = ""
+        ace_id = ace_node_id(node)
         if ace_id:
-            try:
-                source_id = str(node.get("ace_source_id", "") or "")
-            except Exception as exc:
-                utils.note_swallowed("sync._ui_tree_topology_signature#2", exc)
-                source_id = ""
+            source_id = node_source_id(node)
             try:
                 op_value = str(node.get('ace_mode', '') or '')
             except Exception as exc:
@@ -275,9 +269,7 @@ def _sync_ui_dummy_tree(context, force: bool = False):
         else:
             reader = ACEDummyTreeReader(tree)
         abstract = reader.build()
-        node_lookup_ids = _build_ui_node_lookup_ids(tree, reader=reader)
-        # Reading can assign missing ace_ids; sign the tree as it is now.
-        topology_sig = _ui_tree_topology_signature(tree)
+        node_lookup_ids: dict[str, str] = {}
         roots_by_node = {
             str(node_lookup_ids.get(node.id, "") or node.id): set(node.root_sources) | (
                 {node.source_binding_id} if node.source_binding_id else set()
@@ -322,7 +314,7 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
     """Folded rows of the operators under the active source's Source node(s) in *tree*."""
     bl_by_id = {}
     for bl_node in getattr(tree, "nodes", []) or []:
-        ace_id = str(bl_node.get("ace_id", "") or "")
+        ace_id = ace_node_id(bl_node, tree)
         if ace_id:
             bl_by_id[ace_id] = bl_node
 
@@ -471,7 +463,7 @@ def _sync_editor_active(tree, active_source) -> None:
     global _last_editor_active
     nodes = getattr(tree, "nodes", None)
     active = getattr(nodes, "active", None) if nodes is not None else None
-    node_id = str(active.get("ace_id", "") or "") if active is not None else ""
+    node_id = ace_node_id(active, tree) if active is not None else ""
     key = (_tree_pointer(tree), node_id)
     if key == _last_editor_active:
         return

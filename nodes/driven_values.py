@@ -9,6 +9,7 @@ muted nodes and the modifier's own inputs. Anything else is unknown.
 import math
 import bpy  # type: ignore
 from .. import utils
+from .identity import is_ace_node, node_id
 
 _MAX_DEPTH = 64
 
@@ -77,7 +78,7 @@ def _socket(sockets, identifier: str):
 
 
 def _output_value(node, output, walk: _Walk, depth: int) -> float:
-    if node.get("ace_id"):
+    if is_ace_node(node):
         return _audio_value(node, output, walk.scene)
     if node.mute:
         through = next((l for l in node.internal_links if l.to_socket == output), None)
@@ -170,7 +171,7 @@ def _audio_value(node, output, scene) -> float:
 
     engine = ACEAudioEngine.get_instance(scene or bpy.context.scene)
     index = next((i for i, s in enumerate(node.outputs) if s.identifier == output.identifier), -1)
-    value = getattr(engine, "latest_values", {}).get(f"{node.get('ace_id')}:{index}")
+    value = getattr(engine, "latest_values", {}).get(f"{node_id(node)}:{index}")
     if value is None:
         raise _Unknown  # not computed yet
     return float(value)

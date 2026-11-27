@@ -1,7 +1,8 @@
 """Selected-node settings and bake controls drawn in the N-panel."""
 
 import textwrap
-from ...core.id_management import ACEIdManager
+from ...nodes.identity import node_id as ace_node_id, parsed_node
+from ...nodes.source_nodes import node_source_id
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
 from ...vars import ACE_NODES, node_modes, resolve_node_mode
@@ -18,17 +19,15 @@ def _resolve_capture_node(context):
         return node, parsed
 
     node = getattr(context, "active_node", None)
-    ace_id = str(node.get("ace_id", "") or "") if node and hasattr(node, "get") else ""
-    if node and ace_id:
-        parsed = ACEIdManager.parse_node_id(ace_id)
-        if parsed:
-            return node, parsed
+    parsed = parsed_node(node) if node is not None else None
+    if parsed:
+        return node, parsed
     return None, None
 
 
 def _source_for_node(node, scene):
     """The audio source a source placeholder node stands for."""
-    source_id = str(node.get("ace_source_id", "") or "")
+    source_id = node_source_id(node)
     for src in getattr(getattr(scene, "audiocore", None), "audio_sources", []) or []:
         if source_id and str(getattr(src, "stable_id", "") or "") == source_id:
             return src
@@ -99,12 +98,27 @@ def rename_operator(node_id: str, value: str) -> str:
             source.name = name
             node.label = name
             node.name = name
+            _follow_renamed_node(node, node_id)
         return str(node.label or node.name or "")
     if not name:
         name = automatic_node_label(node, category, node_type)
     node.label = name
     node.name = name
+    _follow_renamed_node(node, node_id)
     return name
+
+
+def _follow_renamed_node(node, old_id: str) -> None:
+    """A node's id comes from its name: the lists that selected it select its new id."""
+    import bpy  # type: ignore
+
+    new_id = ace_node_id(node)
+    for source in getattr(getattr(bpy.context.scene, "audiocore", None), "audio_sources", []) or []:
+        if str(getattr(source, "active_ui_node_id", "") or "") == old_id:
+            source.active_ui_node_id = new_id
+    global _rename_target_id
+    if _rename_target_id == old_id:
+        _rename_target_id = new_id
 
 
 def rename_selected_operator(active_source, value: str) -> None:
@@ -329,7 +343,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         drew_settings = True
         box = layout.box()
         box.label(text="Audio Source", icon="SOUND")
-        current = str(node.get("ace_source_id", "") or "")
+        current = node_source_id(node)
         name = next((s.name for s in _source_choices() if s.stable_id == current), "Choose a source")
         property_split_row(box, "Input").operator_menu_enum("ace.set_node_source", "source", text=name)
 

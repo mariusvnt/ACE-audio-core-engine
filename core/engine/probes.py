@@ -299,15 +299,41 @@ class SourceProbes:
 
     @staticmethod
     def _write_source_tempos(sources) -> None:
-        """Every source's BPM and Beats per Bar on its proxy mesh, for the Source node's outputs."""
+        """Every source's BPM and Beats per Bar where its Source nodes read them.
+
+        Geometry Nodes: point 0 of the proxy mesh. Shaders: two scene properties, written only
+        for a source that has a shader Source group.
+        """
         objects = getattr(getattr(bpy, "data", None), "objects", None)
         if objects is None:
             return
         for source in (sources or []):
+            bpm = float(getattr(source, "bpm", 120.0) or 120.0)
+            beats_per_bar = int(getattr(source, "beats_per_bar", 4) or 4)
             proxy_name = str(getattr(source, "proxy_object_name", "") or "")
             proxy = objects.get(proxy_name) if proxy_name else None
-            if proxy is None:
-                continue
-            with utils.logged_errors("probes.SourceProbes._write_source_tempos"):
-                write_source_tempo(proxy, float(getattr(source, "bpm", 120.0) or 120.0),
-                                   int(getattr(source, "beats_per_bar", 4) or 4))
+            if proxy is not None:
+                with utils.logged_errors("probes.SourceProbes._write_source_tempos"):
+                    write_source_tempo(proxy, bpm, beats_per_bar)
+            with utils.logged_errors("probes.SourceProbes._write_source_tempos#scene"):
+                SourceProbes._write_shader_tempo(source, bpm, beats_per_bar)
+
+    @staticmethod
+    def _write_shader_tempo(source, bpm: float, beats_per_bar: int) -> None:
+        from ...nodes.identity import source_tempo_props
+        from ...nodes.shader.factory import ACEShaderNodeFactory
+
+        source_id = str(getattr(source, "stable_id", "") or "")
+        groups = getattr(getattr(bpy, "data", None), "node_groups", None)
+        scene = getattr(source, "id_data", None)
+        if not source_id or groups is None or not hasattr(scene, "keys"):
+            return
+        if groups.get(ACEShaderNodeFactory.source_group_name(source_id)) is None:
+            return
+        changed = False
+        for name, value in zip(source_tempo_props(source_id), (bpm, float(beats_per_bar))):
+            if scene.get(name) != value:
+                scene[name] = value
+                changed = True
+        if changed:
+            scene.update_tag()
