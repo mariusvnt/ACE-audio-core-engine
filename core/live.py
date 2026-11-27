@@ -50,6 +50,8 @@ class LiveSession:
     frames: int = 0
     late_frames: int = 0
     measured_fps: float = 0.0
+    recorder: Any = None  # a core.takes.TakeRecorder when the session is recorded
+    takes_added: List[str] = field(default_factory=list)
 
     def on_frame(self, frame: int, now: Optional[float] = None) -> None:
         """Count a frame shown: how fast playback runs, and the frames that came late."""
@@ -76,8 +78,11 @@ class LiveSession:
 
 
 def start(engine, scene, from_start: bool = True, disable_simulation_cache: bool = False,
-          solid_viewports: bool = False, play: bool = True) -> LiveSession:
-    """Set the scene up for a live session and start playback (when there is a window to play in)."""
+          solid_viewports: bool = False, play: bool = True, record: bool = False) -> LiveSession:
+    """Set the scene up for a live session and start playback (when there is a window to play in).
+
+    With *record*, the session is recorded as a take (core/takes.py).
+    """
     utils.assert_main_thread("live.start")
     if getattr(engine, "live_session", None) is not None:
         return engine.live_session
@@ -101,6 +106,10 @@ def start(engine, scene, from_start: bool = True, disable_simulation_cache: bool
     if from_start:
         scene.frame_set(scene.frame_start)
     session.start_frame = int(scene.frame_current)
+    if record:
+        from .takes import TakeRecorder
+
+        session.recorder = TakeRecorder(engine, scene, session.start_frame, fps).start()
     engine.live_session = session
     if play:
         _play(True)
@@ -132,6 +141,11 @@ def stop(engine, scene=None, stop_playback: bool = True) -> None:
     for space, shading in session.saved_shading:
         with utils.logged_errors("live.stop#shading"):
             space.shading.type = shading
+    if session.recorder is not None and scene is not None:
+        with utils.logged_errors("live.stop#take"):
+            session.takes_added = session.recorder.stop(scene)
+        for name in session.takes_added:
+            utils.log(f"Take recorded: '{name}'.", "INFO")
     utils.log(f"Live session ended after {session.frames} frames ({session.late_frames} late).", "INFO")
 
 

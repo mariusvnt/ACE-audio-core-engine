@@ -10,6 +10,8 @@ if SOUNDDEVICE_AVAILABLE:
 
 
 class DeviceInput:
+    # Set by a take (core/takes.py): called from the device callback with every block captured.
+    capture_tap = None
     @staticmethod
     def _query_sounddevice_input_info(device: Any) -> Optional[dict]:
         if not SOUNDDEVICE_AVAILABLE:
@@ -109,6 +111,10 @@ class DeviceInput:
                 if not self._live_queue:
                     return
                 block = indata.copy()
+                tap = self.capture_tap
+                if tap is not None:
+                    with utils.logged_errors("device.DeviceInput._open_live_sounddevice._callback#take"):
+                        tap(block)
                 try:
                     self._live_queue.put_nowait(block)
                     return

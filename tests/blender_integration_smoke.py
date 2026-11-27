@@ -1953,6 +1953,43 @@ def _check_downstream_bake_node(addon_key, engine, scene, src):
     engine.compiler.compile_scene_frontends(scene)
 
 
+def _check_take_recording(addon_key, engine, scene):
+    """A take stores the values a live input showed, marked as a take, and adds its WAV as a file source.
+
+    No audio device runs headless: the device callback is played by pushing blocks to the track.
+    """
+    import numpy as np
+
+    takes = importlib.import_module(f"{addon_key}.core.takes")
+    bake_store = importlib.import_module(f"{addon_key}.core.bake_store")
+    ace = scene.audiocore
+    bpy.ops.audiocore.add_audio_source(source_type="LIVE")
+    live_src = ace.audio_sources[ace.active_audio_source_index]
+    uid = str(live_src.stable_id)
+    recorder = takes.TakeRecorder(engine, scene, start_frame=scene.frame_start, fps=24.0)
+    track = recorder.add_track(uid, live_src.name, sample_rate=48000, channels=1, folder=takes.takes_folder())
+    for frame in range(scene.frame_start, scene.frame_start + 24):
+        track.push(np.full((2000, 1), 0.1, dtype=np.float32))
+        recorder.on_frame(uid, frame, {"S_take_probe:0": 0.01 * frame})
+    count = len(ace.audio_sources)
+    added = recorder.stop(scene)
+    _assert(len(added) == 1 and len(ace.audio_sources) == count + 1, f"The take added no file source: {added}")
+    take_src = ace.audio_sources[count]
+    _assert(take_src.source_type == "FILE" and os.path.isfile(take_src.filepath), f"The take's WAV is missing: {take_src.filepath}")
+    view = engine.bake.store.read(uid)
+    _assert(view is not None and view.origin == "take", "The live values were not stored as a take")
+    _assert(abs(float(view.series["S_take_probe:0"][5]) - 0.01 * (scene.frame_start + 5)) < 1e-6, "The take holds other values")
+    _assert(not bake_store.uses_bake(live_src, view), "A live input reads its take before being told to")
+    live_src["ace_bake_use"] = True
+    _assert(bake_store.uses_bake(live_src, view), "Use Take does not make the live input read its take")
+    print(f"[ACE smoke] take: {track.samples_written} samples recorded, {len(view.series)} curve(s) stored, '{take_src.name}' added")
+    engine.bake.store.clear(uid)
+    os.remove(take_src.filepath)
+    ace.audio_sources.remove(count)
+    ace.audio_sources.remove(count - 1)
+    ace.active_audio_source_index = 0
+
+
 def _check_live_session(addon_key, engine, scene):
     """A live session plays every frame over the longest range, counts its frames, and restores it all."""
     clock = importlib.import_module(f"{addon_key}.core.clock")
@@ -2249,6 +2286,7 @@ def main():
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io")
     _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="processes_dsp")
     _check_live_session(addon_key, engine, scene)
+    _check_take_recording(addon_key, engine, scene)
     _check_shader_values_reach_scene(addon_key, scene, engine, src)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)

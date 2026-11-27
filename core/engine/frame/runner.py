@@ -262,6 +262,9 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             # frame interval to fill.
             self._collect_graph_preview(graph, ctx)
         self._commit_graph_results(graph, graph_key, results, ctx)
+        recorder = getattr(getattr(self.engine, "live_session", None), "recorder", None)
+        if recorder is not None and ctx.clock is Clock.LIVE and source_type.upper() == "LIVE":
+            recorder.on_frame(str(getattr(graph, "source_uid", "") or graph_key), int(self.engine.current_frame), results)
 
     def _prepare_graph(self, scene, graph, ctx):
         """Set the graph's modes, pick its source tasks and adjust its block size."""

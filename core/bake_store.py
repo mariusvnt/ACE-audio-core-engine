@@ -326,6 +326,20 @@ def _layout_scene(scene, entries) -> None:
     nla_strip.extrapolation = "HOLD"
 
 
+def uses_bake(source, view: Optional[BakeView]) -> bool:
+    """True when *source* reads its store: a file source unless switched to live, a live input
+    only when told to use its take (it plays live otherwise)."""
+    if view is None:
+        return False
+    source_type = str(getattr(source, "source_type", "") or "").upper()
+    getter = getattr(source, "get", None)
+    if source_type == "FILE":
+        return bool(getter("ace_bake_use", True)) if callable(getter) else True
+    if source_type == "LIVE":
+        return view.origin == "take" and (bool(getter("ace_bake_use", False)) if callable(getter) else False)
+    return False
+
+
 def apply_layout(engine, store: BakeStore) -> None:
     """Lay the stores of the compiled sources out onto their proxies and scene properties.
 
@@ -344,10 +358,8 @@ def apply_layout(engine, store: BakeStore) -> None:
             objects.add(proxy_name)
         source = getattr(graph, "source_context", None)
         view = store.read(str(uid))
-        if view is None or str(getattr(source, "source_type", "") or "").upper() != "FILE":
+        if view is None or not uses_bake(source, view):
             continue
-        if hasattr(source, "get") and not bool(source.get("ace_bake_use", True)):
-            continue  # switched to live: the store stays
         for key in graph.output_attr_keys:
             series = view.series.get(key)
             if series is None:

@@ -468,15 +468,18 @@ def _draw_bake_state(layout, context, source):
     graph = engine.graphs.get(uid) if engine is not None else None
     outputs = list(getattr(graph, "output_attr_keys", []) or []) if graph is not None else []
     baked = sum(1 for key in outputs if key in view.series)
-    use = bool(source.get("ace_bake_use", True))
+    is_take = view.origin == "take"
+    use = bool(source.get("ace_bake_use", not is_take))
     box = layout.box()
     row = box.row()
-    row.label(text=f"Baked: {baked} of {len(outputs)} outputs, frames {view.frame_start} -> {view.frame_end}",
+    what = "Take" if is_take else "Baked"
+    row.label(text=f"{what}: {baked} of {len(outputs)} outputs, frames {view.frame_start} -> {view.frame_end}",
               icon="CHECKMARK" if outputs and baked == len(outputs) else "INFO")
     if outputs and baked < len(outputs):
         box.label(text="Outputs changed since the bake are computed live. Bake again to include them.", icon="ERROR")
     row = box.row(align=True)
-    row.operator("audiocore.toggle_source_bake", text="Using Bake" if use else "Live", icon="CHECKBOX_HLT" if use else "CHECKBOX_DEHLT", depress=use)
+    label = ("Using Take" if use else "Live (Use Take)") if is_take else ("Using Bake" if use else "Live")
+    row.operator("audiocore.toggle_source_bake", text=label, icon="CHECKBOX_HLT" if use else "CHECKBOX_DEHLT", depress=use)
     row.operator("audiocore.clear_source_bake", text="Clear Bake", icon="TRASH")
 
 
@@ -512,6 +515,8 @@ def _draw_bake_controls(layout, context):
     _, active_source = _get_active_source(context)
     if not active_source:
         return
+    if getattr(active_source, "source_type", "") == 'LIVE':
+        _draw_bake_state(layout, context, active_source)  # its take, if one was recorded
 
     row = layout.row()
     row.enabled = getattr(active_source, "source_type", "") == 'FILE'

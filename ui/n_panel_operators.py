@@ -710,6 +710,17 @@ def _active_file_source(context):
     return source if source is not None and getattr(source, "source_type", "") == 'FILE' else None
 
 
+def _active_baked_source(context):
+    """The active source when it has a bake: a file source's, or a live input's take."""
+    from ..core.bake_store import store_name
+    from ..utils import _get_active_source
+
+    _, source = _get_active_source(context)
+    if source is None or bpy.data.meshes.get(store_name(str(source.stable_id))) is None:
+        return None
+    return source
+
+
 class ACE_OT_clear_source_bake(bpy.types.Operator):
     """Delete the active source's bake: its outputs are computed live again."""
     bl_idname = "audiocore.clear_source_bake"
@@ -718,13 +729,10 @@ class ACE_OT_clear_source_bake(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        source = _active_file_source(context)
-        from ..core.bake_store import store_name
-
-        return source is not None and bpy.data.meshes.get(store_name(str(source.stable_id))) is not None
+        return _active_baked_source(context) is not None
 
     def execute(self, context):
-        source = _active_file_source(context)
+        source = _active_baked_source(context)
         engine = ACEAudioEngine.ensure_instance(context.scene)
         engine.bake.clear_source(str(source.stable_id))
         source["ace_bake_status"] = ""
@@ -739,11 +747,12 @@ class ACE_OT_toggle_source_bake(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return _active_file_source(context) is not None
+        return _active_baked_source(context) is not None
 
     def execute(self, context):
-        source = _active_file_source(context)
-        source["ace_bake_use"] = not bool(source.get("ace_bake_use", True))
+        source = _active_baked_source(context)
+        default = getattr(source, "source_type", "") == 'FILE'  # a live input plays live until told otherwise
+        source["ace_bake_use"] = not bool(source.get("ace_bake_use", default))
         engine = ACEAudioEngine.ensure_instance(context.scene)
         engine.bake.layout()
         return {'FINISHED'}
@@ -765,6 +774,11 @@ class ACE_OT_live_start(bpy.types.Operator):
         description="Do not keep simulated frames in memory during the session (restored after)",
         default=True,
     )
+    record: bpy.props.BoolProperty(  # type: ignore
+        name="Record a Take",
+        description="Record the live inputs to WAV files and the values shown on each frame, to render the show later",
+        default=False,
+    )
     solid_viewports: bpy.props.BoolProperty(  # type: ignore
         name="Solid 3D Views",
         description="Drop the 3D views to solid shading during the session, to leave the GPU to the show (restored after)",
@@ -780,7 +794,7 @@ class ACE_OT_live_start(bpy.types.Operator):
         from ..core import live
 
         engine = ACEAudioEngine.ensure_instance(context.scene)
-        live.start(engine, context.scene, from_start=self.from_start,
+        live.start(engine, context.scene, from_start=self.from_start, record=self.record,
                    disable_simulation_cache=self.disable_simulation_cache, solid_viewports=self.solid_viewports)
         return {'FINISHED'}
 

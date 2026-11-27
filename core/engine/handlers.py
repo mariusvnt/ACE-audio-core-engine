@@ -120,7 +120,8 @@ def _render_notes(engine, scene) -> list:
         name = str(getattr(ctx, "name", "") or uid)
         source_type = str(getattr(ctx, "source_type", "") or "").upper()
         if source_type == "LIVE":
-            notes.append(f"'{name}' is a live input: its values render as 0. Record a take to render it.")
+            if not engine.bake.covers(graph, frame_start, frame_end):
+                notes.append(f"'{name}' is a live input: its values render as 0. Record a take and use it to render it.")
         elif not engine.bake.covers(graph, frame_start, frame_end):
             notes.append(f"'{name}' is not baked: the render streams it, and may not match playback.")
     return notes
