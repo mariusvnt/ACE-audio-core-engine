@@ -3,7 +3,7 @@
 Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
 1. [Time model: render, bake, live](#1-time-model-render-bake-live)
-2. [Core operator set](#2-core-operator-set): the node set, motion and event nodes
+2. [Core operator set](#2-core-operator-set): the node set, the add menu, motion and event nodes
 3. [Live output window](#3-live-output-window)
 4. [Presets as assets](#4-presets-as-assets)
 5. [Per-instance parameters](#5-per-instance-parameters), only if needed
@@ -154,6 +154,33 @@ ACE has 11 nodes, after the removals that came first. Stereo and Stereo Vector s
 | **Gate** | Open, Hit, Count |
 | **Audio Preview** | none: plays a branch, in Geometry Nodes and shaders |
 
+### Add menu
+
+**Today:** the Audio Core Engine entry of the add menu has four submenus, each with an icon: Input (Source), Delta (Frequency Splitter), Stream (the measurements) and Utilities (Audio Preview, Rolling Average, Stream Accumulator).
+
+The menus become:
+
+```text
+Input
+Output
+─────────
+Audio
+Controllers
+```
+
+| Menu | Nodes | What puts a node there |
+| --- | --- | --- |
+| **Input** | Source | audio enters the tree |
+| **Output** | Audio Preview | audio leaves the tree, to be heard |
+| **Audio** | Frequency Splitter, Loudness, Pitch, Brightness, Transient, Stereo | at least one Audio input |
+| **Controllers** | Envelope, Running Total, Gate | no Audio input: they take a value and turn it into motion or events |
+
+- Input and Output have no icon, and a separator sets them apart from Audio and Controllers. Audio and Controllers keep an icon each.
+- Audio Preview has an Audio input, but it's where a branch ends, so it goes under Output.
+- Until Envelope and Running Total replace them, Rolling Average and Stream Accumulator are listed under Controllers.
+- A menu with no node for the current editor is hidden, as today.
+- The categories in `ACE_NODES` become these four, so the menu stays registry-driven.
+
 ### Outputs on 0..1
 
 Every measurement is a float between 0 and 1, so outputs can be swapped and a Gate's Threshold is always set on the same range. Balance is the exception: it keeps its range of -1 (left) to 1 (right), with 0 at the centre.
@@ -237,7 +264,7 @@ The Source node outputs only what musical time depends on: **BPM, Beats per Bar 
 
 ### Core set order
 
-1. Registry-driven value nodes and the `stateful` flag, then the merged Stereo node and the 0..1 outputs.
+1. Registry-driven value nodes and the `stateful` flag, then the merged Stereo node, the 0..1 outputs and the add menu.
 2. Envelope and Running Total.
 3. The Downbeat estimate.
 4. Gate.
