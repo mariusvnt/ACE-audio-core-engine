@@ -51,7 +51,7 @@ Uses of one node share its sink names. When they compute different values (a
 group input that differs per use, a value node behind two sources), two
 signals claim one sink: the use first in id order keeps it, and the conflict
 is logged and listed in the *Active ACE Instances* panel. Names per use are
-FUTURE.md §5.
+FUTURE.md §4.
 
 ## 2. Packages
 
@@ -66,6 +66,9 @@ FUTURE.md §5.
 | `core/worker` | Graph evaluation inside worker processes (no `bpy`) |
 | `core/input` | File decoding (Blender's `aud`), sound-device and UDP input |
 | `core/proxy` | Proxy objects (only for sources a node reads), the `ACE_Values` mesh, attribute and scene-property sinks |
+| `core/clock.py` | Which clock decides the frame, and how each source gets its values under it (§3, Time) |
+| `core/bake_store.py` | Bakes as Blender data, and their layout onto proxies and scene properties (§8, Bake) |
+| `core/live.py`, `core/takes.py` | Live sessions, and recording them as takes (§3, Time) |
 | `nodes` | Node identity, cached tree definitions, Source node bindings, linked values |
 | `nodes/geometry`, `nodes/shader` | Node-group factories, and the instance walker that reads one use of a tree |
 | `ui` | N-panel, add menu, operators and preferences |
@@ -116,7 +119,55 @@ FUTURE.md §5.
   (`ACE_bpm_<uid>`, `ACE_bpb_<uid>`).
 
 Block size follows the source sample rate and scene fps, so one block is one
-frame of audio and analysis stays locked to the timeline.
+frame of audio and analysis stays locked to the timeline. Every frame of a file
+source reads from its own start sample, `round((f - frame_start) · sr / fps)`,
+whether it is played, jumped to or baked, so all three read the same block.
+
+A sink is written unless the float32 value it would store is unchanged. A
+looser test (it was "within 1e-6") made a stored value depend on the frames
+written before it, and a bake could not equal playback.
+
+**Time.** Every value is a value at a frame; `core/clock.py` decides how a
+source gets it:
+
+| Clock \ Source | File | Live input |
+| --- | --- | --- |
+| Timeline (playback, scrubbing) | its bake, else computed | computed from the latest block |
+| Render | its bake, else computed, with a warning | its take (§8), else held at 0, with a warning |
+| Live (a live session) | its bake, else computed | computed from the latest block |
+
+- **Render.** The render clock runs from `render_init` to `render_complete` or
+  `render_cancel`: a render started from a script in background mode runs in
+  place, not as a job, so `bpy.app.is_job_running("RENDER")` misses it. A
+  rendered frame runs the graph once (`render_pre`, `frame_change_pre` and
+  `frame_change_post` all ask for it), with local DSP only (worker values may
+  be 50 ms old), and gets its values even on a compile frame. `render_init`
+  lists what will not render exactly (a file source not baked, a live input
+  without a take); the Baking panel shows it. Handlers cannot stop a render.
+- **Seeks.** Stateless measurements are exact after a jump (their block and
+  its history are read from the file). A stateful task declares how many
+  frames it needs to forget the past (`settle_frames`): Loudness in LUFS and
+  Peak modes (its Window and filters), Transient (64 frames), Rolling Average
+  (its window). When its last frame is not the previous one (a jump, a rewind,
+  frames dropped in playback, a task started mid-timeline), the frame runner
+  resets it and replays up to 4 s before the target through the stateful
+  tasks and what feeds them, writing nothing, never before `frame_start`. A
+  running sum (Stream Accumulator) never forgets: it is exact only when baked.
+  Live inputs are not replayed.
+- **Live sessions** (`core/live.py`) are Blender's own playback in *Play Every
+  Frame* mode (`sync_mode = 'NONE'`): frames are consecutive, and a scene that
+  can't keep up plays late instead of dropping frames. `frame_end` is raised to
+  Blender's last frame (1,048,574), and so is the simulation range when the
+  scene uses a custom one, so playback never wraps. Simulation caching can be
+  turned off on the objects that simulate, and 3D views dropped to solid. All
+  of it is restored when playback stops (`animation_playback_post`). The Live
+  panel shows the measured fps, late frames and the drift behind real time.
+- **Takes** (`core/takes.py`): a recorded session writes each live input to a
+  WAV from the device callback (the analysis keeps only the latest block),
+  after silence from `frame_start` to the frame the session started on, and
+  stores the values shown on each frame in the live source's bake store
+  (origin "take"). The WAV is added as a file source. With *Use Take* on, the
+  live source reads its take: a render shows the show as it was seen.
 
 ## 4. Engine components
 
@@ -167,8 +218,10 @@ Nothing ACE needs to tell nodes apart is stored on them.
 
 - Workers never import `bpy`. `bpy` (data, context, trees, handlers) is used
   on the main thread only.
-- `stream_accumulator` stays on the main thread: a running sum must not jump
-  when execution moves between a worker and local DSP.
+- Stateful nodes stay on the main thread (`"stateful"` in `ACE_NODES`:
+  Loudness in LUFS and Peak modes, Transient, Rolling Average, Stream
+  Accumulator). Each worker keeps its own copy of a task, so a stateful task
+  offloaded would split its state across copies.
 - A job older than 66 ms is dropped. A late result would either stall the
   frame or contaminate a later one.
 - At most two jobs per source are in flight.
@@ -221,8 +274,9 @@ covered by local DSP.
 
 ## 7. Blender integration
 
-- **Render safety.** Writes from frame handlers stop while a render runs with
-  `use_lock_interface` off; viewport renders keep updating.
+- **Render safety.** Writes from frame handlers stop while a render job runs
+  with `use_lock_interface` off; viewport renders keep updating. A baked
+  source needs no writes at all (§8, Bake).
 - **Auto-compile.** A depsgraph update of a node tree, or of the material,
   light or World holding one, marks that tree dirty; object updates mark
   nothing. A 0.25 s poll compares which trees each object uses (modifiers,
@@ -308,11 +362,38 @@ covered by local DSP.
   tree's audio output when there is none. Branches are mixed, limited and
   played only while the timeline plays. A feeder thread paces delivery at the
   device block rate because Blender timers jitter.
-- **Bake.** A file source can be analysed over the frame range ahead of time.
-  Baked values replace live computation until that source's signals, its
-  block size, or the file's path or modification time change; an edit to
-  another source's nodes, or a renamed sink, keeps the bake. The cache lives
-  in memory.
+- **Bake** (`core/engine/bake.py`, `core/bake_store.py`). A file source's
+  outputs are computed over the frame range on a thread, on a fresh copy of
+  its graph (`fresh_graph_copy`: new tasks, snapshots of the source and
+  settings, no prefetch thread). The bake is therefore what a playback from
+  the first frame computes, bit for bit, and playback goes on meanwhile; a
+  recompile or an undo leaves a running bake alone.
+  - **Store:** one hidden mesh per source, `.ACE_bake_<uid>` (fake user), one
+    point per frame, one attribute per output key. An output key is a signal
+    identity, so a curve stays right for its key whatever else is edited, and
+    an edit leaves only the signals it changes unbaked. Its custom properties
+    hold the range and the file (path, size, modification time, content
+    hash). A store whose file changed is dropped; one whose file is missing is
+    kept, since the bake is then all there is.
+  - **Layout,** after every compile and bake: a proxy (and `ACE_Values`) gets
+    one point per frame, its baked attributes their curves, and `ACE_frame0`
+    the frame of point 0. The Geometry Nodes groups sample point
+    `floor(frame) - ACE_frame0` with Sample Index clamping, so a live proxy
+    (one point) reads the same as before; outputs not baked are written live
+    to every point. Baked scene properties are animated by F-curves converted
+    to sample points, in the action `ACE_Bake` on its own NLA track of the
+    scene. No Python runs to read any of it: a baked .blend renders with ACE
+    disabled.
+  - **Live and baked:** `source["ace_bake_use"]` off lays a source out live
+    and keeps its store. A live input reads its take only with it on.
+  - **Downstream Bake nodes.** A native bake records what the proxies hold at
+    each frame it steps, so the sources read by a modifier holding a Bake node
+    or a simulation zone are kept baked over that bake's range. The 0.25 s
+    poll bakes what such a source is missing, once edits have been quiet for a
+    second; the proxies read live values meanwhile. The bake is released when
+    no Bake node needs it, unless the user baked it. Python can't tell whether
+    a native bake holds data, so ACE can't follow its bake and delete
+    buttons.
 
 ## 9. Error handling
 
@@ -353,10 +434,12 @@ pan, a music loop, 44.1 and 96 kHz files) play at 24, 30 and 60 fps through
 one tree holding every node and mode, and each output is compared frame by
 frame with the goldens in `tests/reference/curves`, within a tolerance per
 node (`spec.py`); the Source node's own case records the detected tempo.
-Each pass starts from a fresh engine with its tasks dropped, as after a file
-load, because a seek keeps analyzer history and a compile keeps tasks; it runs
-twice and must repeat exactly,
-and the I/O-thread mode must match. A new node type fails
+Each pass starts from a fresh engine with its tasks dropped and no bake, as
+after a file load; it runs twice and must repeat exactly, and the I/O-thread
+mode must match. Two more passes check time: a bake of the same case must
+equal the played curves bit for bit (`bake_vs_stream`), and a jump to the
+middle then playing on must match within tolerance (`seek_then_play`, without
+the running sum, which can't settle). A new node type fails
 `test_reference_goldens` until it has curves or an exclusion reason.
 `-- --update` records the goldens; `tests/reference/report.py` plots drifting
 curves. `test_reference_crosscheck` compares the goldens with librosa,
@@ -388,7 +471,14 @@ and nothing when its branch has an open pull request, which already tests it.
 ## 12. Constraints
 
 - Processing is frame-block based: tuned for reactivity, not offline fidelity.
-- The bake cache is in memory only.
+- At a subframe (motion blur), Geometry Nodes read the frame's baked value
+  (floor), while baked scene properties interpolate between frames.
+- Eevee reads View Layer attributes at half precision (about 1e-4), live or
+  baked; Cycles reads them exactly.
+- An unbaked playback can drop frames (Blender's default *Sync to Audio*):
+  stateful nodes settle after each jump, so they are close, not exact. A baked
+  source, or a live session, is exact.
+- Takes record device inputs only (not UDP), and no MIDI or OSC.
 - Uses of one ACE node share its sink names, so uses that compute different
   values conflict, and only one of them reaches the sink (§1).
 - Shader values are one global value per signal, not one per object.

@@ -16,7 +16,11 @@ Overview
 - **Integration**: a set of node groups for the Geometry Nodes and shader
   editors, which also work nested inside your own groups.
 - **Preview and bake**: listen to any part of the analysis during playback, or
-  compute a file ahead of time over the scene's frame range.
+  bake a file over the frame range into the .blend itself. A baked scene
+  renders exactly what playback shows, even on a computer without ACE, and a
+  Bake node placed after ACE nodes gets what it reads baked.
+- **Live**: a live session plays every frame, never drops one and never loops,
+  and can be recorded as a take to render the show later.
 
 Requirements
 ------------
