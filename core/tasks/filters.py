@@ -1,4 +1,4 @@
-"""Biquad, one-pole and envelope filter kernels."""
+"""Biquad filter kernels."""
 
 from typing import List, Tuple
 import numpy as np
@@ -27,17 +27,6 @@ def reset_biquad_fallback_warned() -> None:
 
 if NUMBA_AVAILABLE:
     @njit(cache=True)  # pragma: no cover - compiled at runtime
-    def _signed_smooth_block(data: np.ndarray, attack_c: float, release_c: float, smooth_state: float):
-        out = np.empty_like(data)
-        smoothed = smooth_state
-        for i in range(data.shape[0]):
-            x = float(data[i])
-            coeff = attack_c if abs(x) > abs(smoothed) else release_c
-            smoothed = coeff * smoothed + (1.0 - coeff) * x
-            out[i] = smoothed
-        return out, smoothed
-
-    @njit(cache=True)  # pragma: no cover - compiled at runtime
     def _biquad_filter_block(
         data: np.ndarray,
         b0: float,
@@ -58,28 +47,8 @@ if NUMBA_AVAILABLE:
             s2 = (b2 * x) - (a2 * y)
             out[i] = y
         return out, s1, s2
-
-    @njit(cache=True)  # pragma: no cover - compiled at runtime
-    def _iir1_filter_block(
-        data: np.ndarray,
-        b0: float,
-        b1: float,
-        a1: float,
-        x_prev: float,
-        y_prev: float,
-    ):
-        out = np.empty_like(data)
-        x1 = x_prev
-        y1 = y_prev
-        for i in range(data.shape[0]):
-            x = float(data[i])
-            y = (b0 * x) + (b1 * x1) - (a1 * y1)
-            out[i] = y
-            x1 = x
-            y1 = y
-        return out, x1, y1
 else:
-    _biquad_filter_block = _signed_smooth_block = _iir1_filter_block = None
+    _biquad_filter_block = None
 
 
 def _run_biquad(

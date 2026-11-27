@@ -47,10 +47,6 @@ def source_payload(chunk, block_size: int, sample_rate: int) -> Dict[str, Any]:
             if not isinstance(before, np.ndarray) or before.shape != (stereo_payload.shape[0], history.size):
                 before = np.zeros((stereo_payload.shape[0], history.size), dtype=np.float32)
             payload["stereo"] = np.concatenate((before, stereo_payload), axis=1).astype(np.float32, copy=False)
-    frontend_config = getattr(chunk, "frontend_config", None)
-    if isinstance(frontend_config, (list, tuple)) and len(frontend_config) >= 4:
-        with utils.logged_errors("slots.source_payload"):
-            payload["frontend_config"] = tuple(float(v or 0.0) for v in frontend_config[:4])
     band_indices = getattr(chunk, "band_indices", None)
     if band_indices is not None:
         with utils.logged_errors("slots.source_payload#2"):

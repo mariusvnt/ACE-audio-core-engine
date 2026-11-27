@@ -10,9 +10,7 @@ from ... import utils
 from .base import ACEAudioTask
 from .block_size import _resolve_block_size_default
 from .chunk import SAMPLE_RATE, _make_silence_chunk
-from .frontend import SourceFrontendProcessor
 from .source_clock import SourceClock
-from .source_frontend import SourceFrontendStage
 
 
 # One open per file at a time: the tempo thread and the prefetcher may open the same file (exclusive on Windows).
@@ -36,7 +34,7 @@ def _clear_file_open_locks():
         idle = [k for k, v in _FILE_OPEN_LOCKS.items() if not v.locked()]
         for k in idle:
             _FILE_OPEN_LOCKS.pop(k, None)
-class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
+class SourceTask(SourceClock, ACEAudioTask):
     """Audio source bridge task — supplies raw audio chunks to downstream nodes."""
     def __init__(self, node_id, params, block_size):
         super().__init__(node_id, params, block_size)
@@ -44,21 +42,9 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self.reader_path: Optional[str] = None
         self.reader_channels = 1
         self.sample_rate = SAMPLE_RATE
-        self._frontend_processor = SourceFrontendProcessor()
         self.initialized = False
-        self._env_state = 0.0
         self.reception: Optional[AudioReception] = None
         self._last_seek_sample = -1
-        self._hpf_state = {"x1": 0.0, "y1": 0.0}
-        self._lpf_state = {"x1": 0.0, "y1": 0.0}
-        self._frontend_buffer: Optional[np.ndarray] = None
-        self._env_buffer: Optional[np.ndarray] = None
-        self._iir_prev_input: Optional[np.ndarray] = None
-        self._iir_u_buffer: Optional[np.ndarray] = None
-        self._iir_pow_buffer: Optional[np.ndarray] = None
-        self._iir_accum_buffer: Optional[np.ndarray] = None
-        self._frontend_index_buffer: Optional[np.ndarray] = None
-        self._workspace_pool: Dict[int, Dict[str, np.ndarray]] = {}
         self._last_live_retry_ts: float = 0.0
         self.engine_settings = None
         self._live_block_buffer: deque[Tuple[np.ndarray, Optional[np.ndarray], int, int, int]] = deque(maxlen=16)
@@ -69,17 +55,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self._live_history_block: Optional[np.ndarray] = None
         self._live_history_tail: Optional[Tuple[np.ndarray, Optional[np.ndarray]]] = None
         self._live_history_before: Optional[Tuple[np.ndarray, Optional[np.ndarray]]] = None
-        self._filter_cache = {
-            "sr": None,
-            "freq_min": None,
-            "freq_max": None,
-            "attack_ms": None,
-            "release_ms": None,
-            "hpf_coeffs": None,
-            "lpf_coeffs": None,
-            "attack_c": 0.0,
-            "release_c": 0.0,
-        }
         self.live_ready: bool = True
         self._last_config_signature: Optional[Tuple[Any, ...]] = None
         self.source_ready: bool = True
@@ -228,11 +203,8 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
     def _set_block_size_from_engine(self, new_size: int):
         size = max(int(new_size), 1)
         if size == int(self.block_size):
-            self._adopt_workspace_for_size(size)
             return
         self.block_size = size
-        self._adopt_workspace_for_size(size)
-        self._frontend_processor.reset()
         self._reset_sample_clocks()
 
     def _reopen_for_config_change(self):
@@ -244,7 +216,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self.cached_output = None
         self.last_frame_processed = -1
         self.initialized = False
-        self._frontend_processor.reset()
         self.source_ready = True
         self.live_ready = True
         self.last_error = ""
@@ -347,12 +318,6 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
             return
 
         self._last_config_signature = self._config_signature()
-        self._hpf_state = {"x1": 0.0, "y1": 0.0}
-        self._lpf_state = {"x1": 0.0, "y1": 0.0}
-        self._env_state = 0.0
-        self._frontend_processor.reset()
-        self._adopt_workspace_for_size(self.block_size)
-        self._ensure_frontend_workspace(self.block_size)
         self._last_live_retry_ts = time.time()
 
     def _apply_block_size(self, new_size: int):
@@ -376,6 +341,4 @@ class SourceTask(SourceFrontendStage, SourceClock, ACEAudioTask):
         self.live_ready = True
         self.source_ready = True
         self.last_error = ""
-        self._frontend_processor.reset()
-        self._workspace_pool.clear()
         self.initialized = False

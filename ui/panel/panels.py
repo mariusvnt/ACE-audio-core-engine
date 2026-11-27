@@ -532,34 +532,6 @@ class ACE_PT_sub_tempo_meter(_ACESourceSubPanel, bpy.types.Panel):
         row.prop(src, "beats_per_bar", text="Beats/Bar")
 
 
-class ACE_PT_sub_envelope(_ACESourceSubPanel, bpy.types.Panel):
-    """Per-source preprocessing before analysis: attack/release envelope and frequency range."""
-
-    bl_label = "Envelope"
-    bl_idname = "ACE_PT_sub_envelope"
-    bl_order = 2
-
-    def draw_header(self, context):
-        from ...utils import _get_active_source
-        _, src = _get_active_source(context)
-        if src:
-            self.layout.prop(src, "enable_preprocessing", text="")
-
-    def draw(self, context):
-        from ...utils import _get_active_source
-        _, src = _get_active_source(context)
-        if not src:
-            return
-        col = self.layout.column()
-        col.active = bool(src.enable_preprocessing)
-        freqs = col.row(align=True)
-        freqs.prop(src, "freq_min", text="Min Hz")
-        freqs.prop(src, "freq_max", text="Max Hz")
-        times = col.row(align=True)
-        times.prop(src, "envelope_attack", text="Attack (ms)")
-        times.prop(src, "envelope_release", text="Release (ms)")
-
-
 class ACE_PT_information_streams(bpy.types.Panel):
     """Panel listing all ACE graph nodes for the active source with live values."""
 
@@ -644,7 +616,6 @@ classes = (
     ACE_PT_audio_sources,
     ACE_PT_sub_source_info,
     ACE_PT_sub_tempo_meter,
-    ACE_PT_sub_envelope,
     ACE_PT_information_streams,
     ACE_PT_information_streams_description,
     ACE_PT_capture_influx,

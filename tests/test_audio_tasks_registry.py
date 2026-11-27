@@ -509,64 +509,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         peak = float(np.max(np.abs(out.mono))) if out.mono.size > 0 else 0.0
         self.assertLessEqual(peak, 0.985)
 
-    def test_source_frontend_signed_smoothing_preserves_polarity_and_reduces_jitter(self):
-        processor = atr.SourceFrontendProcessor()
-        mono = np.array([1.0, -1.0] * 64, dtype=np.float32)
-        analysis_mono, analysis_stereo = processor.process(
-            mono=mono,
-            stereo=None,
-            sample_rate=48000,
-            frontend_config=(0.0, 0.0, 5.0, 50.0),
-        )
-
-        self.assertIsNone(analysis_stereo)
-        self.assertGreater(float(np.max(analysis_mono)), 0.0)
-        self.assertLess(float(np.min(analysis_mono)), 0.0)
-        self.assertLess(
-            float(np.mean(np.abs(np.diff(analysis_mono)))),
-            float(np.mean(np.abs(np.diff(mono)))),
-        )
-        self.assertTrue(np.all(np.sign(analysis_mono[1:]) != np.sign(analysis_mono[:-1])))
-
-    def test_preview_sink_uses_raw_audio_track_when_analysis_frontend_is_present(self):
-        n = 256
-        sr = 48000
-        t = np.arange(n, dtype=np.float32) / float(sr)
-        raw_stereo = np.stack(
-            [
-                np.sin(2.0 * np.pi * 220.0 * t).astype(np.float32),
-                np.sin(2.0 * np.pi * 330.0 * t).astype(np.float32),
-            ],
-            axis=0,
-        )
-        raw_mono = np.mean(raw_stereo, axis=0).astype(np.float32)
-        processor = atr.SourceFrontendProcessor()
-        analysis_mono, analysis_stereo = processor.process(
-            mono=raw_mono,
-            stereo=raw_stereo,
-            sample_rate=sr,
-            frontend_config=(120.0, 800.0, 10.0, 80.0),
-        )
-        chunk = atr.AudioChunk(
-            raw_mono,
-            raw_stereo,
-            sr,
-            analysis_mono=analysis_mono,
-            analysis_stereo=analysis_stereo,
-            frontend_config=(120.0, 800.0, 10.0, 80.0),
-            lineage=("src",),
-            spectrum_token=("src", "frame"),
-        )
-
-        preview = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=n)
-        preview_out = preview.process({0: chunk})
-        analysis_view, analysis_stereo_view = atr._analysis_signals_normalized(chunk)
-
-        self.assertTrue(np.allclose(preview_out.mono, raw_mono, atol=1e-6))
-        self.assertFalse(np.allclose(analysis_view, raw_mono, atol=1e-3))
-        self.assertIsNotNone(analysis_stereo_view)
-        self.assertLess(float(np.min(analysis_view)), -0.01)
-
     def test_source_task_hot_reload_on_runtime_config_change(self):
         load_calls = []
 

@@ -43,9 +43,6 @@ class AudioChunk:
     __slots__ = (
         "mono",
         "stereo",
-        "analysis_mono",
-        "analysis_stereo",
-        "frontend_config",
         "sample_rate",
         "latency_ms",
         "provider",
@@ -62,9 +59,6 @@ class AudioChunk:
 
     def __init__(self, mono: np.ndarray, stereo: Optional[np.ndarray], sample_rate: int,
                  provider: Optional['SourceTask'] = None, frame_index: int = -1,
-                 analysis_mono: Optional[np.ndarray] = None,
-                 analysis_stereo: Optional[np.ndarray] = None,
-                 frontend_config: Optional[Tuple[float, float, float, float]] = None,
                  band_indices: Optional[np.ndarray] = None,
                  band_index_fft_size: Optional[int] = None,
                  band_hz_bounds: Optional[Tuple[float, float]] = None,
@@ -73,15 +67,12 @@ class AudioChunk:
                  latency_ms: float = 0.0,
                  history_mono: Optional[np.ndarray] = None,
                  history_stereo: Optional[np.ndarray] = None):
-        # The audio just before this block (zeros before the start of a file), in the domain of
-        # analysis_mono before frontend processing. None when nothing is known about it.
+        # The audio just before this block (zeros before the start of a file). None when
+        # nothing is known about it.
         self.history_mono = history_mono
         self.history_stereo = history_stereo
         self.mono = mono.astype(np.float32, copy=False)
         self.stereo = stereo.astype(np.float32, copy=False) if stereo is not None else None
-        self.analysis_mono = analysis_mono.astype(np.float32, copy=False) if isinstance(analysis_mono, np.ndarray) else None
-        self.analysis_stereo = analysis_stereo.astype(np.float32, copy=False) if isinstance(analysis_stereo, np.ndarray) else None
-        self.frontend_config = tuple(frontend_config) if isinstance(frontend_config, (tuple, list)) and len(frontend_config) >= 4 else None
         self.sample_rate = sample_rate
         self.latency_ms = float(max(float(latency_ms), 0.0))
         self.provider = provider
@@ -130,9 +121,6 @@ def _spawn_audio_chunk(
     *,
     mono: Any = _KEEP,
     stereo: Any = _KEEP,
-    analysis_mono: Any = _KEEP,
-    analysis_stereo: Any = _KEEP,
-    frontend_config: Any = _KEEP,
     sample_rate: Any = _KEEP,
     provider: Any = _KEEP,
     frame_index: Any = _KEEP,
@@ -152,9 +140,6 @@ def _spawn_audio_chunk(
         sample_rate=(source.sample_rate if sample_rate is _KEEP else sample_rate),
         provider=(source.provider if provider is _KEEP else provider),
         frame_index=(source.frame_index if frame_index is _KEEP else frame_index),
-        analysis_mono=(source.analysis_mono if analysis_mono is _KEEP else analysis_mono),
-        analysis_stereo=(source.analysis_stereo if analysis_stereo is _KEEP else analysis_stereo),
-        frontend_config=(source.frontend_config if frontend_config is _KEEP else frontend_config),
         band_indices=(source.band_indices if band_indices is _KEEP else band_indices),
         band_index_fft_size=(source.band_index_fft_size if band_index_fft_size is _KEEP else band_index_fft_size),
         band_hz_bounds=(source.band_hz_bounds if band_hz_bounds is _KEEP else band_hz_bounds),
@@ -166,22 +151,11 @@ def _spawn_audio_chunk(
     )
 
 
-def _signal_for_chunk(chunk: AudioChunk, *, prefer_analysis_track: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """The (mono, stereo) arrays of a chunk: its analysis track when it has one and that is preferred."""
-    analysis_mono = getattr(chunk, "analysis_mono", None)
-    analysis_stereo = getattr(chunk, "analysis_stereo", None)
-    mono_base = analysis_mono if prefer_analysis_track and isinstance(analysis_mono, np.ndarray) else getattr(chunk, "mono", None)
-    stereo_base = analysis_stereo if prefer_analysis_track and isinstance(analysis_stereo, np.ndarray) else getattr(chunk, "stereo", None)
-    mono = mono_base if isinstance(mono_base, np.ndarray) else np.zeros(0, dtype=np.float32)
-    return np.asarray(mono, dtype=np.float32).reshape(-1), stereo_base
-
-
-def _analysis_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    return _signal_for_chunk(chunk, prefer_analysis_track=True)
-
-
-def _preview_signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    return _signal_for_chunk(chunk, prefer_analysis_track=False)
+def _signal_for_chunk(chunk: AudioChunk) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """The (mono, stereo) arrays of a chunk."""
+    mono = getattr(chunk, "mono", None)
+    mono = mono if isinstance(mono, np.ndarray) else np.zeros(0, dtype=np.float32)
+    return np.asarray(mono, dtype=np.float32).reshape(-1), getattr(chunk, "stereo", None)
 
 
 def _ensure_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:

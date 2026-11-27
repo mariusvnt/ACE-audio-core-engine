@@ -7,7 +7,7 @@ import numpy as np
 from .filters import NUMBA_AVAILABLE
 from ... import utils
 from .base import ACEAudioTask, _LAYER3_THREAD_LOCAL
-from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk, _preview_signal_for_chunk
+from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk, _signal_for_chunk
 from .filters import _run_biquad
 from .spectral import _remap_indices_fft_domain
 
@@ -351,7 +351,7 @@ class PreviewSinkTask(ACEAudioTask):
     def _process_impl(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
         # The raw signal, filtered to the chunk's band.
-        mono_base, stereo_base = _preview_signal_for_chunk(chunk)
+        mono_base, stereo_base = _signal_for_chunk(chunk)
         sample_rate = float(max(getattr(chunk, "sample_rate", SAMPLE_RATE), 1))
         nyquist = 0.5 * sample_rate
         stereo_in = stereo_base

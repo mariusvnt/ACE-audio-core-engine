@@ -156,8 +156,6 @@ class FrequencySplitterTask(ACEAudioTask):
                             chunk,
                             mono=np.zeros_like(audio),
                             stereo=(None if stereo is None else np.zeros_like(stereo)),
-                            analysis_mono=None,
-                            analysis_stereo=None,
                             history_mono=None,
                             history_stereo=None,
                             provider=None,

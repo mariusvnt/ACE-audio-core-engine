@@ -1162,16 +1162,13 @@ def _check_panels_draw(addon_key, scene):
         def props(panel_name):
             return {value for kind, value in drawn[panel_name] if kind == "prop"}
 
-        _assert({"enable_preprocessing", "envelope_attack", "envelope_release"} <= props("ACE_PT_sub_envelope"),
-                f"Envelope panel: {props('ACE_PT_sub_envelope')}")
         _assert({"bpm", "beats_per_bar"} <= props("ACE_PT_sub_tempo_meter"), "Tempo panel")
         _assert(("operator", "audiocore.reset_engine") in drawn["ACE_PT_sub_engine_settings"], "No reset button")
         _assert({"ace_split_freq_1", "ace_band_fill"} <= props("ACE_PT_information_streams"),
                 f"Splitter settings: {props('ACE_PT_information_streams')}")
-        for name in ("ACE_PT_sub_source_info", "ACE_PT_sub_tempo_meter", "ACE_PT_sub_envelope"):
+        for name in ("ACE_PT_sub_source_info", "ACE_PT_sub_tempo_meter"):
             _assert("DEFAULT_CLOSED" in getattr(panels, name).bl_options, f"{name} is not closed by default")
-        order = [panels.ACE_PT_sub_source_info.bl_order, panels.ACE_PT_sub_tempo_meter.bl_order,
-                 panels.ACE_PT_sub_envelope.bl_order]
+        order = [panels.ACE_PT_sub_source_info.bl_order, panels.ACE_PT_sub_tempo_meter.bl_order]
         _assert(order == sorted(order), f"Source sub-panel order: {order}")
     finally:
         sync._find_active_node_tree = original_tree

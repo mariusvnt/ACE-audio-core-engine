@@ -9,7 +9,6 @@ from ...vars import ACE_NODES
 from ..tasks.base import ACEAudioTask
 from ..tasks.chunk import AudioChunk, SAMPLE_RATE
 from ..tasks.delta import FrequencySplitterTask
-from ..tasks.frontend import SourceFrontendProcessor
 from ..tasks.stream import create_stream_task
 from ..tasks.utility import StreamAccumulatorTask
 
@@ -66,7 +65,6 @@ class _WorkerSourceBridgeTask:
         self._current_frame = -1
         self._current_chunk: Optional[AudioChunk] = None
         self._silence = np.zeros(self.block_size, dtype=np.float32)
-        self._frontend_processor = SourceFrontendProcessor()
         meta = dict(source_ir or {})
         self.default_sample_rate = max(int(meta.get("sample_rate", provider.sample_rate) or provider.sample_rate), 1)
         lineage_raw = meta.get("lineage", (self.node_id,))
@@ -144,40 +142,12 @@ class _WorkerSourceBridgeTask:
         else:
             band_hz_bounds = None
 
-        frontend_config = payload.get("frontend_config")
-        if isinstance(frontend_config, (list, tuple)) and len(frontend_config) >= 4:
-            try:
-                frontend_config = (
-                    float(frontend_config[0] or 0.0),
-                    float(frontend_config[1] or 0.0),
-                    float(frontend_config[2] or 0.0),
-                    float(frontend_config[3] or 0.0),
-                )
-            except Exception as exc:
-                utils.note_swallowed("graph._WorkerSourceBridgeTask.set_chunk#3", exc)
-                frontend_config = None
-        else:
-            frontend_config = None
-
-        analysis_mono = None
-        analysis_stereo = None
-        if frontend_config is not None:
-            analysis_mono, analysis_stereo = self._frontend_processor.process(
-                mono=mono,
-                stereo=stereo,
-                sample_rate=sr,
-                frontend_config=frontend_config,
-            )
-
         chunk = AudioChunk(
             mono=mono,
             stereo=stereo,
             sample_rate=sr,
             provider=self.provider,
             frame_index=int(frame_id),
-            analysis_mono=analysis_mono,
-            analysis_stereo=analysis_stereo,
-            frontend_config=frontend_config,
             band_indices=band_indices,
             band_index_fft_size=payload.get("band_index_fft_size"),
             band_hz_bounds=band_hz_bounds,

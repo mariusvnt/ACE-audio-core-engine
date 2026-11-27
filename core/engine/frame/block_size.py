@@ -29,7 +29,6 @@ class BlockSizing:
                     utils.note_swallowed("block_size.BlockSizing.adjust_graph_block_size_for_task", exc)
                     t.block_size = new_block_size
                     t.silence_buffer = np.zeros(new_block_size, dtype=np.float32)
-                    t._ensure_frontend_workspace(new_block_size)
                 continue
 
             t.block_size = new_block_size

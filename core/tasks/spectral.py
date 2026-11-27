@@ -8,8 +8,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 from ... import utils
 from .base import _LAYER3_THREAD_LOCAL
-from .chunk import AudioChunk, SAMPLE_RATE, _analysis_signal_for_chunk, _finite_copy, _preview_signal_for_chunk
-from .frontend import SourceFrontendProcessor
+from .chunk import AudioChunk, SAMPLE_RATE, _finite_copy, _signal_for_chunk
 
 
 # Pitch: the newest samples are compared with the signal one period earlier (a 21 ms window at
@@ -51,14 +50,8 @@ def _aligned_signal_length(signal: np.ndarray, target_len: int) -> np.ndarray:
     return _aligned_signal_length(flat, target)
 
 
-def _analysis_signals_normalized(
-    chunk: AudioChunk,
-    prefer_analysis_track: bool = True,
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
-    if prefer_analysis_track:
-        mono_sig, stereo_sig = _analysis_signal_for_chunk(chunk)
-    else:
-        mono_sig, stereo_sig = _preview_signal_for_chunk(chunk)
+def _analysis_signals_normalized(chunk: AudioChunk) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    mono_sig, stereo_sig = _signal_for_chunk(chunk)
     mono = np.asarray(mono_sig, dtype=np.float32).reshape(-1).astype(np.float32, copy=False)
     if mono.size > 0:
         mono = _finite_copy(mono)
@@ -170,15 +163,12 @@ def _masked_spectrum(chunk: AudioChunk, fft_size: Optional[int] = None) -> Tuple
 
 
 def _analysis_history_pair(chunk: AudioChunk) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """The analysis signal before the chunk's block, mono and stereo, processed like the block."""
+    """The audio before the chunk's block, mono and stereo."""
     if "analysis_history_pair" in chunk.features:
         return chunk.features["analysis_history_pair"]
     mono = chunk.history_mono
     stereo = chunk.history_stereo
     if mono is not None:
-        if chunk.analysis_mono is not None and chunk.frontend_config is not None:
-            # A fresh filter, so the result depends only on the audio, not on what played before.
-            mono, stereo = SourceFrontendProcessor().process(mono, stereo, int(chunk.sample_rate), chunk.frontend_config)
         mono = _finite_copy(mono)
         stereo = _finite_copy(stereo) if isinstance(stereo, np.ndarray) and stereo.ndim == 2 else None
     else:
@@ -188,7 +178,7 @@ def _analysis_history_pair(chunk: AudioChunk) -> Tuple[Optional[np.ndarray], Opt
 
 
 def _analysis_history(chunk: AudioChunk) -> Optional[np.ndarray]:
-    """The analysis signal before the chunk's block, processed like the block, or None."""
+    """The audio before the chunk's block, or None."""
     return _analysis_history_pair(chunk)[0]
 
 

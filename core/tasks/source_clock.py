@@ -1,7 +1,7 @@
 """Sample clocks that keep file and live reads aligned with the timeline."""
 
 import time
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 import numpy as np
 from ... import utils
 from .block_size import _resolve_block_size_default
@@ -9,6 +9,20 @@ from .chunk import AudioChunk, HISTORY_SAMPLES, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE
 
 
 class SourceClock:
+    @staticmethod
+    def _coerce_stereo_block(stereo: Any, frame_count: int) -> Optional[np.ndarray]:
+        """A (2, n) float32 view of a stereo block in either layout, or None."""
+        if not isinstance(stereo, np.ndarray):
+            return None
+        arr = np.asarray(stereo, dtype=np.float32)
+        if arr.ndim != 2:
+            return None
+        if arr.shape[1] == int(frame_count):
+            return arr.astype(np.float32, copy=False)
+        if arr.shape[0] == int(frame_count):
+            return arr.T.astype(np.float32, copy=False)
+        return None
+
     def _reset_sample_clocks(self):
         self.read_cursor = 0
         self._last_seek_sample = -1
@@ -345,14 +359,6 @@ class SourceClock:
 
             mono_raw = np.asarray(mono, dtype=np.float32).reshape(-1).astype(np.float32, copy=False)
             stereo_raw = self._coerce_stereo_block(stereo, mono_raw.shape[0])
-            analysis_mono = None
-            analysis_stereo = None
-            frontend_config = self._frontend_runtime_config()
-            if self._should_materialize_local_frontend():
-                analysis_mono, analysis_stereo, frontend_config = self._analysis_frontend_tracks(
-                    mono_raw,
-                    stereo_raw,
-                )
             live_latency_ms = float(getattr(self.source_context, "live_latency_ms", 0.0) or 0.0) if source_type == "LIVE" else 0.0
             sr = max(float(self.sample_rate), 1.0)
             block_latency_ms = (float(self.block_size) / sr) * 1000.0
@@ -362,9 +368,6 @@ class SourceClock:
                 stereo_raw,
                 self.sample_rate,
                 provider=self,
-                analysis_mono=analysis_mono,
-                analysis_stereo=analysis_stereo,
-                frontend_config=frontend_config,
                 lineage=(self.node_id,),
                 latency_ms=total_latency_ms,
                 history_mono=None if history is None else history[0],

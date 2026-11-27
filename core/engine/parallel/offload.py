@@ -4,14 +4,12 @@ import time
 from collections import deque
 from typing import Any, Dict, List, Optional
 
-import bpy
 import numpy as np
 
 from .... import utils
 from ...abstract_tree import ACEAbstractTree
 from ...tasks.chunk import SAMPLE_RATE
 from ...tasks.graph import ACEAudioGraph
-from ...tasks.source import SourceTask
 from ...worker.job import evaluate_parallel_job
 from ..common import BrokenProcessPool, engine_settings
 from . import ir
@@ -174,22 +172,6 @@ class ParallelOffload:
             graph_key = str(getattr(graph, "parallel_graph_uid", "") or ir.graph_uid(graph))
             if graph_key and getattr(graph, "parallel_ir", {}) and getattr(graph, "parallel_offload_attr_keys", []):
                 self.require_ir(graph_key)
-
-    def source_task_requires_local_frontend(self, task: Optional[SourceTask]) -> bool:
-        """False when workers compute every output of the task's graph."""
-        if not isinstance(task, SourceTask):
-            return True
-        node_id = str(getattr(task, "node_id", "") or "")
-        graph = next((g for g in self.engine.graphs.values() if g.tasks.get(node_id) is task), None)
-        if graph is None:
-            return True
-        scene = getattr(getattr(bpy, "context", None), "scene", None)
-        offloaded = (
-            self.mode(scene) == "processes_dsp"
-            and bool(getattr(graph, "parallel_ir", {}))
-            and bool(getattr(graph, "parallel_offload_attr_keys", []))
-        )
-        return not offloaded or bool(getattr(graph, "parallel_local_attr_keys", []))
 
     # Jobs
 

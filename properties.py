@@ -370,32 +370,6 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         description="Desired latency buffer for live capture (ms)"
     )
 
-    # These are fed into the Engine to pre-process the source signal
-    enable_preprocessing: bpy.props.BoolProperty(                                                                                   # type: ignore
-        name="Envelope",
-        description="Apply source-side HPF/LPF filtering and signed attack/release smoothing before analysis",
-        default=False,
-    )
-    envelope_attack: bpy.props.FloatProperty(                                                                                       # type: ignore
-        name="Attack", 
-        description="Smoothing time for rising signal magnitude (ms)", 
-        default=10.0, min=0.0
-    )
-    envelope_release: bpy.props.FloatProperty(                                                                                      # type: ignore
-        name="Release", 
-        description="Smoothing time for falling signal magnitude (ms)", 
-        default=100.0, min=0.0
-    )
-    freq_min: bpy.props.FloatProperty(                                                                                              # type: ignore
-        name="Min Freq", 
-        description="Lowest relevant frequency (Hz). Signals below this are filtered out.", 
-        default=20.0, min=0.0, soft_max=20000.0
-    )
-    freq_max: bpy.props.FloatProperty(                                                                                              # type: ignore
-        name="Max Freq", 
-        description="Highest relevant frequency (Hz).", 
-        default=20000.0, min=0.0, soft_max=20000.0
-    )
     bpm: bpy.props.FloatProperty(                                                                                                   # type: ignore
         name="BPM",
         description="Tempo used for beat-synced calculations.",
