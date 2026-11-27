@@ -831,6 +831,42 @@ def _abstract_nodes(engine, node_type, name):
     return [n for n in tree.nodes.values() if n.type == node_type and n.name == name] if tree is not None else []
 
 
+def _check_instances_panel_model(addon_key, scene, engine, obj, tree, window_group, source_group, inner_loud,
+                                 sources, count):
+    """The Active ACE Instances report and the sidebar's list of a group come from the compiled model."""
+    instances = importlib.import_module(f"{addon_key}.ui.panel.instances")
+    sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
+    report = {(d.tree_name, d.node_name): d for d in instances.instance_report(engine)}
+    window = report.get((window_group.name, "Loudness"))
+    owner = f"{obj.name} › {obj.modifiers[0].name}"
+    _assert(window is not None and len(window.uses) == 2 and window.conflicts, f"Window group report: {window}")
+    _assert(all(use.owners == [owner] and len(use.chain) == 1 for use in window.uses),
+            f"Uses not named by owner and group node: {[(u.owners, u.chain) for u in window.uses]}")
+    inner = report.get((source_group.name, "Inner Loudness"))
+    _assert(inner is not None and sorted(s for u in inner.uses for s in u.sources) == sorted(s.stable_id for s in sources),
+            f"Each use's source is not reported: {inner}")
+    uses = instances.source_uses(engine)
+    _assert(all(any(f.tree_name == tree.name for f in uses.get(s.stable_id, [])) for s in sources),
+            f"The Audio Inputs list does not show the tree under both sources: {uses}")
+
+    # A group open in the editor: its operators under the source the use gives them (the group
+    # read on its own has no source: its Source node's proxy comes from outside).
+    ace = scene.audiocore
+    original_tree = sync._find_active_node_tree
+    try:
+        ace.active_audio_source_index = count + 1
+        sync._find_active_node_tree = lambda _context, **_kw: source_group
+        sync._sync_ui_dummy_tree(bpy.context, force=True)
+        labels = [seg.label for row in sync.current_rows() for seg in row.segments]
+        _assert("Inner Loudness" in labels, f"The group's operators are not listed under its source: {labels}")
+        view = instances.compiled_tree_view(engine, source_group, sources[1].stable_id)
+        node = view.nodes.get(_nid(inner_loud)) if view is not None else None
+        _assert(node is not None and sources[1].stable_id in node.root_sources, "The view does not use the tree's own ids")
+    finally:
+        sync._find_active_node_tree = original_tree
+        ace.active_audio_source_index = count
+
+
 def _check_instances_through_groups(addon_key, scene, engine):
     """ACE nodes in user groups are read once per use, with what each use binds: values and sources."""
     ace = scene.audiocore
@@ -892,6 +928,9 @@ def _check_instances_through_groups(addon_key, scene, engine):
             _assert(graph is not None and any(n.name == "Inner Loudness" for n in
                     (engine.abstract_tree_ref.nodes.get(t) for t in graph.tasks) if n is not None),
                     f"No graph computes the group's Loudness for {src.name}")
+
+        _check_instances_panel_model(addon_key, scene, engine, obj, tree, window_group, source_group,
+                                     inner_loud, (first, second), count)
 
         # An edit inside a group is an edit of its uses.
         before = engine.frontends._hierarchy_trees(engine.frontends.discover_scene_frontends(scene))

@@ -247,37 +247,6 @@ def _describe_node(cat: str, typ: str) -> str:
         return ""
 
 
-def _compiled_abstract_tree(scene):
-    if scene is None:
-        return None
-    engine = ACEAudioEngine.get_instance(scene)
-    if engine is None:
-        return None
-    return getattr(engine, "abstract_tree_ref", None)
-
-
-def _scene_audio_sources_by_id(scene) -> dict[str, object]:
-    ace = getattr(scene, "audiocore", None) if scene is not None else None
-    sources = getattr(ace, "audio_sources", []) if ace is not None else []
-    return {
-        str(getattr(source, "stable_id", "") or ""): source
-        for source in (sources or [])
-        if str(getattr(source, "stable_id", "") or "")
-    }
-
-
-def _source_display_name(source_prop, source_node) -> str:
-    if source_prop is not None:
-        name = str(getattr(source_prop, "name", "") or "").strip()
-        if name:
-            return name
-    if source_node is not None:
-        name = str(getattr(source_node, "name", "") or "").strip()
-        if name:
-            return name
-    return "Unnamed Source"
-
-
 def _source_list_icon(source_prop) -> str:
     if source_prop is None:
         return "SPEAKER"
@@ -340,95 +309,6 @@ def _frontend_kind_icon(frontend_kind: str) -> str:
             return "MOD_NODES"
         return "NODETREE"
     return "SHADING_RENDERED"
-
-
-def _compiled_source_instance_rows(scene):
-    """Build the read-only source-to-frontend ledger from compiled IR."""
-    abstract_tree = _compiled_abstract_tree(scene)
-    if abstract_tree is None:
-        return None
-
-    nodes = dict(getattr(abstract_tree, "nodes", {}) or {})
-    frontends = dict(getattr(abstract_tree, "frontends", {}) or {})
-    consumer_intents = list(getattr(abstract_tree, "consumer_intents", []) or [])
-    source_props_by_id = _scene_audio_sources_by_id(scene)
-
-    source_nodes_by_token: dict[str, object] = {}
-    for node in nodes.values():
-        if str(getattr(node, "category", "") or "") != "source_mngmt":
-            continue
-        if str(getattr(node, "type", "") or "") != "src":
-            continue
-        source_token = str(getattr(node, "source_binding_id", "") or "").strip()
-        if not source_token:
-            roots = sorted({str(v) for v in (getattr(node, "root_sources", set()) or set()) if str(v)})
-            source_token = roots[0] if roots else ""
-        if not source_token:
-            continue
-        if source_token not in source_nodes_by_token:
-            source_nodes_by_token[source_token] = node
-
-    if not source_nodes_by_token:
-        return []
-
-    frontend_uids_by_source: dict[str, set[str]] = {
-        token: set() for token in source_nodes_by_token.keys()
-    }
-    for intent in consumer_intents:
-        source_token = str(getattr(intent, "source_token", "") or "").strip()
-        frontend_uid = str(getattr(intent, "frontend_uid", "") or "").strip()
-        if not source_token or not frontend_uid:
-            continue
-        if source_token in frontend_uids_by_source:
-            frontend_uids_by_source[source_token].add(frontend_uid)
-
-    for node in nodes.values():
-        frontend_uid = str(getattr(node, "frontend_uid", "") or "").strip()
-        if not frontend_uid or str(getattr(node, "category", "") or "") == "source_mngmt":
-            continue
-        for source_token in sorted({str(v) for v in (getattr(node, "root_sources", set()) or set()) if str(v)}):
-            if source_token in frontend_uids_by_source and not frontend_uids_by_source[source_token]:
-                frontend_uids_by_source[source_token].add(frontend_uid)
-
-    ordered_tokens = sorted(
-        source_nodes_by_token.keys(),
-        key=lambda token: (
-            next(
-                (
-                    idx for idx, src in enumerate(
-                        getattr(getattr(scene, "audiocore", None), "audio_sources", []) or []
-                    )
-                    if str(getattr(src, "stable_id", "") or "") == token
-                ),
-                999999,
-            ),
-            _source_display_name(source_props_by_id.get(token), source_nodes_by_token.get(token)).lower(),
-            token,
-        ),
-    )
-
-    ledger_rows = []
-    for source_token in ordered_tokens:
-        source_node = source_nodes_by_token.get(source_token)
-        source_prop = source_props_by_id.get(source_token)
-        frontend_uids = sorted(
-            frontend_uids_by_source.get(source_token, set()) or set(),
-            key=lambda uid: (
-                int(getattr(frontends.get(uid), "discovery_index", 0) or 0),
-                str(getattr(frontends.get(uid), "tree_name", "") or "").lower(),
-                str(uid),
-            ),
-        )
-        ledger_rows.append(
-            {
-                "source_token": source_token,
-                "source_node": source_node,
-                "source_prop": source_prop,
-                "display_name": _source_display_name(source_prop, source_node),
-                "frontend_refs": [frontends[uid] for uid in frontend_uids if uid in frontends],
-            }
-        )
-    return ledger_rows
 
 
 def _source_display_sample_rate(source) -> int:

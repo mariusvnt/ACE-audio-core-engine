@@ -604,6 +604,57 @@ class ACE_PT_capture_influx(bpy.types.Panel):
         _draw_bake_controls(layout, context)
 
 
+def _use_text(use, source_names: dict) -> str:
+    """"Cube › GeometryNodes › Group: Drums, 2 uses share it"."""
+    owners = list(use.owners or []) or ["no owner"]
+    where = " › ".join([owners[0], *use.chain])
+    if len(owners) > 1:
+        where += f" (+{len(owners) - 1})"
+    sources = ", ".join(source_names.get(s, s) for s in use.sources) or "no source"
+    shared = f", {use.shared_with + 1} uses share it" if use.shared_with else ""
+    return f"{where}: {sources}{shared}"
+
+
+class ACE_PT_active_instances(bpy.types.Panel):
+    """Every compiled ACE node: where it is used, what each use reads, what is shared, what conflicts."""
+
+    bl_label = "Active ACE Instances"
+    bl_idname = "ACE_PT_active_instances"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Audio Core Engine"
+    bl_order = 5
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
+
+    def draw(self, context):
+        from .instances import instance_report
+
+        layout = self.layout
+        report = instance_report(ACEAudioEngine.get_instance(context.scene))
+        if not report:
+            layout.label(text="No ACE node is compiled.", icon='INFO')
+            return
+        source_names = {str(s.stable_id): str(s.name) for s in context.scene.audiocore.audio_sources}
+        for definition in report:
+            box = layout.box()
+            col = box.column(align=True)
+            head = col.row()
+            head.label(text=definition.node_name, icon='ERROR' if definition.conflicts else 'NODE')
+            head.label(text=definition.tree_name)
+            for use in definition.uses:
+                row = col.row()
+                row.separator(factor=2.0)
+                row.label(text=_use_text(use, source_names))
+            for conflict in definition.conflicts:
+                row = col.row()
+                row.alert = True
+                row.label(text=f"'{conflict['sink_name']}' gets different values: one use keeps it", icon='ERROR')
+
+
 classes = (
     ACE_UL_source_list,
     ACE_UL_dummy_tree,
@@ -619,6 +670,7 @@ classes = (
     ACE_PT_information_streams,
     ACE_PT_information_streams_description,
     ACE_PT_capture_influx,
+    ACE_PT_active_instances,
 )
 
 

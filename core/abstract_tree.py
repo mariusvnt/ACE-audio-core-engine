@@ -65,6 +65,11 @@ class ACEAbstractNode:
     # In a signal tree (core/engine/compiler/signals.py): the uses this node stands for, and
     # the sinks of their outputs, as {output index: [(use id, sink name, frontend kind)]}.
     instance_ids: List[str] = field(default_factory=list)
+    # Where the use is: the tree holding the node (pointer and name), and the group nodes
+    # entered from the root to reach it ("" chain at the root).
+    definition_ptr: int = 0
+    definition_tree: str = ""
+    use_chain: tuple = ()
     instance_sinks: Dict[int, List[tuple]] = field(default_factory=dict)
 
 @dataclass

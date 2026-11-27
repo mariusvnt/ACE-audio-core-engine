@@ -19,6 +19,7 @@ from . import usage
 from ...nodes.split_freqs import split_freq_states
 from ...nodes.dynamic_audio_operators import is_automatic_count_label
 from .helpers import _find_active_node_tree, _find_tree_node_by_ace_id, _tree_pointer, _ui_is_blocked
+from .instances import compile_marker, compiled_tree_view
 from ...nodes.identity import node_id as ace_node_id
 from ...nodes.source_nodes import node_source_id
 
@@ -236,8 +237,10 @@ def _sync_ui_dummy_tree(context, force: bool = False):
     )
 
     # The tree's own signature is the change detector: cheap (about 10 us per node)
-    # and independent of auto-compile and of the engine's dirty tracking.
-    topology_sig = _ui_tree_topology_signature(tree) if tree else ""
+    # and independent of auto-compile and of the engine's dirty tracking. A compile
+    # also rebuilds the list: the compiled model is what it shows when it is current.
+    engine = ACEAudioEngine.get_instance(context.scene)
+    topology_sig = f"{_ui_tree_topology_signature(tree)}|{compile_marker(engine)}" if tree else ""
     rebuild_topology = bool(
         tree
         and (
@@ -264,11 +267,17 @@ def _sync_ui_dummy_tree(context, force: bool = False):
         utils.log("UI sync: no active ACE node tree found.", "DEBUG")
         _ui_tree_cache = _empty_tree_cache(now)
     elif rebuild_topology or not cache_scope_match:
-        if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
-            reader = ACEShaderTreeReader(tree)
-        else:
-            reader = ACEDummyTreeReader(tree)
-        abstract = reader.build()
+        # The compiled use of the tree (a group's operators under the source each use gives
+        # them); the tree read on its own while it has edits the engine has not compiled.
+        abstract = None
+        with utils.logged_errors("sync._sync_ui_dummy_tree#compiled"):
+            abstract = compiled_tree_view(engine, tree, source_uid)
+        if abstract is None:
+            if str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree":
+                reader = ACEShaderTreeReader(tree)
+            else:
+                reader = ACEDummyTreeReader(tree)
+            abstract = reader.build()
         node_lookup_ids: dict[str, str] = {}
         roots_by_node = {
             str(node_lookup_ids.get(node.id, "") or node.id): set(node.root_sources) | (
@@ -581,13 +590,10 @@ def follow_active_source(project) -> None:
 
 def _source_rows(scene) -> list[tuple]:
     """(kind, target, name, detail, icon, detail_icon, depth, has_children, branch_key, parent) rows."""
-    from .helpers import _compiled_source_instance_rows, _frontend_instance_type, _frontend_kind_icon, _frontend_object_name
+    from .helpers import _frontend_instance_type, _frontend_kind_icon, _frontend_object_name
+    from .instances import source_uses
 
-    instances: dict[str, list] = {}
-    for entry in _compiled_source_instance_rows(scene) or []:
-        source_prop = entry.get("source_prop")
-        token = str(getattr(source_prop, "stable_id", "") or entry.get("source_token", "") or "")
-        instances[token] = list(entry.get("frontend_refs", []) or [])
+    instances = source_uses(ACEAudioEngine.get_instance(scene))
 
     rows: list[tuple] = []
     for index, source in enumerate(scene.audiocore.audio_sources):

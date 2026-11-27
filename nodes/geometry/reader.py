@@ -188,6 +188,9 @@ class ACEDummyTreeReader:
             frontend_uid=self.frontend_uid,
             frontend_kind=self.frontend_kind,
             source_binding_id=root_id if (entry.category, entry.node_type) == ("source_mngmt", "src") else "",
+            definition_ptr=_tree_pointer(scope.tree),
+            definition_tree=str(getattr(scope.tree, "name_full", "") or getattr(scope.tree, "name", "") or ""),
+            use_chain=tuple(scope.chain),
         )
         self.abstract_tree.add_node(node)
         return node
