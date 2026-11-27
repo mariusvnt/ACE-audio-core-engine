@@ -77,6 +77,8 @@ class SourceTask(SourceClock, ACEAudioTask):
         self._read_lock = threading.RLock()
         # Off for a copy that reads on another thread already (the bake): no prefetch thread.
         self.prefetch_allowed: bool = True
+        # Set while the frame runner replays frames after a seek: those reads bypass the prefetch.
+        self.replaying: bool = False
 
     def _start_prefetch_thread(self):
         if self._prefetch_thread is not None and self._prefetch_thread.is_alive():

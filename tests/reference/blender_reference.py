@@ -249,9 +249,28 @@ def fresh_engine(addon_key, scene):
     return engine
 
 
-def record(addon_key, scene, last_nodes, n_frames) -> dict:
-    """{"<case>/<output>": array over frames}, played from frame_start on a fresh engine."""
+def wait_for_bake(engine, source, timeout_s=120.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while str(source.get("ace_bake_status", "")) == "baking" and time.monotonic() < deadline:
+        engine.bake.flush_bake_results()
+        time.sleep(0.02)
+    engine.bake.flush_bake_results()
+    status = str(source.get("ace_bake_status", ""))
+    if status != "done":
+        raise AssertionError(f"The bake ended as {status!r}: {source.get('ace_bake_error')!r}")
+
+
+def record(addon_key, scene, last_nodes, n_frames, first_offset=0, bake_source=None) -> dict:
+    """{"<case>/<output>": array over frames}, played on a fresh engine.
+
+    The frames are frame_start + first_offset to the end: with an offset, the pass starts
+    with a jump. With *bake_source*, the source is baked first and the frames read the bake.
+    """
     engine = fresh_engine(addon_key, scene)
+    if bake_source is not None:
+        if not engine.bake.bake_source_to_cache(bake_source, scene=scene):
+            raise AssertionError("The bake did not start")
+        wait_for_bake(engine, bake_source)
     compiles = []
     original = engine.compiler.compile_scene_frontends
     frontends = engine.frontends
@@ -260,7 +279,7 @@ def record(addon_key, scene, last_nodes, n_frames) -> dict:
         compiles.append((scene.frame_current, dict(dirty_since))), original(*a, **k))[1]
     rows: dict = {}
     try:
-        for k in range(n_frames):
+        for k in range(int(first_offset), n_frames):
             scene.frame_set(scene.frame_start + k)
             for uid in list(getattr(frontends, "_dirty_frontend_uids", None) or ()):
                 dirty_since.setdefault(uid, scene.frame_current)
@@ -383,7 +402,7 @@ def main():
         if int(meta.get("fixture_version", -1)) != fixtures.FIXTURE_VERSION:
             raise AssertionError(f"Goldens were recorded from fixture version {meta.get('fixture_version')}, not {fixtures.FIXTURE_VERSION}")
 
-    summary = {"drift": {}, "nondeterministic": {}, "threads_vs_off": {}, "warnings": {}}
+    summary = {"drift": {}, "nondeterministic": {}, "threads_vs_off": {}, "bake_vs_stream": {}, "seek_then_play": {}, "warnings": {}}
     hashes = {}
     t_start = time.monotonic()
     for name in names:
@@ -430,7 +449,30 @@ def main():
             if first_frame:
                 summary["warnings"].setdefault("threads_first_frame", {})[tag] = sorted(first_frame)
 
+            # The bake streams on fresh tasks: it equals a fresh playback, bit for bit.
+            baked = record(addon_key, scene, last_nodes, n_frames, bake_source=src)
+            engine = engine_cls.ensure_instance(scene)
+            unequal = sorted(k for k in set(first) | set(baked)
+                             if k not in first or k not in baked or not np.array_equal(first[k], baked[k], equal_nan=True))
+            if unequal:
+                summary["bake_vs_stream"][tag] = {
+                    k: np.flatnonzero(np.any(np.reshape(first[k] != baked[k], (len(first[k]), -1)), axis=1))[:8].tolist()
+                    if k in first and k in baked and first[k].shape == baked[k].shape else "missing or reshaped"
+                    for k in unequal
+                }
+
+            # A jump to the middle, then playing on: stateful nodes settle after the jump.
+            middle = n_frames // 2
+            seeked = record(addon_key, scene, last_nodes, n_frames, first_offset=middle)
+            engine = engine_cls.ensure_instance(scene)
+            settleable = {k: v for k, v in seeked.items() if not k.split("/", 1)[0].startswith(spec.NOT_SETTLEABLE)}
+            seek_drift = compare(settleable, {k: v[middle:] for k, v in first.items() if k in settleable})
+            if seek_drift:
+                summary["seek_then_play"][tag] = seek_drift
+
             np.savez(os.path.join(opts["out"], f"actual_{tag}"), **first)
+            np.savez(os.path.join(opts["out"], f"baked_{tag}"), **baked)
+            np.savez(os.path.join(opts["out"], f"seeked_{tag}"), **seeked)
             if opts["update"]:
                 os.makedirs(GOLDEN_DIR, exist_ok=True)
                 np.savez(os.path.join(GOLDEN_DIR, tag), **first)

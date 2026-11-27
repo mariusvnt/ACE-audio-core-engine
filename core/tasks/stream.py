@@ -66,9 +66,20 @@ class LUFSTask(ACEAudioTask):
         self._last_lufs: float = 0.0
         self._last_frame_request: Optional[int] = None
 
+    # The K-weighting filters settle within this; the Window comes on top for LUFS.
+    _FILTER_SETTLE_S = 0.1
+
     def _reset_temporal_state(self):
         self._weighted_energy = np.zeros(0, dtype=np.float64)
         self._last_lufs = 0.0
+
+    def settle_frames(self, fps: float) -> Optional[int]:
+        window_s = float(getattr(self, "_window_s", self._MAX_WINDOW_S))
+        return int(math.ceil((window_s + self._FILTER_SETTLE_S) * max(float(fps), 1.0)))
+
+    def reset_state(self) -> None:
+        self._reset_temporal_state()
+        self._reset_filter_state()
 
     def _reset_filter_state(self):
         self._prefilter_state[0] = 0.0
@@ -248,6 +259,7 @@ class LUFSTask(ACEAudioTask):
             max_value=self._MAX_WINDOW_S,
         )
         window_samples = max(int(round(window_s * float(sample_rate))), 1)
+        self._window_s = float(window_s)
 
         analysis_mono = _masked_mono_signal(chunk)
         if analysis_mono.size <= 0:
@@ -290,6 +302,9 @@ class PeakTask(LUFSTask):
 
     def _reset_temporal_state(self):
         self._last_peak = 0.0
+
+    def settle_frames(self, fps: float) -> Optional[int]:
+        return int(math.ceil(self._FILTER_SETTLE_S * max(float(fps), 1.0)))
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
@@ -347,6 +362,17 @@ class TransientTask(ACEAudioTask):
         self._prev_mag: Optional[np.ndarray] = None
         self._prev_sr: int = 0
         self._flux_env: float = 0.0
+
+    # The running average keeps 0.92 of itself per frame: after 64 frames, 0.5 % of the past.
+    _SETTLE_FRAMES = 64
+
+    def settle_frames(self, fps: float) -> Optional[int]:
+        return self._SETTLE_FRAMES
+
+    def reset_state(self) -> None:
+        self._prev_mag = None
+        self._prev_sr = 0
+        self._flux_env = 0.0
 
     def _transient(self, chunk: AudioChunk) -> float:
         mag, _ = _masked_spectrum(chunk)

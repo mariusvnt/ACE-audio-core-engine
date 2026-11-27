@@ -17,6 +17,13 @@ class RollingAvgTask(ACEAudioTask):
         super().__init__(node_id, parameters, block_size)
         self._samples: deque = deque()  # (frame, value)
         self._current_frame_request: Optional[int] = None
+        self._window_s: float = self._DEFAULT_WINDOW_S
+
+    def settle_frames(self, fps: float) -> Optional[int]:
+        return int(np.ceil(float(self._window_s) * max(float(fps), 1.0))) + 1
+
+    def reset_state(self) -> None:
+        self._samples.clear()
 
     def process(self, inputs):
         raw_value = inputs.get(0)
@@ -34,6 +41,7 @@ class RollingAvgTask(ACEAudioTask):
             window_s = max(float(raw_window), 0.0)
         except (TypeError, ValueError):
             window_s = self._DEFAULT_WINDOW_S
+        self._window_s = float(window_s)
         fps = max(float(getattr(self.engine_ref, "_current_scene_fps", 0.0) or self.scene_fps or 24.0), 1.0)
         last = self._samples[-1][0] if self._samples else None
         frame = self._current_frame_request
@@ -59,6 +67,9 @@ class StreamAccumulatorTask(ACEAudioTask):
         self._accumulator: Optional[np.ndarray] = None
         self._last_frame_request: Optional[int] = None
         self._manual_reset_latched: bool = False
+
+    def settle_frames(self, fps: float) -> Optional[int]:
+        return None  # a sum remembers everything: exact only when baked
 
     @staticmethod
     def _coerce_input_array(raw_value: Any) -> np.ndarray:

@@ -43,6 +43,11 @@ TOLERANCES: Dict[str, Dict[str, float]] = {
 }
 
 
+# Cases that can't settle after a seek: a running sum remembers every frame before. They are
+# exact only when baked, so the seek gate leaves them out (FUTURE.md 1.2).
+NOT_SETTLEABLE = ("utilities.stream_accumulator",)
+
+
 def tolerance(case_id: str) -> Dict[str, float]:
     best = ""
     for prefix in TOLERANCES:

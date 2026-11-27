@@ -144,15 +144,20 @@ class AttributeSinks:
 
     @classmethod
     def _values_equal(cls, prev, curr) -> bool:
+        """True when a write would store the same thing: the same float32 values, as they render.
+
+        Not "close": a change skipped as small would leave a frame's value depending on the
+        frames written before it, and a bake would no longer equal playback.
+        """
         if isinstance(prev, (int, float)) and isinstance(curr, (int, float)):
-            return abs(float(prev) - float(curr)) <= 1e-6
+            return bool(np.float32(prev) == np.float32(curr))
         if isinstance(prev, np.ndarray):
             prev = prev.tolist()
         if isinstance(curr, np.ndarray):
             curr = curr.tolist()
         if isinstance(prev, (list, tuple)) and isinstance(curr, (list, tuple)):
             try:
-                return bool(np.allclose(np.asarray(prev, dtype=np.float32), np.asarray(curr, dtype=np.float32), atol=1e-6))
+                return bool(np.array_equal(np.asarray(prev, dtype=np.float32), np.asarray(curr, dtype=np.float32)))
             except Exception as exc:
                 utils.note_swallowed("attributes.AttributeSinks._values_equal", exc)
                 return False
@@ -191,7 +196,7 @@ class AttributeSinks:
                     utils.note_swallowed("attributes.AttributeSinks.update_proxy_object", exc)
                     continue
                 prev = last_vals.get(attr_name)
-                if not _is_transient and isinstance(prev, float) and abs(prev - val) <= 1e-6:
+                if not _is_transient and isinstance(prev, float) and np.float32(prev) == np.float32(val):
                     continue
                 last_vals[attr_name] = val
             elif dtype in ('FLOAT_VECTOR', 'FLOAT_COLOR'):
@@ -206,7 +211,7 @@ class AttributeSinks:
                 flat = np.zeros(target_len, dtype=np.float32)
                 flat[: min(target_len, arr.size)] = arr.ravel()[:target_len]
                 prev = last_vals.get(attr_name)
-                if isinstance(prev, np.ndarray) and prev.shape == flat.shape and np.allclose(prev, flat, atol=1e-6):
+                if isinstance(prev, np.ndarray) and prev.shape == flat.shape and np.array_equal(prev, flat):
                     continue
                 last_vals[attr_name] = flat
             else:

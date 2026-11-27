@@ -246,6 +246,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             return
         if not self._graph_sources_ready(graph, graph_key):
             return
+        self._settle_after_seek(graph, ctx)
         results = self._compute_graph_results(scene, graph, graph_key, source_tasks, ctx)
         if ctx.preview_eval_due:
             # After the main evaluation, so FILE-source prefetch has the full
@@ -325,6 +326,55 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                     utils.note_swallowed("runner.FrameRunner._prepare_graph", exc)
                     continue
         return graph_key, source_tasks
+
+    # Longest replay after a seek: a node that needs more is close, not exact, until baked.
+    _SETTLE_CAP_S = 4.0
+
+    def _settle_after_seek(self, graph, ctx):
+        """After a seek, reset the stateful tasks and replay the frames before this one (FUTURE.md 1.2).
+
+        A task "seeks" when the last frame it computed is not the previous one: a jump, a
+        rewind, frames dropped in playback, or a new task started mid-timeline. The replay
+        runs only the stateful tasks and what feeds them, writes nothing, and starts no earlier
+        than the scene's first frame, where playback starts from fresh state too. A live input
+        can't be replayed, and a task that never forgets (a running sum) is left as it is.
+        """
+        source_ctx = getattr(graph, "source_context", None)
+        if str(getattr(source_ctx, "source_type", "") or "").upper() == "LIVE":
+            return
+        frame = int(self.engine.current_frame)
+        fps = float(ctx.fps)
+        frame_start = frame
+        need = []
+        longest = 0
+        for node_id, task in graph.tasks.items():
+            settle = task.settle_frames(fps)
+            if settle is None or settle <= 0:
+                continue
+            last = int(getattr(task, "last_frame_processed", -1))
+            frame_start = int(getattr(task, "scene_frame_start", frame) or frame)
+            if last in (frame, frame - 1) or (last < 0 and frame <= frame_start):
+                continue
+            need.append(node_id)
+            longest = max(longest, int(settle))
+        if not need:
+            return
+        cap = int(self._SETTLE_CAP_S * max(fps, 1.0) + 0.999)
+        first = max(frame_start, frame - min(longest, cap))
+        for node_id in need:
+            graph.tasks[node_id].reset_state()
+        plan = self._graph_eval_plan_for_targets(graph, need)
+        sources = [graph.tasks[node_id] for node_id in plan if isinstance(graph.tasks.get(node_id), SourceTask)]
+        t0 = time.perf_counter()
+        for source in sources:
+            source.replaying = True
+        try:
+            for replay_frame in range(first, frame):
+                self._evaluate_graph_plan_iterative(graph, replay_frame, plan)
+        finally:
+            for source in sources:
+                source.replaying = False
+        self.engine.diagnostics._perf_add("dsp", time.perf_counter() - t0)
 
     def _ensure_graph_outputs(self, graph, graph_key, ctx):
         """Resolve the proxy and output keys, recovering them when missing; False skips the graph."""

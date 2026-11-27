@@ -188,7 +188,7 @@ class SourceClock:
         ).upper()
         frame_request = getattr(self, "_current_frame_request", None)
 
-        if self._prefetch_enabled and source_type == "FILE" and frame_request is not None:
+        if self._prefetch_enabled and source_type == "FILE" and frame_request is not None and not getattr(self, "replaying", False):
             if self._prefetch_ready.is_set() and self._prefetch_for_frame == frame_request:
                 # Cache hit: take pre-read chunk, clear slot, trigger next read.
                 self._prefetch_ready.clear()
