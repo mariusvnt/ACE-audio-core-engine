@@ -2,7 +2,7 @@
 
 Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
-1. [Core operator set](#1-core-operator-set): the node set, the add menu, motion and event nodes
+1. [Core operator set](#1-core-operator-set): the node set, the add menu, controllers and musical time
 2. [Live output window](#2-live-output-window)
 3. [Presets as assets](#3-presets-as-assets)
 4. [Per-instance parameters](#4-per-instance-parameters), only if needed
@@ -19,7 +19,7 @@ Left from the time model:
 
 ### Why a core set
 
-ACE has 11 nodes, after the removals that came first. Stereo and Stereo Vector still overlap, and none of them gives motion weight or turns a measurement into an event. The goal is a small set where each node answers a question the others can't:
+ACE has 11 nodes, after the removals that came first. Stereo and Stereo Vector still overlap, and none of the nodes gives motion weight or turns a measurement into an event. The goal is a small set where each node answers a question the others can't:
 
 | Node | Outputs |
 | --- | --- |
@@ -35,9 +35,9 @@ ACE has 11 nodes, after the removals that came first. Stereo and Stereo Vector s
 | **Gate** | Open, Hit, Count |
 | **Audio Preview** | none: plays a branch, in Geometry Nodes and shaders |
 
-### Add menu
+### Add menu and categories
 
-**Today:** the Audio Core Engine entry of the add menu has four submenus, each with an icon: Input (Source), Delta (Frequency Splitter), Stream (the measurements) and Utilities (Audio Preview, Rolling Average, Stream Accumulator).
+**Today:** the Audio Core Engine entry of the add menu has four submenus: Input (Source), Delta (Frequency Splitter), Stream (the measurements) and Utilities (Audio Preview, Rolling Average, Stream Accumulator).
 
 The menus become:
 
@@ -56,11 +56,10 @@ Controllers
 | **Audio** | Frequency Splitter, Loudness, Pitch, Brightness, Transient, Stereo | at least one Audio input |
 | **Controllers** | Envelope, Running Total, Gate | no Audio input: they take a value and turn it into motion or events |
 
-- Input and Output have no icon, and a separator sets them apart from Audio and Controllers. Audio and Controllers keep an icon each.
+- Input and Output have no icon, and a separator sets them apart from Audio and Controllers, which keep an icon each.
 - Audio Preview has an Audio input, but it's where a branch ends, so it goes under Output.
-- Until Envelope and Running Total replace them, Rolling Average and Stream Accumulator are listed under Controllers.
 - A menu with no node for the current editor is hidden, as today.
-- The categories in `ACE_NODES` become these four, so the menu stays registry-driven.
+- **The categories of `ACE_NODES` become these four:** `input`, `output`, `audio`, `controllers`. Categories are in node ids, group names (`.ACE_<category>_<type>`), signal ids, golden keys and the worker IR, so the rename comes in the same step that removes every check on a category (see Design rules). The goldens then change only their keys. Old files are not migrated.
 
 ### Outputs on 0..1
 
@@ -74,89 +73,127 @@ Every measurement is a float between 0 and 1, so outputs can be swapped and a Ga
 | Transient | smooth | sharp | as today |
 | Width | mono | side only | as today |
 
-The ranges are fixed, also behind a Frequency Splitter, so values from different bands compare. Envelope keeps the scale of its input.
+The ranges are fixed, also behind a Frequency Splitter, so values from different bands compare. 20 to 5000 Hz is also the range the pitch detector searches.
 
-These are quantities rather than measurements, and keep their units: BPM, Beats per Bar and Downbeat, Running Total, and Gate's Count.
+These are quantities rather than measurements, and keep their units: BPM, Beats per Bar and Downbeat, Running Total, and Gate's Count. Envelope keeps the scale of its input.
 
 Pitch and Brightness get new reference curves.
 
 ### Stereo
 
-Stereo and Stereo Vector become one node without modes, with two outputs: **Balance** and **Width**. Both are ratios that say where the sound is, whatever its volume. Levels are Loudness's job, so the left and right levels of Stereo Vector go.
+Stereo and Stereo Vector become one node without modes, with two outputs: **Balance** and **Width**. Both are ratios that say where the sound is, whatever its volume. Levels are Loudness's job, so the left and right levels of Stereo Vector go. Both outputs come from one task, as the two values of one result.
 
-### Motion and event nodes
+### Controllers
 
-ACE measures audio, but every measurement describes the current frame, so whatever it drives moves in short twitches. Giving that motion weight, and turning it into "something happens on each kick", takes smoothing, thresholds, holds and counters built from math nodes. That is hard to get right per frame, and impossible to get right across a scrub, because the state lives nowhere.
+ACE measures audio, but every measurement describes the current frame, so whatever it drives moves in short twitches. Giving that motion weight, and turning it into "something happens on each kick", takes smoothing, thresholds, holds and counters.
 
-**Today:** two utilities keep state:
+**Today:** two utilities keep state in the backend, and both fall short:
 
 - **Rolling Average** is a symmetric box window. It lags on the way up as much as it blurs on the way down.
 - **Stream Accumulator** adds its input once per frame, so the same scene moves twice as far at 48 fps as at 24 fps.
+- Neither sees the maths in front of it. The reader walks through every node that isn't an ACE node (`nodes/definitions.py`), so Loudness → Math ×2 → Rolling Average averages the raw Loudness.
 
-### Design rules
+**Controllers are native Geometry Nodes groups.** ACE makes them, and they compute inside Blender, with a Simulation Zone that carries their state from frame to frame:
 
-- These are new backend tasks. The frontends stay contracts with no maths, as the 3-layer model requires.
-- **A node that writes values is described by `ACE_NODES` alone.**
-  - Its value outputs give its attribute sockets ("Attribute ID", "Attribute ID 2", …).
-  - Its `stateful` key keeps it on the main thread (built: `vars.node_is_stateful`, used by the offload policy).
-  - The reader, sinks, compiler, offload policy and both factories ask the registry instead of checking node names. A new node is then one registry entry and one task.
-- **Times are in seconds**, and each step uses the duration of a frame. Results don't depend on fps.
-- **Each stateful task is a pure step**: `(state, input, dt) → (state, output)`. This is what makes replay possible (see State and timeline).
-- Booleans are Bool sockets in Geometry Nodes and 0/1 floats in shaders.
+- **Any node can feed them**: Math, Map Range, Float Curve, other ACE outputs. What reaches the input is what Blender computes.
+- **Each use has its own state**, per modifier and per group path, so two objects using one tree don't share a controller.
+- **Times are in seconds**, and each step uses the zone's Delta Time: results don't depend on fps. Each step is an exact discretization (a one-pole filter uses `1 − e^(−dt/τ)`), so a step input defined in seconds gives the same curve at 24 and 48 fps.
+- **Blender's simulation cache and Bake record them**, as they record any simulation.
+- Their inputs take single values only (`structure_type` `SINGLE`). A field linked to one is drawn as an invalid link by Blender itself.
+
+This is a deliberate exception to "frontends compute nothing" (ARCHITECTURE.md §1): audio analysis stays in the backend, and shaping the values it gives is done where the values are used. The backend has no controller tasks, and the values of controllers need no sinks. Rolling Average, Stream Accumulator and the `ACE_Values` mesh go.
 
 ### Envelope, Running Total and Gate
 
-**Envelope** replaces Rolling Average, in two modes, with Follow as the default:
+**Envelope** replaces Rolling Average. Its **Mode** is a menu on the node, with Follow as the default. Inputs used by one mode only are greyed out in the other.
 
 - **Follow:** rises with Attack and falls with Release. Hold keeps the value at its peak for Hold seconds before it starts to fall. With Attack at 0, this is a peak hold, and fed a Gate's Hit it gives a hit-then-decay shape.
-- **Spring:** the output follows the input like a weight on a spring. It speeds up toward the input, overshoots and settles. Speed (Hz) sets how fast it follows. Bounce sets how much it overshoots: 0 means not at all, 1 means it barely stops. This gives motion weight and follow-through.
+- **Spring:** the output follows the input like a weight on a spring. It speeds up toward the input, overshoots and settles. Speed (Hz) sets how fast it follows. Bounce sets how much it overshoots: 0 means not at all, 1 means it barely stops. Each step is the exact solution of the spring over Delta Time, so it is stable at any fps. The overshoot isn't clamped: clamping would flatten the bounce.
+- It starts at rest on its first input, so there is no ramp up from 0.
 
-Inputs used by one mode only are hidden in the other.
+**Running Total** replaces Stream Accumulator. Its input is a rate and its output is the total over time (value × seconds), for a scalar:
 
-**Running Total** replaces Stream Accumulator. Its input is a rate and its output is the total over time (value × seconds), for a scalar or a vector:
-
-- **Leak Time:** the total drifts back toward 0 when the input goes quiet. Energy pushes it forward, and silence lets it return. At 0 it never leaks, and sums from the start of the timeline.
+- **Leak Time:** the total drifts back toward 0 when the input goes quiet. Energy pushes it forward, and silence lets it return. At 0 it never leaks, and sums from the start of the simulation.
 - **Reset**, a Boolean input, for example from a Gate's Hit.
 
 **Gate:** float in, three outputs:
 
-- **Open:** true from the moment the input crosses Threshold until it falls below Re-arm Level (the hysteresis).
+- **Open:** true from the moment the input crosses Threshold until it falls below Re-arm Level (the hysteresis). Re-arm Level is a level of its own on the input's scale. Above Threshold, it counts as Threshold.
 - **Hit:** true only on the frame it opens.
 - **Count:** the number of hits so far, set back to 0 by the **Reset** input. A Floored Modulo math node turns it into "change colour every 4 kicks".
 
-The **Min Interval** input prevents a new Hit sooner than this, so one kick gives one pulse.
+The **Min Interval** input prevents a new Hit sooner than this, so one kick gives one pulse. A crossing within it is ignored, and the gate opens again only after the input has fallen below Re-arm Level, so it never gives a late Hit off the beat.
+
+### Controllers in shaders
+
+Shader trees have no Simulation Zone. For a controller in a material, the World or a light, ACE generates a hidden Geometry Nodes tree on a hidden object:
+
+- it holds a copy of the chain that feeds the controller in the shader tree. ACE nodes become their Geometry Nodes twins, with the same settings and the same sink names, so they share the signals of the shader nodes and cost no extra analysis. Other nodes are copied when Geometry Nodes has the same node (Math, Map Range, Clamp, Mix, Float Curve, Value);
+- the controller's result is stored as a named attribute;
+- after each frame, ACE reads it from the evaluated object and writes it to the scene property the shader node reads (View Layer, as for measurements).
+
+A node that exists only in shaders (a texture, Light Path, Fresnel) can't be copied: the link it feeds is ignored, so it is shown as invalid (see Ignored links).
+
+This rests on a probe: that a scene property written after the frame is evaluated is seen on that same frame, in the viewport and in a render, and what the second evaluation costs. If it fails, controllers exist only in Geometry Nodes. A material on an object can still read one through Store Named Attribute and an Attribute node.
+
+### Ignored links
+
+**Today:** some links are ignored with nothing to show for it:
+
+- a linked Loudness Window that isn't bound through a group input;
+- a linked Attribute ID;
+- a Proxy Object fed by something other than a group input;
+- a Split Freq fed by a chain ACE can't compute;
+- an Audio input reached through a Switch.
+
+**Every link ACE ignores becomes an invalid link**, drawn red by Blender (`NodeLink.is_valid`). The reason is in the N-panel: on the selected node's box, and in a list of the ignored links of the edited tree. Blender then evaluates the input with its default value, as ACE does.
+
+- Blender checks links again whenever a tree changes, so ACE marks them again after each tree update, undo and file load. The flag is not part of a tree's content signature, so marking a link never recompiles.
+- Marking a link is the second thing a compile writes into user trees, after the repair of sink names. It is a flag, not content.
+- A link fed by an ACE output that has no value yet is not ignored: it is only waiting.
+- This rests on a probe: that the flag holds between tree updates, and that Geometry Nodes and both render engines then use the default. If it doesn't, ACE removes the ignored link instead, and the N-panel lists what it removed.
+
+### Design rules
+
+- **Audio analysis is in backend tasks, controllers are native groups.** The audio frontends stay contracts with no maths, as the 3-layer model requires.
+- **A node is described by `ACE_NODES` alone.**
+  - Its **role** (`source`, `splitter`, `measure`, `controller`, `preview`) says how it is built and read. A `native` node (the controllers) has no task.
+  - Its value outputs give its attribute sockets ("Attribute ID", "Attribute ID 2", …).
+  - Its `stateful` key keeps it on the main thread (built: `vars.node_is_stateful`, used by the offload policy).
+  - The reader, sinks, compiler, offload policy, workers and both factories ask the registry for these traits, and never check a category. A new measurement is then one registry entry and one task.
+- Booleans are Bool sockets in Geometry Nodes and 0/1 floats in shaders.
 
 ### Musical time: the Source node
 
-The Source node outputs only what musical time depends on: **BPM, Beats per Bar and Downbeat**. The Geometry Nodes one already outputs BPM and Beats per Bar. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so no node outputs a phase.
+The Source node outputs only what musical time depends on: **BPM, Beats per Bar and Downbeat**. The Geometry Nodes one already outputs BPM and Beats per Bar. Once these are known, every phase (beat, bar, phrase) is a function of time, so no node outputs a phase.
 
-- **Downbeat estimate:** the tempo detection already finds the first downbeat, as the accented beat of the bar, and keeps it unused. It becomes a source property the user can override, like BPM and meter, and an output of the Source node.
+- **Downbeat** is the time of the first downbeat, in **scene seconds**: the clock of Scene Time's Seconds output. A file source starts at the scene's `frame_start`, so Downbeat is `frame_start / fps` plus the downbeat's time in the file. A beat's phase is then `(Seconds − Downbeat) · BPM / 60`. A live source outputs 0.
+- **The estimate:** the tempo detection already finds the first downbeat, as the accented beat of the bar, and keeps it unused. It becomes a source property, in seconds from the start of the file, that the user can override, like BPM and meter.
+- **The beat grid is fitted over the whole file.** A phase computed from a fixed BPM drifts: an error of 0.1 % in the BPM, which is what 15 seconds of audio gives, is half a beat off after 4 minutes at 120 BPM. So, after today's estimate from the first 15 seconds, the onset peaks near each beat of the whole file (up to 10 minutes) are fitted with a straight line by least squares, which gives the BPM and the downbeat. When the fit is poor, the estimate stays.
 - **Phases in Geometry Nodes** come from a **Beat Clock** preset (section 3). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
 
 ### State and timeline
 
-- **Rule:** a stateful node gives the same value on a frame whether that frame is reached by playing or by jumping.
-- **File sources replay.**
-  - Envelope and Gate's Open forget within a few time constants. They declare how many frames they need (`settle_frames`), and the frame runner replays those frames before the target after a seek (ARCHITECTURE.md §3, Time).
-  - Running Total and Gate's Count remember indefinitely (`settle_frames` is None), so they are exact only when baked (ARCHITECTURE.md §8, Bake).
-- **Live sources** can't be replayed, so their state simply carries on.
-- **Recompiles:** a recompile keeps every task whose signal remains, with its state (ARCHITECTURE.md §3), so these nodes keep theirs too.
+- **Measurements** keep the time model: a stateful one gives the same value on a frame whether that frame is reached by playing or by jumping (ARCHITECTURE.md §3, Time).
+- **Controllers** follow Blender's simulation rules:
+  - A frame in the simulation cache, or in a bake, is exact.
+  - Playing from the start computes every frame in order, and so does rendering an animation.
+  - What a jump to a frame outside the cache gives is to be probed. So is a frame skipped in playback, and a single render of a frame that isn't cached. The Baking panel says so when a scene has controllers whose simulation isn't cached or baked.
+  - A live session carries their state on, with the simulation cache on or off.
+- **Recompiles** don't touch controllers: they hold no backend state.
 
 ### Core set order
 
-1. Registry-driven value nodes (the `stateful` key of `ACE_NODES` exists already), then the merged Stereo node, the 0..1 outputs and the add menu.
-2. Envelope and Running Total.
-3. The Downbeat estimate.
-4. Gate.
-5. `settle_frames` and `reset_state` for Envelope and Gate.
+1. Probes on Blender 5.2: a Simulation Zone inside an ACE group used twice and nested in a user group (state per use); jumps, skipped frames and a render without a cache; a Menu socket on a group; a `SINGLE` input fed a field; the `is_valid` flag; and, for shaders, the read-back after a frame.
+2. Registry traits and the four categories, every check on a category removed, and the add menu. Values don't change.
+3. Ignored links shown as invalid, with their reasons in the N-panel.
+4. The merged Stereo node, and Pitch and Brightness on 0..1.
+5. Rolling Average, Stream Accumulator and `ACE_Values` removed; the native controller groups, and Envelope.
+6. Running Total and Gate.
+7. The Downbeat estimate and the beat-grid fit.
+8. Controllers in shaders, if the probe allows it.
 
-Each new node gets reference curves (ARCHITECTURE.md §10), which also check that 24 and 48 fps give the same curve.
-
-### Core set open questions
-
-- Envelope's Spring overshoots, so on an input near either end of its range it leaves it. Proposed: let it, since clamping would flatten the bounce.
-- Should Running Total and Gate outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
-- Should Gate's Re-arm Level be a free level, or a fraction of Threshold?
+Measurements get reference curves (ARCHITECTURE.md §10). Controllers are checked against a Python reference of the same equations, on a step and an impulse at 24 and 48 fps.
 
 ## 2. Live output window
 
