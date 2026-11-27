@@ -6,7 +6,7 @@ import sys
 PACKAGE_NAME = __name__
 
 # Dependency order; packages come before their modules so a reload re-imports parents first.
-# deps comes first: it sets up the optional libraries' environment before any of them loads.
+# deps comes first: it sets up the bundled libraries' environment before any of them loads.
 MODULE_NAMES = [
     "deps",
     "vars",
@@ -154,6 +154,10 @@ def register():
 
         modules[:] = imported_modules
         log(f"Registered successfully ({len(modules)} modules).")
+        # No preference shows the bundled libraries, so one that did not load is reported here.
+        from .deps import failures
+        for message in failures():
+            log(message, 'ERROR')
     except Exception as e:  # noqa: BLE001 boundary: roll back, then re-raise
         log(f"Registration failed: {e}", 'ERROR')
         _remove_handlers_and_timers(log)

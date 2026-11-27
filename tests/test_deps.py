@@ -1,4 +1,4 @@
-"""deps: switches, the environment worker processes inherit, the library report, and the spawn bootstrap."""
+"""deps: no switches, the library report and its failures, and the spawn bootstrap."""
 
 import os
 import subprocess
@@ -13,62 +13,39 @@ from module_loader import ROOT, forget_modules, load_module  # noqa: E402
 
 import fake_bpy  # noqa: E402
 
-ENV_KEYS = ("ACE_USE_NUMBA", "ACE_USE_SOUNDDEVICE")
-
-
 class DepsTests(unittest.TestCase):
     def setUp(self):
         fake_bpy.install()
-        self._env = mock.patch.dict(os.environ, {}, clear=False)
-        self._env.start()
-        for key in ENV_KEYS:
-            os.environ.pop(key, None)
         forget_modules("deps")
         self.deps = load_module("deps")
 
     def tearDown(self):
-        self._env.stop()
         forget_modules("deps")
 
-    def test_switches_default_on_and_store_changes(self):
-        self.assertTrue(self.deps.setting("use_numba"))
-        self.assertTrue(self.deps.setting("use_sounddevice"))
-        self.deps.set_setting("use_sounddevice", False)
-        self.assertFalse(self.deps.setting("use_sounddevice"))
-        self.assertEqual(os.environ["ACE_USE_SOUNDDEVICE"], "0")
-        with self.assertRaises(KeyError):
-            self.deps.set_setting("use_everything", True)
+    def test_no_switches(self):
+        # The libraries are always used when they import: nothing to turn off.
+        for name in ("setting", "set_setting", "DEFAULT_SETTINGS"):
+            self.assertFalse(hasattr(self.deps, name), name)
+        self.assertEqual(self.deps.numba_enabled(), self.deps.available("numba"))
+        self.assertEqual(self.deps.sounddevice_enabled(), self.deps.available("sounddevice"))
 
-    def test_workers_inherit_the_parent_choice(self):
-        # Loading deps exports the switches; a process started with them reads them back.
-        self.assertEqual(os.environ["ACE_USE_NUMBA"], "1")
-        os.environ["ACE_USE_NUMBA"] = "0"
-        forget_modules("deps")
-        worker_deps = load_module("deps")
-        self.assertFalse(worker_deps.setting("use_numba"))
-        self.assertFalse(worker_deps.numba_enabled())
-
-    def test_numba_use_is_decided_once_per_session(self):
-        first = self.deps.numba_enabled()
-        self.deps.set_setting("use_numba", not self.deps.setting("use_numba"))
-        self.assertEqual(self.deps.numba_enabled(), first)
-
-    def test_report_states(self):
+    def test_report_states_and_failures(self):
         libraries = {
-            "json": {"name": "JSON", "desc": "always there", "switch": None},
-            "ace_no_such_library": {"name": "Missing", "desc": "never there", "switch": None},
-            "csv": {"name": "Switched", "desc": "turned off", "switch": "use_sounddevice"},
+            "json": {"name": "JSON", "desc": "always there"},
+            "ace_no_such_library": {"name": "Missing", "desc": "never there", "missing_note": "Nothing works"},
         }
-        self.deps.set_setting("use_sounddevice", False)
         with mock.patch.object(self.deps, "LIBRARIES", libraries):
             rows = {row["id"]: row for row in self.deps.report()}
+            failures = self.deps.failures()
         self.assertEqual(rows["json"]["state"], "ok")
         self.assertEqual(rows["ace_no_such_library"]["state"], "missing")
+        self.assertIn("Nothing works", rows["ace_no_such_library"]["detail"])
         self.assertIn("ModuleNotFoundError", rows["ace_no_such_library"]["detail"])
-        self.assertEqual(rows["csv"]["state"], "off")
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].startswith("Missing could not be loaded: "))
 
     def test_no_user_folder_outside_an_extension(self):
-        # The test package is not under bl_ext: settings stay in memory, nothing is written.
+        # The test package is not under bl_ext: Numba keeps its default cache folder.
         self.assertIsNone(self.deps._user_dir())
 
 

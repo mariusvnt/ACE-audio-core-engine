@@ -100,9 +100,8 @@ def _run_biquad(
     if not _BIQUAD_PYTHON_FALLBACK_WARNED:
         _BIQUAD_PYTHON_FALLBACK_WARNED = True
         utils.log(
-            "ACE Layer-3 preview: Numba is off or failed to load. "
-            "Using a slow Python biquad fallback that may cause audio dropouts. "
-            "Turn Numba on in the add-on preferences (see its status there) to restore full preview performance.",
+            "ACE Layer-3 preview: Numba failed to load (the console shows why, logged at registration). "
+            "Using a slow Python biquad fallback that may cause audio dropouts.",
             "WARNING",
         )
 

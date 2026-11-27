@@ -69,7 +69,7 @@ FUTURE.md §5.
 | `nodes` | Node identity, cached tree definitions, Source node bindings, linked values |
 | `nodes/geometry`, `nodes/shader` | Node-group factories, and the instance walker that reads one use of a tree |
 | `ui` | N-panel, add menu, operators and preferences |
-| `deps.py` | Optional libraries: which load, and the user's switches (§13) |
+| `deps.py` | Bundled libraries: which load, and why one did not (§13) |
 | `tools` | Wheel fetching for the extension build (§13) |
 
 ## 3. Frame pipeline
@@ -258,7 +258,7 @@ covered by local DSP.
   time and target rate. Files above the working sample rate are resampled
   there, in memory. Metadata probes read the header only. Without `aud` (it
   fails to import when another extension shadows Blender's NumPy) only WAV
-  files are read, through the `wave` module; the preferences say so. `aud`
+  files are read, through the `wave` module; registration logs it as an error. `aud`
   maps 16-bit PCM by 1/32767, `wave` decoding here by 1/32768.
 - **Analysis frames.** A source hands out each block with the 4096 samples
   before it: read from the decoded file (zeros before its start, so a seek
@@ -415,13 +415,11 @@ on every machine. NumPy is never bundled; Blender ships its own.
   --split-platforms` then gives one zip per platform. A pure-Python wheel
   needed by only some platforms is tagged for them, so no zip holds two copies
   of one package (SoundDevice bundles PortAudio on Windows and macOS only).
-- **Switches.** `deps.py` decides whether ACE uses an optional library: it
-  imports, and its switch is on. The switches (Numba; SoundDevice for live
-  input and the preview) live in `settings.json` in the extension's user folder,
-  not in the preferences datablock, so they are read before any class
-  registers, and reach worker processes through environment variables. Numba's
-  applies at the next start, since kernels compile at import; SoundDevice's the
-  next time a live source or the preview opens. Numba caches its kernels in the
-  same user folder.
-- **Preferences** only report: one row per library (Blender's `aud` included)
-  with its version or why it is missing, plus the two switches.
+- **No switches.** ACE always uses Numba, and SoundDevice for live input and
+  preview playback. `deps.py` only records whether each one imports (worker
+  processes check for themselves); one that does not leaves ACE on its
+  fallback paths: NumPy and Python filters and limiter, no live input or
+  preview playback. Numba caches its kernels in the extension's user folder.
+- **Failures are logged, not shown.** At registration, each library that did
+  not load (Blender's `aud` included) is logged as an error with the reason and
+  what is lost. The preferences hold only the extended-logs option.

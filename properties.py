@@ -208,7 +208,7 @@ def _refresh_live_device_cache() -> None:
             (
                 "__MISSING__",
                 "SoundDevice Unavailable",
-                "SoundDevice is off or failed to load; the add-on preferences show why",
+                "SoundDevice failed to load; the console shows why",
             )
         )
     _LIVE_DEVICE_CACHE = items

@@ -70,7 +70,7 @@ class _ACEPreviewAudioMonitor:
         else:
             self._backend = False
             if not self._unavailable_logged:
-                utils.log("Preview monitor unavailable: SoundDevice is off or failed to load (see the add-on preferences).", "WARNING")
+                utils.log("Preview monitor unavailable: SoundDevice failed to load (the console shows why).", "WARNING")
                 self._unavailable_logged = True
         return self._backend
 

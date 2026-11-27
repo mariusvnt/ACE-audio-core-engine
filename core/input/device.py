@@ -4,11 +4,9 @@ from queue import Queue, Empty, Full
 from typing import Any, Optional, Tuple
 from ... import deps, utils
 import numpy as np
-try:
+SOUNDDEVICE_AVAILABLE = deps.sounddevice_enabled()
+if SOUNDDEVICE_AVAILABLE:
     import sounddevice as sd  # type: ignore
-    SOUNDDEVICE_AVAILABLE = True
-except Exception:  # noqa: BLE001 boundary: a broken native library raises more than ImportError
-    SOUNDDEVICE_AVAILABLE = False
 
 
 class DeviceInput:
@@ -34,15 +32,11 @@ class DeviceInput:
 
     def _open_live_sounddevice(self, cfg: dict, kind: str = "sounddevice") -> bool:
         """Open a sounddevice InputStream for live audio capture."""
-        if not deps.setting("use_sounddevice"):
-            self.kind = "live_stub"
-            self.last_error = "Live input is turned off in the add-on preferences (SoundDevice)."
-            return False
         if not SOUNDDEVICE_AVAILABLE:
             self.kind = "live_stub"
             self.last_error = (
                 "SoundDevice could not be loaded, so live input is unavailable. "
-                "The add-on preferences show why."
+                "The console shows why."
             )
             return False
 
