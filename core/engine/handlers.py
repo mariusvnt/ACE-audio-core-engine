@@ -62,7 +62,7 @@ def frame_change_handler(scene):
         return
     if engine._undo_recovery_active():
         return
-    is_rendering = engine._is_rendering_job()
+    is_rendering = engine._is_rendering_job() or bool(engine.render_active)
     if engine._unsafe_for_handler_writes(scene):
         utils.log_throttled(
             "render_lock_interface",
@@ -102,10 +102,52 @@ def frame_change_post_handler(scene):
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None and engine._undo_recovery_active():
         return
-    is_rendering = ACEAudioEngine._is_rendering_job()
+    is_rendering = ACEAudioEngine._is_rendering_job() or bool(getattr(engine, "render_active", False))
     if not is_rendering:
         return
     frame_change_handler(scene)
+
+
+def _render_notes(engine, scene) -> list:
+    """What a render will not show exactly: file sources without a valid bake, live inputs."""
+    notes = []
+    frame_start = int(getattr(scene, "frame_start", 1) or 1)
+    frame_end = int(getattr(scene, "frame_end", frame_start) or frame_start)
+    for uid, graph in sorted(engine.graphs.items()):
+        if not graph.output_attr_keys:
+            continue
+        ctx = getattr(graph, "source_context", None)
+        name = str(getattr(ctx, "name", "") or uid)
+        source_type = str(getattr(ctx, "source_type", "") or "").upper()
+        if source_type == "LIVE":
+            notes.append(f"'{name}' is a live input: its values render as 0. Record a take to render it.")
+        elif not engine.bake.covers(graph, frame_start, frame_end):
+            notes.append(f"'{name}' is not baked: the render streams it, and may not match playback.")
+    return notes
+
+
+@persistent
+def render_init_handler(scene):
+    """bpy.app.handlers.render_init: start a render's bookkeeping, and say what won't render exactly."""
+    engine = ACEAudioEngine.get_instance(scene)
+    if engine is None:
+        return
+    engine.render_active = True
+    engine.render_frames_done = set()
+    engine.render_notes = []
+    with utils.logged_errors("handlers.render_init_handler"):
+        engine.render_notes = _render_notes(engine, scene)
+    for note in engine.render_notes:
+        utils.log(f"Render: {note}", "WARNING")
+
+
+@persistent
+def render_complete_handler(scene):
+    """bpy.app.handlers.render_complete: the render job is over."""
+    engine = ACEAudioEngine.get_instance(scene)
+    if engine is not None:
+        engine.render_active = False
+        engine.render_frames_done = set()
 
 
 @persistent
@@ -157,6 +199,8 @@ def render_cancel_handler(scene):
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None:
         engine.diagnostics._mark_render_complete(scene, cancelled=True)
+        engine.render_active = False
+        engine.render_frames_done = set()
     render_post_handler(scene)
 
 
@@ -333,6 +377,10 @@ def register_handlers():
         bpy.app.handlers.frame_change_pre.append(frame_change_handler)
     if not _ace_handler_registered(bpy.app.handlers.frame_change_post, frame_change_post_handler):
         bpy.app.handlers.frame_change_post.append(frame_change_post_handler)
+    if not _ace_handler_registered(bpy.app.handlers.render_init, render_init_handler):
+        bpy.app.handlers.render_init.append(render_init_handler)
+    if not _ace_handler_registered(bpy.app.handlers.render_complete, render_complete_handler):
+        bpy.app.handlers.render_complete.append(render_complete_handler)
     if not _ace_handler_registered(bpy.app.handlers.render_pre, render_pre_handler):
         bpy.app.handlers.render_pre.append(render_pre_handler)
     if not _ace_handler_registered(bpy.app.handlers.render_post, render_post_handler):
@@ -355,6 +403,8 @@ def unregister_handlers():
     _ace_handler_remove_all(bpy.app.handlers.redo_post, _undo_redo_invalidate_engine_caches)
     _ace_handler_remove_all(bpy.app.handlers.frame_change_pre, frame_change_handler)
     _ace_handler_remove_all(bpy.app.handlers.frame_change_post, frame_change_post_handler)
+    _ace_handler_remove_all(bpy.app.handlers.render_init, render_init_handler)
+    _ace_handler_remove_all(bpy.app.handlers.render_complete, render_complete_handler)
     _ace_handler_remove_all(bpy.app.handlers.render_pre, render_pre_handler)
     _ace_handler_remove_all(bpy.app.handlers.render_post, render_post_handler)
     _ace_handler_remove_all(bpy.app.handlers.render_cancel, render_cancel_handler)

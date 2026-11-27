@@ -70,6 +70,15 @@ class BakeManager:
                 self._cleanup_bake_entry(entry if isinstance(entry, dict) else None)
                 self._bake_cache.pop(sid, None)
 
+    def covers(self, graph: ACEAudioGraph, frame_start: int, frame_end: int) -> bool:
+        """True when *graph*'s source has a valid bake over the frames [frame_start, frame_end]."""
+        entry = self._bake_cache.get(str(getattr(graph, "source_uid", "") or ""))
+        if not isinstance(entry, dict):
+            return False
+        if int(entry.get("frame_start", 0)) > int(frame_start) or int(entry.get("frame_end", -1)) < int(frame_end):
+            return False
+        return self._get_baked_frame_results(graph, int(frame_start)) is not None
+
     def _get_baked_frame_results(self, graph: ACEAudioGraph, frame_index: int) -> Optional[Dict[str, Any]]:
         source_uid = getattr(graph, "source_uid", "") or getattr(getattr(graph, "source_context", None), "stable_id", "")
         if not source_uid:

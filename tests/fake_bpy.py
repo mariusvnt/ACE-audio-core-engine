@@ -17,6 +17,8 @@ HANDLER_NAMES = (
     "redo_post",
     "frame_change_pre",
     "frame_change_post",
+    "render_init",
+    "render_complete",
     "render_pre",
     "render_post",
     "render_cancel",

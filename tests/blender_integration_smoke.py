@@ -1691,6 +1691,67 @@ def _check_file_formats_decode(addon_key):
         rec.close()
 
 
+def _check_render_reads_bake_or_streams_once(engine, scene, graph, entry, tmp_dir):
+    """A render runs the graph once per frame and writes the bake; unbaked, it streams locally, exactly.
+
+    Worker processes are on (processes_dsp), so a render that used their values would not
+    match the bake on the offloaded outputs.
+    """
+    keys = list(graph.output_attr_keys)
+    baked = {key: [float(v) for v in entry["values"][key]] for key in keys}
+    cam = bpy.data.objects.new("ACE_Smoke_Camera", bpy.data.cameras.new("ACE_Smoke_Camera"))
+    scene.collection.objects.link(cam)
+    saved = (scene.camera, scene.render.engine, scene.frame_start, scene.frame_end, scene.render.filepath)
+    scene.camera = cam
+    scene.render.engine = "BLENDER_WORKBENCH"
+    scene.render.resolution_x = scene.render.resolution_y = 4
+    scene.render.use_lock_interface = True
+    scene.render.filepath = os.path.join(tmp_dir, "render_")
+    scene.frame_start, scene.frame_end = 1, 8
+    rendered: dict = {}
+    runs: dict = {}
+
+    def _grab(sc, *_args):
+        rendered[int(sc.frame_current)] = dict(engine.latest_values)
+
+    original_run = engine.frame._run_graph
+
+    def _counted_run(sc, g, ctx):
+        runs[int(sc.frame_current)] = runs.get(int(sc.frame_current), 0) + 1
+        return original_run(sc, g, ctx)
+
+    def _render_and_check(label):
+        rendered.clear()
+        runs.clear()
+        bpy.ops.render.render(animation=True)
+        _assert(sorted(rendered) == list(range(1, 9)), f"{label}: frames rendered {sorted(rendered)}")
+        # Frames outside the range: Blender sets the scene's own frame back when the render ends.
+        in_range = {frame: n for frame, n in runs.items() if 1 <= frame <= 8}
+        _assert(in_range == {frame: 1 for frame in range(1, 9)}, f"{label}: graph runs per rendered frame {runs}")
+        bad = [
+            (key, frame, rendered[frame].get(key), baked[key][frame - entry["frame_start"]])
+            for frame in rendered
+            for key in keys
+            if abs(float(rendered[frame].get(key, float("nan"))) - baked[key][frame - entry["frame_start"]]) > 1e-6
+        ]
+        _assert(not bad, f"{label}: rendered values differ from the bake ({len(bad)}), first: {bad[:3]}")
+
+    bpy.app.handlers.render_post.append(_grab)
+    engine.frame._run_graph = _counted_run
+    try:
+        _render_and_check("baked render")
+        _assert(not engine.render_notes, f"A baked render reported {engine.render_notes}")
+        engine.bake._clear_bake_cache()
+        _render_and_check("unbaked render")
+        _assert(any("not baked" in note for note in engine.render_notes), f"No note on the unbaked source: {engine.render_notes}")
+    finally:
+        engine.frame._run_graph = original_run
+        bpy.app.handlers.render_post.remove(_grab)
+        scene.camera, scene.render.engine, scene.frame_start, scene.frame_end, scene.render.filepath = saved
+        bpy.data.objects.remove(cam, do_unlink=True)
+    print("[ACE smoke] render: one graph run per frame; baked and unbaked renders match the bake")
+
+
 def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode="threads_io"):
     """A file source wired to RMS, LUFS and a splitter writes values that follow the audio, and bakes."""
     scene.audiocore.engine_settings.ace_parallel_mode = parallel_mode
@@ -1848,6 +1909,8 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     _assert(compared > 0, "No played value to compare the bake with")
     _assert(not mismatches, f"The bake differs from playback ({len(mismatches)} values), first: {mismatches[:3]}")
     print(f"[ACE smoke] {parallel_mode}: bake matches playback on {compared} values")
+    if parallel_mode == "processes_dsp":
+        _check_render_reads_bake_or_streams_once(engine, scene, graph, entry, tmp_dir)
 
     bpy.data.objects.remove(obj, do_unlink=True)
     bpy.data.node_groups.remove(tree)

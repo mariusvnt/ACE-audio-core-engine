@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any, Dict, Optional
 from .... import utils
+from ...clock import Clock, Method, current_clock, method_for
 from ...tasks.chunk import AudioChunk, SAMPLE_RATE
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
@@ -27,6 +28,9 @@ class _FrameContext:
     preview_chunks: list = field(default_factory=list)
     geometry_proxy_names: set = field(default_factory=set)
     preview_pushed: bool = False
+    clock: Clock = Clock.TIMELINE
+
+
 class FrameRunner(BlockSizing, GraphEvaluation):
     """Per-frame execution: block sizing, graph evaluation, preview and sink writes."""
 
@@ -50,9 +54,10 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         if clock is None:
             return
         fps, delta_frames = clock
-        if self._sync_runtime_inputs(scene):
+        if self._sync_runtime_inputs(scene) and current_clock(self.engine) is not Clock.RENDER:
             # Freshly compiled this frame: give Geometry Nodes one clean cycle
-            # with the new graph before values are pushed into it.
+            # with the new graph before values are pushed into it. A rendered frame
+            # gets its values anyway: it is evaluated once.
             return
         ctx = self._frame_context(scene, fps, delta_frames)
         if ctx is None:
@@ -87,6 +92,12 @@ class FrameRunner(BlockSizing, GraphEvaluation):
         scene_frame = getattr(scene, "frame_current", None)
         if scene_frame is None:
             scene_frame = self.engine.current_frame + 1
+        if current_clock(self.engine) is Clock.RENDER:
+            # render_pre, frame_change_pre and frame_change_post all ask for the rendered
+            # frame: it is computed once, so stateful nodes step once per frame.
+            if int(scene_frame) in self.engine.render_frames_done:
+                return
+            self.engine.render_frames_done.add(int(scene_frame))
 
         prev_scene_frame = int(self.engine.last_scene_frame)
         if (
@@ -158,6 +169,11 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             parallel_pool_ready = self.engine.parallel.ensure_pool(scene)
         elif self.engine.parallel.pool.executor is not None:
             self.engine.parallel.shutdown_pool()
+        frame_clock = current_clock(self.engine)
+        if frame_clock is Clock.RENDER:
+            # A rendered frame is computed here and now: worker values may be up to 50 ms old.
+            parallel_mode = "off"
+            parallel_pool_ready = False
 
         # Keep the preview feeder's drift-correction in sync with the scene fps.
         with utils.logged_errors("runner.FrameRunner._frame_context"):
@@ -211,6 +227,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             preview_block_size=preview_block_size,
             preview_chunks=preview_chunks,
             geometry_proxy_names=geometry_proxy_names,
+            clock=frame_clock,
         )
 
     def _run_graph(self, scene, graph, ctx):
@@ -220,6 +237,12 @@ class FrameRunner(BlockSizing, GraphEvaluation):
             return
         self._sync_graph_schema(graph, graph_key, ctx)
         if self._write_baked_results(graph, graph_key, ctx):
+            return
+        source_type = str(getattr(getattr(graph, "source_context", None), "source_type", "") or "")
+        if method_for(source_type, ctx.clock, baked=False) is Method.HOLD:
+            # Nothing to compute a value from (a live input in a render): hold the outputs at 0.
+            held = {key: self._zero_value_for_attr(key) for key in graph.output_attr_keys}
+            self._commit_graph_results(graph, graph_key, held, ctx)
             return
         if not self._graph_sources_ready(graph, graph_key):
             return

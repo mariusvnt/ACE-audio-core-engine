@@ -35,6 +35,12 @@ class ACEAudioEngine:
         self.graphs: Dict[str, ACEAudioGraph] = {}
         # Latest value of every operator output, by 'node_id:socket' (linked split frequencies read it).
         self.latest_values: dict = {}
+        # The render being run: frames it has computed (one graph run per rendered frame), and
+        # what it reported about sources that do not render exactly (FUTURE.md 1.1).
+        self.render_active: bool = False
+        self.render_frames_done: set = set()
+        self.render_notes: list = []
+        self.live_session = None  # set while a live session runs (core/clock.py, Clock.LIVE)
         self.current_frame = 0
         self.last_scene_frame = -1
         self.writer: Optional[ACEProxyManager] = None

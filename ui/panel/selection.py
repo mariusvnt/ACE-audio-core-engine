@@ -444,9 +444,24 @@ def _draw_selected_node_description(layout, context, description: str):
         column.label(text=line)
 
 
+def _draw_render_notes(layout, context):
+    """What the last render could not show exactly (core/engine/handlers.py, render_init)."""
+    engine = ACEAudioEngine.get_instance(context.scene)
+    notes = list(getattr(engine, "render_notes", []) or []) if engine is not None else []
+    if not notes:
+        return
+    box = layout.box()
+    box.label(text="Last render:", icon="RENDER_ANIMATION")
+    for note in notes:
+        row = box.row()
+        row.alert = True
+        row.label(text=note, icon="ERROR")
+
+
 def _draw_bake_controls(layout, context):
     from ...utils import _get_active_source
 
+    _draw_render_notes(layout, context)
     _, active_source = _get_active_source(context)
     if not active_source:
         return
