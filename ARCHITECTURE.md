@@ -16,20 +16,24 @@ object-bound shader materials. It is built in three layers:
    compiled into one task graph per source, and evaluated every frame. All DSP
    happens here.
 3. **Acoustic monitor.** Preview playback rebuilds audible audio with
-   time-domain filters derived from Layer 2 metadata (band limits, analysis
-   ops). It never inverts spectral analysis: inverse-FFT reconstruction would
-   reintroduce block artefacts and couple monitoring to analysis settings.
+   time-domain filters derived from Layer 2 metadata (band limits). It never
+   inverts spectral analysis: inverse-FFT reconstruction would reintroduce
+   block artefacts and couple monitoring to analysis settings.
 
-Delta nodes (splitters, chromagram, components) mostly attach constraints to
-the audio chunk (`band_indices`, `analysis_ops`, lineage) instead of producing
-new signals. Downstream stream nodes apply them while analysing, so a split
-costs metadata, not a copy of the audio.
+The Frequency Splitter, the only delta node, attaches a constraint to the audio
+chunk (`band_hz_bounds` and lineage) instead of producing new signals.
+Downstream stream nodes apply it while analysing, so a split costs metadata,
+not a copy of the audio.
+
+A chunk carries only the source's audio; nothing is filtered or smoothed at
+the source. The Source node also outputs the source's BPM and Beats per Bar
+(§8, Tempo).
 
 ## 2. Packages
 
 | Package | Role |
 | --- | --- |
-| `core/tasks` | DSP tasks, the audio chunk, analyzers and the per-source runtime graph |
+| `core/tasks` | DSP tasks, the audio chunk, tempo detection and the per-source runtime graph |
 | `core/engine` | `ACEAudioEngine` (one per scene) and its components |
 | `core/engine/compiler` | Stage A: frontends to task graphs |
 | `core/engine/parallel` | Stage B: worker-process offload |
@@ -41,7 +45,7 @@ costs metadata, not a copy of the audio.
 | `nodes/geometry`, `nodes/shader` | Node-group factories and tree readers |
 | `ui` | N-panel, add menu, operators and preferences |
 | `deps.py` | Optional libraries: which load, and the user's switches (§13) |
-| `tools` | Wheel fetching and AudioFlux trimming for the extension build (§13) |
+| `tools` | Wheel fetching for the extension build (§13) |
 
 ## 3. Frame pipeline
 
@@ -168,22 +172,46 @@ covered by local DSP.
 - **Analysis frames.** A source hands out each block with the 4096 samples
   before it: read from the decoded file (zeros before its start, so a seek
   gives the same values), or kept from the blocks already played for live
-  input. Splitters, mixes and worker payloads carry them along. Analysis that
-  needs more than one block takes a frame that ends with the block
-  (`_analysis_frame`), never a block padded with zeros; source preprocessing
-  runs over the history with a fresh filter.
-  - **Centroid and flux:** a Hann window of the next power of two of the block.
-  - **Band loudness** (splitter bands, chroma, components): the block plus a
-    5 ms fade at each end. The squares of the fades add up to 1 across
-    consecutive blocks, so every sample counts once and a band level is on the
-    same scale as the full level.
-  - **Pitch:** YIN in NumPy over 4096 samples, comparing the newest 1024, down
-    to 20 Hz and inside the chunk's band; 0 when there is no pitch.
-- **Tempo.** A background thread reads the first 15 s of a file, builds an
-  onset envelope (10 ms steps, log-compressed spectral flux) and takes the
-  beat period from its autocorrelation, between 40 and 240 BPM with a
-  preference around 120 that settles half and double tempo. A file without a
-  steady pulse gets no tempo, and the source keeps its BPM.
+  input. Splitters and worker payloads carry them along. Analysis that needs
+  more than one block takes a frame that ends with the block
+  (`_analysis_frame`), never a block padded with zeros. All of it is NumPy.
+  - **Band loudness** (splitter bands): the block plus a 5 ms fade at each
+    end. The squares of the fades add up to 1 across consecutive blocks, so
+    every sample counts once and a band level is on the same scale as the full
+    level.
+  - **Stereo** behind a splitter: Width, Balance and the left and right levels
+    come from the in-band powers of left, right, mid and side, measured like
+    band loudness. Without a splitter they are measured on the whole block.
+  - **Brightness:** the centroid of the magnitude spectrum of a periodic Hann
+    window, as long as the next power of two of the block. A band counts only
+    its own bins, with the same bounds test as band loudness, and a band too
+    narrow to hold a bin reads 0. The bands of one block share one spectrum,
+    cached by source, frame, sample rate, length and a checksum of the
+    samples, so another file or frame rate never gets a stale one.
+  - **Pitch:** YIN over 4096 samples, comparing the newest 1024, down to
+    20 Hz and inside the chunk's band; 0 when there is no pitch.
+- **Tempo.** A file source's tempo is detected on its own when the source gets
+  a file or the file changes on disk, unless the user typed a BPM or Beats per
+  Bar; *Auto Detect* replaces typed values. One background thread
+  (`TempoService` in `core/tasks/tempo.py`) reads the first 15 s, builds an
+  onset envelope (10 ms steps, log-compressed spectral flux) and analyses it:
+  - **BPM:** the beat period from the envelope's autocorrelation, between 40
+    and 240 BPM. A preference around 120 settles half and double tempo, and a
+    period must also repeat at 2 and 4 times its length (bars of 2 or 4) or at
+    3 and 6 (bars of 3).
+  - **Beats per Bar:** each beat's strength is the envelope peak within a sixth
+    of a beat, so off-beats never count. The strengths are folded by beat
+    number for bar lengths 2 to 8, and the length where one fold stands out
+    most clearly wins; a shorter bar wins a near tie. Without a clear accent
+    pattern the answer is 4. The first downbeat is found too, and kept for the
+    Downbeat output planned in FUTURE.md.
+
+  A file without a steady pulse gets no tempo, and the source keeps its BPM.
+  Results are cached per file path and modification time and written to the
+  source on the main thread. Every tick, each source writes its BPM and Beats
+  per Bar on point 0 of its proxy mesh (`ACE_bpm`, `ACE_beats_per_bar`); the
+  Geometry Nodes Source group reads them there, and sink pruning leaves them
+  alone. The shader Source node has no tempo outputs yet.
 - **Preview.** Audio comes from manual preview sinks, or from links to the
   tree's audio output when there is none. Branches are mixed, limited and
   played only while the timeline plays. A feeder thread paces delivery at the
@@ -230,7 +258,8 @@ worker processes at real-time pace.
 pan, a music loop, 44.1 and 96 kHz files) play at 24, 30 and 60 fps through
 one tree holding every node and mode, and each output is compared frame by
 frame with the goldens in `tests/reference/curves`, within a tolerance per
-node (`spec.py`). Each pass starts from a fresh engine, as after a file load,
+node (`spec.py`); the Source node's own case records the detected tempo.
+Each pass starts from a fresh engine, as after a file load,
 because a seek keeps analyzer history; it runs twice and must repeat exactly,
 and the I/O-thread mode must match. A new node type fails
 `test_reference_goldens` until it has curves or an exclusion reason.
@@ -262,9 +291,10 @@ cross-checks.
 
 - Processing is frame-block based: tuned for reactivity, not offline fidelity.
 - The bake cache is in memory only.
-- AudioFlux ships with the extension. If it fails to load, the N-panel shows
-  that problem instead of its controls (spectral features have NumPy
-  fallbacks, but they are less faithful).
+- Files saved with earlier versions are not converted. Nodes removed or
+  renamed since (Audio Math, the Mid/Side, Attack/Release, Chromagram and
+  Automatic Component splitters, Source Specs, Onset, the one-method RMS, LUFS,
+  Peak and Stereo nodes) no longer work in them.
 - Files are decoded into memory: a 5-minute stereo file at 48 kHz takes about
   115 MB.
 - Live input quality depends on the transport. On Linux, SoundDevice needs
@@ -277,18 +307,13 @@ Its libraries ship as wheels inside the platform zip, and Blender installs
 them with it: nothing is installed at runtime, and an install behaves the same
 on every machine. NumPy is never bundled; Blender ships its own.
 
-- **Wheels.** `tools/wheels.txt` pins them: AudioFlux, Numba with llvmlite,
+- **Wheels.** `tools/wheels.txt` pins them: Numba with llvmlite, and
   SoundDevice with cffi and pycparser. `tools/fetch_wheels.py` downloads them
   for Blender's Python (3.13) and every platform in the manifest, and rewrites
   the manifest's `wheels` list; `blender --command extension build
   --split-platforms` then gives one zip per platform. A pure-Python wheel
   needed by only some platforms is tagged for them, so no zip holds two copies
   of one package (SoundDevice bundles PortAudio on Windows and macOS only).
-- **AudioFlux** is repackaged per platform (`tools/trim_audioflux.py`): the
-  PyPI wheel carries every OS's native library (200 MB of MKL for Linux) and
-  imports SciPy, SoundFile and matplotlib for file and plot helpers ACE never
-  uses. The trimmed wheel keeps one platform's libraries and loads those
-  helpers lazily, so it needs NumPy only.
 - **Switches.** `deps.py` decides whether ACE uses an optional library: it
   imports, and its switch is on. The switches (Numba; SoundDevice for live
   input and the preview) live in `settings.json` in the extension's user folder,

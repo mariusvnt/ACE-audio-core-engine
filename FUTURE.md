@@ -2,57 +2,15 @@
 
 Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
-1. [Fixes and removals](#1-fixes-and-removals)
-2. [Instance model](#2-instance-model-definitions-instances-signals): definitions, instances, signals
-3. [Time model: render, bake, live](#3-time-model-render-bake-live)
-4. [Core operator set](#4-core-operator-set): the node set, motion and event nodes
-5. [Live output window](#5-live-output-window)
-6. [Presets as assets](#6-presets-as-assets)
+1. [Instance model](#1-instance-model-definitions-instances-signals): definitions, instances, signals
+2. [Time model: render, bake, live](#2-time-model-render-bake-live)
+3. [Core operator set](#3-core-operator-set): the node set, motion and event nodes
+4. [Live output window](#4-live-output-window)
+5. [Presets as assets](#5-presets-as-assets)
 
-The extension packaging and the reference-curve tests are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13 and §10). The sections below rewrite the compiler and the sinks: the reference curves of the nodes that remain must stay unchanged through that work.
+The extension packaging, the reference-curve tests and the fixes and removals that came first are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13, §10 and §8). The sections below rewrite the compiler and the sinks: the reference curves of the nodes that remain must stay unchanged through that work.
 
-## 1. Fixes and removals
-
-These are first because they fix or delete what exists, ahead of any rewrite. The node set they lead to is described in section 4.
-
-Old .blend files don't need to keep working: nothing is migrated, and the migration of the older per-method stream types goes too.
-
-### Stereo band fix
-
-Stereo and Stereo Vector ignore a Frequency Splitter: Width, Balance and the left and right levels of every band are those of the whole signal. A split only tags a frequency range, and the stereo measurements don't apply it. They must measure inside the band of their input. It is fixed first, on the nodes as they are today. Without a splitter the values don't change.
-
-### Spectral band fix
-
-Behind a Frequency Splitter, Spectral doesn't measure inside the band:
-
-- **Centroid of a band that holds no FFT bin** (narrower than the bin spacing, about 23 Hz at 24 fps) is that of the whole signal.
-- **Centroid on Windows:** AudioFlux can't select a band there, because its wrapper looks up `calloc` in a library that doesn't export it. Every band centroid logs an error and falls back to an unwindowed NumPy spectrum of the block, so its values aren't computed like the full-band ones.
-- **Flux** ignores the band and reports the whole signal's. It is removed below, so it needs no fix.
-
-The centroid of a band should come from the same spectrum as the full-band one, be 0 for a band with no bin, and get a reference curve behind a splitter.
-
-### Beats per Bar estimate
-
-The tempo analysis rarely finds the bar length. On synthetic loops with an accent every three or every four beats, at 90, 120 and 140 BPM, it was right in one case of six, and answered 2 for all four at 120 and 140 BPM. It scores every onset peak, off-beats included, and favours short bars. The Downbeat estimate of section 4 depends on the bar length.
-
-### Removals and renames
-
-These come before section 2, so that its rewrite of the compiler and the sinks has less to carry. The curves of the nodes that remain stay unchanged.
-
-- **Audio Math.** A split only tags a frequency range, so the node combines the unfiltered audio: adding two bands doubles the whole signal, and subtracting them gives silence.
-- **Attack/Release Splitter.** It gates single samples by the slope of the waveform, not by the loudness envelope.
-- **Automatic Component Splitter.** Its split doesn't hold: stationary noise comes out partly percussive.
-- **Mid/Side Splitter.** The Width of a stereo signal covers its main use.
-- **Chromagram.** Using it takes one Loudness node per note. It can come back as a single node if harmony is missed.
-- **Source Specs.** BPM and Beats per Bar are already source settings: the Source node outputs them, and the tempo estimate moves with them. Frames per Beat and Beat Phase are dropped.
-- **Loudness** keeps its three methods and Window, and its default changes from LUFS to RMS.
-- **Spectral** becomes Brightness and keeps the centroid only: flux and zero-crossing rate go.
-- **Source preprocessing:** the per-source high-pass, low-pass and attack/release settings. Frequency Splitter does the filtering, and Envelope (section 4) the smoothing.
-- **Onset** is renamed Transient.
-
-Rolling Average and Stream Accumulator stay until Envelope and Running Total (section 4) replace them. Stereo and Stereo Vector stay until section 4 merges them into one Stereo node.
-
-## 2. Instance model: definitions, instances, signals
+## 1. Instance model: definitions, instances, signals
 
 ### Why
 
@@ -83,7 +41,7 @@ The pipeline:
 5. **Sinks.**
    - Output names stay stable per definition node, so editing a parameter never rewrites strings in a user tree. Several sink names may share one task, and the fan-out uses bulk writes.
    - **Geometry Nodes:** stream and utility nodes read the proxy geometry from the incoming bundle. The per-node `Proxy Object` socket goes away, and a source that differs per instance then works with no extra machinery.
-   - **Shaders, values:** a prototype should test the helper Attribute node in **View Layer** mode, which reads view-layer or scene custom properties. That gives one write per value for any number of materials and objects. *Still to check: live refresh in Eevee and Cycles viewports, and how much tagging it needs.*
+   - **Shaders, values:** a prototype should test the helper Attribute node in **View Layer** mode, which reads view-layer or scene custom properties. That gives one write per value for any number of materials and objects. *Still to check: live refresh in Eevee and Cycles viewports, and how much tagging it needs.* The shader Source node gets its BPM and Beats per Bar outputs this way; today only the Geometry Nodes one has them.
    - **Shaders, structure:** instead of helper nodes in the user's material, each shader ACE node could point to its own generated group that holds the fixed attribute name. That gets around the fact that a shared group's internals can't be specialized, without adding nodes to the user's tree. The cost is one datablock per node.
 6. **No writes into user trees.**
    - Node identity comes from the instance path plus `node.name`, not a stored `ace_id`.
@@ -120,7 +78,7 @@ The latency items in [AI_Code_Review.md](AI_Code_Review.md) (stale-job budget, d
 - Shaders: is a per-object value (OBJECT attributes) ever needed, or is one global value per signal (View Layer) enough?
 - Is linked-library support a goal? If so, step 1 is required, not optional.
 
-## 3. Time model: render, bake, live
+## 2. Time model: render, bake, live
 
 ### Why define time
 
@@ -130,7 +88,7 @@ The latency items in [AI_Code_Review.md](AI_Code_Review.md) (stale-job budget, d
 - whether a rendered frame matches what playback showed;
 - what happens when the timeline loops. A wrap looks like a rewind, so Stream Accumulators reset and the preview buffers are flushed, which is wrong during a live show.
 
-### 3.1 Signals are functions of time
+### 2.1 Signals are functions of time
 
 Every signal is `value(signal, t)`, with `t` a position in the source audio. The engine's only job is to answer that question for the current `t`. How it answers depends on the clock and the source.
 
@@ -138,12 +96,12 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 
 - **Timeline:** playback and scrubbing. `t` comes from the current frame.
 - **Render:** Blender's render job. `t` comes from the exact frame being rendered, and there's no hurry.
-- **Live:** ACE's own clock (3.4), independent of timeline playback.
+- **Live:** ACE's own clock (2.4), independent of timeline playback.
 
 **Ways to get a value:**
 
-- **Bake:** look up the stored curve (3.3).
-- **Random access:** for a file source, analyse the exact sample window at `t` (3.2).
+- **Bake:** look up the stored curve (2.3).
+- **Random access:** for a file source, analyse the exact sample window at `t` (2.2).
 - **Stream:** read the next block from a live input. Only possible "now".
 
 **Rule table:**
@@ -151,21 +109,21 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 | Clock \ Source | File | Live input |
 | --- | --- | --- |
 | Timeline | Bake if valid, else random access | Stream: the value now, and scrubbing doesn't apply |
-| Render | Bake if valid, else random access. **Never stream** | A recorded take (3.5). If there is none, the render stops with a clear message |
+| Render | Bake if valid, else random access. **Never stream** | A recorded take (2.5). If there is none, the render stops with a clear message |
 | Live | Real-time playback of the file as a backing track | Stream |
 
 `core/clock.py` owns this table and is the only place that decides how a value is obtained. The render handlers stop calling the playback frame path and ask the clock layer for "value at this frame".
 
-**Stateful nodes** (Envelope, Running Total and Gate, section 4) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
+**Stateful nodes** (Envelope, Running Total and Gate, section 3) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
 
-### 3.2 Random access for file sources
+### 2.2 Random access for file sources
 
 - File sources gain `read_at(t, window)` next to `read_block`.
 - The block for frame f is the same one streaming would use: samples `[f·N, (f+1)·N)` with `N = sample_rate / fps`, plus the history the analyser needs (an FFT window longer than a block reads samples before it).
 - **Analyser state:** Loudness in LUFS and Peak modes runs K-weighting filters (LUFS also averages over its Window), and Transient compares each frame with the previous spectrum and a running average. Random access runs a pre-roll before `t`, long enough for that state to settle, so the result matches streaming within a tolerance set by the reference curves (ARCHITECTURE.md §10). Where the tolerance is too loose, use the checkpoints instead.
 - **Contract, checked by the tests:** random access = stream within tolerance, and bake = random access = render, value for value.
 
-### 3.3 Baking into Blender data
+### 2.3 Baking into Blender data
 
 **Today:** the bake is a cache kept in memory (ARCHITECTURE.md §12). It's lost when the file is reloaded, and rendering still needs ACE running in the frame handlers. That means:
 
@@ -176,7 +134,7 @@ A bake writes each signal's full curve over the frame range into ordinary Blende
 
 - **Geometry Nodes:** one baked mesh per source, with one point per frame and one attribute per signal. The ACE node's internals switch from sampling point 0 of the live proxy to sampling point `frame - frame_start` of the baked mesh (Scene Time → Sample Index). The node interface is unchanged.
 - **Shaders:** a float image, one row per signal and one column per frame, packed in the .blend. An ACE shader node samples it at the current frame (Scene Time → coordinate, Closest interpolation). The baked image needs to be checked against the image size limit for long ranges; past that, use several rows per signal.
-- **Signal identity:** each baked curve is keyed by its signal key (section 2) plus the hash of the source file. A curve whose key still matches is reused after edits elsewhere; a changed key marks the bake stale in the UI.
+- **Signal identity:** each baked curve is keyed by its signal key (section 1) plus the hash of the source file. A curve whose key still matches is reused after edits elsewhere; a changed key marks the bake stale in the UI.
 - **Live vs baked:** each source switches between the two. With the source in baked mode, the frame handler does nothing for it.
 
 Results:
@@ -185,9 +143,9 @@ Results:
 - scrubbing, viewport and render read exactly the same numbers;
 - the bake survives reloads.
 
-The bake uses the signal keys of section 2 and is filled by random access (3.2), so it doesn't depend on playing the stream through. `core/bake_store.py` owns it.
+The bake uses the signal keys of section 1 and is filled by random access (2.2), so it doesn't depend on playing the stream through. `core/bake_store.py` owns it.
 
-### 3.4 Live clock
+### 2.4 Live clock
 
 Under the live clock, ACE drives time instead of following timeline playback.
 
@@ -216,7 +174,7 @@ Keyframed animation past its last key behaves as its F-curves say (hold, or cycl
 - The main window's 3D views drop to solid shading (or stop redrawing) to leave the GPU and main thread to the show. They're restored on exit.
 - The side panel shows fps, end-to-end latency, and late ticks.
 
-### 3.5 Takes: record live, render later
+### 2.5 Takes: record live, render later
 
 A **take** is a recorded live session:
 
@@ -233,20 +191,20 @@ A take is a file source, so the rule table applies: it can be scrubbed, baked an
 
 Recording writes WAV and the event log off the main thread. `core/takes.py` owns it.
 
-### 3.6 Order
+### 2.6 Order
 
 1. Clock layer, random access for file sources, and the render rule. Rendering becomes defined and exact.
-2. Bake into Blender data (3.3).
-3. Live clock (3.4), with the simulation-cache prototype first.
-4. Takes (3.5).
+2. Bake into Blender data (2.3).
+3. Live clock (2.4), with the simulation-cache prototype first.
+4. Takes (2.5).
 
-The live output window of section 5 needs the live clock.
+The live output window of section 4 needs the live clock.
 
-## 4. Core operator set
+## 3. Core operator set
 
 ### Why a core set
 
-ACE has 17 nodes. Several measure the same thing, some don't do what their name says, and none of them gives motion weight or turns a measurement into an event. Section 1 removes what overlaps or fails. The goal is a small set where each node answers a question the others can't:
+ACE has 11 nodes, after the removals that came first. Stereo and Stereo Vector still overlap, and none of them gives motion weight or turns a measurement into an event. The goal is a small set where each node answers a question the others can't:
 
 | Node | Outputs |
 | --- | --- |
@@ -254,8 +212,8 @@ ACE has 17 nodes. Several measure the same thing, some don't do what their name 
 | **Frequency Splitter** | one Audio per band |
 | **Loudness** | level, 0..1: RMS (default), LUFS or Peak |
 | **Pitch** | 0..1 |
-| **Brightness** (today's Spectral centroid) | 0..1 |
-| **Transient** (today's Onset) | sharpness of the transient, 0..1 |
+| **Brightness** | 0..1 |
+| **Transient** | sharpness of the transient, 0..1 |
 | **Stereo** | Balance (-1..1), Width (0..1) |
 | **Envelope** | the input, smoothed |
 | **Running Total** | the input summed over time |
@@ -328,20 +286,20 @@ The **Min Interval** input prevents a new Hit sooner than this, so one kick give
 
 ### Musical time: the Source node
 
-The Source node outputs only what musical time depends on: **BPM, Beats per Bar and Downbeat**. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so no node outputs a phase.
+The Source node outputs only what musical time depends on: **BPM, Beats per Bar and Downbeat**. The Geometry Nodes one already outputs BPM and Beats per Bar. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so no node outputs a phase.
 
-- **Downbeat estimate:** found together with the tempo, as the position in the bar with the strongest mean spectral flux. It is a source property the user can override, like BPM and meter.
-- **Phases in Geometry Nodes** come from a **Beat Clock** preset (section 6). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
+- **Downbeat estimate:** the tempo detection already finds the first downbeat, as the accented beat of the bar, and keeps it unused. It becomes a source property the user can override, like BPM and meter, and an output of the Source node.
+- **Phases in Geometry Nodes** come from a **Beat Clock** preset (section 5). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
 
 ### State and timeline
 
 - **Rule:** a stateful node gives the same value on a frame whether that frame is reached by playing or by jumping.
 - **File sources replay.**
-  - Envelope and Gate's Open forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (3.2) for the measurements upstream.
-  - Running Total and Gate's Count remember indefinitely. They need checkpoints saved every N frames, or the bake (3.3).
-- **Until section 3 exists**, state resets on a rewind or a jump, and the panel says so.
+  - Envelope and Gate's Open forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (2.2) for the measurements upstream.
+  - Running Total and Gate's Count remember indefinitely. They need checkpoints saved every N frames, or the bake (2.3).
+- **Until section 2 exists**, state resets on a rewind or a jump, and the panel says so.
 - **Live sources** can't be replayed, so their state simply carries on.
-- **Recompiles:** the task diff of section 2 keeps this state. Today's per-task export and import covers only the accumulator.
+- **Recompiles:** the task diff of section 1 keeps this state. Today's per-task export and import covers only the accumulator.
 
 ### Core set order
 
@@ -349,7 +307,7 @@ The Source node outputs only what musical time depends on: **BPM, Beats per Bar 
 2. Envelope and Running Total.
 3. The Downbeat estimate.
 4. Gate.
-5. Replay on jump, once random access (3.2) exists.
+5. Replay on jump, once random access (2.2) exists.
 
 Each new node gets reference curves (ARCHITECTURE.md §10), which also check that 24 and 48 fps give the same curve.
 
@@ -359,13 +317,13 @@ Each new node gets reference curves (ARCHITECTURE.md §10), which also check tha
 - Should Running Total and Gate outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
 - Should Gate's Re-arm Level be a free level, or a fraction of Threshold?
 
-## 5. Live output window
+## 4. Live output window
 
 ### Why a live output window
 
 Live visuals go to a projector or to a mixing tool (OBS, Resolume, projection mapping). Making a clean output from Blender by hand takes about ten steps that have to be redone every session: new window, rendered shading, camera view, overlays off, every panel hidden, fullscreen. One button does it.
 
-The window is the output: the program that receives it captures the window. That adds no dependency to ACE, and ACE never copies frames from the GPU. The live clock (3.4) needs a 3D view that keeps redrawing anyway, and this window is that view.
+The window is the output: the program that receives it captures the window. That adds no dependency to ACE, and ACE never copies frames from the GPU. The live clock (2.4) needs a 3D view that keeps redrawing anyway, and this window is that view.
 
 ### The window
 
@@ -375,7 +333,7 @@ The window is the output: the program that receives it captures the window. That
   - overlays, gizmos, header, tool header, toolbar, sidebar and asset shelf are all hidden;
   - the area outside the camera frame is black (passepartout fully opaque), so a display with a different shape gets clean letterboxing.
 - **Fullscreen** on the monitor where the window opens.
-- **Going live:** opening the window starts the live clock (3.4).
+- **Going live:** opening the window starts the live clock (2.4).
 - **Leaving:** Esc ends live. A timer notices if the window was closed some other way, and cleans up either way: the live clock's `frame_end` and the main window's 3D view shading are restored.
 - **The readout** (fps, end-to-end latency, late ticks) is in the main window's side panel, never in the image.
 
@@ -395,17 +353,17 @@ The window is the output: the program that receives it captures the window. That
 
 - **Capture:** OBS captures the fullscreen Blender window reliably, with Window Capture (Windows Graphics Capture method) and with Display Capture.
 - **Clean frame:** no interface pixels anywhere, with the camera frame filling the window exactly.
-- **Cost:** rendered shading in this window, with the main window's 3D views dropped to solid (3.4).
+- **Cost:** rendered shading in this window, with the main window's 3D views dropped to solid (2.4).
 
 ### Code
 
 `ui/live_window.py` holds the operator, the workspace, and window setup and cleanup. The clock itself stays in `core/clock.py`.
 
-## 6. Presets as assets
+## 5. Presets as assets
 
 Ship ready-made setups as an asset library that a user drags in from the Asset Browser:
 
-- Geometry Nodes groups: bass pulse scale, spectrum bars, beat flash, stereo sway, Beat Clock (section 4).
+- Geometry Nodes groups: bass pulse scale, spectrum bars, beat flash, stereo sway, Beat Clock (section 3).
 - Materials: emission on level, hue on pitch.
 
-Each preset is an ordinary user tree built from ACE nodes, so presets also check section 2 (nesting, reuse across objects). The asset library ships inside the extension and is registered when the extension loads.
+Each preset is an ordinary user tree built from ACE nodes, so presets also check section 1 (nesting, reuse across objects). The asset library ships inside the extension and is registered when the extension loads.

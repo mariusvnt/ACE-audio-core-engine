@@ -204,7 +204,7 @@ class ShaderGroupInterface:
     def _shader_node_def(category: str, node_type: str, node_def):
         """The definition a shader group is built from: the Source node keeps only its Audio output.
 
-        Its BPM and Beats per Bar come to shaders with the View Layer values (FUTURE 2.1).
+        Its BPM and Beats per Bar come to shaders with the View Layer values (FUTURE.md section 1).
         """
         if (category, node_type) != ("source_mngmt", "src"):
             return node_def

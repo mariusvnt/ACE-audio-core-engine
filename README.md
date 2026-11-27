@@ -3,8 +3,8 @@ Audio Core Engine (ACE)
 
 Audio Core Engine is a Blender extension that turns audio into per-frame values for
 Geometry Nodes and shader materials. A sound file or a live input is analysed as
-the timeline plays, and the results (loudness, pitch, spectral features, stereo
-image, beat phase and more) drive procedural animation without keyframes.
+the timeline plays, and the results (loudness, pitch, brightness, transients,
+stereo image, tempo and more) drive procedural animation without keyframes.
 
 Requirements
 ------------
@@ -12,8 +12,7 @@ Requirements
 - Blender 5.2 or later, on Windows (x64), macOS (Apple silicon, macOS 12 or
   later) or Linux (x64).
 - Nothing else to install. The libraries ACE uses ship inside the extension:
-  - AudioFlux: spectral analysis (spectrum and spectral features).
-  - Numba: faster filters and envelopes.
+  - Numba: faster filters.
   - SoundDevice: live capture and preview playback. On Linux it needs the
     PortAudio system library (`libportaudio2` on Debian and Ubuntu).
 
@@ -48,21 +47,25 @@ Quick start
 Nodes
 -----
 
-- **Source**: a reference to one of the scene's audio sources.
-- **Delta** nodes split the audio before analysis: frequency bands, mid/side,
-  attack/release, the 12 notes of the chromagram, and percussive/harmonic
-  components.
-  A split frequency can be driven by other nodes, audio operator outputs
-  included: Value, Integer, Math, Clamp, Map Range, Mix, Switch, Float Curve,
-  Float to Integer, Scene Time, node groups and modifier inputs are followed.
-- **Stream** nodes measure the audio each frame: Loudness (RMS, LUFS or Peak,
-  0..1 between -70 dB and 0 dB), Stereo (width or balance), Spectral
-  (centroid, flux or zero-crossing rate), a stereo vector, onset and pitch. The
-  method of a node is switched in the sidebar's *Operators* panel; files
-  made with the former one-method nodes are converted when opened.
-- **Utilities**: source specs (frames per beat, beat phase), audio math, a
-  rolling average over a time window, an accumulator and a preview sink for
-  listening to a branch.
+- **Source**: a reference to one of the scene's audio sources. In Geometry
+  Nodes it also outputs the source's BPM and Beats per Bar. For a file they
+  are detected when the file is chosen; a value typed in the sidebar is kept,
+  and *Auto Detect BPM / BPB* detects again.
+- **Frequency Splitter** splits the audio into frequency bands before
+  analysis. A split frequency can be driven by other nodes, audio operator
+  outputs included: Value, Integer, Math, Clamp, Map Range, Mix, Switch, Float
+  Curve, Float to Integer, Scene Time, node groups and modifier inputs are
+  followed.
+- **Stream** nodes measure the audio each frame, inside its band behind a
+  splitter: Loudness (RMS by default, LUFS or Peak, 0..1 between -70 dB and
+  0 dB), Stereo (width or balance), a stereo vector, Brightness (the spectral
+  centroid, in Hz), Pitch and Transient. The method of a node is switched in
+  the sidebar's *Operators* panel.
+- **Utilities**: a rolling average over a time window, an accumulator and a
+  preview sink for listening to a branch.
+
+Files saved with earlier versions are not converted: nodes removed or renamed
+since no longer work in them.
 
 Preview and bake
 ----------------
