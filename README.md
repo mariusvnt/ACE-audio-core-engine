@@ -42,13 +42,18 @@ Quick start
    input; with several, choose another in the node's settings.
 3. Connect them. Each output appears as a value the tree can use, refreshed
    every frame during playback.
-4. To drive a material, add the same nodes to an object's shader tree.
+4. To drive a material, a light or the World, add the same nodes to its
+   shader tree.
+
+ACE nodes also work inside your own node groups, at any depth. A group used
+several times computes each use with the values and the source it is given,
+and uses that compute the same thing share the work.
 
 Nodes
 -----
 
-- **Source**: a reference to one of the scene's audio sources. In Geometry
-  Nodes it also outputs the source's BPM and Beats per Bar. For a file they
+- **Source**: a reference to one of the scene's audio sources. It also
+  outputs the source's BPM and Beats per Bar. For a file they
   are detected when the file is chosen; a value typed in the sidebar is kept,
   and *Auto Detect BPM / BPB* detects again.
 - **Frequency Splitter** splits the audio into frequency bands before
@@ -63,6 +68,11 @@ Nodes
   the sidebar's *Operators* panel.
 - **Utilities**: a rolling average over a time window, an accumulator and a
   preview sink for listening to a branch.
+
+The sidebar's *Active ACE Instances* panel lists every ACE node: where it is
+used, the source each use reads, and which uses share one computation. It also
+flags uses of one node that compute different values: they share the node's
+output name, so only one of them is written.
 
 Files saved with earlier versions are not converted: nodes removed or renamed
 since no longer work in them.

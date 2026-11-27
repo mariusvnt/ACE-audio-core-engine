@@ -2,83 +2,17 @@
 
 Planned changes that aren't built yet, in the order they should be done. Nothing here describes current behaviour; [ARCHITECTURE.md](ARCHITECTURE.md) does.
 
-1. [Instance model](#1-instance-model-definitions-instances-signals): definitions, instances, signals
-2. [Time model: render, bake, live](#2-time-model-render-bake-live)
-3. [Core operator set](#3-core-operator-set): the node set, motion and event nodes
-4. [Live output window](#4-live-output-window)
-5. [Presets as assets](#5-presets-as-assets)
+1. [Time model: render, bake, live](#1-time-model-render-bake-live)
+2. [Core operator set](#2-core-operator-set): the node set, motion and event nodes
+3. [Live output window](#3-live-output-window)
+4. [Presets as assets](#4-presets-as-assets)
+5. [Per-instance parameters](#5-per-instance-parameters), only if needed
 
-The extension packaging, the reference-curve tests and the fixes and removals that came first are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13, §10 and §8). The sections below rewrite the compiler and the sinks: the reference curves of the nodes that remain must stay unchanged through that work.
+The extension packaging, the reference-curve tests, the fixes and removals, and the instance model (definitions, uses and shared signals) are built ([ARCHITECTURE.md](ARCHITECTURE.md) §13, §10, §8, §1 and §3). The reference curves of the nodes that remain must stay unchanged through the work below.
 
-## 1. Instance model: definitions, instances, signals
+The latency items in [AI_Code_Review.md](AI_Code_Review.md) (stale-job budget, duplicated work on the main thread, process vs thread offload) come first: tasks are now shared and kept across compiles, which makes them simpler.
 
-### Why
-
-ACE already compiles several top-level trees, but one notion, the *frontend*, covers three different things: the tree that defines the nodes, the places where that tree is used, and the DSP it computes. With many trees on many objects (Geometry Nodes and shaders), this causes the following limits:
-
-- **Discovery is limited to top-level trees on `scene.objects`** (`ACEAudioEngine.discover_scene_frontends`). It skips ACE nodes nested in user groups, World and light shaders, collection instances from other scenes, and linked-library data.
-- **The source is fixed per node.** Each stream or utility node has its own `Proxy Object` socket that ACE fills in, so a group reused with different sources can't work. The Source node already puts `Proxy Geometry` into the bundle that flows downstream.
-- **Parameters are read only from unlinked sockets** (`ACEDummyTreeReader._parse_node`). A value wired to a modifier input or group input is ignored, so the same tree on two objects can't differ.
-- **ACE writes into user trees on every compile**: `ace_id` on nodes, Source node titles and proxy inputs (`nodes/source_nodes.py`), and helper Attribute nodes in shader trees. These writes trigger depsgraph updates that cause recompiles, they fail on linked data, and they make every added tree more expensive.
-- **Every change re-parses every frontend and rebuilds every task** (`compile_scene_frontends`, `compile`). `_dirty_frontend_uids` is cleared but never narrows the work, and stateful tasks need ad hoc export/import, such as the Stream Accumulator state.
-- **Identical computations aren't shared.** The same RMS of the same source in two trees runs as two tasks.
-- **Shader values are copied per object.** They're written as custom properties on every object that uses the material, in a Python loop, so N objects mean N writes of the same value.
-
-### Design
-
-The model has three layers:
-
-- **Definition**: a node tree or group, parsed once.
-- **Instance**: one place where a definition is used, given by a path from an owner through group nodes down to an ACE node.
-- **Signal**: one concrete DSP computation, identified by its content and computed once, however many instances need it.
-
-The pipeline:
-
-1. **Discovery from the depsgraph.** Go through `depsgraph.ids` (taking `.original`) and keep the node trees. That covers every tree actually evaluated, including nested groups, World, lights, instanced collections and linked data. Owners for the UI come from `bpy.data.user_map`. *To confirm on Blender 5.x: that node trees are listed in `depsgraph.ids`.*
-2. **Definitions.** Parse each tree or group into a cached definition that depends only on its contents. Group inputs stay symbolic parameters, and ACE-free nested groups are walked through. Only changed definitions are re-parsed.
-3. **Instances.** An instance is the path owner (modifier, material slot or World) → group node → … → ACE node. Instantiating binds the parameters along the path (modifier input values, group-node socket values, unlinked defaults) and the source that reaches the node through the bundle.
-4. **Signals, shared by content.** Each concrete node gets the key `hash(op, params, input keys)`, using blake2b as everywhere else. Equal keys anywhere in the scene give one task. A recompile becomes a set difference between old and new keys: create what's new, destroy what's gone, keep the rest with its state. That replaces the per-task state export, keeps analyzers warm, and avoids rebuilding the worker IR.
-5. **Sinks.**
-   - Output names stay stable per definition node, so editing a parameter never rewrites strings in a user tree. Several sink names may share one task, and the fan-out uses bulk writes.
-   - **Geometry Nodes:** stream and utility nodes read the proxy geometry from the incoming bundle. The per-node `Proxy Object` socket goes away, and a source that differs per instance then works with no extra machinery.
-   - **Shaders, values:** a prototype should test the helper Attribute node in **View Layer** mode, which reads view-layer or scene custom properties. That gives one write per value for any number of materials and objects. *Still to check: live refresh in Eevee and Cycles viewports, and how much tagging it needs.* The shader Source node gets its BPM and Beats per Bar outputs this way; today only the Geometry Nodes one has them.
-   - **Shaders, structure:** instead of helper nodes in the user's material, each shader ACE node could point to its own generated group that holds the fixed attribute name. That gets around the fact that a shared group's internals can't be specialized, without adding nodes to the user's tree. The cost is one datablock per node.
-6. **No writes into user trees.**
-   - Node identity comes from the instance path plus `node.name`, not a stored `ace_id`.
-   - The source is chosen on the Source node by the user (the proxy object, or a menu socket), not injected by ACE.
-   - Result: no depsgraph feedback loops, and append, linking, Shift+D and undo are safe.
-7. **Conflicts are reported, not silently specialized.** A definition node can produce different signals across instances: a group-input parameter that varies, or a shader group fed by different sources. In version 1 these conflicts are listed in the UI.
-
-### UI: Active ACE Instances
-
-The panel shows a tree: Definition → its uses (object, modifier or material, GN or shader) → the signals it produces → conflicts. Sources stay global. This also covers managing source nodes across several trees.
-
-### Later: true per-instance parameters
-
-This applies only to parameters, since the bundle already handles different sources in GN.
-
-- **GN:** the bundle could carry a signal-key string that each ACE node extends with its operation and parameters (Value to String, Join Strings, possibly Hash Value), so GN computes the attribute names itself.
-- **Shaders:** there are no string operations, so this would need generated copies of the groups.
-
-Build this only if version 1's conflict reports show a real need.
-
-### Order
-
-1. Stop writing into user trees, and add path-based identity.
-2. Depsgraph discovery and cached definitions, which gives incremental compile.
-3. Shared signals plus the task diff.
-4. Sinks: proxy from the bundle in GN, then the View Layer prototype for shaders.
-5. Active ACE Instances with conflicts.
-
-The latency items in [AI_Code_Review.md](AI_Code_Review.md) (stale-job budget, duplicated work on the main thread, process vs thread offload) come after this. They get simpler once tasks are shared and diffed.
-
-### Open questions
-
-- Are different **parameters** per object needed (the same tree on several objects with different bands), or only different sources and different trees? This decides whether version 1 can skip per-instance specialization.
-- Shaders: is a per-object value (OBJECT attributes) ever needed, or is one global value per signal (View Layer) enough?
-- Is linked-library support a goal? If so, step 1 is required, not optional.
-
-## 2. Time model: render, bake, live
+## 1. Time model: render, bake, live
 
 ### Why define time
 
@@ -88,7 +22,7 @@ The latency items in [AI_Code_Review.md](AI_Code_Review.md) (stale-job budget, d
 - whether a rendered frame matches what playback showed;
 - what happens when the timeline loops. A wrap looks like a rewind, so Stream Accumulators reset and the preview buffers are flushed, which is wrong during a live show.
 
-### 2.1 Signals are functions of time
+### 1.1 Signals are functions of time
 
 Every signal is `value(signal, t)`, with `t` a position in the source audio. The engine's only job is to answer that question for the current `t`. How it answers depends on the clock and the source.
 
@@ -96,12 +30,12 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 
 - **Timeline:** playback and scrubbing. `t` comes from the current frame.
 - **Render:** Blender's render job. `t` comes from the exact frame being rendered, and there's no hurry.
-- **Live:** ACE's own clock (2.4), independent of timeline playback.
+- **Live:** ACE's own clock (1.4), independent of timeline playback.
 
 **Ways to get a value:**
 
-- **Bake:** look up the stored curve (2.3).
-- **Random access:** for a file source, analyse the exact sample window at `t` (2.2).
+- **Bake:** look up the stored curve (1.3).
+- **Random access:** for a file source, analyse the exact sample window at `t` (1.2).
 - **Stream:** read the next block from a live input. Only possible "now".
 
 **Rule table:**
@@ -109,21 +43,21 @@ Every signal is `value(signal, t)`, with `t` a position in the source audio. The
 | Clock \ Source | File | Live input |
 | --- | --- | --- |
 | Timeline | Bake if valid, else random access | Stream: the value now, and scrubbing doesn't apply |
-| Render | Bake if valid, else random access. **Never stream** | A recorded take (2.5). If there is none, the render stops with a clear message |
+| Render | Bake if valid, else random access. **Never stream** | A recorded take (1.5). If there is none, the render stops with a clear message |
 | Live | Real-time playback of the file as a backing track | Stream |
 
 `core/clock.py` owns this table and is the only place that decides how a value is obtained. The render handlers stop calling the playback frame path and ask the clock layer for "value at this frame".
 
-**Stateful nodes** (Envelope, Running Total and Gate, section 3) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
+**Stateful nodes** (Envelope, Running Total and Gate, section 2) depend on everything before `t`. Under random access their state is rebuilt from checkpoints saved every N frames. In practice, stateful signals are baked before rendering, and the UI says so.
 
-### 2.2 Random access for file sources
+### 1.2 Random access for file sources
 
 - File sources gain `read_at(t, window)` next to `read_block`.
 - The block for frame f is the same one streaming would use: samples `[f·N, (f+1)·N)` with `N = sample_rate / fps`, plus the history the analyser needs (an FFT window longer than a block reads samples before it).
 - **Analyser state:** Loudness in LUFS and Peak modes runs K-weighting filters (LUFS also averages over its Window), and Transient compares each frame with the previous spectrum and a running average. Random access runs a pre-roll before `t`, long enough for that state to settle, so the result matches streaming within a tolerance set by the reference curves (ARCHITECTURE.md §10). Where the tolerance is too loose, use the checkpoints instead.
 - **Contract, checked by the tests:** random access = stream within tolerance, and bake = random access = render, value for value.
 
-### 2.3 Baking into Blender data
+### 1.3 Baking into Blender data
 
 **Today:** the bake is a cache kept in memory (ARCHITECTURE.md §12). It's lost when the file is reloaded, and rendering still needs ACE running in the frame handlers. That means:
 
@@ -134,7 +68,7 @@ A bake writes each signal's full curve over the frame range into ordinary Blende
 
 - **Geometry Nodes:** one baked mesh per source, with one point per frame and one attribute per signal. The ACE node's internals switch from sampling point 0 of the live proxy to sampling point `frame - frame_start` of the baked mesh (Scene Time → Sample Index). The node interface is unchanged.
 - **Shaders:** a float image, one row per signal and one column per frame, packed in the .blend. An ACE shader node samples it at the current frame (Scene Time → coordinate, Closest interpolation). The baked image needs to be checked against the image size limit for long ranges; past that, use several rows per signal.
-- **Signal identity:** each baked curve is keyed by its signal key (section 1) plus the hash of the source file. A curve whose key still matches is reused after edits elsewhere; a changed key marks the bake stale in the UI.
+- **Signal identity:** each baked curve is keyed by its signal key (ARCHITECTURE.md §1) plus the hash of the source file. A curve whose key still matches is reused after edits elsewhere; a changed key marks the bake stale in the UI.
 - **Live vs baked:** each source switches between the two. With the source in baked mode, the frame handler does nothing for it.
 
 Results:
@@ -143,9 +77,9 @@ Results:
 - scrubbing, viewport and render read exactly the same numbers;
 - the bake survives reloads.
 
-The bake uses the signal keys of section 1 and is filled by random access (2.2), so it doesn't depend on playing the stream through. `core/bake_store.py` owns it.
+The bake uses the signal keys and is filled by random access (1.2), so it doesn't depend on playing the stream through. `core/bake_store.py` owns it.
 
-### 2.4 Live clock
+### 1.4 Live clock
 
 Under the live clock, ACE drives time instead of following timeline playback.
 
@@ -174,7 +108,7 @@ Keyframed animation past its last key behaves as its F-curves say (hold, or cycl
 - The main window's 3D views drop to solid shading (or stop redrawing) to leave the GPU and main thread to the show. They're restored on exit.
 - The side panel shows fps, end-to-end latency, and late ticks.
 
-### 2.5 Takes: record live, render later
+### 1.5 Takes: record live, render later
 
 A **take** is a recorded live session:
 
@@ -191,16 +125,16 @@ A take is a file source, so the rule table applies: it can be scrubbed, baked an
 
 Recording writes WAV and the event log off the main thread. `core/takes.py` owns it.
 
-### 2.6 Order
+### 1.6 Order
 
 1. Clock layer, random access for file sources, and the render rule. Rendering becomes defined and exact.
-2. Bake into Blender data (2.3).
-3. Live clock (2.4), with the simulation-cache prototype first.
-4. Takes (2.5).
+2. Bake into Blender data (1.3).
+3. Live clock (1.4), with the simulation-cache prototype first.
+4. Takes (1.5).
 
-The live output window of section 4 needs the live clock.
+The live output window of section 3 needs the live clock.
 
-## 3. Core operator set
+## 2. Core operator set
 
 ### Why a core set
 
@@ -289,17 +223,17 @@ The **Min Interval** input prevents a new Hit sooner than this, so one kick give
 The Source node outputs only what musical time depends on: **BPM, Beats per Bar and Downbeat**. The Geometry Nodes one already outputs BPM and Beats per Bar. Downbeat is the time of the first downbeat in seconds from the source start; a file source starts at the scene's `frame_start`. Once these are known, every phase (beat, bar, phrase) is a function of time, so no node outputs a phase.
 
 - **Downbeat estimate:** the tempo detection already finds the first downbeat, as the accented beat of the bar, and keeps it unused. It becomes a source property the user can override, like BPM and meter, and an output of the Source node.
-- **Phases in Geometry Nodes** come from a **Beat Clock** preset (section 5). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
+- **Phases in Geometry Nodes** come from a **Beat Clock** preset (section 4). It turns Scene Time, BPM and Downbeat into the phase and index of the beat, the bar and the phrase (4, 8 or 16 bars).
 
 ### State and timeline
 
 - **Rule:** a stateful node gives the same value on a frame whether that frame is reached by playing or by jumping.
 - **File sources replay.**
-  - Envelope and Gate's Open forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (2.2) for the measurements upstream.
-  - Running Total and Gate's Count remember indefinitely. They need checkpoints saved every N frames, or the bake (2.3).
-- **Until section 2 exists**, state resets on a rewind or a jump, and the panel says so.
+  - Envelope and Gate's Open forget within a few time constants, so a short pre-roll before the target frame settles them. That needs random access (1.2) for the measurements upstream.
+  - Running Total and Gate's Count remember indefinitely. They need checkpoints saved every N frames, or the bake (1.3).
+- **Until section 1 exists**, state resets on a rewind or a jump, and the panel says so.
 - **Live sources** can't be replayed, so their state simply carries on.
-- **Recompiles:** the task diff of section 1 keeps this state. Today's per-task export and import covers only the accumulator.
+- **Recompiles:** a recompile keeps every task whose signal remains, with its state (ARCHITECTURE.md §3), so these nodes keep theirs too.
 
 ### Core set order
 
@@ -307,7 +241,7 @@ The Source node outputs only what musical time depends on: **BPM, Beats per Bar 
 2. Envelope and Running Total.
 3. The Downbeat estimate.
 4. Gate.
-5. Replay on jump, once random access (2.2) exists.
+5. Replay on jump, once random access (1.2) exists.
 
 Each new node gets reference curves (ARCHITECTURE.md §10), which also check that 24 and 48 fps give the same curve.
 
@@ -317,13 +251,13 @@ Each new node gets reference curves (ARCHITECTURE.md §10), which also check tha
 - Should Running Total and Gate outputs be baked like any other signal? This is the simplest and makes scrubbing exact.
 - Should Gate's Re-arm Level be a free level, or a fraction of Threshold?
 
-## 4. Live output window
+## 3. Live output window
 
 ### Why a live output window
 
 Live visuals go to a projector or to a mixing tool (OBS, Resolume, projection mapping). Making a clean output from Blender by hand takes about ten steps that have to be redone every session: new window, rendered shading, camera view, overlays off, every panel hidden, fullscreen. One button does it.
 
-The window is the output: the program that receives it captures the window. That adds no dependency to ACE, and ACE never copies frames from the GPU. The live clock (2.4) needs a 3D view that keeps redrawing anyway, and this window is that view.
+The window is the output: the program that receives it captures the window. That adds no dependency to ACE, and ACE never copies frames from the GPU. The live clock (1.4) needs a 3D view that keeps redrawing anyway, and this window is that view.
 
 ### The window
 
@@ -333,7 +267,7 @@ The window is the output: the program that receives it captures the window. That
   - overlays, gizmos, header, tool header, toolbar, sidebar and asset shelf are all hidden;
   - the area outside the camera frame is black (passepartout fully opaque), so a display with a different shape gets clean letterboxing.
 - **Fullscreen** on the monitor where the window opens.
-- **Going live:** opening the window starts the live clock (2.4).
+- **Going live:** opening the window starts the live clock (1.4).
 - **Leaving:** Esc ends live. A timer notices if the window was closed some other way, and cleans up either way: the live clock's `frame_end` and the main window's 3D view shading are restored.
 - **The readout** (fps, end-to-end latency, late ticks) is in the main window's side panel, never in the image.
 
@@ -353,17 +287,31 @@ The window is the output: the program that receives it captures the window. That
 
 - **Capture:** OBS captures the fullscreen Blender window reliably, with Window Capture (Windows Graphics Capture method) and with Display Capture.
 - **Clean frame:** no interface pixels anywhere, with the camera frame filling the window exactly.
-- **Cost:** rendered shading in this window, with the main window's 3D views dropped to solid (2.4).
+- **Cost:** rendered shading in this window, with the main window's 3D views dropped to solid (1.4).
 
 ### Code
 
 `ui/live_window.py` holds the operator, the workspace, and window setup and cleanup. The clock itself stays in `core/clock.py`.
 
-## 5. Presets as assets
+## 4. Presets as assets
 
 Ship ready-made setups as an asset library that a user drags in from the Asset Browser:
 
-- Geometry Nodes groups: bass pulse scale, spectrum bars, beat flash, stereo sway, Beat Clock (section 3).
+- Geometry Nodes groups: bass pulse scale, spectrum bars, beat flash, stereo sway, Beat Clock (section 2).
 - Materials: emission on level, hue on pitch.
 
-Each preset is an ordinary user tree built from ACE nodes, so presets also check section 1 (nesting, reuse across objects). The asset library ships inside the extension and is registered when the extension loads.
+Each preset is an ordinary user tree built from ACE nodes, so presets also exercise the instance model (ARCHITECTURE.md §1: nesting, reuse across objects). The asset library ships inside the extension and is registered when the extension loads.
+
+## 5. Per-instance parameters
+
+Uses of one ACE node share its sink names (ARCHITECTURE.md §1). Uses that compute different values, such as a group used twice with different band frequencies, or a Rolling Average behind two sources, are reported as conflicts in *Active ACE Instances*, and only one use reaches the sink. Different sources through the bundle already work in Geometry Nodes.
+
+- **Geometry Nodes:** the bundle could carry a signal-key string that each ACE node extends with its operation and parameters (Value to String, Join Strings, possibly Hash Value), so Geometry Nodes computes the attribute names itself.
+- **Shaders:** there are no string operations, so this would need generated copies of the groups.
+
+Build this only if the conflict reports show a real need.
+
+### Open questions
+
+- Are different **parameters** per object needed (the same tree on several objects with different bands), or are different sources and different trees enough?
+- Shaders: is a value per object (OBJECT attributes) ever needed, or is one global value per signal (View Layer, today) enough?
