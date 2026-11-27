@@ -43,6 +43,10 @@ class TestPreferencesPanelUI(unittest.TestCase):
 
         self.assertIs(resolved, expected_prefs)
 
+    def test_only_the_extended_logs_option(self):
+        annotations = self.prefs_ui.ACE_preferences.__annotations__
+        self.assertEqual(list(annotations), ["debug_logging"])
+
 
 if __name__ == "__main__":
     unittest.main()

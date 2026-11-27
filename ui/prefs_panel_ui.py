@@ -1,22 +1,10 @@
-"""prefs_panel_ui.py: the add-on preferences, the status of the bundled libraries and their switches."""
+"""prefs_panel_ui.py: the add-on preferences (the extended-logs option)."""
 
 import bpy # type: ignore
-from .. import deps, utils
+from .. import utils
 
 # The add-on's root package: "bl_ext.<repository>.audio_core_engine" as an extension.
 ADDON_PACKAGE = (__package__ or __name__).rsplit(".", 1)[0]
-
-_STATE_ICONS = {"ok": "CHECKMARK", "off": "CANCEL", "missing": "ERROR"}
-
-
-def _switch_property(key: str, name: str, description: str):
-    """A checkbox that reads and writes the deps settings file instead of the preferences datablock."""
-    return bpy.props.BoolProperty(
-        name=name,
-        description=description,
-        get=lambda _self: deps.setting(key),
-        set=lambda _self, value: deps.set_setting(key, value),
-    )
 
 
 class ACE_preferences(bpy.types.AddonPreferences):
@@ -33,38 +21,9 @@ class ACE_preferences(bpy.types.AddonPreferences):
         default=False,
         update=_update_debug_logging
     )
-    use_numba: _switch_property(  # type: ignore
-        "use_numba",
-        "Numba",
-        "Compile filters and envelopes with Numba. Turn off if it fails on this machine; applies after restarting Blender",
-    )
-    use_sounddevice: _switch_property(  # type: ignore
-        "use_sounddevice",
-        "Live Input and Preview Playback",
-        "Use SoundDevice for live audio input and the preview monitor; applies the next time a live source or the preview opens",
-    )
 
     def draw(self, context):
         layout = self.layout
-
-        layout.label(text="Libraries")
-        box = layout.box()
-        for row_info in deps.report():
-            row = box.row()
-            row.label(text=row_info["name"], icon=_STATE_ICONS.get(row_info["state"], "QUESTION"))
-            desc = row.row()
-            desc.enabled = False
-            desc.label(text=row_info["desc"])
-            status = row_info["version"] if row_info["state"] == "ok" else row_info["detail"]
-            row.label(text=status)
-
-        col = layout.column(heading="Use")
-        col.prop(self, "use_numba")
-        if deps.setting("use_numba") != deps.numba_enabled() and deps.available("numba"):
-            col.label(text="Restart Blender to apply the Numba change", icon="INFO")
-        col.prop(self, "use_sounddevice")
-
-        layout.separator(type='LINE')
         layout.label(text="By default, the add-on only prints errors to the console. Enable extended logs for debugging.")
         layout.prop(self, "debug_logging", text="Extend Logs")
 

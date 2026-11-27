@@ -404,7 +404,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
         if not ACEAudioEngine.preview_monitor_available():
             warn = box.row()
             warn.alert = True
-            warn.label(text="SoundDevice is off or failed to load: see the add-on preferences.", icon="ERROR")
+            warn.label(text="SoundDevice failed to load: the console shows why.", icon="ERROR")
         else:
             err_count = ACEAudioEngine.preview_monitor_consecutive_errors()
             if err_count >= 5:
