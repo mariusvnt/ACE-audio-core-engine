@@ -4,12 +4,11 @@ import bpy  # type: ignore
 import hashlib
 import json
 from ...vars import (
-    ACE_NODES, ROLE_MEASURE, ROLE_PREVIEW, ROLE_SOURCE, ROLE_SPLITTER, apply_socket_ranges, node_def as registry_node_def, node_role,
-    reads_values_object, value_outputs,
+    ACE_NODES, ROLE_MEASURE, ROLE_PREVIEW, ROLE_SOURCE, ROLE_SPLITTER, apply_socket_ranges, node_def as registry_node_def,
+    node_is_native, node_role, value_outputs,
 )
 from ... import utils
 from ..frontend import remember_group_inputs
-from ..identity import VALUE_NODE_KINDS
 
 
 class ACEDummyNodeFactory:
@@ -97,9 +96,9 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def _internals_outdated(ng, category: str, node_type: str) -> bool:
-        """True when a value-reading group was built by an older version of its internals."""
-        reads_values = node_role(category, node_type) == ROLE_MEASURE or reads_values_object(category, node_type)
-        return reads_values and ng.get("ace_internals") != INTERNALS_VERSION
+        """True when a group with real internals (a measure's readers, a controller's maths) was built by an older version."""
+        has_internals = node_role(category, node_type) == ROLE_MEASURE or node_is_native(category, node_type)
+        return has_internals and ng.get("ace_internals") != INTERNALS_VERSION
 
     @staticmethod
     def _node_group_needs_refresh(ng, category: str, node_type: str) -> bool:
@@ -125,16 +124,10 @@ class ACEDummyNodeFactory:
             return "Audio" not in inputs or not any(
                 n == "Audio" or n.startswith("Audio ") for n in outputs
             )
+        if node_is_native(category, node_type):
+            # Exactly the declared sockets: a controller computes from all of them.
+            return inputs != declared_inputs or outputs != declared_outputs
         attr_inputs = set(ACEDummyNodeFactory._attr_socket_names(category, node_type))
-        if reads_values_object(category, node_type):
-            # No Proxy Object input: the group reads ACE_Values (a group with one is out of date).
-            required_inputs = declared_inputs | attr_inputs
-            return (
-                not required_inputs.issubset(inputs)
-                or not declared_outputs.issubset(outputs)
-                or "Proxy Object" in inputs
-                or not _reads_values_object(ng)
-            )
         if role == ROLE_MEASURE:
             required_inputs = declared_inputs | attr_inputs
             # Inputs the definition no longer declares (e.g. a removed control)
@@ -178,6 +171,10 @@ class ACEDummyNodeFactory:
         for sock_type_str, sock_name in outputs:
             ng.interface.new_socket(sock_name, in_out='OUTPUT', socket_type=sock_type_str)
 
+        if node_is_native(category, node_type):
+            from .controllers import prepare_interface
+
+            prepare_interface(ng, node_def)
         with utils.logged_errors("factory.ACEDummyNodeFactory._build_group_content"):
             apply_socket_ranges(ng, category, node_type)
 
@@ -187,6 +184,12 @@ class ACEDummyNodeFactory:
     @staticmethod
     def _create_dummy_internals(ng, inputs_def, outputs_def, category, node_type):
         """Constructs the internal node graph logic using Bundle nodes."""
+        if node_is_native(category, node_type):
+            from .controllers import build_internals
+
+            build_internals(ng, registry_node_def(category, node_type), node_type)
+            ng["ace_internals"] = INTERNALS_VERSION
+            return
         input_node = ng.nodes.new('NodeGroupInput')
         output_node = ng.nodes.new('NodeGroupOutput')
         input_node.location = (-600, 0)
@@ -343,110 +346,6 @@ class ACEDummyNodeFactory:
         elif role == ROLE_PREVIEW:
             pass
 
-        # CASE E: CONTROLLERS fed a value, which read ACE_Values
-        elif reads_values_object(category, node_type):
-
-            if node_type == 'util_rolling_avg':
-                # Attribute ID input (string) — the auto-generated proxy attribute name.
-                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
-                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
-                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
-
-                attr_id_idx = len(inputs_def)  # 2: after Value (0) and Window (1)
-
-                # (Value + Number of Frames) * 0: both inputs are consumed and the index stays 0.
-                math_add = ng.nodes.new('ShaderNodeMath')
-                math_add.operation = 'ADD'
-                math_add.location = (-560, -160)
-
-                math_mul = ng.nodes.new('ShaderNodeMath')
-                math_mul.operation = 'MULTIPLY'
-                math_mul.inputs[1].default_value = 0.0
-                math_mul.location = (-380, -160)
-
-                ng.links.new(input_node.outputs[0], math_add.inputs[0])  # Value  → Add A
-                ng.links.new(input_node.outputs[1], math_add.inputs[1])  # Frames → Add B
-                ng.links.new(math_add.outputs[0], math_mul.inputs[0])    # sum → × 0
-
-                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
-                obj_info.transform_space = 'ORIGINAL'
-                obj_info.location = (-300, 0)
-                if 'As Instance' in obj_info.inputs:
-                    obj_info.inputs['As Instance'].default_value = False
-
-                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
-                named_attr.data_type = 'FLOAT'
-                named_attr.location = (-100, 150)
-
-                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
-                sample_idx.data_type = 'FLOAT'
-                sample_idx.domain = 'POINT'
-                sample_idx.clamp = True
-                sample_idx.location = (150, 0)
-
-                # A. ACE_Values → Object Info (Object)
-                obj_info.name = VALUES_READER_NODE
-                bind_values_object(ng)
-                # B. Object Info (Geometry) → Sample Index (Geometry)
-                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
-                # C. Group Input (Attribute ID) → Named Attribute (Name)
-                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
-                # D. Named Attribute → Sample Index (Value)
-                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                # E. The frame's point ((Value + Window) × 0 keeps both inputs in use)
-                frame_index = _frame_index_socket(ng, obj_info.outputs['Geometry'], math_mul.outputs[0], (-100, -360))
-                ng.links.new(frame_index, sample_idx.inputs['Index'])
-                # F. Sample Index (Value) → Group Output (Rolling Avg)
-                if len(outputs_def) > 0:
-                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
-
-            elif node_type == 'stream_accumulator':
-                # Attribute ID input (string) — the auto-generated proxy attribute name.
-                if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
-                    ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')
-                    ng.interface.items_tree["Attribute ID"].default_value = "ACE_undefined"
-
-                attr_id_idx = len(inputs_def)  # 1: after Value (0)
-
-                # Consume Value so the input is active, then force index 0 sampling.
-                math_mul = ng.nodes.new('ShaderNodeMath')
-                math_mul.operation = 'MULTIPLY'
-                math_mul.inputs[1].default_value = 0.0
-                math_mul.location = (-420, -160)
-                ng.links.new(input_node.outputs[0], math_mul.inputs[0])  # Value → × 0
-
-                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
-                obj_info.transform_space = 'ORIGINAL'
-                obj_info.location = (-300, 0)
-                if 'As Instance' in obj_info.inputs:
-                    obj_info.inputs['As Instance'].default_value = False
-
-                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
-                named_attr.data_type = 'FLOAT'
-                named_attr.location = (-100, 150)
-
-                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
-                sample_idx.data_type = 'FLOAT'
-                sample_idx.domain = 'POINT'
-                sample_idx.clamp = True
-                sample_idx.location = (150, 0)
-
-                # A. ACE_Values → Object Info (Object)
-                obj_info.name = VALUES_READER_NODE
-                bind_values_object(ng)
-                # B. Object Info (Geometry) → Sample Index (Geometry)
-                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
-                # C. Group Input (Attribute ID) → Named Attribute (Name)
-                ng.links.new(input_node.outputs[attr_id_idx], named_attr.inputs['Name'])
-                # D. Named Attribute → Sample Index (Value)
-                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                # E. The frame's point (Value × 0 keeps the input in use)
-                frame_index = _frame_index_socket(ng, obj_info.outputs['Geometry'], math_mul.outputs[0], (-100, -360))
-                ng.links.new(frame_index, sample_idx.inputs['Index'])
-                # F. Sample Index (Value) → Group Output (Accumulated)
-                if len(outputs_def) > 0:
-                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[0])
-
         # FALLBACK (unknown node type)
         else:
             for i, _ in enumerate(inputs_def):
@@ -458,9 +357,10 @@ class ACEDummyNodeFactory:
         ng["ace_internals"] = INTERNALS_VERSION
 
 
-# Version of what the value-reading groups hold inside; a group built by another one is rebuilt
-# (internals only). 2: they sample the frame's point of a baked proxy (FUTURE.md 1.3).
-INTERNALS_VERSION = 2
+# Version of what the groups with real internals hold inside; a group built by another one is
+# rebuilt (internals only). 2: measures sample the frame's point of a baked proxy. 3: the
+# controllers' Simulation Zones.
+INTERNALS_VERSION = 3
 
 
 def _frame_index_socket(ng, geometry_socket, driver_socket, location):
@@ -501,50 +401,6 @@ def _frame_index_socket(ng, geometry_socket, driver_socket, location):
     ng.links.new(offset.outputs[0], plus_driver.inputs[0])
     ng.links.new(driver_socket, plus_driver.inputs[1])
     return plus_driver.outputs[0]
-
-
-VALUES_READER_NODE = "ACE Values"
-
-
-def _values_reader(ng):
-    node = ng.nodes.get(VALUES_READER_NODE)
-    return node if str(getattr(node, "bl_idname", "") or "") == "GeometryNodeObjectInfo" else None
-
-
-def _reads_values_object(ng) -> bool:
-    return _values_reader(ng) is not None
-
-
-def bind_values_object(ng, values_obj=None) -> bool:
-    """Point a value node's group at ACE_Values (created when missing); True when it changed.
-
-    The group is ACE's own; the user's trees only hold nodes using it.
-    """
-    reader = _values_reader(ng)
-    if reader is None:
-        return False
-    if values_obj is None:
-        from ...core.proxy.manager import ACEProxyManager
-
-        try:
-            values_obj = ACEProxyManager.ensure_values_object()
-        except AttributeError:
-            return False  # restricted data access (registration): bound at the first compile
-    sock = reader.inputs.get("Object")
-    if sock is None or sock.default_value == values_obj:
-        return False
-    sock.default_value = values_obj
-    return True
-
-
-def bind_all_values_objects(values_obj) -> int:
-    """Point every value node group at *values_obj*; how many changed."""
-    changed = 0
-    for category, node_type in sorted(VALUE_NODE_KINDS):
-        ng = bpy.data.node_groups.get(ACEDummyNodeFactory.get_group_name(category, node_type))
-        if ng is not None and bind_values_object(ng, values_obj):
-            changed += 1
-    return changed
 
 
 def register():

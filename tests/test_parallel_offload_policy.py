@@ -26,8 +26,8 @@ class TestParallelOffloadPolicy(unittest.TestCase):
         params = {} if mode is None else {"mode": mode}
         return types.SimpleNamespace(category=str(category), type=str(node_type), parameters=params)
 
-    def test_stream_accumulator_is_not_parallel_offload_candidate(self):
-        node = self._node("controllers", "stream_accumulator")
+    def test_a_controller_is_not_parallel_offload_candidate(self):
+        node = self._node("controllers", "envelope")
         allowed = self.ae.ParallelOffload.is_offload_candidate(node)
         self.assertFalse(allowed)
 

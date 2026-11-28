@@ -15,7 +15,7 @@ links are marked again after every compile and every tree update.
 from dataclasses import dataclass
 
 from .. import utils
-from ..vars import ROLE_CONTROLLER, ROLE_SPLITTER, node_role
+from ..vars import ROLE_SPLITTER, node_role
 from .identity import is_ace_group, node_kind, tree_key
 
 
@@ -101,10 +101,6 @@ def judge_input(node, category: str, node_type: str, index: int, sock, data_type
         if unsupported is None:
             return "ok", None
         return ignored(f"{name} comes through {unsupported}, which ACE can't compute: its own value, {_number(sock.default_value)}, is used.")
-    if role == ROLE_CONTROLLER and index == 0:
-        if origin is not None and (node_kind(origin)[0] or _passes_audio(origin)):
-            return "ok", None
-        return ignored(f"{name} comes through {_label(origin)}: ACE reads {name} straight from an ACE output.")
     # A control of a measurement (a Window): a group input binds it per use, a constant sets it.
     if origin is not None and str(getattr(origin, "type", "") or "") == "GROUP_INPUT":
         return "ok", None

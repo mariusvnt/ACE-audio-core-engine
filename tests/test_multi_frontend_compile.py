@@ -499,9 +499,8 @@ class TestMultiFrontendCompile(unittest.TestCase):
             "gn_attr": {"node_id": "node_gn", "socket_idx": 0, "type": "FLOAT", "attr_id": "ACE_rms_aaaaaa"},
             "shader_attr": {"node_id": "node_shader", "socket_idx": 0, "type": "FLOAT", "attr_id": "ACE_rms_bbbbbb"},
             "unnamed": {"node_id": "node_gn", "socket_idx": 1, "type": "FLOAT", "attr_id": ""},
-            "value_attr": {"node_id": "node_acc", "socket_idx": 0, "type": "FLOAT", "attr_id": "ACE_acc_cccccc"},
         }
-        graph = types.SimpleNamespace(output_attr_keys=["gn_attr", "shader_attr", "unnamed", "value_attr"])
+        graph = types.SimpleNamespace(output_attr_keys=["gn_attr", "shader_attr", "unnamed"])
         tree = self.abs_mod.ACEAbstractTree(
             nodes={
                 "node_gn": self.abs_mod.ACEAbstractNode(
@@ -511,10 +510,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 "node_shader": self.abs_mod.ACEAbstractNode(
                     id="node_shader", name="Shader RMS", category="audio", type="loudness",
                     frontend_uid="frontend_shader", frontend_kind="SHADER_NODES",
-                ),
-                "node_acc": self.abs_mod.ACEAbstractNode(
-                    id="node_acc", name="Accumulator", category="controllers", type="stream_accumulator",
-                    frontend_uid="frontend_gn", frontend_kind="GEOMETRY_NODES",
                 ),
             },
         )
@@ -530,10 +525,6 @@ class TestMultiFrontendCompile(unittest.TestCase):
         self.assertEqual((shader.sink_kind, shader.target_object_name, shader.target_data_name),
                          ("SCENE_PROPERTY", "Scene", "ACE_rms_bbbbbb"))
         self.assertEqual(bindings["unnamed"], [])
-        # Fed a value, not audio: no source proxy, the one ACE_Values mesh.
-        (value,) = bindings["value_attr"]
-        self.assertEqual((value.sink_kind, value.target_object_name, value.target_data_name),
-                         ("PROXY_ATTRIBUTE", "ACE_Values", "ACE_acc_cccccc"))
 
     def test_depsgraph_handler_marks_updated_trees_and_never_object_updates(self):
         engine = _EngineStub(

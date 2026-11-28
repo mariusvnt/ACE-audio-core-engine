@@ -228,51 +228,6 @@ class TestAudioTasksRegistry(unittest.TestCase):
         task.source_context = None
         self.assertEqual((task._extract_result(1), task._extract_result(2)), (120.0, 4))
 
-    def test_rolling_average_covers_a_time_window(self):
-        task = atr.RollingAvgTask("rolling_node", {"in_1": 0.3}, block_size=128)  # 3 frames at 10 fps
-        task.scene_fps = 10.0
-
-        def at(frame, value, window=None):
-            task._current_frame_request = frame
-            inputs = {0: value} if window is None else {0: value, 1: window}
-            return float(task.process(inputs))
-
-        self.assertAlmostEqual(at(1, 1.0), 1.0)
-        self.assertAlmostEqual(at(2, 2.0), 1.5)
-        self.assertAlmostEqual(at(3, 3.0), 2.0)
-        self.assertAlmostEqual(at(4, 9.0), (2.0 + 3.0 + 9.0) / 3.0)
-        self.assertAlmostEqual(at(4, 12.0), (2.0 + 3.0 + 12.0) / 3.0)  # the same frame again
-        self.assertAlmostEqual(at(6, 6.0), (12.0 + 6.0) / 2.0)  # a skipped frame: time still counts
-        self.assertAlmostEqual(at(7, 5.0, window=0.05), 5.0)  # shorter than a frame: this one only
-        self.assertAlmostEqual(at(2, 4.0), 4.0)  # rewound
-
-    def test_stream_accumulator_persists_and_resets_on_timeline_rewind(self):
-        task = atr.StreamAccumulatorTask("accum_node", {}, block_size=128)
-        task.scene_frame_start = 1
-
-        task._current_frame_request = 1
-        self.assertAlmostEqual(float(task.process({0: 1.25})), 1.25, places=6)
-        task._current_frame_request = 2
-        self.assertAlmostEqual(float(task.process({0: 2.75})), 4.0, places=6)
-        task._current_frame_request = 3
-        self.assertAlmostEqual(float(task.process({0: -1.0})), 3.0, places=6)
-
-        # Rewind to frame 1: accumulator should reset before adding the new value.
-        task._current_frame_request = 1
-        self.assertAlmostEqual(float(task.process({0: 5.0})), 5.0, places=6)
-
-    def test_stream_accumulator_supports_vector_inputs(self):
-        task = atr.StreamAccumulatorTask("accum_vec_node", {}, block_size=64)
-        task.scene_frame_start = 1
-
-        task._current_frame_request = 1
-        out_a = task.process({0: (1.0, 2.0, 3.0)})
-        self.assertTrue(np.allclose(np.asarray(out_a, dtype=np.float32), np.array([1.0, 2.0, 3.0], dtype=np.float32)))
-
-        task._current_frame_request = 2
-        out_b = task.process({0: np.array([0.5, -1.0, 2.0], dtype=np.float32)})
-        self.assertTrue(np.allclose(np.asarray(out_b, dtype=np.float32), np.array([1.5, 1.0, 5.0], dtype=np.float32)))
-
     def test_band_rms_of_a_tone_inside_the_band_equals_its_rms(self):
         sr, n = 48000, 2000
         t = np.arange(3 * n, dtype=np.float64) / sr

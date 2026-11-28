@@ -758,10 +758,10 @@ def _check_compile_writes_nothing(addon_key, scene, engine):
         source = _add_ace_node(addon_key, tree, "input", "src", "Source")
         split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
         loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
-        acc = _add_ace_node(addon_key, tree, "controllers", "stream_accumulator", "Accumulator")
+        envelope = _add_ace_node(addon_key, tree, "controllers", "envelope", "Envelope")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         tree.links.new(split.outputs[1], loud.inputs["Audio"])
-        tree.links.new(loud.outputs[0], acc.inputs["Value"])
+        tree.links.new(loud.outputs[0], envelope.inputs["Value"])
         shader_tree = material.node_tree
         s_source = _add_ace_node(addon_key, shader_tree, "input", "src", "Source")
         s_loud = _add_ace_node(addon_key, shader_tree, "audio", "loudness", "Loudness")
@@ -902,6 +902,80 @@ def _check_stereo_writes_two_sinks(addon_key, scene, engine, src):
         bpy.data.materials.remove(material)
 
 
+def _check_envelope_matches_reference(addon_key, scene, engine):
+    """The Envelope group computes what tests/controller_reference.py does, at 24 and 48 fps.
+
+    Two Envelopes in one tree keep their own state (one Follow, one Spring). A field linked to
+    one is an invalid link, flagged by Blender itself. The engine compiles nothing for them.
+    """
+    import controller_reference as ref
+    render = scene.render
+    saved = (render.fps, render.fps_base, scene.frame_start, scene.frame_end, scene.frame_current)
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Envelope")
+    try:
+        out = next(n for n in tree.nodes if n.bl_idname == "NodeGroupOutput")
+        point = tree.nodes.new("GeometryNodeMeshLine")
+        point.inputs["Count"].default_value = 1
+        time = tree.nodes.new("GeometryNodeInputSceneTime")
+        after = tree.nodes.new("FunctionNodeCompare")
+        after.data_type, after.operation = "FLOAT", "GREATER_THAN"
+        after.inputs[1].default_value = 0.5  # the step: on the 24 and 48 fps grids
+        tree.links.new(time.outputs["Seconds"], after.inputs[0])
+        settings = {
+            "Follow": {"attack": 0.05, "hold": 0.2, "release": 0.3},
+            "Spring": {"speed": 3.0, "bounce": 0.5},
+        }
+        geometry = point.outputs[0]
+        for mode, values in settings.items():
+            node = _add_ace_node(addon_key, tree, "controllers", "envelope", mode)
+            node.inputs["Mode"].default_value = mode
+            for name, value in values.items():
+                node.inputs[name.capitalize()].default_value = value
+            tree.links.new(after.outputs[0], node.inputs["Value"])
+            store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+            store.data_type, store.domain = "FLOAT", "POINT"
+            store.inputs["Name"].default_value = f"env_{mode}"
+            tree.links.new(geometry, store.inputs["Geometry"])
+            tree.links.new(node.outputs["Envelope"], store.inputs["Value"])
+            geometry = store.outputs[0]
+        for link in [lk for lk in tree.links if lk.to_node == out]:
+            tree.links.remove(link)
+        tree.links.new(geometry, out.inputs[0])
+        field = tree.nodes.new("GeometryNodeInputPosition")
+        split = tree.nodes.new("ShaderNodeSeparateXYZ")
+        loose = _add_ace_node(addon_key, tree, "controllers", "envelope", "Loose")
+        tree.links.new(field.outputs[0], split.inputs[0])
+        field_link = tree.links.new(split.outputs[0], loose.inputs["Value"])
+
+        for fps in (24, 48):
+            render.fps, render.fps_base = fps, 1.0
+            scene.frame_start, scene.frame_end = 1, 3 * fps
+            obj.use_simulation_cache = False  # played in order from frame 1: no cache from the other fps
+            seen = {mode: [] for mode in settings}
+            for frame in range(1, 3 * fps + 1):
+                scene.frame_set(frame)
+                evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+                for mode in settings:
+                    seen[mode].append(float(evaluated.data.attributes[f"env_{mode}"].data[0].value))
+            times = [frame / fps for frame in range(1, 3 * fps + 1)]
+            inputs = [1.0 if t > 0.5 else 0.0 for t in times]
+            for mode, values in settings.items():
+                expected = ref.run_envelope(inputs, times, mode=mode, **values)
+                worst = max(abs(a - b) for a, b in zip(seen[mode], expected))
+                _assert(worst < 1e-4, f"Envelope {mode} at {fps} fps is {worst:.2e} off its reference")
+            scene.frame_set(1)
+        _assert(not field_link.is_valid, "A field into an Envelope is not flagged invalid")
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(not any(n.type == "envelope" for n in engine.abstract_tree_ref.nodes.values()),
+                "The engine compiled an Envelope")
+        print("[ACE smoke] Envelope matches its reference at 24 and 48 fps, Follow and Spring")
+    finally:
+        render.fps, render.fps_base, scene.frame_start, scene.frame_end, frame = saved
+        scene.frame_set(frame)
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
 def _check_linked_tree_compiles(addon_key, scene, engine):
     """A tree linked from another file is read; its names are claimed first and never written."""
     import tempfile
@@ -1015,8 +1089,6 @@ def _check_instances_through_groups(addon_key, scene, engine):
         source_group.links.new(gi2.outputs["Proxy"], inner_source.inputs["Proxy Object"])
         inner_loud = _add_ace_node(addon_key, source_group, "audio", "loudness", "Inner Loudness", mode="rms")
         source_group.links.new(inner_source.outputs["Audio"], inner_loud.inputs["Audio"])
-        inner_acc = _add_ace_node(addon_key, source_group, "controllers", "stream_accumulator", "Inner Accumulator")
-        source_group.links.new(inner_loud.outputs[0], inner_acc.inputs["Value"])
         proxy_mod = importlib.import_module(f"{addon_key}.core.proxy.manager").ACEProxyManager
         for src in (first, second):
             use = tree.nodes.new("GeometryNodeGroup")
@@ -1031,11 +1103,6 @@ def _check_instances_through_groups(addon_key, scene, engine):
         window_sink = blender_helpers.sink_names(addon_key, loud)[0]
         clash = [c for c in engine.sink_conflicts if c["sink_name"] == window_sink]
         _assert(len(clash) == 1 and len(clash[0]["dropped"]) == 1, f"The sink conflict is not listed: {engine.sink_conflicts}")
-        # A value node reached from two sources writes one name on ACE_Values: listed too.
-        acc_sink = blender_helpers.sink_names(addon_key, inner_acc)[0]
-        clash = [c for c in engine.sink_conflicts if c["sink_name"] == acc_sink]
-        _assert(len(clash) == 1 and clash[0]["target"] == "ACE_Values",
-                f"The value node conflict is not listed: {engine.sink_conflicts}")
         roots = sorted(sorted(n.root_sources) for n in _abstract_nodes(engine, "loudness", "Inner Loudness"))
         _assert(roots == sorted([[first.stable_id], [second.stable_id]]), f"Each use did not read its source: {roots}")
         for src in (first, second):
@@ -1141,8 +1208,8 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
             tree.links.new(source.outputs["Audio"], rms.inputs["Audio"])
             sources.append(source)
             uses.append(rms)
-        acc = _add_ace_node(addon_key, tree_a, "controllers", "stream_accumulator", "Accumulator")
-        tree_a.links.new(uses[0].outputs[0], acc.inputs["Value"])
+        lufs = _add_ace_node(addon_key, tree_a, "audio", "loudness", "LUFS", mode="lufs")
+        tree_a.links.new(sources[0].outputs["Audio"], lufs.inputs["Audio"])
         # A proxy made by an earlier version carries no source id: the first compile still reads it.
         del bpy.data.objects[src.proxy_object_name]["ace_source_id"]
 
@@ -1151,7 +1218,7 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         _assert(len(signals) == 1 and "" not in signals, f"The two RMS nodes are not one signal: {signals}")
         rms_signal = signals.pop()
         graph = engine.graphs[src.stable_id]
-        loudness_tasks = [t for t in graph.tasks if t.startswith("S_audio_loudness_")]
+        loudness_tasks = [t for t in graph.tasks if t.startswith("S_audio_loudness_") and t != _signal(engine, lufs)]
         _assert(loudness_tasks == [rms_signal], f"Loudness tasks: {loudness_tasks}")
         _assert(len([t for t in graph.tasks if t.startswith("S_input_src_")]) == 1, "The source is read twice")
         names = [blender_helpers.sink_names(addon_key, rms)[0] for rms in uses]
@@ -1166,21 +1233,10 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         for frame in (6, 7, 8):
             scene.frame_set(frame)
         graph = engine.graphs[src.stable_id]
-        acc_signal, rms_signal = _signal(engine, acc), _signal(engine, uses[0])
+        acc_signal, rms_signal = _signal(engine, lufs), _signal(engine, uses[0])
         acc_task, rms_task = graph.tasks[acc_signal], graph.tasks[rms_signal]
-        total = float(acc_task._accumulator.sum())
-        _assert(total > 0.0, f"The accumulator did not run: {total}")
-        # A value node has no source to carry a proxy: its values go to ACE_Values, which its group reads.
-        _assert("Proxy Object" not in acc.inputs, "The accumulator still has a Proxy Object socket")
-        values_obj = bpy.data.objects.get("ACE_Values")
-        reader = acc.node_tree.nodes.get("ACE Values")
-        _assert(values_obj is not None and reader is not None and reader.inputs["Object"].default_value == values_obj,
-                "The accumulator's group does not read ACE_Values")
-        acc_name = blender_helpers.sink_names(addon_key, acc)[0]
-        acc_attr = values_obj.data.attributes.get(acc_name)
-        _assert(acc_attr is not None and abs(float(acc_attr.data[0].value) - total) < 1e-3 * max(1.0, total),
-                f"ACE_Values does not hold the accumulated value: {acc_attr and acc_attr.data[0].value} vs {total}")
-        _assert(acc_name not in graph.get_proxy_object().data.attributes, "The accumulator wrote the source's proxy")
+        total = float(acc_task._weighted_energy.sum())
+        _assert(total > 0.0, f"The LUFS window did not fill: {total}")
         digest = engine.parallel.ir_digests.get(graph.parallel_graph_uid)
         signature = graph.signal_signature
 
@@ -1190,9 +1246,9 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         graph = engine.graphs[src.stable_id]
         _assert(graph.tasks.get(acc_signal) is acc_task and graph.tasks.get(rms_signal) is rms_task,
                 f"A sink rename replaced the tasks: signals {(acc_signal, rms_signal)} -> "
-                f"{(_signal(engine, acc), _signal(engine, uses[0]))}, block sizes "
+                f"{(_signal(engine, lufs), _signal(engine, uses[0]))}, block sizes "
                 f"{(acc_task.block_size, rms_task.block_size)} -> {graph.block_size}")
-        _assert(float(acc_task._accumulator.sum()) == total, "The accumulator lost its sum")
+        _assert(float(acc_task._weighted_energy.sum()) == total, "The LUFS task lost its window")
         _assert(engine.parallel.ir_digests.get(graph.parallel_graph_uid) == digest and graph.signal_signature == signature,
                 f"A sink rename changed the worker graph or the bake key: "
                 f"{digest} -> {engine.parallel.ir_digests.get(graph.parallel_graph_uid)}, "
@@ -1209,7 +1265,7 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         _assert(graph.tasks.get(acc_signal) is acc_task and graph.tasks.get(rms_signal) is rms_task,
                 "A new node elsewhere replaced the tasks")
         _assert(_signal(engine, peak) in graph.tasks and graph.signal_signature != signature, "The new node is not compiled")
-        _assert(float(acc_task._accumulator.sum()) == total, "The accumulator lost its sum")
+        _assert(float(acc_task._weighted_energy.sum()) == total, "The LUFS task lost its window")
     finally:
         settings.ace_parallel_mode = parallel_mode
         for obj, tree in ((obj_a, tree_a), (obj_b, tree_b)):
@@ -1388,7 +1444,7 @@ def _check_status_and_inputs(addon_key, scene):
 
 
 def _check_titles_units_and_info(addon_key, scene):
-    """The buffer field's unit, the Info panel and the Rolling Average window."""
+    """The buffer field's unit, the Info panel and the Envelope's times."""
     panels = importlib.import_module(f"{addon_key}.ui.panel.panels")
     ace = scene.audiocore
     count, first_index = len(ace.audio_sources), ace.active_audio_source_index
@@ -1415,11 +1471,11 @@ def _check_titles_units_and_info(addon_key, scene):
         span = f"Frame Span: {scene.frame_start} - {scene.frame_start + frames - 1} ({frames} frames)"
         _assert("Duration: 2 min 5 s" in labels and span in labels, f"Info: {labels}")
 
-        # A new Rolling Average takes its window as a time.
-        node = _add_ace_node(addon_key, tree, "controllers", "util_rolling_avg", "Rolling")
-        item = next(i for i in node.node_tree.interface.items_tree if i.name == "Window")
-        _assert(abs(node.inputs["Window"].default_value - 0.25) < 1e-6 and item.subtype == "TIME_ABSOLUTE",
-                f"New Rolling Average window: {node.inputs['Window'].default_value}")
+        # A new Envelope takes its times as times.
+        node = _add_ace_node(addon_key, tree, "controllers", "envelope", "Envelope")
+        items = {i.name: i for i in node.node_tree.interface.items_tree if getattr(i, "in_out", "") == "INPUT"}
+        _assert(abs(node.inputs["Attack"].default_value - 0.01) < 1e-6 and items["Attack"].subtype == "TIME_ABSOLUTE"
+                and items["Release"].subtype == "TIME_ABSOLUTE", f"New Envelope attack: {node.inputs['Attack'].default_value}")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.node_groups.remove(tree)
@@ -2397,6 +2453,7 @@ def main():
     _check_take_recording(addon_key, engine, scene)
     _check_shader_values_reach_scene(addon_key, scene, engine, src)
     _check_stereo_writes_two_sinks(addon_key, scene, engine, src)
+    _check_envelope_matches_reference(addon_key, scene, engine)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)

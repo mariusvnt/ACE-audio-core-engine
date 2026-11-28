@@ -20,8 +20,6 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
     def __init__(self, abstract_tree: ACEAbstractTree | None = None):
         self.abstract_tree = abstract_tree
         self.output_defs: Dict[str, Dict[str, Any]] = {}
-        # The mesh value nodes write (ensure_values_object), set by the compile when one is used.
-        self.values_object_name: str = ""
         self._attr_cache: Dict[str, Dict[str, Any]] = {}
         self._last_values: Dict[str, Dict[str, Any]] = {}
         self._last_object_prop_values: Dict[str, Dict[str, Any]] = {}
@@ -116,26 +114,6 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
 
         return obj
 
-    @classmethod
-    def ensure_values_object(cls, scene=None) -> bpy.types.Object:
-        """The one-vertex mesh holding the values of nodes fed a value, not audio (Rolling Average,
-        Stream Accumulator): they carry no source, so every source writes them here."""
-        from ...nodes.identity import VALUES_OBJECT_NAME
-
-        utils.assert_main_thread("ensure_values_object")
-        obj = bpy.data.objects.get(VALUES_OBJECT_NAME)
-        if obj is not None and obj.type == 'MESH' and obj.library is None:
-            cls._move_to_internal_collection(obj, scene=scene)
-            return obj
-        mesh = bpy.data.meshes.new(f"{VALUES_OBJECT_NAME}_Mesh")
-        mesh.from_pydata([(0, 0, 0)], [], [])
-        obj = bpy.data.objects.new(VALUES_OBJECT_NAME, mesh)
-        cls._ensure_internal_collection(scene=scene).objects.link(obj)
-        obj.lock_location = (True, True, True)
-        obj.lock_rotation = (True, True, True)
-        obj.lock_scale = (True, True, True)
-        return obj
-
     @staticmethod
     def _mark_proxy(obj, stable_id: str) -> None:
         """The proxy carries its source's id: a Source node reading this proxy reads that source."""
@@ -197,8 +175,6 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
                 sink_kind = str(getattr(binding, "sink_kind", "") or "")
                 target_obj_name = str(getattr(binding, "target_object_name", "") or "")
                 name = str(getattr(binding, "target_data_name", "") or "")[:63]
-                if target_obj_name and target_obj_name == self.values_object_name:
-                    continue  # every source writes there: laid out once per compile (layout_values_object)
                 if sink_kind == "PROXY_ATTRIBUTE" and target_obj_name and name:
                     required_by_object.setdefault(target_obj_name, {})[name] = str(binding.attr_type or "FLOAT")
                 elif sink_kind == "SCENE_PROPERTY" and target_obj_name:
@@ -214,22 +190,6 @@ class ACEProxyManager(AttributeSinks, ScenePropertySinks):
         for scene_name, bindings in scene_bindings.items():
             self.ensure_scene_property_sinks(scene_name, bindings)
         return geometry_proxy_names
-
-    def layout_values_object(self, graphs) -> None:
-        """The attributes of ACE_Values: what every graph's value nodes write, nothing else."""
-        utils.assert_main_thread("layout_values_object")
-        obj = bpy.data.objects.get(self.values_object_name) if self.values_object_name else None
-        if obj is None:
-            return
-        required: Dict[str, str] = {}
-        for graph in graphs:
-            for bindings in (getattr(graph, "sink_bindings_by_attr", {}) or {}).values():
-                for binding in bindings or []:
-                    if binding.sink_kind == "PROXY_ATTRIBUTE" and binding.target_object_name == obj.name:
-                        name = str(binding.target_data_name or "")[:63]
-                        if name:
-                            required[name] = str(binding.attr_type or "FLOAT")
-        self.ensure_attributes_exist(obj, required, prune_existing=True)
 
     def commit_results(self, graph, results: Dict[str, Any], active_keys: Set[str] | None = None):
         """Fan out compiled graph results into concrete sink targets."""

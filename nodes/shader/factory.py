@@ -416,6 +416,8 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
             return
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category.get("nodes", {}).items():
+                if node_def.get("native"):
+                    continue  # a controller is a Geometry Nodes group (FUTURE.md: controllers in shaders)
                 group_name = cls.get_group_name(cat_key, type_key)
                 ng = bpy.data.node_groups.get(group_name)
                 if ng is not None and getattr(ng, "bl_idname", "") != "ShaderNodeTree":

@@ -10,7 +10,7 @@ curve.
 
 **The layout.** After every compile and every bake, the curves go where the frontends read:
 
-- Geometry Nodes: the proxy mesh (and ACE_Values) gets one point per frame, the baked
+- Geometry Nodes: the proxy mesh gets one point per frame, the baked
   attributes hold their curve, and ``ACE_FRAME0`` the frame of point 0. The node groups sample
   point ``floor(frame) - ACE_frame0``, clamped; outputs not baked are written live to every
   point, so they read the same at any index.
@@ -249,7 +249,7 @@ def _padded(series: np.ndarray, offset: int, n: int) -> np.ndarray:
 
 
 def _layout_mesh(obj, entries) -> bool:
-    """Write the baked curves of one proxy (or ACE_Values); True when its point count changed."""
+    """Write the baked curves of one proxy; True when its point count changed."""
     mesh = getattr(obj, "data", None)
     if mesh is None or not hasattr(mesh, "attributes"):
         return False
@@ -373,8 +373,6 @@ def apply_layout(engine, store: BakeStore) -> None:
                 elif binding.sink_kind == "SCENE_PROPERTY":
                     per_scene.setdefault(target, []).append((name, series, view.frame_start))
                     scene_signature.setdefault(target, []).append((name, view.src_uid, view.version, key))
-    if writer is not None and getattr(writer, "values_object_name", ""):
-        objects.add(str(writer.values_object_name))
     objects |= set(per_object)
     for obj_name in sorted(objects):
         obj = bpy.data.objects.get(obj_name)

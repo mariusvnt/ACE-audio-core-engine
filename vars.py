@@ -26,9 +26,10 @@ class NodeType(TypedDict):
     inputs: list[tuple[str, str]]
     outputs: list[tuple[str, str]]
     # Optional keys: "modes", "default_mode", "mode_inputs" ({input name: the mode that uses
-    # it}), "native" (True: the node computes in Blender and has no task), and "stateful" (True,
-    # or the list of modes that are): a stateful node's value depends on the frames before, so
-    # it runs on the main thread and settles after a seek.
+    # it}), "native" (True: the node computes in Blender and has no task), "menus" ({menu input
+    # name: its items, the first one the default}), and "stateful" (True, or the list of modes
+    # that are): a stateful node's value depends on the frames before, so it runs on the main
+    # thread and settles after a seek.
 
 class Category(TypedDict):
     """category container"""
@@ -171,23 +172,27 @@ ACE_NODES: dict[str, Category] = {
             "description": "Nodes that take a value and turn it into motion or events."
         },
         "nodes": {
-            "util_rolling_avg": {
-            "label": "Rolling Average",
+            "envelope": {
+            "label": "Envelope",
             "icon": "",
-            "description": "Smooths a scalar attribute stream over a time window.",
+            "description": (
+                "Its input, smoothed, with times in seconds. Follow: rises with Attack, stays at its "
+                "peak for Hold, falls with Release. Spring: follows like a weight on a spring, Speed "
+                "setting how fast and Bounce how much it overshoots."
+            ),
             "role": ROLE_CONTROLLER,
-            "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Window')],
-            "outputs": [('NodeSocketFloat', 'Rolling Avg')],
-            "stateful": True,
-            },
-            "stream_accumulator": {
-            "label": "Stream Accumulator",
-            "icon": "",
-            "description": "Maintains a running sum of the input stream values.",
-            "role": ROLE_CONTROLLER,
-            "inputs": [('NodeSocketFloat', 'Value')],
-            "outputs": [('NodeSocketFloat', 'Accumulated')],
-            "stateful": True,
+            "native": True,
+            "inputs": [
+                ('NodeSocketFloat', 'Value'),
+                ('NodeSocketMenu', 'Mode'),
+                ('NodeSocketFloat', 'Attack'),
+                ('NodeSocketFloat', 'Hold'),
+                ('NodeSocketFloat', 'Release'),
+                ('NodeSocketFloat', 'Speed'),
+                ('NodeSocketFloat', 'Bounce'),
+            ],
+            "outputs": [('NodeSocketFloat', 'Envelope')],
+            "menus": {"Mode": ["Follow", "Spring"]},
             },
         },
     },
@@ -233,11 +238,6 @@ def kind_of_role(role: str) -> tuple[str, str]:
 def writes_values(category: str, node_type: str) -> bool:
     """True for a node whose values ACE computes and writes for Blender to read."""
     return node_role(category, node_type) in (ROLE_MEASURE, ROLE_CONTROLLER) and not node_is_native(category, node_type)
-
-
-def reads_values_object(category: str, node_type: str) -> bool:
-    """True for a node fed a value, not audio: no bundle carries a proxy to it, so its group reads ACE_Values."""
-    return node_role(category, node_type) == ROLE_CONTROLLER and not node_is_native(category, node_type)
 
 
 def value_outputs(category: str, node_type: str) -> list[tuple[int, str]]:
@@ -309,14 +309,21 @@ SOCKET_RANGES: dict[tuple[str, str], dict[str, tuple[float, float, float]]] = {
     ("audio", "loudness"): {
         "Window (s)": (0.4, 0.05, 3.0),
     },
-    ("controllers", "util_rolling_avg"): {
-        "Window": (0.25, 0.001, 60.0),
+    ("controllers", "envelope"): {
+        "Attack": (0.01, 0.0, 10.0),
+        "Hold": (0.0, 0.0, 10.0),
+        "Release": (0.3, 0.0, 30.0),
+        "Speed": (2.0, 0.01, 50.0),
+        "Bounce": (0.3, 0.0, 1.0),
     },
 }
 
 # Sockets whose field shows a unit: a time in seconds reads "250 ms".
 SOCKET_SUBTYPES: dict[tuple[str, str], dict[str, str]] = {
-    ("controllers", "util_rolling_avg"): {"Window": "TIME_ABSOLUTE"},
+    ("controllers", "envelope"): {
+        "Attack": "TIME_ABSOLUTE", "Hold": "TIME_ABSOLUTE", "Release": "TIME_ABSOLUTE",
+        "Speed": "FREQUENCY", "Bounce": "FACTOR",
+    },
 }
 
 

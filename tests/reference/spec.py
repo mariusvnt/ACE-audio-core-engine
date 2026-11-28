@@ -40,13 +40,12 @@ TOLERANCES: Dict[str, Dict[str, float]] = {
     "audio.frequency_splitter.out00.brightness": {"abs": 1e-4, "rel": 1e-4},
     "audio.frequency_splitter.out01.brightness": {"abs": 1e-4, "rel": 1e-4},
     SOURCE_CASE: {"abs": 1e-3, "rel": 1e-4},                 # BPM
-    "controllers.stream_accumulator": {"abs": 1e-4, "rel": 1e-4},  # a running sum
 }
 
 
-# Cases that can't settle after a seek: a running sum remembers every frame before. They are
-# exact only when baked, so the seek gate leaves them out (FUTURE.md 1.2).
-NOT_SETTLEABLE = ("controllers.stream_accumulator",)
+# Cases that can't settle after a seek: they remember every frame before, so they are exact
+# only when baked, and the seek gate leaves them out. None now: controllers compute in Blender.
+NOT_SETTLEABLE: Tuple[str, ...] = ()
 
 
 def tolerance(case_id: str) -> Dict[str, float]:
@@ -132,13 +131,6 @@ def cases() -> List[dict]:
                     "chain": [_step(split_category, split_type), _step(measure_category[node_type], node_type, mode, from_output=idx)],
                 })
 
-    feeds = {"util_rolling_avg": ("loudness", "rms"), "stream_accumulator": ("transient", None)}
-    for category, node_type, _d in _kinds(nodes, "controller"):
-        feed_type, feed_mode = feeds.get(node_type, ("loudness", "rms"))
-        out.append({
-            "id": f"{category}.{node_type}",
-            "chain": [_step(measure_category[feed_type], feed_type, feed_mode), _step(category, node_type)],
-        })
     out.append({"id": SOURCE_CASE, "chain": []})
     return out
 
@@ -150,8 +142,8 @@ def uncovered_node_types() -> List[Tuple[str, str]]:
     missing = []
     for category, cat in nodes.items():
         for node_type, node_def in cat["nodes"].items():
-            if (category, node_type) in EXCLUDED:
-                continue
+            if (category, node_type) in EXCLUDED or node_def.get("native"):
+                continue  # a native node computes in Blender: tests/controller_reference.py
             modes = [m[0] for m in node_def.get("modes") or []] or [None]
             for mode in modes:
                 if not any(h[0] == category and h[1] == node_type and (mode is None or h[2] == mode) for h in have):

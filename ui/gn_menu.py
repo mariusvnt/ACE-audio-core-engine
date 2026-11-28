@@ -1,5 +1,5 @@
 import bpy # type: ignore
-from ..vars import ACE_NODES, MENU_SEPARATOR_AFTER, SOURCE_KIND, SPLITTER_KIND, node_modes
+from ..vars import ACE_NODES, MENU_SEPARATOR_AFTER, SOURCE_KIND, SPLITTER_KIND, node_is_native, node_modes
 from ..nodes.modes import apply_node_mode
 from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
@@ -10,9 +10,18 @@ from ..nodes.dynamic_audio_operators import ACESplitterManager
 from ..nodes.source_nodes import set_node_source
 from .. import utils
 
+def _node_available(category: str, node_type: str, tree_type: str) -> bool:
+    """Native nodes (the controllers) are Geometry Nodes groups: shader trees have no Simulation Zone."""
+    return tree_type == "GeometryNodeTree" or not node_is_native(category, node_type)
+
+
+# A category is offered where at least one of its nodes is: an empty submenu is hidden.
 _ALLOWED_CATEGORIES_BY_TREE_TYPE = {
-    "GeometryNodeTree": tuple(ACE_NODES),
-    "ShaderNodeTree": tuple(ACE_NODES),
+    tree_type: tuple(
+        category for category, cat_def in ACE_NODES.items()
+        if any(_node_available(category, node_type, tree_type) for node_type in cat_def["nodes"])
+    )
+    for tree_type in ("GeometryNodeTree", "ShaderNodeTree")
 }
 
 
@@ -240,6 +249,8 @@ class ACE_MT_add_node_menu_base(bpy.types.Menu):
         
         for type_key in sorted_keys:
             node_def = nodes_dict[type_key]
+            if not _node_available(category_key, type_key, _menu_tree_type(context)):
+                continue
             
             op = layout.operator("ace.add_node_group", text=node_def['label'], icon=node_def['icon'] or 'NONE')
             op.category_key = category_key

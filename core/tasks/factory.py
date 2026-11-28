@@ -7,7 +7,7 @@ need them, and they bring the input stack with them.
 
 from typing import Any, Dict, Optional
 
-from ...vars import ROLE_CONTROLLER, ROLE_MEASURE, ROLE_PREVIEW, ROLE_SOURCE, ROLE_SPLITTER, node_is_native, node_role
+from ...vars import ROLE_MEASURE, ROLE_PREVIEW, ROLE_SOURCE, ROLE_SPLITTER, node_is_native, node_role
 from .base import ACEAudioTask
 
 
@@ -16,7 +16,7 @@ def create_task(node_id: str, category: str, node_type: str, params: Optional[Di
     params = params if params is not None else {}
     role = node_role(category, node_type)
     if node_is_native(category, node_type):
-        return ACEAudioTask(node_id, params, block_size)
+        return ACEAudioTask(node_id, params, block_size)  # it computes in Blender: never compiled
     if role == ROLE_MEASURE:
         from .stream import create_stream_task
 
@@ -27,12 +27,6 @@ def create_task(node_id: str, category: str, node_type: str, params: Optional[Di
         from .delta import FrequencySplitterTask
 
         return FrequencySplitterTask(node_id, params, block_size)
-    elif role == ROLE_CONTROLLER:
-        from .utility import CONTROLLER_TASKS
-
-        task_cls = CONTROLLER_TASKS.get(str(node_type or ""))
-        if task_cls is not None:
-            return task_cls(node_id, params, block_size)
     elif role == ROLE_SOURCE:
         from .source import SourceTask
 

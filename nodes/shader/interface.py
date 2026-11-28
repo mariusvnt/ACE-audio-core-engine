@@ -1,6 +1,6 @@
 """Shader group interface: sockets ACE nodes expose and the checks that trigger a rebuild."""
 
-from ...vars import ROLE_MEASURE, SOURCE_KIND, node_def as registry_node_def, node_role, reads_values_object, writes_values
+from ...vars import ROLE_MEASURE, SOURCE_KIND, node_def as registry_node_def, node_role, writes_values
 from ... import utils
 from ..geometry.factory import ACEDummyNodeFactory
 
@@ -74,8 +74,6 @@ class ShaderGroupInterface:
             return tuple(specs)
         if (category, node_type) == SOURCE_KIND:
             return (("NodeSocketString", "Proxy Object", ""),)
-        if reads_values_object(category, node_type):
-            return (("NodeSocketString", "Attribute ID", "ACE_undefined"),)
         return ()
 
     @classmethod

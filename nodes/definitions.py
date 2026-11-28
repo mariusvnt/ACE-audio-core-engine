@@ -20,7 +20,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..vars import ACE_NODES, SOURCE_KIND, SPLITTER_KIND, resolve_node_mode
+from ..vars import ACE_NODES, SOURCE_KIND, SPLITTER_KIND, node_is_native, resolve_node_mode
 from .. import utils
 from .identity import is_ace_group, node_kind, sink_names, tree_key
 
@@ -160,6 +160,18 @@ def definition(tree) -> Definition:
     return parsed
 
 
+def engine_kind(node) -> tuple[str, str]:
+    """(category, type) of an ACE node the engine computes, ("", "") for any other node.
+
+    A native node (a controller) computes in Blender: to the engine it is like any other node,
+    which a flow goes through.
+    """
+    category, node_type = node_kind(node)
+    if category and node_is_native(category, node_type):
+        return "", ""
+    return category, node_type
+
+
 def is_user_group_node(node) -> bool:
     if str(getattr(node, "type", "") or "") != "GROUP":
         return False
@@ -178,7 +190,7 @@ def tree_uses_ace(tree, _seen=None) -> bool:
     seen[key] = False
     found = False
     for node in getattr(tree, "nodes", []) or []:
-        if node_kind(node)[0]:
+        if engine_kind(node)[0]:
             found = True
             break
         if is_user_group_node(node) and tree_uses_ace(node.node_tree, seen):
@@ -264,7 +276,7 @@ def _targets(start_socket) -> list:
                 continue
             seen.add(marker)
             node_type = str(getattr(node, "type", "") or "")
-            if node_kind(node)[0]:
+            if engine_kind(node)[0]:
                 found.append(("ace", node.name, _input_index(node, to_socket)))
             elif node_type == "GROUP_OUTPUT":
                 found.append(("go", str(to_socket.identifier), _input_index(node, to_socket), str(to_socket.name)))
@@ -341,7 +353,7 @@ def _parse_ace(node, category: str, node_type: str, order: int) -> AceEntry:
 def _parse(tree, key: str, signature: str) -> Definition:
     parsed = Definition(key=key, signature=signature)
     for order, node in enumerate(getattr(tree, "nodes", []) or []):
-        category, node_type = node_kind(node)
+        category, node_type = engine_kind(node)
         node_type_name = str(getattr(node, "type", "") or "")
         if category:
             with utils.logged_errors("definitions._parse#ace"):

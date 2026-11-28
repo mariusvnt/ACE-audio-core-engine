@@ -34,7 +34,7 @@ MODULE_NAMES = [
     "core.tasks.delta",
     "core.tasks.stream",
     "core.tasks.preview",
-    "core.tasks.utility",
+    "core.tasks.factory",
     "core.tasks.graph",
     "core.worker",
     "core.worker.graph",

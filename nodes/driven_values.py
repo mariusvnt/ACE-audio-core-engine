@@ -10,6 +10,7 @@ import math
 import bpy  # type: ignore
 from .. import utils
 from .identity import instance_node_id, is_ace_node, node_id, node_kind
+from ..vars import node_is_native
 
 _MAX_DEPTH = 64
 
@@ -169,6 +170,8 @@ def _socket(sockets, identifier: str):
 
 
 def _output_value(node, output, walk: _Walk, depth: int) -> float:
+    if is_ace_node(node) and node_is_native(*node_kind(node)):
+        raise _Unsupported(_node_label(node))  # a controller: Blender computes it, ACE can't
     if is_ace_node(node):
         if walk.mode == "constant":
             raise _Varies(f"{_node_label(node)}, which changes every frame")

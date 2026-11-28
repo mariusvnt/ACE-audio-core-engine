@@ -233,7 +233,7 @@ def _parsed_node_has_operator_settings(parsed) -> bool:
         return len(_source_choices()) > 1
     if node_modes(*key):
         return True
-    return key in {SPLITTER_KIND, PREVIEW_KIND} or key[1] == "util_rolling_avg"
+    return key in {SPLITTER_KIND, PREVIEW_KIND}
 
 
 def _selected_node_has_operator_settings(context) -> bool:
@@ -438,19 +438,6 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                     text=f"Preview DSP error \u00d7{err_count} — check console for details.",
                     icon="ERROR",
                 )
-
-    if parsed.get("type") == "util_rolling_avg":
-        drew_settings = True
-        box = layout.box()
-        box.label(text="Rolling Average", icon="DRIVER")
-        frames_sock = next(
-            (sock for sock in getattr(node, "inputs", []) if getattr(sock, "name", "") == "Window"),
-            None,
-        )
-        if frames_sock is not None:
-            property_column(box).prop(frames_sock, "default_value", text="Window")
-        else:
-            box.label(text="Window input is unavailable.", icon="INFO")
 
     return drew_settings
 

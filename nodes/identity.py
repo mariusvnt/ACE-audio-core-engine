@@ -14,17 +14,13 @@
 
 import hashlib
 
-from ..vars import ACE_NODES, ROLE_CONTROLLER, kinds_with_role, reads_values_object, value_outputs, writes_values
+from ..vars import ACE_NODES, value_outputs, writes_values
 from .. import utils
 
 PREFIX = "ACE_"
 KIND_KEY = "ace_kind"
 SINK_NAMES_KEY = "ace_sink_names"
 SOURCE_ID_KEY = "ace_source_id"
-# Nodes fed a value, not audio: they have no bundle to carry a source's proxy, so their
-# values go to one mesh for the whole file, which their groups read.
-VALUE_NODE_KINDS = frozenset(kind for kind in kinds_with_role(ROLE_CONTROLLER) if reads_values_object(*kind))
-VALUES_OBJECT_NAME = "ACE_Values"
 # What a new stream group's Attribute ID sockets hold until the add menu names them.
 PLACEHOLDER_NAMES = frozenset({"ACE_undefined"} | {f"ACE_undefined_{i}" for i in range(2, 9)})
 
