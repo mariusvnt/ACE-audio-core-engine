@@ -56,10 +56,17 @@ ACE_NODES: dict[str, Category] = {
             "src": {
             "label": "Source",
             "icon": "",
-            "description": "Reference to an audio source, with its tempo.",
+            "description": (
+                "Reference to an audio source, with its tempo: BPM, Beats per Bar, and the first "
+                "Downbeat in scene seconds (Scene Time's clock), so a beat's phase is "
+                "(Seconds - Downbeat) x BPM / 60."
+            ),
             "role": ROLE_SOURCE,
             "inputs": [],
-            "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'BPM'), ('NodeSocketInt', 'Beats per Bar')],
+            "outputs": [
+                ('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'BPM'), ('NodeSocketInt', 'Beats per Bar'),
+                ('NodeSocketFloat', 'Downbeat'),
+            ],
             },
         },
     },

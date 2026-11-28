@@ -34,6 +34,17 @@ def _clear_file_open_locks():
         idle = [k for k, v in _FILE_OPEN_LOCKS.items() if not v.locked()]
         for k in idle:
             _FILE_OPEN_LOCKS.pop(k, None)
+def downbeat_scene_seconds(source, frame_start: float, fps: float) -> float:
+    """A source's first downbeat on the clock of Scene Time's Seconds (frame / fps); 0 for a live input.
+
+    A file source starts at the scene's first frame, so its downbeat comes frame_start / fps
+    plus its time in the file.
+    """
+    if source is None or str(getattr(source, "source_type", "") or "").upper() != "FILE":
+        return 0.0
+    return float(frame_start) / max(float(fps), 1e-6) + float(getattr(source, "downbeat", 0.0) or 0.0)
+
+
 class SourceTask(SourceClock, ACEAudioTask):
     """Audio source bridge task — supplies raw audio chunks to downstream nodes."""
     def __init__(self, node_id, params, block_size):
@@ -151,12 +162,14 @@ class SourceTask(SourceClock, ACEAudioTask):
         return self.silence_buffer
 
     def _extract_result(self, socket_idx):
-        """Output 0 is the audio; 1 and 2 are the source's BPM and Beats per Bar (ACE_NODES order)."""
-        if socket_idx in (1, 2):
+        """Output 0 is the audio; 1, 2 and 3 the source's BPM, Beats per Bar and Downbeat (ACE_NODES order)."""
+        if socket_idx in (1, 2, 3):
             ctx = self.source_context
             if socket_idx == 1:
                 return float(getattr(ctx, "bpm", 120.0) or 120.0) if ctx else 120.0
-            return int(getattr(ctx, "beats_per_bar", 4) or 4) if ctx else 4
+            if socket_idx == 2:
+                return int(getattr(ctx, "beats_per_bar", 4) or 4) if ctx else 4
+            return downbeat_scene_seconds(ctx, self.scene_frame_start, self.scene_fps)
         return super()._extract_result(socket_idx)
 
     def _flush_pending_ctx_writes(self) -> None:

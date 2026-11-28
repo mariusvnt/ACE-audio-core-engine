@@ -99,11 +99,11 @@ def read_node_outputs(engine) -> dict:
 
 
 def read_source_tempo(source_node) -> dict:
-    """The Source node's BPM and Beats per Bar: the attributes its group reads from the proxy."""
+    """The Source node's BPM, Beats per Bar and Downbeat: the attributes its group reads from the proxy."""
     proxy = source_node.inputs["Proxy Object"].default_value
     attrs = getattr(getattr(proxy, "data", None), "attributes", None)
     out = {}
-    for name, attr_name in (("BPM", "ACE_bpm"), ("Beats per Bar", "ACE_beats_per_bar")):
+    for name, attr_name in (("BPM", "ACE_bpm"), ("Beats per Bar", "ACE_beats_per_bar"), ("Downbeat", "ACE_downbeat")):
         attr = attrs.get(attr_name) if attrs is not None else None
         if attr is not None and len(attr.data):
             out[name] = float(attr.data[0].value)
@@ -157,13 +157,14 @@ def _clear_spectrum_cache(addon_key) -> None:
 
 def reset_tempo(source) -> None:
     """Back to a new source's tempo: a file with no beat keeps whatever the last one set."""
-    for key in ("ace_bpm_user_override", "ace_meter_user_override", "ace_tempo_detect_status",
+    for key in ("ace_bpm_user_override", "ace_meter_user_override", "ace_downbeat_user_override", "ace_tempo_detect_status",
                 "ace_tempo_detect_message", "ace_tempo_detect_filepath", "ace_tempo_detect_mtime",
                 "ace_tempo_detect_auto"):
         if key in source:
             del source[key]
     source.property_unset("bpm")
     source.property_unset("beats_per_bar")
+    source.property_unset("downbeat")
 
 
 def settle(addon_key, engine, scene, timeout_s=60.0):

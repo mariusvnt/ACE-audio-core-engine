@@ -530,6 +530,7 @@ class ACE_PT_sub_tempo_meter(_ACESourceSubPanel, bpy.types.Panel):
         row = layout.row(align=True)
         row.prop(src, "bpm", text="BPM")
         row.prop(src, "beats_per_bar", text="Beats/Bar")
+        layout.prop(src, "downbeat", text="First Downbeat")
 
 
 class ACE_PT_information_streams(bpy.types.Panel):

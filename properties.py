@@ -19,6 +19,11 @@ def _mark_user_meter(self, context):  # noqa: ARG001
         self["ace_meter_user_override"] = True
 
 
+def _mark_user_downbeat(self, context):  # noqa: ARG001
+    with utils.logged_errors("properties._mark_user_downbeat"):
+        self["ace_downbeat_user_override"] = True
+
+
 def compose_live_flow_identifier(source_prop) -> str:
     """Compatibility wrapper around the shared live-route token builder."""
     return _compose_live_flow_identifier(source_prop)
@@ -380,6 +385,15 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         description="Beats in one measure for beat position reporting.",
         default=4, min=1, max=32,
         update=_mark_user_meter
+    )
+    downbeat: bpy.props.FloatProperty(                                                                                              # type: ignore
+        name="Downbeat",
+        description=(
+            "When the first downbeat (the first beat of a bar) comes, from the start of the file. "
+            "The Source node outputs it in scene seconds, the clock of Scene Time"
+        ),
+        default=0.0, min=0.0, soft_max=10.0, unit='TIME_ABSOLUTE', precision=3,
+        update=_mark_user_downbeat
     )
     live_status: bpy.props.StringProperty(                                                                                          # type: ignore
         name="Live Status",

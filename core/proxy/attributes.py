@@ -9,7 +9,7 @@ from ... import utils
 
 
 # A source's tempo, on its proxy mesh for the GN Source node's BPM and Beats per Bar outputs.
-SOURCE_TEMPO_ATTRS = {"ACE_bpm": "FLOAT", "ACE_beats_per_bar": "INT"}
+SOURCE_TEMPO_ATTRS = {"ACE_bpm": "FLOAT", "ACE_beats_per_bar": "INT", "ACE_downbeat": "FLOAT"}
 
 # The scene frame of point 0 of a baked proxy mesh (one point per frame). The node groups sample
 # point floor(frame) - ACE_frame0, clamped: a live proxy has one point, so they read it whatever
@@ -17,15 +17,15 @@ SOURCE_TEMPO_ATTRS = {"ACE_bpm": "FLOAT", "ACE_beats_per_bar": "INT"}
 FRAME0_ATTR = "ACE_frame0"
 
 
-def write_source_tempo(proxy, bpm: float, beats_per_bar: int) -> bool:
-    """Write a source's tempo on its proxy mesh; True when a value changed."""
+def write_source_tempo(proxy, bpm: float, beats_per_bar: int, downbeat: float = 0.0) -> bool:
+    """Write a source's tempo (and its downbeat, in scene seconds) on its proxy mesh; True when a value changed."""
     utils.assert_main_thread("write_source_tempo")
     mesh = getattr(proxy, "data", None)
     attributes = getattr(mesh, "attributes", None)
     if attributes is None or not len(getattr(mesh, "vertices", ())):
         return False
     changed = False
-    for name, value in (("ACE_bpm", float(bpm)), ("ACE_beats_per_bar", int(beats_per_bar))):
+    for name, value in (("ACE_bpm", float(bpm)), ("ACE_beats_per_bar", int(beats_per_bar)), ("ACE_downbeat", float(downbeat))):
         attr = attributes.get(name)
         if attr is not None and (attr.data_type != SOURCE_TEMPO_ATTRS[name] or attr.domain != "POINT"):
             attributes.remove(attr)

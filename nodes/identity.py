@@ -197,10 +197,10 @@ def new_sink_name(output_name: str, taken) -> str:
             return name
 
 
-def source_tempo_props(source_id: str) -> tuple[str, str]:
-    """The scene properties that hold a source's BPM and Beats per Bar for shaders."""
+def source_tempo_props(source_id: str) -> tuple[str, str, str]:
+    """The scene properties that hold a source's BPM, Beats per Bar and Downbeat for shaders."""
     token = str(source_id or "").rsplit("_", 1)[-1] or "src"
-    return f"{PREFIX}bpm_{token}", f"{PREFIX}bpb_{token}"
+    return f"{PREFIX}bpm_{token}", f"{PREFIX}bpb_{token}", f"{PREFIX}db_{token}"
 
 
 def parsed_node(node) -> dict | None:

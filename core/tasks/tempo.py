@@ -17,8 +17,16 @@ _ENVELOPE_HOP_S = 0.01
 _ENVELOPE_WINDOW_HOPS = 4
 # Magnitudes are compressed so quiet onsets (hats) count next to loud ones (kicks).
 _ENVELOPE_COMPRESSION = 1000.0
-# How much of a file is analysed.
+# How much of a file the tempo and meter are estimated on, and how much the beat grid is then
+# fitted over: a phase computed from a fixed BPM drifts, by half a beat after 4 minutes at 120
+# BPM for an error of 0.1 %, which is what 15 seconds of audio gives.
 _ANALYSIS_MAX_SECONDS = 15.0
+_GRID_FIT_MAX_SECONDS = 600.0
+# A beat's onset is looked for within this share of a beat around where the grid puts it, and
+# the fit is kept only when its beats lie within this share of a beat of the line, on average.
+_GRID_REACH = 1.0 / 6.0
+_GRID_MAX_RESIDUAL = 1.0 / 8.0
+_GRID_MIN_BEATS = 8
 _TEMPO_RANGE_BPM = (40.0, 240.0)
 # Half and double tempo fit the audio about as well as the tempo itself; this preference, a
 # bell over tempo in octaves, decides between them.
@@ -146,18 +154,81 @@ def _meter(envelope: np.ndarray, period: float) -> Tuple[int, Optional[float]]:
     return int(best_bar), downbeat
 
 
-def _tempo_of_envelope(envelope: np.ndarray, step_s: float) -> Optional[Dict[str, Any]]:
-    """BPM, beats per bar and first downbeat (seconds) of an onset envelope, or None without a beat."""
+def _onset_peaks(env: np.ndarray, period: float, origin: float, last: float):
+    """(beat number, position in steps, strength) of the onset nearest each beat of the grid up to *last*."""
+    reach = max(int(round(period * _GRID_REACH)), 1)
+    first = -int(np.floor(origin / period))
+    peaks = []
+    for k in range(first, int(np.floor((last - origin) / period)) + 1):
+        centre = int(round(origin + k * period))
+        lo, hi = max(centre - reach, 1), min(centre + reach, env.size - 2)
+        if hi <= lo:
+            continue
+        i = lo + int(np.argmax(env[lo:hi + 1]))
+        before, at, after = env[i - 1], env[i], env[i + 1]
+        curve = before - 2.0 * at + after
+        offset = 0.5 * (before - after) / curve if curve < 0.0 else 0.0
+        peaks.append((k, i + float(np.clip(offset, -0.5, 0.5)), float(at)))
+    return peaks
+
+
+def _fit_grid(envelope: np.ndarray, period: float, downbeat: float) -> Optional[Tuple[float, float]]:
+    """(period, downbeat) in steps, refined by a weighted least-squares line through the onsets of the whole envelope.
+
+    The grid is extended in spans that double, each fitted before the next, so the onsets it
+    looks for never drift out of reach. None when the onsets don't line up: the estimate stays.
+    """
     env = np.asarray(envelope, dtype=np.float64).reshape(-1)
-    if env.size < 4:
+    if period <= 1.0 or env.size < 4:
         return None
-    period = _beat_period(env, step_s)
+    span = 16.0 * period
+    while True:
+        last = min(downbeat + span, env.size - 2.0)
+        peaks = _onset_peaks(env, period, downbeat, last)
+        strengths = np.array([s for _k, _p, s in peaks])
+        if strengths.size < _GRID_MIN_BEATS:
+            return None
+        keep = strengths >= float(np.median(strengths))
+        k = np.array([b for b, _p, _s in peaks], dtype=np.float64)[keep]
+        pos = np.array([p for _b, p, _s in peaks], dtype=np.float64)[keep]
+        w = strengths[keep]
+        if k.size < _GRID_MIN_BEATS or np.ptp(k) <= 0:
+            return None
+        a = np.vstack([np.ones_like(k), k]).T * np.sqrt(w)[:, None]
+        (origin, fitted), *_ = np.linalg.lstsq(a, pos * np.sqrt(w), rcond=None)
+        residual = float(np.sqrt(np.sum(w * (pos - origin - fitted * k) ** 2) / np.sum(w)))
+        if not np.isfinite(fitted) or fitted <= 1.0 or residual > _GRID_MAX_RESIDUAL * fitted:
+            return None
+        period, downbeat = float(fitted), float(origin)
+        if last >= env.size - 2.0:
+            return period, downbeat
+        span *= 2.0
+
+
+def _tempo_of_envelope(envelope: np.ndarray, step_s: float, estimate_steps: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """BPM, beats per bar and first downbeat (seconds) of an onset envelope, or None without a beat.
+
+    The tempo and meter are estimated on the first *estimate_steps* values (all of them when
+    None); when a downbeat is found, the beat grid is then fitted over the whole envelope.
+    """
+    env = np.asarray(envelope, dtype=np.float64).reshape(-1)
+    head = env if estimate_steps is None else env[:int(estimate_steps)]
+    if head.size < 4:
+        return None
+    period = _beat_period(head, step_s)
     if period is None:
         return None
     seconds_per_beat = period * step_s
     if seconds_per_beat <= 1e-6 or not np.isfinite(60.0 / seconds_per_beat):
         return None
-    beats_per_bar, downbeat = _meter(env, period)
+    beats_per_bar, downbeat = _meter(head, period)
+    if downbeat is not None:
+        fitted = _fit_grid(env, period, downbeat)
+        if fitted is not None:
+            period, downbeat = fitted
+            seconds_per_beat = period * step_s
+            bar = beats_per_bar * period
+            downbeat -= bar * np.floor((downbeat + 1.0) / bar)  # the first downbeat of the file
     return {
         "bpm": float(np.clip(60.0 / seconds_per_beat, *_TEMPO_RANGE_BPM)),
         "beats_per_bar": int(beats_per_bar),
@@ -180,7 +251,9 @@ def estimate_file_tempo(filepath: str, stop: Optional[threading.Event] = None) -
         hop = max(int(round(sr * _ENVELOPE_HOP_S)), 1)
         window = np.hanning(hop * _ENVELOPE_WINDOW_HOPS).astype(np.float32)
         scale = _ENVELOPE_COMPRESSION / max(float(np.sum(window)) / 2.0, 1.0)  # 1000 for a full-scale tone
-        max_samples = int(max(float(sr), 1.0) * _ANALYSIS_MAX_SECONDS)
+        max_samples = int(max(float(sr), 1.0) * _GRID_FIT_MAX_SECONDS)
+        estimate_samples = int(max(float(sr), 1.0) * _ANALYSIS_MAX_SECONDS)
+        estimate_steps = None
 
         flux: list[float] = []
         recent = np.zeros(window.size, dtype=np.float32)
@@ -193,13 +266,18 @@ def estimate_file_tempo(filepath: str, stop: Optional[threading.Event] = None) -
             mono = np.asarray(payload[0], dtype=np.float32).reshape(-1)
             if mono.size <= 0:
                 break
+            if total_samples < estimate_samples <= total_samples + int(mono.size):
+                estimate_steps = len(flux)  # what the first 15 s gave: the estimate is made on these
             total_samples += int(mono.size)
             recent = np.concatenate((recent[mono.size:], mono))
             mag = np.log1p(scale * np.abs(np.fft.rfft(recent * window)))
             if prev_mag is not None:
                 flux.append(float(np.sum(np.maximum(mag - prev_mag, 0.0), dtype=np.float64)))
             prev_mag = mag
-        return _tempo_of_envelope(np.asarray(flux), hop / float(sr))
+        if estimate_steps is not None and estimate_steps < len(flux):
+            # The block that reached 15 s gave its own value, which the estimate saw too.
+            estimate_steps += 1
+        return _tempo_of_envelope(np.asarray(flux), hop / float(sr), estimate_steps)
     finally:
         with utils.logged_errors("tempo.estimate_file_tempo"):
             rec.close()

@@ -850,11 +850,15 @@ def _check_shader_values_reach_scene(addon_key, scene, engine, src):
         evaluated = bpy.context.evaluated_depsgraph_get().scene_eval.get(name)
         _assert(evaluated is not None and abs(float(evaluated) - float(scene[name])) < 1e-6,
                 f"The evaluated scene does not see the value: {evaluated} vs {scene.get(name)}")
-        bpm_name, _bpb_name = importlib.import_module(f"{addon_key}.nodes.identity").source_tempo_props(src.stable_id)
+        bpm_name, _bpb_name, downbeat_name = importlib.import_module(f"{addon_key}.nodes.identity").source_tempo_props(src.stable_id)
         bpm_readers = [n.attribute_name for n in source.node_tree.nodes if n.bl_idname == "ShaderNodeAttribute"]
         _assert(bpm_name in bpm_readers, f"The shader Source node does not read its BPM: {bpm_readers}")
         engine.probes.flush_source_tempo_detection_updates(list(ace.audio_sources))
         _assert(abs(float(scene.get(bpm_name, -1.0)) - float(src.bpm)) < 1e-6, "The source's BPM is not on the scene")
+        fps = scene.render.fps / scene.render.fps_base
+        _assert(abs(float(scene.get(downbeat_name, -1.0)) - (scene.frame_start / fps + float(src.downbeat))) < 1e-6,
+                f"The source's Downbeat is not on the scene: {scene.get(downbeat_name)}")
+        _assert(downbeat_name in bpm_readers, f"The shader Source node does not read its Downbeat: {bpm_readers}")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
         bpy.data.materials.remove(material)
@@ -1454,7 +1458,7 @@ def _check_source_nodes(addon_key, scene, engine):
 
 
 def _check_source_node_outputs_tempo(addon_key, scene, engine):
-    """The GN Source node's BPM and Beats per Bar are its source's, as Blender evaluates them."""
+    """The GN Source node's BPM, Beats per Bar and Downbeat are its source's, as Blender evaluates them."""
     ace = scene.audiocore
     count, first_index = len(ace.audio_sources), ace.active_audio_source_index
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_SourceTempo")
@@ -1468,7 +1472,8 @@ def _check_source_node_outputs_tempo(addon_key, scene, engine):
         loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(node.outputs["Audio"], loud.inputs["Audio"])
         geometry = group_in.outputs["Geometry"]
-        for output, data_type, name in (("BPM", "FLOAT", "bpm_probe"), ("Beats per Bar", "INT", "meter_probe")):
+        for output, data_type, name in (("BPM", "FLOAT", "bpm_probe"), ("Beats per Bar", "INT", "meter_probe"),
+                                        ("Downbeat", "FLOAT", "downbeat_probe")):
             store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
             store.data_type = data_type
             store.inputs["Name"].default_value = name
@@ -1485,10 +1490,21 @@ def _check_source_node_outputs_tempo(addon_key, scene, engine):
             attrs = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.attributes
             return attrs["bpm_probe"].data[0].value, attrs["meter_probe"].data[0].value
 
+        def downbeat():
+            attrs = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.attributes
+            return attrs["downbeat_probe"].data[0].value
+
         source.bpm, source.beats_per_bar = 97.5, 7
         _assert(evaluated() == (97.5, 7), f"Source node tempo: {evaluated()}")
         source.bpm, source.beats_per_bar = 140.0, 3
         _assert(evaluated() == (140.0, 3), f"Source node tempo after a change: {evaluated()}")
+        # The Downbeat on Scene Time's clock: a file starts at frame_start.
+        source.source_type = "FILE"
+        source.downbeat = 1.25
+        _assert(source.get("ace_downbeat_user_override"), "Typing a downbeat does not mark it as the user's")
+        evaluated()
+        fps = scene.render.fps / scene.render.fps_base
+        _assert(abs(downbeat() - (scene.frame_start / fps + 1.25)) < 1e-5, f"Source node Downbeat: {downbeat()}")
         # The sink layout keeps the tempo attributes: they belong to no sink.
         engine.execute_next_frame(scene, force=True)
         proxy_attrs = bpy.data.objects[source.proxy_object_name].data.attributes

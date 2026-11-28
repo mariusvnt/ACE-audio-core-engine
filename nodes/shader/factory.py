@@ -154,8 +154,8 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
     def _value_names(cls, category: str, node_type: str, sink_names=None, source_id: str = "") -> dict[int, str]:
         """Output index -> the scene property its Attribute node reads ("" reads nothing)."""
         if (category, node_type) == SOURCE_KIND:
-            bpm, bpb = source_tempo_props(source_id) if source_id else ("", "")
-            return {1: bpm, 2: bpb}
+            bpm, bpb, downbeat = source_tempo_props(source_id) if source_id else ("", "", "")
+            return {1: bpm, 2: bpb, 3: downbeat}
         names = list(sink_names or [])
         return {
             out_idx: (names[slot] if slot < len(names) else "")

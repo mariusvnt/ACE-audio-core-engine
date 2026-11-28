@@ -277,8 +277,8 @@ class TestParallelDSP(unittest.TestCase):
 
     def test_worker_rejects_out_of_range_output_socket(self):
         ir = self._splitter_stream_graph_ir()
-        ir["links"][0] = ("src_a", 3, "split", 0)  # Source has outputs 0..2
-        with self.assertRaisesRegex(ValueError, "has 3 output"):
+        ir["links"][0] = ("src_a", 4, "split", 0)  # Source has outputs 0..3
+        with self.assertRaisesRegex(ValueError, "has 4 output"):
             self.pds.evaluate_parallel_job(self._job_for(ir, "digest_bad_socket"))
 
     def test_worker_warm_up_builds_every_stream_task(self):

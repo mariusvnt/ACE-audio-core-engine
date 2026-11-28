@@ -9,6 +9,7 @@ from ...properties import ACEAudioSource
 from ..input import decode
 from ..proxy.attributes import write_source_tempo
 from ..tasks.chunk import SAMPLE_RATE
+from ..tasks.source import downbeat_scene_seconds
 from ..tasks.tempo import TempoService
 
 
@@ -167,9 +168,13 @@ class SourceProbes:
 
     @staticmethod
     def _user_set_tempo(source) -> bool:
-        """True once the user typed a BPM or Beats per Bar: automatic detection leaves the source alone."""
+        """True once the user typed a BPM, Beats per Bar or Downbeat: automatic detection leaves the source alone."""
         try:
-            return bool(source.get("ace_bpm_user_override", False) or source.get("ace_meter_user_override", False))
+            return bool(
+                source.get("ace_bpm_user_override", False)
+                or source.get("ace_meter_user_override", False)
+                or source.get("ace_downbeat_user_override", False)
+            )
         except Exception as exc:
             utils.note_swallowed("probes.SourceProbes._user_set_tempo", exc)
             return False
@@ -186,13 +191,17 @@ class SourceProbes:
         if bpm <= 0.0 or beats_per_bar <= 0:
             return False
         try:
+            downbeat = detected.get("downbeat_s")
             source.bpm = float(bpm)
             source.beats_per_bar = int(beats_per_bar)
+            source.downbeat = float(downbeat) if downbeat is not None else 0.0
             # Writing the values ran their update callbacks, which mark a user override.
             source["ace_bpm_user_override"] = False
             source["ace_meter_user_override"] = False
+            source["ace_downbeat_user_override"] = False
             source["ace_tempo_detect_status"] = "ready"
-            source["ace_tempo_detect_message"] = f"Detected {float(bpm):.2f} BPM / {int(beats_per_bar)} BPB"
+            found_downbeat = f", first downbeat at {float(downbeat):.3f} s" if downbeat is not None else ""
+            source["ace_tempo_detect_message"] = f"Detected {float(bpm):.2f} BPM / {int(beats_per_bar)} BPB{found_downbeat}"
             return True
         except Exception as exc:
             utils.note_swallowed("probes.SourceProbes._apply_tempo_detection_to_source", exc)
@@ -299,9 +308,9 @@ class SourceProbes:
 
     @staticmethod
     def _write_source_tempos(sources) -> None:
-        """Every source's BPM and Beats per Bar where its Source nodes read them.
+        """Every source's BPM, Beats per Bar and Downbeat (scene seconds) where its Source nodes read them.
 
-        Geometry Nodes: point 0 of the proxy mesh. Shaders: two scene properties, written only
+        Geometry Nodes: point 0 of the proxy mesh. Shaders: three scene properties, written only
         for a source that has a shader Source group.
         """
         objects = getattr(getattr(bpy, "data", None), "objects", None)
@@ -310,16 +319,20 @@ class SourceProbes:
         for source in (sources or []):
             bpm = float(getattr(source, "bpm", 120.0) or 120.0)
             beats_per_bar = int(getattr(source, "beats_per_bar", 4) or 4)
+            scene = getattr(source, "id_data", None)
+            render = getattr(scene, "render", None)
+            fps = float(getattr(render, "fps", 24) or 24) / float(getattr(render, "fps_base", 1.0) or 1.0)
+            downbeat = downbeat_scene_seconds(source, int(getattr(scene, "frame_start", 1) or 1), fps)
             proxy_name = str(getattr(source, "proxy_object_name", "") or "")
             proxy = objects.get(proxy_name) if proxy_name else None
             if proxy is not None:
                 with utils.logged_errors("probes.SourceProbes._write_source_tempos"):
-                    write_source_tempo(proxy, bpm, beats_per_bar)
+                    write_source_tempo(proxy, bpm, beats_per_bar, downbeat)
             with utils.logged_errors("probes.SourceProbes._write_source_tempos#scene"):
-                SourceProbes._write_shader_tempo(source, bpm, beats_per_bar)
+                SourceProbes._write_shader_tempo(source, bpm, beats_per_bar, downbeat)
 
     @staticmethod
-    def _write_shader_tempo(source, bpm: float, beats_per_bar: int) -> None:
+    def _write_shader_tempo(source, bpm: float, beats_per_bar: int, downbeat: float = 0.0) -> None:
         from ...nodes.identity import source_tempo_props
         from ...nodes.shader.factory import ACEShaderNodeFactory
 
@@ -331,7 +344,7 @@ class SourceProbes:
         if groups.get(ACEShaderNodeFactory.source_group_name(source_id)) is None:
             return
         changed = False
-        for name, value in zip(source_tempo_props(source_id), (bpm, float(beats_per_bar))):
+        for name, value in zip(source_tempo_props(source_id), (bpm, float(beats_per_bar), float(downbeat))):
             if scene.get(name) != value:
                 scene[name] = value
                 changed = True
