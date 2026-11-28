@@ -1230,7 +1230,7 @@ def _abstract_nodes(engine, node_type, name):
 
 def _check_instances_panel_model(addon_key, scene, engine, obj, tree, window_group, source_group, inner_loud,
                                  sources, count):
-    """The Active ACE Instances report and the sidebar's list of a group come from the compiled model."""
+    """The instance report (sink conflicts in the Operators panel) and the sidebar's list of a group come from the compiled model."""
     instances = importlib.import_module(f"{addon_key}.ui.panel.instances")
     sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
     report = {(d.tree_name, d.node_name): d for d in instances.instance_report(engine)}
@@ -1239,6 +1239,11 @@ def _check_instances_panel_model(addon_key, scene, engine, obj, tree, window_gro
     _assert(window is not None and len(window.uses) == 2 and window.conflicts, f"Window group report: {window}")
     _assert(all(use.owners == [owner] and len(use.chain) == 1 for use in window.uses),
             f"Uses not named by owner and group node: {[(u.owners, u.chain) for u in window.uses]}")
+    seen: list = []
+    importlib.import_module(f"{addon_key}.ui.panel.selection").draw_other_conflicts(
+        _CheckedLayout(seen), types.SimpleNamespace(scene=scene), None)
+    _assert(any(kind == "label" and text.startswith(f"Loudness ({window_group.name})") for kind, text in seen),
+            f"The Operators panel does not name the conflicting node: {seen}")
     inner = report.get((source_group.name, "Inner Loudness"))
     _assert(inner is not None and sorted(s for u in inner.uses for s in u.sources) == sorted(s.stable_id for s in sources),
             f"Each use's source is not reported: {inner}")

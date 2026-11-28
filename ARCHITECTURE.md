@@ -70,8 +70,9 @@ The engine keeps three notions apart:
 
 Uses of one node share its sink names. When they compute different values (a
 group input that differs per use), two signals claim one sink: the use first
-in id order keeps it, and the conflict is logged and listed in the *Active ACE
-Instances* panel. Names per use are FUTURE.md §3.
+in id order keeps it, and the conflict is logged, named in the *Operators*
+panel, and explained on the node when it is selected. Names per use are
+FUTURE.md §3.
 
 ## 2. Packages
 
@@ -241,7 +242,8 @@ Nothing ACE needs to tell nodes apart is stored on them.
   template is found by its `ace_kind` and `ace_template` properties, never by
   name, so a user's own group of that name is never taken for it; a file
   with the old hidden names (`.ACE_<category>_<type>`) has its templates
-  renamed on load. The groups a placed node gets are hidden: a splitter's
+  renamed on load. They are built on each load, and by a one-shot timer when
+  the add-on is enabled: `bpy.data` can't be written while it registers. The groups a placed node gets are hidden: a splitter's
   variant per band count (`.ACE_audio_frequency_splitter_<n>_bands`), a
   shader node's sink group, a shader Source's source group.
 - **Placing a node** (`nodes/placement.py`). The add menu places what it
@@ -256,8 +258,8 @@ Nothing ACE needs to tell nodes apart is stored on them.
   the Node Editor go through ACE: the copy also notes the selected ACE nodes
   (kind, label, settings, input values, links), and a paste into the other
   tree type adds them with that type's groups and links them again, to each
-  other and to the nodes Blender pasted. The Edit menu's Copy and Paste stay
-  Blender's own.
+  other and to the nodes Blender pasted. Ctrl+V pastes at the mouse, as
+  Blender's own does. The Edit menu's Copy and Paste stay Blender's own.
 - **Node ids** are computed: `ACE_<category>_<type>_<blake2b(tree key:group
   path/node name)>` (`nodes/identity.py`). The tree key is the tree's
   `session_uid`, which is stable across undo. The first use of a tree keeps the
@@ -400,7 +402,8 @@ covered by local DSP.
   tree itself, so it follows edits even with auto-compile off. Controllers
   aren't in the engine's model: they are listed from the tree, under the ACE
   node they read through any other nodes, with their inputs and description
-  when selected. *Audio Inputs* and a selected node's sink conflicts read
+  when selected. An ACE node with no row (it reads no source) selected in the
+  Node Editor shows in the panel until a row is selected. *Audio Inputs* and a selected node's sink conflicts read
   only the compiled model (`ui/panel/instances.py`).
 - **Shared memory.** Completed jobs are drained on a timer only while playback
   is paused; during playback the frame handler drains them, and an extra drain

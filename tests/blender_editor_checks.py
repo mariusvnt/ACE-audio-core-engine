@@ -331,7 +331,58 @@ def check_controllers_in_operator_list(addon_key, scene):
     print("[ACE smoke] controllers are listed under what they read")
 
 
+def check_unlisted_node_selected(addon_key, scene, src):
+    """A controller that reads no source has no row: selected in the editor, the panel shows it, not the last row."""
+    sync = _mod(addon_key, "ui.panel.sync")
+    utils = _mod(addon_key, "utils")
+    scene.audiocore.active_audio_source_index = list(scene.audiocore.audio_sources).index(src)
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Unlisted")
+    finders = [(m, m._find_active_node_tree) for m in (sync, _mod(addon_key, "ui.panel.helpers"))]
+    try:
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
+        lone = _add_ace_node(addon_key, tree, "controllers", "running_total", "Lone Total")
+        tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
+        for module, _finder in finders:
+            module._find_active_node_tree = lambda _context, **_kw: tree
+        sync._sync_ui_dummy_tree(bpy.context, force=True)
+        _, active = utils._get_active_source(bpy.context)
+        for node in (loud, lone):
+            tree.nodes.active = node
+            sync._sync_editor_active(tree, active)
+            shown, _parsed = sync._resolve_ui_list_selected_node(bpy.context)
+            _assert(shown == node, f"Selecting {node.name} shows {getattr(shown, 'name', None)}")
+        _assert(active.active_ui_node_id == _mod(addon_key, "nodes.identity").node_id(loud, tree),
+                "Selecting a node without a row changed the list's selection")
+        tree.nodes.active = loud
+        sync._sync_editor_active(tree, active)
+        shown, _parsed = sync._resolve_ui_list_selected_node(bpy.context)
+        _assert(shown == loud, "A listed node selected again does not show")
+    finally:
+        for module, finder in finders:
+            module._find_active_node_tree = finder
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+        sync.reset_state()
+    print("[ACE smoke] a node without a row shows in the panel when selected in the editor")
+
+
+def check_templates_built_after_enable(addon_key):
+    """bpy.data is restricted while an add-on registers: the templates are built by a timer just after."""
+    handlers = _mod(addon_key, "core.engine.handlers")
+    _assert(hasattr(handlers, "_build_groups_after_enable"), "No deferred template build")
+    for group in [g for g in bpy.data.node_groups if _mod(addon_key, "nodes.groups").is_template(g) and g.users == 0]:
+        bpy.data.node_groups.remove(group)
+    handlers._build_groups_after_enable()
+    groups = _mod(addon_key, "nodes.groups")
+    missing = [kind for kind in _kinds(addon_key) for tree_type in ("GeometryNodeTree", "ShaderNodeTree")
+               if groups.find_template(*kind, tree_type) is None]
+    _assert(not missing, f"Templates missing after the deferred build: {missing}")
+    print("[ACE smoke] the templates are built once the add-on is enabled")
+
+
 def run_all(addon_key, scene, engine, src):
+    check_templates_built_after_enable(addon_key)
     check_template_names(addon_key)
     check_search_added_nodes_are_placed(addon_key, scene, engine, src)
     check_inputs_in_use(addon_key, scene)
@@ -340,3 +391,4 @@ def run_all(addon_key, scene, engine, src):
     check_internals_layout(addon_key, scene)
     check_shader_only_source_controller(addon_key, scene, engine)
     check_controllers_in_operator_list(addon_key, scene)
+    check_unlisted_node_selected(addon_key, scene, src)

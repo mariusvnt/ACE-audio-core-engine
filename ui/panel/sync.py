@@ -82,10 +82,14 @@ def _resolve_ui_list_selected_node(context):
     _, active_source = _get_active_source(context)
     if not active_source:
         return None, None
+    tree = _find_active_node_tree(context, editor_context_only=True)
+    if _unlisted_active[1] and tree is not None and _unlisted_active[0] == _tree_pointer(tree):
+        node, parsed = _find_tree_node_by_ace_id(tree, _unlisted_active[1])
+        if node and parsed:
+            return node, parsed
     node_id = str(getattr(active_source, "active_ui_node_id", "") or "")
     if not node_id:
         return None, None
-    tree = _find_active_node_tree(context, editor_context_only=True)
     node, parsed = _find_tree_node_by_ace_id(tree, node_id)
     if node and parsed:
         return node, parsed
@@ -460,6 +464,10 @@ _setting_active_row = False
 # (tree pointer, ace_id) of the Node Editor's active node at the last check.
 _last_editor_active: tuple[int, str] = (0, "")
 
+# (tree pointer, ace_id) of an ACE node selected in the Node Editor that has no row in the list
+# (it reads no source: an unconnected controller, say). The panel shows it until a row is selected.
+_unlisted_active: tuple[int, str] = (0, "")
+
 
 def current_rows() -> list[operator_tree.Row]:
     return list(_ui_tree_cache.get("rows", []) or [])
@@ -505,8 +513,9 @@ def reveal_operator(active_source, node_id: str) -> int:
 
 def note_editor_active(tree, node_id: str) -> None:
     """Record a selection the add-on made in the Node Editor, so it is not read back as a new one."""
-    global _last_editor_active
+    global _last_editor_active, _unlisted_active
     _last_editor_active = (_tree_pointer(tree), str(node_id or ""))
+    _unlisted_active = (0, "")
 
 
 def _sync_editor_active(tree, active_source) -> None:
@@ -514,7 +523,7 @@ def _sync_editor_active(tree, active_source) -> None:
 
     A node of another source's graph makes that source the active one first.
     """
-    global _last_editor_active
+    global _last_editor_active, _unlisted_active
     nodes = getattr(tree, "nodes", None)
     active = getattr(nodes, "active", None) if nodes is not None else None
     node_id = ace_node_id(active, tree) if active is not None else ""
@@ -524,6 +533,7 @@ def _sync_editor_active(tree, active_source) -> None:
     # Only a change within a tree already on screen is a click: showing a tree switches nothing.
     clicked = key[0] == _last_editor_active[0]
     _last_editor_active = key
+    _unlisted_active = (0, "")
     if not node_id:
         return
     # The click may land before the periodic sync has read a tree or node that just appeared.
@@ -534,6 +544,7 @@ def _sync_editor_active(tree, active_source) -> None:
     elif node_id == active_source.active_ui_node_id:
         return
     if operator_tree.row_of_node(current_rows(), node_id) < 0:
+        _unlisted_active = key  # no row to select: the panel shows the node itself
         return
     active_source.active_ui_node_id = node_id
     reveal_operator(active_source, node_id)
@@ -1002,7 +1013,7 @@ def _ui_sync_timer():
 @persistent
 def _ui_load_post(_dummy):
     """Blender load_post handler: reset all UI state caches after a file load."""
-    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _last_editor_active
+    global _ui_sync_last_ts, _ui_sync_last_key, _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _last_editor_active, _unlisted_active
     _ui_sync_last_ts = 0.0
     _ui_sync_last_key = ""
     _ui_timer_last_quick_key = ""
@@ -1018,10 +1029,11 @@ def _ui_load_post(_dummy):
     _collapsed_by_tree.clear()
     _expanded_sources.clear()
     _last_editor_active = (0, "")
+    _unlisted_active = (0, "")
 
 
 def reset_state():
-    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _last_editor_active
+    global _ui_timer_last_quick_key, _ui_timer_last_sync_ts, _ui_source_probe_last, _ui_latency_cache, _ui_tree_cache, _last_editor_active, _unlisted_active
     _ui_timer_last_quick_key = ""
     _ui_timer_last_sync_ts = 0.0
     _ui_source_probe_last = {}
@@ -1034,3 +1046,4 @@ def reset_state():
     _ui_tree_cache = _empty_tree_cache()
     _collapsed_by_tree.clear()
     _last_editor_active = (0, "")
+    _unlisted_active = (0, "")

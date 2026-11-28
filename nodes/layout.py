@@ -23,15 +23,26 @@ _SETTING_ROWS = {
 }
 
 
-def _visible(sockets) -> int:
-    return sum(1 for s in sockets if getattr(s, "enabled", True) and not getattr(s, "hide", False))
+# An unlinked input of these types draws its name, then one field per component.
+_COMPONENT_ROWS = {"VECTOR": 3, "ROTATION": 3}
+
+
+def _visible(sockets) -> list:
+    return [s for s in sockets if getattr(s, "enabled", True) and not getattr(s, "hide", False)]
+
+
+def _input_rows(sock) -> int:
+    if sock.is_linked or getattr(sock, "hide_value", False):
+        return 1
+    return 1 + _COMPONENT_ROWS.get(getattr(sock, "type", ""), 0)
 
 
 def node_size(node) -> tuple[float, float]:
     """(width, height) the node is drawn at, estimated."""
     if node.bl_idname == "NodeReroute":
         return 16.0, 16.0
-    rows = _visible(node.outputs) + _visible(node.inputs) + _SETTING_ROWS.get(node.bl_idname, 1)
+    rows = len(_visible(node.outputs)) + sum(_input_rows(s) for s in _visible(node.inputs))
+    rows += _SETTING_ROWS.get(node.bl_idname, 1)
     return float(getattr(node, "width", 140.0) or 140.0), HEADER + SOCKET_ROW * rows
 
 

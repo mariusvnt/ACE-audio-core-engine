@@ -43,6 +43,17 @@ def _refresh_loaded_node_groups():
             utils.log(f"ACE node group refresh after load failed ({factory.__name__}): {exc}", "ERROR")
 
 
+def _build_groups_after_enable():
+    """One-shot timer: the template groups, built once Blender data can be written.
+
+    bpy.data is restricted while an add-on registers. Started with Blender, ACE builds them on
+    the startup file's load_post; enabled or updated later, it would have none until a file
+    loads, and Blender's search and Add > Group would offer no ACE node.
+    """
+    _refresh_loaded_node_groups()
+    return None
+
+
 @persistent
 def _undo_redo_invalidate_engine_caches(_dummy):
     for engine in ACEAudioEngine.iter_instances():
@@ -445,6 +456,8 @@ def register_handlers():
         bpy.app.timers.register(auto_compile_timer, first_interval=0.25, persistent=True)
     if not bpy.app.timers.is_registered(_shm_drain_timer):
         bpy.app.timers.register(_shm_drain_timer, first_interval=2.0, persistent=True)
+    if not bpy.app.timers.is_registered(_build_groups_after_enable):
+        bpy.app.timers.register(_build_groups_after_enable, first_interval=0.0, persistent=True)
     ACEAudioEngine.ensure_instance(getattr(getattr(bpy, "context", None), "scene", None))
 
 
@@ -466,5 +479,7 @@ def unregister_handlers():
         bpy.app.timers.unregister(auto_compile_timer)
     if bpy.app.timers.is_registered(_shm_drain_timer):
         bpy.app.timers.unregister(_shm_drain_timer)
+    if bpy.app.timers.is_registered(_build_groups_after_enable):
+        bpy.app.timers.unregister(_build_groups_after_enable)
 
     ACEAudioEngine.shutdown_all_instances()

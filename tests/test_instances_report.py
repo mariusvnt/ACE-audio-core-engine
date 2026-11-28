@@ -1,4 +1,4 @@
-"""The Active ACE Instances report: definitions, their uses, shared signals and conflicts."""
+"""The instance report behind the sink conflicts the Operators panel names: definitions, their uses, shared signals and conflicts."""
 
 import types
 import unittest

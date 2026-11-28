@@ -182,12 +182,22 @@ class ACE_OT_clipboard_paste(bpy.types.Operator):
     def poll(cls, context):
         return _edit_tree(context) is not None
 
+    def invoke(self, context, event):
+        """Ctrl+V: Blender's paste puts the nodes at the mouse, and so does ACE's translation."""
+        region = getattr(context, "region", None)
+        if region is not None and region.type == 'WINDOW':
+            context.space_data.cursor_location_from_region(event.mouse_region_x, event.mouse_region_y)
+        return self._paste(context, 'INVOKE_DEFAULT')
+
     def execute(self, context):
+        return self._paste(context, 'EXEC_DEFAULT')
+
+    def _paste(self, context, call):
         tree = _edit_tree(context)
         before = {n.as_pointer() for n in tree.nodes}
         cross = bool(_clipboard["nodes"]) and _clipboard["tree_type"] not in ("", str(tree.bl_idname))
         try:
-            result = bpy.ops.node.clipboard_paste()
+            result = bpy.ops.node.clipboard_paste(call)
         except RuntimeError as exc:
             # Blender pasted what it could and refused the group nodes of the other type.
             if not cross:
@@ -198,11 +208,15 @@ class ACE_OT_clipboard_paste(bpy.types.Operator):
             return result
         pasted = [n for n in tree.nodes if n.as_pointer() not in before]
         natives = {}
+        copied_names = set(_clipboard.get("selected", ())) - set(_clipboard["names"])
         for node in pasted:
-            base = node.name
-            copied = next((name for name in _clipboard.get("selected", ()) if base == name or (
-                base.startswith(name + ".") and base[len(name) + 1:].isdigit())), None)
-            if copied is not None and copied not in _clipboard["names"]:
+            base = str(node.name)
+            copied = base if base in copied_names else None  # "Math.001" copied as itself
+            if copied is None:
+                # Renamed by the paste: "Math" pasted where a "Math" was already is "Math.001".
+                stem, _dot, suffix = base.rpartition(".")
+                copied = stem if suffix.isdigit() and stem in copied_names else None
+            if copied is not None and copied not in natives:
                 natives[copied] = node
         with utils.logged_errors("clipboard.ACE_OT_clipboard_paste"):
             made = translate(tree, context.scene, natives)

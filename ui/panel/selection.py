@@ -262,6 +262,27 @@ def _draw_selected_operator(layout, context) -> None:
     if node is not None:
         draw_sink_conflicts(layout, context, node)
         draw_ignored_links(layout, context, ignored_links_into(node))
+    draw_other_conflicts(layout, context, node)
+
+
+def draw_other_conflicts(layout, context, shown, limit: int = 3) -> None:
+    """The other nodes whose uses write different values to one sink: select one to see why."""
+    from .instances import instance_report
+
+    tree = getattr(shown, "id_data", None)
+    with utils.logged_errors("selection.draw_other_conflicts"):
+        report = instance_report(ACEAudioEngine.get_instance(context.scene))
+        others = [d for d in report if d.conflicts and not (
+            shown is not None and d.tree_name == getattr(tree, "name", None) and d.node_name == shown.name)]
+        if not others:
+            return
+        col = layout.column(align=True)
+        for definition in others[:limit]:
+            row = col.row()
+            row.alert = True
+            row.label(text=f"{definition.node_name} ({definition.tree_name}): uses write different values", icon="ERROR")
+        if len(others) > limit:
+            col.label(text=f"and {len(others) - limit} more: the console lists them")
 
 
 def sink_conflicts_of(node) -> list:
