@@ -68,7 +68,7 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
 
 def check_lufs_matches_pyloudnorm(fps):
     """LUFS over the 0.4 s window ending each frame, against pyloudnorm, on rising pink noise."""
-    curve = _golden("pink_noise", fps)["stream.loudness.lufs/Loudness"]
+    curve = _golden("pink_noise", fps)["audio.loudness.lufs/Loudness"]
     y, sr = fixtures.render("pink_noise")
     meter = pyloudnorm.Meter(sr, block_size=0.4)
     errors = []
@@ -85,7 +85,7 @@ def check_lufs_matches_pyloudnorm(fps):
 
 def check_transients_match_clicks(fps):
     """Transient peaks against the click times, within one frame."""
-    curve = _golden("click_track", fps)["stream.transient/Transient"]
+    curve = _golden("click_track", fps)["audio.transient/Transient"]
     clicks = np.floor(np.arange(0.25, fixtures.DURATION_S - 0.01, 60.0 / fixtures.BPM) * fps).astype(int)
     peaks = [
         i for i in range(len(curve))
@@ -98,26 +98,26 @@ def check_transients_match_clicks(fps):
 
 
 def check_tempo_matches_click_track(fps):
-    values = _golden("click_track", fps)["source_mngmt.src/BPM"]
+    values = _golden("click_track", fps)["input.src/BPM"]
     worst = float(np.max(np.abs(values - fixtures.BPM)) / fixtures.BPM)
     return worst <= 0.02, f"BPM {np.unique(values)} for {fixtures.BPM}"
 
 
 def check_tempo_matches_music(fps):
-    values = _golden("music_synth", fps)["source_mngmt.src/BPM"]
+    values = _golden("music_synth", fps)["input.src/BPM"]
     worst = float(np.max(np.abs(values - fixtures.BPM)) / fixtures.BPM)
     return worst <= 0.02, f"BPM {np.unique(values)} for {fixtures.BPM}"
 
 
 def check_meter_of_music(fps):
     """music_synth is two bars of 4/4."""
-    values = _golden("music_synth", fps)["source_mngmt.src/Beats per Bar"]
+    values = _golden("music_synth", fps)["input.src/Beats per Bar"]
     return bool(np.all(values == 4)), f"beats per bar {np.unique(values)}"
 
 
 def check_centroid_tracks_sweep(fps):
     """On a pure sweep the centroid is the sweep frequency."""
-    curve = _golden("sine_sweep", fps)["stream.brightness/Brightness"]
+    curve = _golden("sine_sweep", fps)["audio.brightness/Brightness"]
     f = _sweep_frequency(_frame_centres(len(curve), fps))
     band = (f > 200.0) & (f < 8000.0)
     octaves = np.abs(np.log2(np.maximum(curve[band], 1e-9) / f[band]))
@@ -126,7 +126,7 @@ def check_centroid_tracks_sweep(fps):
 
 
 def check_centroid_matches_librosa(fps):
-    curve = _golden("music_synth", fps)["stream.brightness/Brightness"]
+    curve = _golden("music_synth", fps)["audio.brightness/Brightness"]
     y, sr = fixtures.render("music_synth")
     mags, times = _ace_stft(y.mean(axis=1), sr, fps)
     ref = librosa.feature.spectral_centroid(S=mags, sr=sr)[0]
@@ -136,7 +136,7 @@ def check_centroid_matches_librosa(fps):
 
 def check_pitch_tracks_sweep(fps):
     """At least 90% of frames between 80 Hz and 1 kHz within 50 cents of the sweep."""
-    curve = _golden("sine_sweep", fps)["stream.pitch/Pitch"]
+    curve = _golden("sine_sweep", fps)["audio.pitch/Pitch"]
     f = _sweep_frequency(_frame_centres(len(curve), fps))
     band = (f > 80.0) & (f < 1000.0)
     cents = 1200.0 * np.abs(np.log2(np.maximum(curve[band], 1e-9) / f[band]))

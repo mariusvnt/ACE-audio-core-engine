@@ -10,7 +10,7 @@ from ..nodes.split_freqs import sort_all_split_freqs, sort_split_freqs
 from ..nodes.source_nodes import set_node_source
 from ..nodes.identity import find_node, node_id as ace_node_id, parsed_node
 from ..nodes.modes import apply_node_mode
-from ..vars import node_modes
+from ..vars import PREVIEW_KIND, SOURCE_KIND, SPLITTER_KIND, node_modes
 from .. import utils
 from ..core.engine.engine import ACEAudioEngine
 from ..core.input.reception import AudioReception, build_live_flow_identifier
@@ -278,7 +278,7 @@ class ACE_OT_update_splitter_bands(bpy.types.Operator):
     
     def execute(self, context):
         node, parsed = _resolve_panel_selected_node(context)
-        is_splitter = bool(parsed and parsed.get("category") == "delta" and parsed.get("type") == "frequency_splitter")
+        is_splitter = bool(parsed and (parsed.get("category"), parsed.get("type")) == SPLITTER_KIND)
         if not node or not is_splitter:
             return {'CANCELLED'}
         current = node.get('ace_band_count', 2)
@@ -330,7 +330,7 @@ class ACE_OT_even_splitter_freqs(bpy.types.Operator):
 
     def execute(self, context):
         node, parsed = _resolve_panel_selected_node(context)
-        if not parsed or parsed.get("category") != "delta" or parsed.get("type") != "frequency_splitter":
+        if not parsed or (parsed.get("category"), parsed.get("type")) != SPLITTER_KIND:
             return {'CANCELLED'}
 
         split_sockets = []
@@ -533,7 +533,7 @@ class ACE_OT_set_node_source(bpy.types.Operator):
 
     def execute(self, context):
         node, parsed = _resolve_panel_selected_node(context)
-        if not parsed or parsed.get("category") != "source_mngmt" or parsed.get("type") != "src":
+        if not parsed or (parsed.get("category"), parsed.get("type")) != SOURCE_KIND:
             return {'CANCELLED'}
         project = context.scene.audiocore
         for index, source in enumerate(project.audio_sources):
@@ -564,7 +564,7 @@ class ACE_OT_toggle_preview_sink(bpy.types.Operator):
 
     def execute(self, context):
         node, parsed = _resolve_panel_selected_node(context)
-        is_preview_sink = bool(parsed and parsed.get("category") == "utilities" and parsed.get("type") == "preview_sink")
+        is_preview_sink = bool(parsed and (parsed.get("category"), parsed.get("type")) == PREVIEW_KIND)
         if not is_preview_sink:
             self.report({'ERROR'}, "Selected node is not an ACE Audio Preview.")
             return {'CANCELLED'}

@@ -3,6 +3,7 @@
 from typing import Dict, Optional
 from ....properties import ACEAudioSource
 from ...abstract_tree import ACEAbstractNode, ACEAbstractTree
+from ....vars import PREVIEW_KIND, SOURCE_KIND, writes_values
 
 
 class RequiredNodes:
@@ -22,19 +23,7 @@ class RequiredNodes:
 
     @staticmethod
     def _is_output_node(node: ACEAbstractNode) -> bool:
-        is_value_utility = bool(
-            node
-            and node.type in {'util_rolling_avg', 'stream_accumulator'}
-            and node.category == 'utilities'
-        )
-        return bool(
-            node
-            and (
-                node.category == 'stream'
-                or is_value_utility
-                or (node.category == 'utilities' and node.type == 'preview_sink')
-            )
-        )
+        return bool(node and (writes_values(node.category, node.type) or (node.category, node.type) == PREVIEW_KIND))
 
     @staticmethod
     def _node_matches_source(node: ACEAbstractNode, source_uid: str, proxy_name: str, single_source_mode: bool) -> bool:
@@ -192,7 +181,7 @@ class RequiredNodes:
             for node in abstract_tree.nodes.values():
                 # Legacy mode keeps source nodes active each frame even when no
                 # stream/spec branch requests them.
-                if not (node.category == 'source_mngmt' and node.type == 'src'):
+                if (node.category, node.type) != SOURCE_KIND:
                     continue
                 if self._node_matches_source(node, source_uid, proxy_name, single_source_mode):
                     seed_nodes.add(node.id)

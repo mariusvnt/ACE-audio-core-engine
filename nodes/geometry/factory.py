@@ -3,7 +3,10 @@
 import bpy  # type: ignore
 import hashlib
 import json
-from ...vars import ACE_NODES, apply_socket_ranges
+from ...vars import (
+    ACE_NODES, ROLE_MEASURE, ROLE_PREVIEW, ROLE_SOURCE, ROLE_SPLITTER, apply_socket_ranges, node_def as registry_node_def, node_role,
+    reads_values_object, value_outputs,
+)
 from ... import utils
 from ..frontend import remember_group_inputs
 from ..identity import VALUE_NODE_KINDS
@@ -47,7 +50,7 @@ class ACEDummyNodeFactory:
                 ng = bpy.data.node_groups.get(group_name)
 
                 if ng:
-                    if ACEDummyNodeFactory._node_group_needs_refresh(ng, type_key):
+                    if ACEDummyNodeFactory._node_group_needs_refresh(ng, cat_key, type_key):
                         remember_group_inputs(ng)
                         ng.nodes.clear()
                         ng.interface.clear()
@@ -95,11 +98,11 @@ class ACEDummyNodeFactory:
     @staticmethod
     def _internals_outdated(ng, category: str, node_type: str) -> bool:
         """True when a value-reading group was built by an older version of its internals."""
-        reads_values = category == "stream" or (category, node_type) in VALUE_NODE_KINDS
+        reads_values = node_role(category, node_type) == ROLE_MEASURE or reads_values_object(category, node_type)
         return reads_values and ng.get("ace_internals") != INTERNALS_VERSION
 
     @staticmethod
-    def _node_group_needs_refresh(ng, node_type: str) -> bool:
+    def _node_group_needs_refresh(ng, category: str, node_type: str) -> bool:
         try:
             inputs = {item.name for item in ng.interface.items_tree if getattr(item, "in_out", None) == 'INPUT'}
             outputs = {item.name for item in ng.interface.items_tree if getattr(item, "in_out", None) == 'OUTPUT'}
@@ -107,82 +110,48 @@ class ACEDummyNodeFactory:
             utils.note_swallowed("factory.ACEDummyNodeFactory._node_group_needs_refresh", exc)
             return True
 
-        if node_type == "src":
+        role = node_role(category, node_type)
+        nd = registry_node_def(category, node_type)
+        declared_inputs = {str(name) for _sock_type, name in list(nd.get("inputs", []))}
+        declared_outputs = {str(name) for _sock_type, name in list(nd.get("outputs", []))}
+        if role == ROLE_SOURCE:
             required_inputs = {"Proxy Object"}
-            required_outputs = {"Audio", "BPM", "Beats per Bar"}
-            return not required_inputs.issubset(inputs) or not required_outputs.issubset(outputs)
-        if node_type == "preview_sink":
+            return not required_inputs.issubset(inputs) or not declared_outputs.issubset(outputs)
+        if role == ROLE_PREVIEW:
             # Sink: one Audio input, no outputs required.
             return "Audio" not in inputs
-        if node_type in ("util_rolling_avg", "stream_accumulator"):
-            # No Proxy Object input: the group reads ACE_Values (a group with one is out of date).
-            required_inputs = {"Value", "Attribute ID"} | ({"Window"} if node_type == "util_rolling_avg" else set())
-            required_outputs = {"Rolling Avg"} if node_type == "util_rolling_avg" else {"Accumulated"}
-            return (
-                not required_inputs.issubset(inputs)
-                or not required_outputs.issubset(outputs)
-                or "Proxy Object" in inputs
-                or not _reads_values_object(ng)
-            )
-        stream_nodes = (
-            ACE_NODES.get("stream", {}).get("nodes", {})
-            if isinstance(ACE_NODES.get("stream", {}), dict)
-            else {}
-        )
-        if node_type in stream_nodes:
-            node_def = stream_nodes.get(node_type, {}) if isinstance(stream_nodes, dict) else {}
-            required_inputs = {str(name) for _sock_type, name in list(node_def.get("inputs", []))}
-            required_outputs = {str(name) for _sock_type, name in list(node_def.get("outputs", []))}
-            value_output_count = 0
-            for sock_type, _sock_name in list(node_def.get("outputs", [])):
-                if "Bundle" in str(sock_type or ""):
-                    continue
-                value_output_count += 1
-            if value_output_count > 0:
-                required_inputs.add("Attribute ID")
-            for idx in range(1, int(value_output_count)):
-                required_inputs.add(f"Attribute ID {int(idx + 1)}")
-            # Inputs the definition no longer declares (e.g. a removed control)
-            # also make the group stale.
-            return (
-                not required_inputs.issubset(inputs)
-                or not required_outputs.issubset(outputs)
-                or bool(inputs - required_inputs)
-            )
-
-        # Delta nodes: one Audio input and type-specific bundle outputs.
-        if node_type == "frequency_splitter":
+        if role == ROLE_SPLITTER:
             # Dynamic output count; require at least the template "Audio" output.
             return "Audio" not in inputs or not any(
                 n == "Audio" or n.startswith("Audio ") for n in outputs
             )
-
+        attr_inputs = set(ACEDummyNodeFactory._attr_socket_names(category, node_type))
+        if reads_values_object(category, node_type):
+            # No Proxy Object input: the group reads ACE_Values (a group with one is out of date).
+            required_inputs = declared_inputs | attr_inputs
+            return (
+                not required_inputs.issubset(inputs)
+                or not declared_outputs.issubset(outputs)
+                or "Proxy Object" in inputs
+                or not _reads_values_object(ng)
+            )
+        if role == ROLE_MEASURE:
+            required_inputs = declared_inputs | attr_inputs
+            # Inputs the definition no longer declares (e.g. a removed control)
+            # also make the group stale.
+            return (
+                not required_inputs.issubset(inputs)
+                or not declared_outputs.issubset(outputs)
+                or bool(inputs - required_inputs)
+            )
         return False
 
     @staticmethod
     def _attr_socket_names(category: str, node_type: str) -> tuple[str, ...]:
         """Return the Attribute-ID socket names that must remain visible for a node."""
-        if category == "stream":
-            stream_nodes = (
-                ACE_NODES.get("stream", {}).get("nodes", {})
-                if isinstance(ACE_NODES.get("stream", {}), dict)
-                else {}
-            )
-            node_def = stream_nodes.get(str(node_type or ""), {}) if isinstance(stream_nodes, dict) else {}
-            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
-            value_output_count = max(
-                1,
-                sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
-            )
-            names = ["Attribute ID"]
-            for idx in range(1, int(value_output_count)):
-                names.append(f"Attribute ID {int(idx + 1)}")
-            return tuple(names)
-        if category == "utilities" and node_type == "util_rolling_avg":
-            return ("Attribute ID",)
-        if category == "utilities" and node_type == "stream_accumulator":
-            return ("Attribute ID",)
-        return ()
+        from ..identity import attribute_socket_name
+
+        return tuple(attribute_socket_name(slot) for slot in range(len(value_outputs(category, node_type))))
 
     @staticmethod
     def _ensure_attr_interface_visible(ng, category: str, node_type: str):
@@ -223,48 +192,48 @@ class ACEDummyNodeFactory:
         input_node.location = (-600, 0)
         output_node.location = (600, 0)
 
-        # CASE A: SOURCE MANAGEMENT
-        if category == 'source_mngmt':
+        role = node_role(category, node_type)
 
-            if node_type == 'src':
-                # Logic: Object Info (Proxy) -> Combine Bundle -> Group Output
+        # CASE A: SOURCE
+        if role == ROLE_SOURCE:
+            # Logic: Object Info (Proxy) -> Combine Bundle -> Group Output
 
-                if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
-                    ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
+            if not any(s.name == "Proxy Object" for s in ng.interface.items_tree):
+                ng.interface.new_socket("Proxy Object", in_out='INPUT', socket_type='NodeSocketObject')
 
-                obj_info = ng.nodes.new('GeometryNodeObjectInfo')
-                obj_info.location = (-200, 0)
-                obj_info.transform_space = 'ORIGINAL'
-                obj_info.inputs['As Instance'].default_value = False
+            obj_info = ng.nodes.new('GeometryNodeObjectInfo')
+            obj_info.location = (-200, 0)
+            obj_info.transform_space = 'ORIGINAL'
+            obj_info.inputs['As Instance'].default_value = False
 
-                # Link Input (Proxy Object) -> Object Info
-                proxy_sock_idx = len(inputs_def)
-                ng.links.new(input_node.outputs[proxy_sock_idx], obj_info.inputs[0])
+            # Link Input (Proxy Object) -> Object Info
+            proxy_sock_idx = len(inputs_def)
+            ng.links.new(input_node.outputs[proxy_sock_idx], obj_info.inputs[0])
 
-                bundle_node = ng.nodes.new('NodeCombineBundle')
-                bundle_node.bundle_items.new('GEOMETRY', "Proxy Geometry")
-                bundle_node.location = (200, 0)
+            bundle_node = ng.nodes.new('NodeCombineBundle')
+            bundle_node.bundle_items.new('GEOMETRY', "Proxy Geometry")
+            bundle_node.location = (200, 0)
 
-                ng.links.new(obj_info.outputs['Geometry'], bundle_node.inputs["Proxy Geometry"])
-                ng.links.new(bundle_node.outputs[0], output_node.inputs[0])
+            ng.links.new(obj_info.outputs['Geometry'], bundle_node.inputs["Proxy Geometry"])
+            ng.links.new(bundle_node.outputs[0], output_node.inputs[0])
 
-                # BPM and Beats per Bar: what the source writes on point 0 of its proxy.
-                from ...core.proxy.attributes import SOURCE_TEMPO_ATTRS
-                for out_idx, (attr_name, data_type) in enumerate(SOURCE_TEMPO_ATTRS.items(), start=1):
-                    named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
-                    named_attr.data_type = data_type
-                    named_attr.inputs['Name'].default_value = attr_name
-                    named_attr.location = (-200, -200 * out_idx)
-                    sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
-                    sample_idx.data_type = data_type
-                    sample_idx.domain = 'POINT'
-                    sample_idx.location = (200, -200 * out_idx)
-                    ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
-                    ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
-                    ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
+            # BPM and Beats per Bar: what the source writes on point 0 of its proxy.
+            from ...core.proxy.attributes import SOURCE_TEMPO_ATTRS
+            for out_idx, (attr_name, data_type) in enumerate(SOURCE_TEMPO_ATTRS.items(), start=1):
+                named_attr = ng.nodes.new('GeometryNodeInputNamedAttribute')
+                named_attr.data_type = data_type
+                named_attr.inputs['Name'].default_value = attr_name
+                named_attr.location = (-200, -200 * out_idx)
+                sample_idx = ng.nodes.new('GeometryNodeSampleIndex')
+                sample_idx.data_type = data_type
+                sample_idx.domain = 'POINT'
+                sample_idx.location = (200, -200 * out_idx)
+                ng.links.new(obj_info.outputs['Geometry'], sample_idx.inputs['Geometry'])
+                ng.links.new(named_attr.outputs[0], sample_idx.inputs['Value'])
+                ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
-        # CASE B: DELTA (Audio -> Audio)
-        elif category == 'delta':
+        # CASE B: SPLITTER (Audio -> Audio)
+        elif role == ROLE_SPLITTER:
             # Logic: Use Join Bundle to drive outputs
             
             if len(inputs_def) > 0:
@@ -274,8 +243,8 @@ class ACEDummyNodeFactory:
                     # Connect Input -> Join Bundle
                     ng.links.new(source_bundle, output_node.inputs[i])
 
-        # CASE C: STREAM (Audio -> Float/Vector)
-        elif category == 'stream':
+        # CASE C: MEASURE (Audio -> Float/Vector)
+        elif role == ROLE_MEASURE:
             # One Sample Index per non-bundle output; extra numeric controls feed (sum * 0) into the index
             # so their sockets stay active without changing the sampled value.
 
@@ -370,14 +339,14 @@ class ACEDummyNodeFactory:
                 ng.links.new(frame_index, sample_idx.inputs['Index'])
                 ng.links.new(sample_idx.outputs['Value'], output_node.inputs[out_idx])
 
-        # CASE D: UTILITIES
-        elif category == 'utilities':
+        # CASE D: PREVIEW (pure sink: one bundle input, no outputs)
+        elif role == ROLE_PREVIEW:
+            pass
 
-            if node_type == 'preview_sink':
-                # Pure sink: one bundle input, no outputs.
-                pass
+        # CASE E: CONTROLLERS fed a value, which read ACE_Values
+        elif reads_values_object(category, node_type):
 
-            elif node_type == 'util_rolling_avg':
+            if node_type == 'util_rolling_avg':
                 # Attribute ID input (string) — the auto-generated proxy attribute name.
                 if not any(s.name == "Attribute ID" for s in ng.interface.items_tree):
                     ng.interface.new_socket("Attribute ID", in_out='INPUT', socket_type='NodeSocketString')

@@ -26,10 +26,10 @@ class TestInstancesReport(unittest.TestCase):
             ("use_c", "fe_mat", "Mat", (), "SRC_1"),
         ):
             tree.add_node(at.ACEAbstractNode(
-                id=node_id, name="Loudness" if tree_name == "Group" else "RMS", category="stream", type="loudness",
+                id=node_id, name="Loudness" if tree_name == "Group" else "RMS", category="audio", type="loudness",
                 root_sources={source}, frontend_uid=frontend, definition_tree=tree_name, use_chain=chain,
             ))
-        tree.add_node(at.ACEAbstractNode(id="viewer", name="Viewer", category="utilities", type="preview_sink",
+        tree.add_node(at.ACEAbstractNode(id="viewer", name="Viewer", category="output", type="preview_sink",
                                          parameters={"viewer": True}, frontend_uid="fe_cube", definition_tree="Main"))
         return types.SimpleNamespace(
             instance_tree_ref=tree,

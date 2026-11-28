@@ -1,12 +1,7 @@
 """Mode nodes (Loudness, Stereo): labels and applying a mode."""
 
-from ..vars import ACE_NODES, node_mode_label, node_modes, resolve_node_mode
+from ..vars import ACE_NODES, SPLITTER_KIND, mode_inputs, node_mode_label, node_modes, resolve_node_mode
 
-
-# Inputs used by one mode only; hidden on the node in the other modes.
-_MODE_ONLY_INPUTS: dict[tuple[str, str], dict[str, str]] = {
-    ("stream", "loudness"): {"Window (s)": "lufs"},
-}
 
 def mode_node_label(category: str, node_type: str, mode: str) -> str:
     """Automatic label of a mode node, e.g. "Loudness (LUFS)"."""
@@ -20,7 +15,7 @@ def automatic_node_label(node, category: str, node_type: str) -> str:
     if node_modes(category, node_type):
         return mode_node_label(category, node_type, resolve_node_mode(category, node_type, node.get("ace_mode")))
     base = str(ACE_NODES.get(category, {}).get("nodes", {}).get(node_type, {}).get("label", "") or node_type)
-    if (category, node_type) == ("delta", "frequency_splitter"):
+    if (category, node_type) == SPLITTER_KIND:
         return f"{base} ({int(node.get('ace_band_count', max(2, len(node.outputs))))} Bands)"
     return base
 
@@ -42,7 +37,7 @@ def apply_node_mode(node, category: str, node_type: str, mode) -> str:
     node["ace_mode"] = resolved
     if _is_automatic_label(getattr(node, "label", ""), category, node_type):
         node.label = mode_node_label(category, node_type, resolved)
-    for sock_name, only_mode in _MODE_ONLY_INPUTS.get((category, node_type), {}).items():
+    for sock_name, only_mode in mode_inputs(category, node_type).items():
         sock = node.inputs.get(sock_name) if hasattr(node, "inputs") else None
         if sock is not None and not sock.is_linked:
             sock.hide = resolved != only_mode

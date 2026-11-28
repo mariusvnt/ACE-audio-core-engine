@@ -120,7 +120,7 @@ class _FakeAceGroup(fake_bpy.TruthyDict):
 class _FakeAceNode(fake_bpy.TruthyDict):
     """A node using an ACE group: what makes a tree an ACE frontend."""
 
-    def __init__(self, name: str, group_name: str = ".ACE_stream_loudness"):
+    def __init__(self, name: str, group_name: str = ".ACE_audio_loudness"):
         super().__init__()
         self.type = "GROUP"
         self.name = name
@@ -212,7 +212,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 "node_a": self.abs_mod.ACEAbstractNode(
                     id="node_a",
                     name="A",
-                    category="stream",
+                    category="audio",
                     type="rms",
                 )
             },
@@ -257,7 +257,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 "node_a": self.abs_mod.ACEAbstractNode(
                     id="node_a",
                     name="Dup",
-                    category="stream",
+                    category="audio",
                     type="rms",
                 )
             }
@@ -269,7 +269,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         node_a = self.abs_mod.ACEAbstractNode(
             id="node_a",
             name="RMS",
-            category="stream",
+            category="audio",
             type="rms",
             frontend_uid="frontend_a",
             frontend_kind="GEOMETRY_NODES",
@@ -277,7 +277,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
         node_b = self.abs_mod.ACEAbstractNode(
             id="node_b",
             name="Shader RMS",
-            category="stream",
+            category="audio",
             type="rms",
             frontend_uid="frontend_b",
             frontend_kind="SHADER_NODES",
@@ -390,7 +390,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 "preview_old": self.abs_mod.ACEAbstractNode(
                     id="preview_old",
                     name="Preview Old",
-                    category="utilities",
+                    category="output",
                     type="preview_sink",
                     frontend_uid="frontend_a",
                     parameters={"frontend_node_index": 2},
@@ -398,7 +398,7 @@ class TestMultiFrontendCompile(unittest.TestCase):
                 "preview_new": self.abs_mod.ACEAbstractNode(
                     id="preview_new",
                     name="Preview New",
-                    category="utilities",
+                    category="output",
                     type="preview_sink",
                     frontend_uid="frontend_b",
                     parameters={"frontend_node_index": 1},
@@ -505,15 +505,15 @@ class TestMultiFrontendCompile(unittest.TestCase):
         tree = self.abs_mod.ACEAbstractTree(
             nodes={
                 "node_gn": self.abs_mod.ACEAbstractNode(
-                    id="node_gn", name="GN RMS", category="stream", type="loudness",
+                    id="node_gn", name="GN RMS", category="audio", type="loudness",
                     frontend_uid="frontend_gn", frontend_kind="GEOMETRY_NODES",
                 ),
                 "node_shader": self.abs_mod.ACEAbstractNode(
-                    id="node_shader", name="Shader RMS", category="stream", type="loudness",
+                    id="node_shader", name="Shader RMS", category="audio", type="loudness",
                     frontend_uid="frontend_shader", frontend_kind="SHADER_NODES",
                 ),
                 "node_acc": self.abs_mod.ACEAbstractNode(
-                    id="node_acc", name="Accumulator", category="utilities", type="stream_accumulator",
+                    id="node_acc", name="Accumulator", category="controllers", type="stream_accumulator",
                     frontend_uid="frontend_gn", frontend_kind="GEOMETRY_NODES",
                 ),
             },

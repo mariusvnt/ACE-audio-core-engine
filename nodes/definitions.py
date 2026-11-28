@@ -20,7 +20,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..vars import ACE_NODES, resolve_node_mode
+from ..vars import ACE_NODES, SOURCE_KIND, SPLITTER_KIND, resolve_node_mode
 from .. import utils
 from .identity import is_ace_group, node_kind, sink_names, tree_key
 
@@ -275,7 +275,7 @@ def _targets(start_socket) -> list:
 
 
 def _parse_ace(node, category: str, node_type: str, order: int) -> AceEntry:
-    if (category, node_type) == ("delta", "frequency_splitter"):
+    if (category, node_type) == SPLITTER_KIND:
         input_defs = [("NodeSocketBundle", "Audio In")] + [
             ("NodeSocketFloat", f"Split Freq {k + 1}") for k in range(len(node.inputs) - 1)
         ]
@@ -314,7 +314,7 @@ def _parse_ace(node, category: str, node_type: str, order: int) -> AceEntry:
     entry.params["frontend_node_index"] = order
     for i, sock in enumerate(node.outputs):
         entry.outputs.append((str(sock.name), output_defs[i][0] if i < len(output_defs) else "NodeSocketFloat"))
-    if (category, node_type) == ("source_mngmt", "src"):
+    if (category, node_type) == SOURCE_KIND:
         from .source_nodes import node_source_id
 
         entry.source_id = node_source_id(node)

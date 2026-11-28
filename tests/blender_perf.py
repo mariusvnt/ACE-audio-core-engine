@@ -92,10 +92,10 @@ def _build_scene(n_nodes, wav_path):
     tree.is_modifier = True
     add_geometry_passthrough(tree)
     obj.modifiers.new("ACE Perf", "NODES").node_group = tree
-    source = smoke._add_ace_node(ADDON, tree, "source_mngmt", "src", "Source")
+    source = smoke._add_ace_node(ADDON, tree, "input", "src", "Source")
     for i in range(n_nodes):
         node_type, mode = NODE_TYPES[i % len(NODE_TYPES)]
-        node = smoke._add_ace_node(ADDON, tree, "stream", node_type, f"{mode or node_type} {i}", mode=mode)
+        node = smoke._add_ace_node(ADDON, tree, "audio", node_type, f"{mode or node_type} {i}", mode=mode)
         tree.links.new(source.outputs["Audio"], node.inputs["Audio"])
     return scene, src
 

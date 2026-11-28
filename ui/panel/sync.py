@@ -13,7 +13,7 @@ from ...core.engine.engine import ACEAudioEngine
 from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...nodes.shader.reader import ACEShaderTreeReader
 from ... import utils
-from ...vars import ACE_NODES
+from ...vars import ROLE_SPLITTER, SOURCE_KIND, node_def, node_role
 from . import operator_tree
 from . import usage
 from ...nodes.split_freqs import split_freq_states
@@ -340,17 +340,17 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
         bl_node = bl_by_id.get(node_id)
         label = str((bl_node.label or bl_node.name) if bl_node is not None else (node.name or node_id))
         outputs = list(getattr(node, "outputs", []) or [])
-        band_names = tuple(str(o.name) for o in outputs) if node.category == "delta" and len(outputs) > 1 else ()
+        band_names = tuple(str(o.name) for o in outputs) if node_role(node.category, node.type) == ROLE_SPLITTER and len(outputs) > 1 else ()
         order = utils.as_int(node.parameters.get("frontend_node_index"), 0)
         prefix = ""
         if band_names:
             # "Split Low", "Split Side", "Split 2"...; a name the user gave replaces "Split".
             custom = str(getattr(bl_node, "label", "") or "")
-            type_label = ACE_NODES["delta"]["nodes"].get(node.type, {}).get("label", "")
+            type_label = node_def(node.category, node.type).get("label", "")
             automatic = custom == type_label or is_automatic_count_label(custom, ("Splitter", "Frequency Splitter"), "Bands")
             prefix = "Split" if automatic else custom
         graph_nodes.append(operator_tree.GraphNode(node_id, label, order, band_names, prefix))
-        if node.category == "source_mngmt" and node.type == "src":
+        if (node.category, node.type) == SOURCE_KIND:
             if source_uid and str(getattr(node, "source_binding_id", "") or "") == source_uid:
                 bound_roots.append((order, node_id))
     links = [

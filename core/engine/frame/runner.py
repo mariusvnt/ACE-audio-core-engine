@@ -11,6 +11,7 @@ from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
 from .block_size import BlockSizing
 from .evaluation import GraphEvaluation
+from ....vars import PREVIEW_KIND, writes_values
 
 
 @dataclass
@@ -406,12 +407,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
                     node = self.engine.abstract_tree_ref.nodes.get(node_id)
                     if not node:
                         continue
-                    is_output_node = (
-                        node.category == 'stream'
-                        or (node.type == 'util_rolling_avg' and node.category == 'utilities')
-                        or (node.type == 'stream_accumulator' and node.category == 'utilities')
-                        or (node.category == 'utilities' and node.type == 'preview_sink')
-                    )
+                    is_output_node = writes_values(node.category, node.type) or (node.category, node.type) == PREVIEW_KIND
                     if not is_output_node:
                         continue
                     for out in getattr(node, "outputs", []) or []:

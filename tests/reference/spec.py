@@ -19,14 +19,14 @@ FRAME_START = 1
 
 # Node types with no reference curve, and why.
 EXCLUDED: Dict[Tuple[str, str], str] = {
-    ("source_mngmt", "src"): "the root of every case; its tempo is SOURCE_CASE",
-    ("utilities", "preview_sink"): "an audio monitor: it outputs no values",
+    ("input", "src"): "the root of every case; its tempo is SOURCE_CASE",
+    ("output", "preview_sink"): "an audio monitor: it outputs no values",
 }
 
 # The Source node itself: BPM and Beats per Bar.
-SOURCE_CASE = "source_mngmt.src"
+SOURCE_CASE = "input.src"
 
-# How many outputs a delta node has once placed (the frequency splitter's
+# How many outputs a splitter has once placed (the frequency splitter's
 # runtime variant is built with this many bands).
 SPLITTER_BANDS = 2
 
@@ -34,18 +34,18 @@ SPLITTER_BANDS = 2
 # The longest matching prefix wins.
 DEFAULT_TOLERANCE = {"abs": 1e-5, "rel": 1e-4}
 TOLERANCES: Dict[str, Dict[str, float]] = {
-    "stream.pitch": {"abs": 1e-3, "rel": 1e-4},             # Hz
-    "stream.brightness": {"abs": 1e-2, "rel": 1e-4},         # Hz
-    "delta.frequency_splitter.out00.brightness": {"abs": 1e-2, "rel": 1e-4},
-    "delta.frequency_splitter.out01.brightness": {"abs": 1e-2, "rel": 1e-4},
+    "audio.pitch": {"abs": 1e-3, "rel": 1e-4},             # Hz
+    "audio.brightness": {"abs": 1e-2, "rel": 1e-4},         # Hz
+    "audio.frequency_splitter.out00.brightness": {"abs": 1e-2, "rel": 1e-4},
+    "audio.frequency_splitter.out01.brightness": {"abs": 1e-2, "rel": 1e-4},
     SOURCE_CASE: {"abs": 1e-3, "rel": 1e-4},                 # BPM
-    "utilities.stream_accumulator": {"abs": 1e-4, "rel": 1e-4},  # a running sum
+    "controllers.stream_accumulator": {"abs": 1e-4, "rel": 1e-4},  # a running sum
 }
 
 
 # Cases that can't settle after a seek: a running sum remembers every frame before. They are
 # exact only when baked, so the seek gate leaves them out (FUTURE.md 1.2).
-NOT_SETTLEABLE = ("utilities.stream_accumulator",)
+NOT_SETTLEABLE = ("controllers.stream_accumulator",)
 
 
 def tolerance(case_id: str) -> Dict[str, float]:
@@ -57,14 +57,39 @@ def tolerance(case_id: str) -> Dict[str, float]:
 
 
 def _load_ace_nodes():
-    """ACE_NODES from vars.py, read without importing the add-on (vars.py has no bpy, but its package does)."""
+    """ACE_NODES from vars.py, read without importing the add-on (vars.py has no bpy, but its package does).
+
+    The module's string constants (ROLE_MEASURE = "measure"...) are put in place of their names.
+    """
     path = Path(__file__).resolve().parents[2] / "vars.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    constants: Dict[str, str] = {}
+
+    class _Names(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id in constants:
+                return ast.copy_location(ast.Constant(constants[node.id]), node)
+            return node
+
     for node in tree.body:
         target = getattr(node, "target", None) or (node.targets[0] if isinstance(node, ast.Assign) else None)
-        if isinstance(target, ast.Name) and target.id == "ACE_NODES":
-            return ast.literal_eval(node.value)
+        if not isinstance(target, ast.Name) or node.value is None:
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            constants[target.id] = node.value.value
+        if target.id == "ACE_NODES":
+            return ast.literal_eval(_Names().visit(node.value))
     raise RuntimeError("ACE_NODES not found in vars.py")
+
+
+def _kinds(nodes, role: str) -> List[Tuple[str, str, dict]]:
+    """(category, type, definition) of each node with this role, in registry order."""
+    return [
+        (category, node_type, node_def)
+        for category, cat in nodes.items()
+        for node_type, node_def in cat["nodes"].items()
+        if node_def.get("role") == role and not node_def.get("native")
+    ]
 
 
 def _step(category: str, node_type: str, mode: Optional[str] = None, from_output: int = 0) -> dict:
@@ -77,43 +102,41 @@ def cases() -> List[dict]:
     nodes = _load_ace_nodes()
     out: List[dict] = []
 
-    stream = nodes["stream"]["nodes"]
-    for node_type, node_def in stream.items():
+    measures = _kinds(nodes, "measure")
+    for category, node_type, node_def in measures:
         modes = [m[0] for m in node_def.get("modes") or []] or [None]
         for mode in modes:
-            case_id = f"stream.{node_type}.{mode}" if mode else f"stream.{node_type}"
-            out.append({"id": case_id, "chain": [_step("stream", node_type, mode)]})
+            case_id = f"{category}.{node_type}.{mode}" if mode else f"{category}.{node_type}"
+            out.append({"id": case_id, "chain": [_step(category, node_type, mode)]})
 
-    for node_type, node_def in nodes["delta"]["nodes"].items():
-        count = SPLITTER_BANDS if node_type == "frequency_splitter" else len(node_def["outputs"])
-        for idx in range(count):
+    rms = next((category, node_type) for category, node_type, _d in measures if node_type == "loudness")
+    for category, node_type, node_def in _kinds(nodes, "splitter"):
+        for idx in range(SPLITTER_BANDS):
             out.append({
-                "id": f"delta.{node_type}.out{idx:02d}.rms",
-                "chain": [_step("delta", node_type), _step("stream", "loudness", "rms", from_output=idx)],
+                "id": f"{category}.{node_type}.out{idx:02d}.rms",
+                "chain": [_step(category, node_type), _step(*rms, "rms", from_output=idx)],
             })
 
     # Measurements that must stay inside a band: one case per band and measurement.
+    measure_category = {node_type: category for category, node_type, _d in measures}
     banded = [("stereo", mode) for mode in ("width", "balance")] + [("stereo_vector", None), ("brightness", None)]
-    for idx in range(SPLITTER_BANDS):
-        for node_type, mode in banded:
-            if node_type not in stream:
-                continue
-            suffix = f"{node_type}.{mode}" if mode else node_type
-            out.append({
-                "id": f"delta.frequency_splitter.out{idx:02d}.{suffix}",
-                "chain": [_step("delta", "frequency_splitter"), _step("stream", node_type, mode, from_output=idx)],
-            })
+    for split_category, split_type, _d in _kinds(nodes, "splitter"):
+        for idx in range(SPLITTER_BANDS):
+            for node_type, mode in banded:
+                if node_type not in measure_category:
+                    continue
+                suffix = f"{node_type}.{mode}" if mode else node_type
+                out.append({
+                    "id": f"{split_category}.{split_type}.out{idx:02d}.{suffix}",
+                    "chain": [_step(split_category, split_type), _step(measure_category[node_type], node_type, mode, from_output=idx)],
+                })
 
-    utilities = nodes["utilities"]["nodes"]
-    if "util_rolling_avg" in utilities:
+    feeds = {"util_rolling_avg": ("loudness", "rms"), "stream_accumulator": ("transient", None)}
+    for category, node_type, _d in _kinds(nodes, "controller"):
+        feed_type, feed_mode = feeds.get(node_type, ("loudness", "rms"))
         out.append({
-            "id": "utilities.util_rolling_avg",
-            "chain": [_step("stream", "loudness", "rms"), _step("utilities", "util_rolling_avg")],
-        })
-    if "stream_accumulator" in utilities:
-        out.append({
-            "id": "utilities.stream_accumulator",
-            "chain": [_step("stream", "transient"), _step("utilities", "stream_accumulator")],
+            "id": f"{category}.{node_type}",
+            "chain": [_step(measure_category[feed_type], feed_type, feed_mode), _step(category, node_type)],
         })
     out.append({"id": SOURCE_CASE, "chain": []})
     return out

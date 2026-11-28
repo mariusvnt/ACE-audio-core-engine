@@ -5,12 +5,9 @@ import sys
 from typing import Any, Dict, Optional
 import numpy as np
 from ... import utils
-from ...vars import ACE_NODES
-from ..tasks.base import ACEAudioTask
+from ...vars import ACE_NODES, SPLITTER_KIND
 from ..tasks.chunk import AudioChunk, SAMPLE_RATE
-from ..tasks.delta import FrequencySplitterTask
-from ..tasks.stream import create_stream_task
-from ..tasks.utility import StreamAccumulatorTask
+from ..tasks.factory import create_task
 
 
 def _coerce_worker_audio_chunk(data: Any, block_size: int, sample_rate: int = SAMPLE_RATE) -> AudioChunk:
@@ -221,28 +218,11 @@ class _CompiledWorkerGraph:
 
 def _create_worker_task(node_id: str, category: str, node_type: str, params: Dict[str, Any], block_size: int):
     """Instantiate the correct ACEAudioTask subclass for a given node IR entry."""
-    cat = str(category or "")
-    typ = str(node_type or "")
-    bs = max(int(block_size), 1)
-
-    if cat == "utilities":
-        if typ == "stream_accumulator":
-            return StreamAccumulatorTask(node_id, params, bs)
-
-    if cat == "delta":
-        if typ == "frequency_splitter":
-            return FrequencySplitterTask(node_id, params, bs)
-
-    if cat == "stream":
-        task = create_stream_task(node_id, typ, params, bs)
-        if task is not None:
-            return task
-
-    return ACEAudioTask(node_id, params, bs)
+    return create_task(node_id, str(category or ""), str(node_type or ""), params, max(int(block_size), 1))
 
 
 # Node types whose output count depends on the instance (splitter band count).
-_VARIABLE_OUTPUT_TYPES = {("delta", "frequency_splitter")}
+_VARIABLE_OUTPUT_TYPES = {SPLITTER_KIND}
 
 
 def _declared_output_count(category: str, node_type: str) -> Optional[int]:

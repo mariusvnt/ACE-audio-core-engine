@@ -14,13 +14,14 @@ A node whose proxy or group no longer belongs to a source reads nothing.
 import bpy  # type: ignore
 from ..core.proxy.manager import ACEProxyManager
 from .identity import SOURCE_ID_KEY, ace_nodes
+from ..vars import SOURCE_KIND
 from .. import utils
 
 
 def is_source_node(node) -> bool:
     from .identity import node_kind
 
-    return node_kind(node) == ("source_mngmt", "src")
+    return node_kind(node) == SOURCE_KIND
 
 
 def _proxy_socket(node):
@@ -76,7 +77,7 @@ def source_nodes(trees):
     """(node, source id) of every Source node in *trees*."""
     for tree in trees:
         for node, category, node_type in ace_nodes(tree):
-            if (category, node_type) == ("source_mngmt", "src"):
+            if (category, node_type) == SOURCE_KIND:
                 yield node, node_source_id(node)
 
 

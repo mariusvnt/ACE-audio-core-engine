@@ -16,24 +16,24 @@ class TestIdManagement(unittest.TestCase):
             self.flow_identifier = ""
 
     def test_generate_and_parse_node_id(self):
-        node_id = idm.ACEIdManager.generate_node_id("stream", "loudness")
+        node_id = idm.ACEIdManager.generate_node_id("audio", "loudness")
         parsed = idm.ACEIdManager.parse_node_id(node_id)
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["category"], "stream")
+        self.assertEqual(parsed["category"], "audio")
         self.assertEqual(parsed["type"], "loudness")
         self.assertEqual(len(parsed["uuid"]), 6)
         int(parsed["uuid"], 16)
 
     def test_generate_node_id_is_deterministic_for_same_occupancy(self):
-        existing = ["ACE_stream_rms_123abc", "ACE_stream_rms_def456"]
-        a = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=existing)
-        b = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=list(existing))
+        existing = ["ACE_audio_rms_123abc", "ACE_audio_rms_def456"]
+        a = idm.ACEIdManager.generate_node_id("audio", "loudness", existing_ids=existing)
+        b = idm.ACEIdManager.generate_node_id("audio", "loudness", existing_ids=list(existing))
         self.assertEqual(a, b)
 
     def test_generate_node_id_advances_deterministically_on_collision(self):
-        first = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[])
-        second = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[first])
-        second_again = idm.ACEIdManager.generate_node_id("stream", "loudness", existing_ids=[first])
+        first = idm.ACEIdManager.generate_node_id("audio", "loudness", existing_ids=[])
+        second = idm.ACEIdManager.generate_node_id("audio", "loudness", existing_ids=[first])
+        second_again = idm.ACEIdManager.generate_node_id("audio", "loudness", existing_ids=[first])
         self.assertNotEqual(first, second)
         self.assertEqual(second, second_again)
 
@@ -45,8 +45,8 @@ class TestIdManagement(unittest.TestCase):
         self.assertNotEqual(name_a, name_c)
 
     def test_compact_attr_name_is_stable(self):
-        attr_a = idm.ACEIdManager.generate_compact_attr_name("ACE_Source_ab12cd", "ACE_stream_rms_123456", "RMS", 0)
-        attr_b = idm.ACEIdManager.generate_compact_attr_name("ACE_Source_ab12cd", "ACE_stream_rms_123456", "RMS", 0)
+        attr_a = idm.ACEIdManager.generate_compact_attr_name("ACE_Source_ab12cd", "ACE_audio_rms_123456", "RMS", 0)
+        attr_b = idm.ACEIdManager.generate_compact_attr_name("ACE_Source_ab12cd", "ACE_audio_rms_123456", "RMS", 0)
         self.assertEqual(attr_a, attr_b)
         self.assertTrue(attr_a.startswith(idm.ACEIdManager.PREFIX))
         self.assertLessEqual(len(attr_a), 63)
@@ -56,7 +56,7 @@ class TestIdManagement(unittest.TestCase):
         self.assertIsNone(idm.ACEIdManager.parse_node_id("ACE_invalid"))
 
     def test_ensure_source_uid_preserves_valid_source_id(self):
-        valid = idm.ACEIdManager.generate_node_id("source_mngmt", "src")
+        valid = idm.ACEIdManager.generate_node_id("input", "src")
         src = self._FakeSource(stable_id=valid)
 
         resolved = idm.ACEIdManager.ensure_source_uid(src, existing_ids=[valid])
@@ -72,7 +72,7 @@ class TestIdManagement(unittest.TestCase):
 
         self.assertNotEqual(resolved, "legacy_source_uuid")
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["category"], "source_mngmt")
+        self.assertEqual(parsed["category"], "input")
         self.assertEqual(parsed["type"], "src")
         self.assertEqual(src.stable_id, resolved)
 

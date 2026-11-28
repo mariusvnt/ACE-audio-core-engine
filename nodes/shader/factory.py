@@ -10,7 +10,7 @@ Beats per Bar the same way. Nothing is added to the user's material.
 import hashlib
 import json
 import bpy  # type: ignore
-from ...vars import ACE_NODES, apply_socket_ranges
+from ...vars import ACE_NODES, SOURCE_KIND, apply_socket_ranges, node_def as registry_node_def
 from ... import utils
 from ..frontend import remember_group_inputs
 from ..identity import KIND_KEY, SINK_NAMES_KEY, SOURCE_ID_KEY, group_kind, source_tempo_props, value_outputs
@@ -153,7 +153,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
     @classmethod
     def _value_names(cls, category: str, node_type: str, sink_names=None, source_id: str = "") -> dict[int, str]:
         """Output index -> the scene property its Attribute node reads ("" reads nothing)."""
-        if (category, node_type) == ("source_mngmt", "src"):
+        if (category, node_type) == SOURCE_KIND:
             bpm, bpb = source_tempo_props(source_id) if source_id else ("", "")
             return {1: bpm, 2: bpb}
         names = list(sink_names or [])
@@ -352,9 +352,9 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
             ng = None
         if ng is None:
             ng = bpy.data.node_groups.new(name, "ShaderNodeTree")
-            ng[KIND_KEY] = "source_mngmt:src"
+            ng[KIND_KEY] = ":".join(SOURCE_KIND)
             ng[SOURCE_ID_KEY] = source_id
-            cls._build_group_content(ng, ACE_NODES["source_mngmt"]["nodes"]["src"], "source_mngmt", "src", source_id=source_id)
+            cls._build_group_content(ng, registry_node_def(*SOURCE_KIND), *SOURCE_KIND, source_id=source_id)
         return ng
 
     @classmethod

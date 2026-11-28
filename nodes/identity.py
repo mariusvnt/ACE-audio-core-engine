@@ -1,8 +1,8 @@
 """Who an ACE node is, read from the node without storing anything on it.
 
 - **Kind** (category, type): from the group the node uses. An ACE group either
-  has the canonical name of its kind (``.ACE_stream_loudness``,
-  ``.ACE_SHADER_stream_loudness`` and variants such as ``..._4``) or carries
+  has the canonical name of its kind (``.ACE_audio_loudness``,
+  ``.ACE_SHADER_audio_loudness`` and variants such as ``..._4``) or carries
   ``ace_kind`` (the shader sink and source groups, whose names are their own).
 - **Id**: ``ACE_<category>_<type>_<hash>`` of where the node is used: the root
   tree (and the values its owner binds), the groups entered, and the node's
@@ -14,7 +14,7 @@
 
 import hashlib
 
-from ..vars import ACE_NODES
+from ..vars import ACE_NODES, ROLE_CONTROLLER, kinds_with_role, reads_values_object, value_outputs, writes_values
 from .. import utils
 
 PREFIX = "ACE_"
@@ -23,7 +23,7 @@ SINK_NAMES_KEY = "ace_sink_names"
 SOURCE_ID_KEY = "ace_source_id"
 # Nodes fed a value, not audio: they have no bundle to carry a source's proxy, so their
 # values go to one mesh for the whole file, which their groups read.
-VALUE_NODE_KINDS = frozenset({("utilities", "util_rolling_avg"), ("utilities", "stream_accumulator")})
+VALUE_NODE_KINDS = frozenset(kind for kind in kinds_with_role(ROLE_CONTROLLER) if reads_values_object(*kind))
 VALUES_OBJECT_NAME = "ACE_Values"
 # What a new stream group's Attribute ID sockets hold until the add menu names them.
 PLACEHOLDER_NAMES = frozenset({"ACE_undefined"} | {f"ACE_undefined_{i}" for i in range(2, 9)})
@@ -67,7 +67,7 @@ def group_kind(group) -> tuple[str, str]:
         kinds = _canonical_kinds()
         if body in kinds:
             return kinds[body]
-        # A variant (".ACE_delta_frequency_splitter_4", a copy's ".001"): the longest kind it extends.
+        # A variant (".ACE_audio_frequency_splitter_4", a copy's ".001"): the longest kind it extends.
         best = ""
         for token in kinds:
             if len(token) > len(best) and body.startswith(token) and body[len(token)] in "_.":
@@ -142,18 +142,7 @@ def ace_nodes(tree):
 
 def is_output_kind(category: str, node_type: str) -> bool:
     """Nodes whose values ACE writes for Blender to read."""
-    return category == "stream" or (category, node_type) in (
-        ("utilities", "util_rolling_avg"),
-        ("utilities", "stream_accumulator"),
-    )
-
-
-def value_outputs(category: str, node_type: str) -> list[tuple[int, str]]:
-    """(output index, output name) of each value an output node writes."""
-    if not is_output_kind(category, node_type):
-        return []
-    outputs = ACE_NODES[category]["nodes"][node_type].get("outputs", [])
-    return [(idx, str(name)) for idx, (sock_type, name) in enumerate(outputs) if "Bundle" not in str(sock_type)]
+    return writes_values(category, node_type)
 
 
 def attribute_socket_name(slot: int) -> str:

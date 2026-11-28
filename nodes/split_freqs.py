@@ -2,6 +2,7 @@
 
 import bpy  # type: ignore
 from .identity import node_kind
+from ..vars import SPLITTER_KIND
 from .. import utils
 from . import driven_values
 
@@ -110,6 +111,6 @@ def sort_all_split_freqs() -> None:
     trees += [m.node_tree for m in bpy.data.materials if m.library is None and m.node_tree is not None]
     for tree in trees:
         for node in list(tree.nodes):
-            if node_kind(node) == ("delta", "frequency_splitter"):
+            if node_kind(node) == SPLITTER_KIND:
                 with utils.logged_errors("split_freqs.sort_all_split_freqs"):
                     sort_split_freqs(node)

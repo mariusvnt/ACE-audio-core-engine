@@ -40,7 +40,7 @@ def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
     gn_menu = importlib.import_module(f"{addon_key}.ui.gn_menu")
     dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
     shader = tree.bl_idname == "ShaderNodeTree"
-    if (category, node_type) == ("delta", "frequency_splitter"):
+    if (category, node_type) == ("audio", "frequency_splitter"):
         group = dynamic.ACESplitterManager.get_or_create_variant(2, tree)
     else:
         if shader:
@@ -53,10 +53,10 @@ def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
     node = tree.nodes.new("ShaderNodeGroup" if shader else "GeometryNodeGroup")
     node.node_tree = group
     node.label = node.name = label
-    if (category, node_type) == ("delta", "frequency_splitter"):
+    if (category, node_type) == ("audio", "frequency_splitter"):
         node["ace_band_count"] = 2
     op = gn_menu.ACE_OT_add_node_group
-    if (category, node_type) == ("source_mngmt", "src"):
+    if (category, node_type) == ("input", "src"):
         op._initialize_source_binding(node, bpy.context)
     modes = importlib.import_module(f"{addon_key}.nodes.modes")
     if importlib.import_module(f"{addon_key}.vars").node_modes(category, node_type):

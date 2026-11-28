@@ -44,8 +44,8 @@ class FreshGraphCopyTests(unittest.TestCase):
         engine = self.engine_mod.ACEAudioEngine(0)
         engine.abstract_tree_ref = types.SimpleNamespace(
             nodes={
-                "src": _node("src", "source_mngmt", "src"),
-                "lufs": _node("lufs", "stream", "loudness", {"mode": "lufs"}),
+                "src": _node("src", "input", "src"),
+                "lufs": _node("lufs", "audio", "loudness", {"mode": "lufs"}),
             }
         )
         source_ctx = types.SimpleNamespace(source_type="FILE", filepath="tone.wav", stable_id="S1", live_latency_ms=5)

@@ -160,3 +160,10 @@ class StreamAccumulatorTask(ACEAudioTask):
         if int(self._accumulator.size) == 1:
             return float(self._accumulator[0])
         return self._accumulator.astype(np.float32, copy=False)
+
+
+# Controller node type -> task class.
+CONTROLLER_TASKS = {
+    "util_rolling_avg": RollingAvgTask,
+    "stream_accumulator": StreamAccumulatorTask,
+}

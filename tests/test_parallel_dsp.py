@@ -50,10 +50,10 @@ class TestParallelDSP(unittest.TestCase):
     def _two_source_graph_ir(self):
         return {
             "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "src_b": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "rms_a": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
-                "rms_b": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
+                "src_a": {"category": "input", "type": "src", "parameters": {}},
+                "src_b": {"category": "input", "type": "src", "parameters": {}},
+                "rms_a": {"category": "audio", "type": "loudness", "parameters": {"mode": "rms"}},
+                "rms_b": {"category": "audio", "type": "loudness", "parameters": {"mode": "rms"}},
             },
             "links": [
                 ("src_a", 0, "rms_a", 0),
@@ -73,9 +73,9 @@ class TestParallelDSP(unittest.TestCase):
     def _dual_stream_graph_ir(self):
         return {
             "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "rms": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
-                "bright": {"category": "stream", "type": "brightness", "parameters": {}},
+                "src_a": {"category": "input", "type": "src", "parameters": {}},
+                "rms": {"category": "audio", "type": "loudness", "parameters": {"mode": "rms"}},
+                "bright": {"category": "audio", "type": "brightness", "parameters": {}},
             },
             "links": [
                 ("src_a", 0, "rms", 0),
@@ -94,9 +94,9 @@ class TestParallelDSP(unittest.TestCase):
     def _lufs_stream_graph_ir(self):
         return {
             "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
+                "src_a": {"category": "input", "type": "src", "parameters": {}},
                 "lufs": {
-                    "category": "stream",
+                    "category": "audio",
                     "type": "loudness",
                     "parameters": {"mode": "lufs", "window_size": 0.4},
                 },
@@ -116,8 +116,8 @@ class TestParallelDSP(unittest.TestCase):
     def _peak_stream_graph_ir(self):
         return {
             "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "peak": {"category": "stream", "type": "loudness", "parameters": {"mode": "peak"}},
+                "src_a": {"category": "input", "type": "src", "parameters": {}},
+                "peak": {"category": "audio", "type": "loudness", "parameters": {"mode": "peak"}},
             },
             "links": [
                 ("src_a", 0, "peak", 0),
@@ -134,9 +134,9 @@ class TestParallelDSP(unittest.TestCase):
     def _splitter_stream_graph_ir(self):
         return {
             "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "split": {"category": "delta", "type": "frequency_splitter", "parameters": {}},
-                "rms": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
+                "src_a": {"category": "input", "type": "src", "parameters": {}},
+                "split": {"category": "audio", "type": "frequency_splitter", "parameters": {}},
+                "rms": {"category": "audio", "type": "loudness", "parameters": {"mode": "rms"}},
             },
             "links": [
                 ("src_a", 0, "split", 0),
@@ -154,9 +154,9 @@ class TestParallelDSP(unittest.TestCase):
     def _stream_accumulator_graph_ir(self):
         return {
             "nodes": {
-                "src_a": {"category": "source_mngmt", "type": "src", "parameters": {}},
-                "rms": {"category": "stream", "type": "loudness", "parameters": {"mode": "rms"}},
-                "accum": {"category": "utilities", "type": "stream_accumulator", "parameters": {}},
+                "src_a": {"category": "input", "type": "src", "parameters": {}},
+                "rms": {"category": "audio", "type": "loudness", "parameters": {"mode": "rms"}},
+                "accum": {"category": "controllers", "type": "stream_accumulator", "parameters": {}},
             },
             "links": [
                 ("src_a", 0, "rms", 0),

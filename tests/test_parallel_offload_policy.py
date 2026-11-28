@@ -27,21 +27,21 @@ class TestParallelOffloadPolicy(unittest.TestCase):
         return types.SimpleNamespace(category=str(category), type=str(node_type), parameters=params)
 
     def test_stream_accumulator_is_not_parallel_offload_candidate(self):
-        node = self._node("utilities", "stream_accumulator")
+        node = self._node("controllers", "stream_accumulator")
         allowed = self.ae.ParallelOffload.is_offload_candidate(node)
         self.assertFalse(allowed)
 
     def test_rms_remains_parallel_offload_candidate(self):
-        node = self._node("stream", "rms")
+        node = self._node("audio", "loudness", "rms")
         allowed = self.ae.ParallelOffload.is_offload_candidate(node)
         self.assertTrue(allowed)
 
     def test_stateful_stream_nodes_stay_on_the_main_thread(self):
         """Each worker keeps its own task copy, so a stateful task offloaded would split its state."""
         offload = self.ae.ParallelOffload.is_offload_candidate
-        self.assertFalse(offload(self._node("stream", "transient")))
-        self.assertFalse(offload(self._node("stream", "loudness", "lufs")))
-        self.assertFalse(offload(self._node("stream", "loudness", "peak")))
-        self.assertTrue(offload(self._node("stream", "loudness", "rms")))
-        self.assertTrue(offload(self._node("stream", "loudness")))  # RMS is the default
-        self.assertTrue(offload(self._node("stream", "brightness")))
+        self.assertFalse(offload(self._node("audio", "transient")))
+        self.assertFalse(offload(self._node("audio", "loudness", "lufs")))
+        self.assertFalse(offload(self._node("audio", "loudness", "peak")))
+        self.assertTrue(offload(self._node("audio", "loudness", "rms")))
+        self.assertTrue(offload(self._node("audio", "loudness")))  # RMS is the default
+        self.assertTrue(offload(self._node("audio", "brightness")))

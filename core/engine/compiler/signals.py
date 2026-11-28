@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Tuple
 
 from ...abstract_tree import ACEAbstractLink, ACEAbstractNode, ACEAbstractOutputLink, ACEAbstractTree, audio_links
+from ....vars import PREVIEW_KIND, SOURCE_KIND
 
 # Parameters that are not part of the computation: the sink names and the editor order.
 _SINK_PARAM_PREFIXES = ("attr_id_out_", "attr_id_custom_out_")
@@ -117,14 +118,14 @@ def signal_keys(instance_tree: ACEAbstractTree, source_keys: Dict[str, Tuple]) -
 
 
 def _signal_id(node: ACEAbstractNode, inputs, keys: Dict[str, str], source_keys: Dict[str, Tuple]) -> str:
-    if (node.category, node.type) == ("utilities", "preview_sink"):
+    if (node.category, node.type) == PREVIEW_KIND:
         return node.id  # what is heard is chosen per node: never shared
     payload: Dict[str, Any] = {
         "op": [node.category, node.type],
         "params": key_params(node),
         "inputs": sorted([idx, keys.get(src, src), out] for idx, src, out in inputs),
     }
-    if (node.category, node.type) == ("source_mngmt", "src"):
+    if (node.category, node.type) == SOURCE_KIND:
         root = _source_root(node)
         payload["source"] = [root, *source_keys.get(root, ())]
     return f"S_{node.category}_{node.type}_{_digest(payload)}"

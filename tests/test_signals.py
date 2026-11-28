@@ -24,7 +24,7 @@ class TestSignals(unittest.TestCase):
                                           data_type="NodeSocketFloat")],
             root_sources={root} if root else set(),
             frontend_kind=kind,
-            source_binding_id=root if (category, node_type) == ("source_mngmt", "src") else "",
+            source_binding_id=root if (category, node_type) == ("input", "src") else "",
         )
 
     def _tree(self, nodes, links):
@@ -41,13 +41,13 @@ class TestSignals(unittest.TestCase):
         if sink:
             params["attr_id_out_0"] = sink
             params["attr_id_custom_out_0"] = True
-        return self._node(node_id, "stream", "loudness", params, root=root, kind=kind,
+        return self._node(node_id, "audio", "loudness", params, root=root, kind=kind,
                           inputs=[("Audio", "NodeSocketBundle"), ("Window (s)", "NodeSocketFloat")])
 
     def _scene(self, *uses):
         """Two Source nodes of one source, each feeding the given Loudness uses in turn."""
-        sources = [self._node("src_1", "source_mngmt", "src", {"in_0": ("object", "proxy")}),
-                   self._node("src_2", "source_mngmt", "src", {"frontend_node_index": 9})]
+        sources = [self._node("src_1", "input", "src", {"in_0": ("object", "proxy")}),
+                   self._node("src_2", "input", "src", {"frontend_node_index": 9})]
         links = [(sources[i % 2].id, use.id) for i, use in enumerate(uses)]
         return self._tree([*sources, *uses], links)
 
@@ -83,8 +83,8 @@ class TestSignals(unittest.TestCase):
         self.assertEqual(first.signal_of, again.signal_of)
 
     def test_preview_sinks_keep_their_own_ids(self):
-        preview = self._node("preview_1", "utilities", "preview_sink", {"preview_enabled": True})
-        tree = self._tree([self._node("src_1", "source_mngmt", "src"), preview], [("src_1", "preview_1")])
+        preview = self._node("preview_1", "output", "preview_sink", {"preview_enabled": True})
+        tree = self._tree([self._node("src_1", "input", "src"), preview], [("src_1", "preview_1")])
         result = self.signals.build_signals(tree, {})
         self.assertEqual(result.signal_of["preview_1"], "preview_1")
 

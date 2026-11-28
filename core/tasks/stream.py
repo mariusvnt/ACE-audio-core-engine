@@ -5,7 +5,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 from .filters import NUMBA_AVAILABLE, SCIPY_AVAILABLE, scipy_lfilter
 from ... import utils
-from ...vars import LOUDNESS_FLOOR_DB, resolve_node_mode
+from ...vars import LOUDNESS_FLOOR_DB, ROLE_MEASURE, kinds_with_role, resolve_node_mode
 from .base import ACEAudioTask
 from .chunk import AudioChunk, SAMPLE_RATE, _ensure_audio_chunk
 from .filters import _biquad_filter_block
@@ -504,7 +504,7 @@ class StereoVectorTask(ACEAudioTask):
 
 
 
-# Stream node type -> {mode: task class}. Nodes without modes use the "" key.
+# Measure node type -> {mode: task class}. Nodes without modes use the "" key.
 _STREAM_TASKS: Dict[str, Dict[str, type]] = {
     "loudness": {"rms": RMSLoudnessTask, "lufs": LUFSTask, "peak": PeakTask},
     "stereo": {"width": StereoWidthTask, "balance": StereoBalanceTask},
@@ -516,11 +516,12 @@ _STREAM_TASKS: Dict[str, Dict[str, type]] = {
 
 
 def create_stream_task(node_id: str, node_type: str, params: Dict[str, Any], block_size: int) -> Optional[ACEAudioTask]:
-    """Task for a stream node, chosen by its type and mode."""
+    """Task for a measure node, chosen by its type and mode."""
     typ = str(node_type or "")
     by_mode = _STREAM_TASKS.get(typ)
     if not by_mode:
         return None
-    mode = resolve_node_mode("stream", typ, (params or {}).get("mode"))
+    category = next((cat for cat, kind_type in kinds_with_role(ROLE_MEASURE) if kind_type == typ), "")
+    mode = resolve_node_mode(category, typ, (params or {}).get("mode"))
     task_cls = by_mode.get(mode) or by_mode.get("") or next(iter(by_mode.values()))
     return task_cls(node_id, params, block_size)

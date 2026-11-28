@@ -12,19 +12,14 @@ from ...tasks.chunk import SAMPLE_RATE
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.source import SourceTask
 from ..compiler.signals import worker_params
-from ....vars import node_is_stateful
+from ....vars import SOURCE_KIND, is_offload_candidate as registry_offload_candidate
 
 
 def is_offload_candidate(node: Optional[ACEAbstractNode]) -> bool:
     if node is None:
         return False
-    category = str(getattr(node, "category", "") or "")
-    if category != "stream":
-        return False
-    # Stateful nodes stay on the main thread: worker processes each keep their own copy of a
-    # task, so its state would be split across them.
     mode = (getattr(node, "parameters", None) or {}).get("mode")
-    return not node_is_stateful(category, str(getattr(node, "type", "") or ""), mode)
+    return registry_offload_candidate(str(getattr(node, "category", "") or ""), str(getattr(node, "type", "") or ""), mode)
 
 
 def sanitize(value: Any):
@@ -130,7 +125,7 @@ def _nodes_ir(graph, abstract_tree, node_ids, fps):
             "type": str(getattr(node, "type", "") or ""),
             "parameters": params,
         }
-        if node.category == "source_mngmt" and node.type == "src":
+        if (node.category, node.type) == SOURCE_KIND:
             source_ir[node_id] = _source_ir(graph, node_id)
     return nodes_ir, source_ir
 

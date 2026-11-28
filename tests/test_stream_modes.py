@@ -43,9 +43,9 @@ class TestStreamModes(unittest.TestCase):
 
     def test_every_mode_node_is_declared_with_its_default(self):
         for node_type in ("loudness", "stereo"):
-            modes = [m[0] for m in ace_vars.node_modes("stream", node_type)]
+            modes = [m[0] for m in ace_vars.node_modes("audio", node_type)]
             self.assertTrue(modes, node_type)
-            self.assertIn(ace_vars.resolve_node_mode("stream", node_type, None), modes)
+            self.assertIn(ace_vars.resolve_node_mode("audio", node_type, None), modes)
 
     def test_loudness_scale_is_linear_in_db_between_floor_and_zero(self):
         to_unit = stream._loudness_db_to_unit
@@ -73,7 +73,7 @@ class TestStreamModes(unittest.TestCase):
             self.assertLess(value, 1.0, mode)
 
     def test_floor_is_fixed_and_not_a_node_input(self):
-        inputs = [name for _type, name in ace_vars.ACE_NODES["stream"]["nodes"]["loudness"]["inputs"]]
+        inputs = [name for _type, name in ace_vars.ACE_NODES["audio"]["nodes"]["loudness"]["inputs"]]
         self.assertNotIn("Floor (dB)", inputs)
         for mode in ("rms", "lufs", "peak"):
             plain = stream.create_stream_task("n", "loudness", {"mode": mode}, 2048)

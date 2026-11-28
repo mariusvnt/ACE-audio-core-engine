@@ -356,7 +356,7 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
         abs_mod.ACEAbstractNode(
             id="src_node",
             name="Source",
-            category="source_mngmt",
+            category="input",
             type="src",
             parameters={},
         )
@@ -377,7 +377,7 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
             abs_mod.ACEAbstractNode(
                 id=node_id,
                 name=node_id,
-                category="stream",
+                category="audio",
                 type=stype,
                 parameters={},
             )
@@ -460,7 +460,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
             abs_mod.ACEAbstractNode(
                 id=src_node_id,
                 name=src_node_id,
-                category="source_mngmt",
+                category="input",
                 type="src",
                 parameters={},
             )
@@ -475,7 +475,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
             abs_mod.ACEAbstractNode(
                 id=split_id,
                 name=split_id,
-                category="delta",
+                category="audio",
                 type="frequency_splitter",
                 parameters=split_params,
             )
@@ -494,7 +494,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
                 abs_mod.ACEAbstractNode(
                     id=stream_id,
                     name=stream_id,
-                    category="stream",
+                    category="audio",
                     type="rms",
                     parameters={},
                 )
@@ -512,7 +512,7 @@ def _build_sla_engine_graph(ae, atr, abs_mod, parallel_mode: str):
                 abs_mod.ACEAbstractNode(
                     id=preview_id,
                     name=preview_id,
-                    category="utilities",
+                    category="output",
                     type="preview_sink",
                     parameters={"preview_enabled": True},
                 )

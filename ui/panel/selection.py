@@ -5,7 +5,7 @@ from ...nodes.identity import node_id as ace_node_id, parsed_node
 from ...nodes.source_nodes import node_source_id
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
-from ...vars import ACE_NODES, node_modes, resolve_node_mode
+from ...vars import ACE_NODES, PREVIEW_KIND, SOURCE_KIND, SPLITTER_KIND, node_modes, resolve_node_mode
 from .splitter import _splitter_display_bounds, splitter_band_widths
 from ...nodes.split_freqs import split_freq_states
 from .helpers import _describe_node, _find_active_node_tree, _find_tree_node_by_ace_id, property_column, property_split_row
@@ -92,7 +92,7 @@ def rename_operator(node_id: str, value: str) -> str:
         return ""
     category, node_type = str(parsed.get("category", "")), str(parsed.get("type", ""))
     name = str(value or "").strip()
-    if (category, node_type) == ("source_mngmt", "src"):
+    if (category, node_type) == SOURCE_KIND:
         source = _source_for_node(node, bpy.context.scene)
         if source is not None and name:
             source.name = name
@@ -229,15 +229,11 @@ def _parsed_node_has_operator_settings(parsed) -> bool:
     if not parsed:
         return False
     key = (str(parsed.get("category", "") or ""), str(parsed.get("type", "") or ""))
-    if key == ("source_mngmt", "src"):
+    if key == SOURCE_KIND:
         return len(_source_choices()) > 1
     if node_modes(*key):
         return True
-    return key in {
-        ("delta", "frequency_splitter"),
-        ("utilities", "preview_sink"),
-        ("utilities", "util_rolling_avg"),
-    }
+    return key in {SPLITTER_KIND, PREVIEW_KIND} or key[1] == "util_rolling_avg"
 
 
 def _selected_node_has_operator_settings(context) -> bool:
@@ -339,7 +335,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
 
     category = str(parsed.get("category", "") or "")
     node_type = str(parsed.get("type", "") or "")
-    if (category, node_type) == ("source_mngmt", "src"):
+    if (category, node_type) == SOURCE_KIND:
         drew_settings = True
         box = layout.box()
         box.label(text="Audio Source", icon="SOUND")
@@ -362,7 +358,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             if sock.name == "Window (s)" and not sock.hide and not sock.is_linked:
                 property_column(box).prop(sock, "default_value", text=sock.name)
 
-    if parsed.get("category") == "delta" and parsed.get("type") == "frequency_splitter":
+    if (parsed.get("category"), parsed.get("type")) == SPLITTER_KIND:
         drew_settings = True
         box = layout.box()
         box.label(text="Frequency Splitter", icon="MOD_WAVE")
@@ -389,7 +385,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                 field.label(text="" if value is None else f"{value:.0f} Hz")
                 field.label(text="Linked", icon="LINKED")
 
-    if parsed.get("category") == "utilities" and parsed.get("type") == "preview_sink":
+    if (parsed.get("category"), parsed.get("type")) == PREVIEW_KIND:
         drew_settings = True
         box = layout.box()
         box.label(text="Audio Preview", icon="PLAY_SOUND")
@@ -415,7 +411,7 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                     icon="ERROR",
                 )
 
-    if parsed.get("category") == "utilities" and parsed.get("type") == "util_rolling_avg":
+    if parsed.get("type") == "util_rolling_avg":
         drew_settings = True
         box = layout.box()
         box.label(text="Rolling Average", icon="DRIVER")

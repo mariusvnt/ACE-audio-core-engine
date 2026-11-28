@@ -3,6 +3,7 @@ import math
 import bpy # type: ignore
 from .. import utils
 from .geometry.factory import ACEDummyNodeFactory
+from ..vars import SPLITTER_KIND
 
 
 def is_automatic_count_label(label: str, bases: tuple[str, ...], unit: str) -> bool:
@@ -65,7 +66,7 @@ class ACESplitterManager:
         band_count = max(2, min(int(band_count), 8))
         factory_cls = _factory_for_tree(tree_or_type)
         tree_type = _tree_bl_idname(tree_or_type)
-        base_name = factory_cls.get_group_name('delta', 'frequency_splitter')
+        base_name = factory_cls.get_group_name(*SPLITTER_KIND)
         variant_name = f"{base_name}_{band_count}_bands"
 
         if variant_name in bpy.data.node_groups:
@@ -83,7 +84,7 @@ class ACESplitterManager:
     def refresh_existing_variants(tree_or_type="GeometryNodeTree"):
         """Migrate already-existing splitter variants in-place so older projects immediately benefit from range constraints and non-greyed controls."""
         tree_type = _tree_bl_idname(tree_or_type)
-        base_name = _factory_for_tree(tree_or_type).get_group_name('delta', 'frequency_splitter')
+        base_name = _factory_for_tree(tree_or_type).get_group_name(*SPLITTER_KIND)
         prefix = f"{base_name}_"
         for ng in list(getattr(bpy.data, "node_groups", [])):
             if str(getattr(ng, "bl_idname", "") or "") != tree_type:

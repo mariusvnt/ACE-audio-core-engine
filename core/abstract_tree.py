@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
+from ..vars import SPLITTER_KIND
 
 @dataclass
 class ACEAbstractSocket:
@@ -92,8 +93,7 @@ def audio_links(abstract_tree):
         target = nodes.get(link.target_node_id)
         if (
             int(link.target_socket_idx) > 0
-            and getattr(target, "category", "") == "delta"
-            and getattr(target, "type", "") == "frequency_splitter"
+            and (getattr(target, "category", ""), getattr(target, "type", "")) == SPLITTER_KIND
         ):
             continue
         yield link

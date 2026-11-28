@@ -1,5 +1,5 @@
 import bpy # type: ignore
-from ..vars import ACE_NODES, node_modes
+from ..vars import ACE_NODES, MENU_SEPARATOR_AFTER, SOURCE_KIND, SPLITTER_KIND, node_modes
 from ..nodes.modes import apply_node_mode
 from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
@@ -11,8 +11,8 @@ from ..nodes.source_nodes import set_node_source
 from .. import utils
 
 _ALLOWED_CATEGORIES_BY_TREE_TYPE = {
-    "GeometryNodeTree": ("source_mngmt", "delta", "stream", "utilities"),
-    "ShaderNodeTree": ("source_mngmt", "delta", "stream", "utilities"),
+    "GeometryNodeTree": tuple(ACE_NODES),
+    "ShaderNodeTree": tuple(ACE_NODES),
 }
 
 
@@ -165,7 +165,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         group_node_type = self._group_node_type_for_context(context)
         splitter_bands = 2
         
-        if self.category_key == "delta" and self.node_type_key == "frequency_splitter":
+        if (self.category_key, self.node_type_key) == SPLITTER_KIND:
             try:
                 ace = getattr(getattr(context, "scene", None), "audiocore", None)
                 settings = getattr(ace, "engine_settings", None) if ace else None
@@ -203,7 +203,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             node["ace_preview_enabled"] = bool(node.get("ace_preview_enabled", True))
         if node_modes(self.category_key, self.node_type_key):
             apply_node_mode(node, self.category_key, self.node_type_key, None)
-        if self.category_key == "source_mngmt" and self.node_type_key == "src":
+        if (self.category_key, self.node_type_key) == SOURCE_KIND:
             self._initialize_source_binding(node, context)
 
         self._initialize_sink_names(node, self.category_key, self.node_type_key, context)
@@ -246,49 +246,28 @@ class ACE_MT_add_node_menu_base(bpy.types.Menu):
             op.node_type_key = type_key
 
 
-class ACE_MT_delta(ACE_MT_add_node_menu_base):
-    bl_idname = "ACE_MT_delta"
-    bl_label = "Delta"
+def _category_menu(category_key: str):
+    """The submenu of one ACE_NODES category."""
 
-    @classmethod
     def poll(cls, context):
-        return "delta" in _allowed_categories_for_context(context)
+        return category_key in _allowed_categories_for_context(context)
 
     def draw(self, context):
-        self.draw_category_items(context, "delta")
+        self.draw_category_items(context, category_key)
 
-class ACE_MT_source_mngmt(ACE_MT_add_node_menu_base):
-    bl_idname = "ACE_MT_source_mngmt"
-    bl_label = "Input"
+    return type(
+        f"ACE_MT_{category_key}",
+        (ACE_MT_add_node_menu_base,),
+        {
+            "bl_idname": f"ACE_MT_{category_key}",
+            "bl_label": ACE_NODES[category_key]["meta"]["label"],
+            "poll": classmethod(poll),
+            "draw": draw,
+        },
+    )
 
-    @classmethod
-    def poll(cls, context):
-        return "source_mngmt" in _allowed_categories_for_context(context)
 
-    def draw(self, context):
-        self.draw_category_items(context, "source_mngmt")
-
-class ACE_MT_stream(ACE_MT_add_node_menu_base):
-    bl_idname = "ACE_MT_stream"
-    bl_label = "Stream"
-
-    @classmethod
-    def poll(cls, context):
-        return "stream" in _allowed_categories_for_context(context)
-
-    def draw(self, context):
-        self.draw_category_items(context, "stream")
-
-class ACE_MT_utilities(ACE_MT_add_node_menu_base):
-    bl_idname = "ACE_MT_utilities"
-    bl_label = "Utilities"
-
-    @classmethod
-    def poll(cls, context):
-        return "utilities" in _allowed_categories_for_context(context)
-
-    def draw(self, context):
-        self.draw_category_items(context, "utilities")
+_CATEGORY_MENUS = tuple(_category_menu(category_key) for category_key in ACE_NODES)
 
 
 class ACE_MT_add_node_menu(bpy.types.Menu):
@@ -298,14 +277,12 @@ class ACE_MT_add_node_menu(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         allowed = set(_allowed_categories_for_context(context))
-        if "source_mngmt" in allowed:
-            layout.menu("ACE_MT_source_mngmt", icon='OUTLINER_OB_EMPTY')
-        if "delta" in allowed:
-            layout.menu("ACE_MT_delta", icon='MOD_WAVE')
-        if "stream" in allowed:
-            layout.menu("ACE_MT_stream", icon='GRAPH')
-        if "utilities" in allowed:
-            layout.menu("ACE_MT_utilities", icon='MODIFIER')
+        for category_key in ACE_NODES:
+            if category_key in allowed:
+                icon = ACE_NODES[category_key]["meta"].get("icon") or "NONE"
+                layout.menu(f"ACE_MT_{category_key}", icon=icon)
+            if category_key == MENU_SEPARATOR_AFTER:
+                layout.separator()
 
 def add_node_menu_func(self, context):
     space = getattr(context, "space_data", None)
@@ -328,10 +305,7 @@ def add_shader_category_menu_func(self, context):
 
 classes = (
     ACE_OT_add_node_group,
-    ACE_MT_source_mngmt,
-    ACE_MT_delta,
-    ACE_MT_stream,
-    ACE_MT_utilities,
+    *_CATEGORY_MENUS,
     ACE_MT_add_node_menu,
 )
 

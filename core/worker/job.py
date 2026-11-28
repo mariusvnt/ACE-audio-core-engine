@@ -231,11 +231,18 @@ def evaluate_parallel_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# Every stream task class, as (node type, mode), so each one warms up.
-_WARMUP_STREAM_TYPES = (
-    ("loudness", "rms"), ("loudness", "lufs"), ("loudness", "peak"), ("pitch", ""), ("brightness", ""),
-    ("transient", ""), ("stereo", "width"), ("stereo", "balance"), ("stereo_vector", ""),
-)
+def _warmup_stream_types():
+    """Every measure task class, as (node type, mode), so each one warms up."""
+    from ...vars import ROLE_MEASURE, kinds_with_role, node_modes
+
+    pairs = []
+    for category, node_type in kinds_with_role(ROLE_MEASURE):
+        modes = [m[0] for m in node_modes(category, node_type)] or [""]
+        pairs.extend((node_type, mode) for mode in modes)
+    return tuple(pairs)
+
+
+_WARMUP_STREAM_TYPES = _warmup_stream_types()
 
 
 def warm_worker():
@@ -270,14 +277,17 @@ def _exit_with_parent() -> None:
 
 def _warm_evaluation():
     sample_rate, block_size = 48000, 2000
-    nodes = {"src": {"category": "source_mngmt", "type": "src", "parameters": {}}}
-    nodes["split"] = {"category": "delta", "type": "frequency_splitter", "parameters": {}}
+    from ...vars import ROLE_MEASURE, SOURCE_KIND, SPLITTER_KIND, kinds_with_role
+
+    measure_category = dict((node_type, category) for category, node_type in kinds_with_role(ROLE_MEASURE))
+    nodes = {"src": {"category": SOURCE_KIND[0], "type": SOURCE_KIND[1], "parameters": {}}}
+    nodes["split"] = {"category": SPLITTER_KIND[0], "type": SPLITTER_KIND[1], "parameters": {}}
     links = [("src", 0, "split", 0)]
     output_specs = {}
     wiring = [("src", t) for t in _WARMUP_STREAM_TYPES] + [("split", ("loudness", "rms"))]
     for parent, (node_type, mode) in wiring:
         node_id = f"{parent}_{node_type}_{mode}"
-        nodes[node_id] = {"category": "stream", "type": node_type, "parameters": {"mode": mode} if mode else {}}
+        nodes[node_id] = {"category": measure_category[node_type], "type": node_type, "parameters": {"mode": mode} if mode else {}}
         links.append((parent, 0, node_id, 0))
         output_specs[node_id] = {"node_id": node_id, "socket_idx": 0, "attr_type": "FLOAT"}
     graph = _compile_worker_graph(

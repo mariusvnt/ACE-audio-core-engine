@@ -77,7 +77,7 @@ def _stale_ace_groups(addon_key):
     for cat_key, category in ace_nodes.items():
         for type_key, node_def in category["nodes"].items():
             group = bpy.data.node_groups.get(gn.get_group_name(cat_key, type_key))
-            if group is not None and gn._node_group_needs_refresh(group, type_key):
+            if group is not None and gn._node_group_needs_refresh(group, cat_key, type_key):
                 stale.append(group.name)
             group = bpy.data.node_groups.get(sh.get_group_name(cat_key, type_key))
             if group is not None and sh._node_group_needs_refresh(group, node_def, cat_key, type_key):
@@ -90,7 +90,7 @@ def _check_loaded_files_get_current_node_groups(addon_key):
     stale = _stale_ace_groups(addon_key)
     _assert(not stale, f"Freshly built ACE groups count as stale (rebuilt on every load): {stale}")
     dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
-    lufs_name = dummy_tree.ACEDummyNodeFactory.get_group_name("stream", "loudness")
+    lufs_name = dummy_tree.ACEDummyNodeFactory.get_group_name("audio", "loudness")
     bpy.data.node_groups[lufs_name].interface.new_socket("Leftover", in_out="INPUT", socket_type="NodeSocketFloat")
     path = os.path.join(tempfile.mkdtemp(prefix="ace_smoke_"), "outdated_groups.blend")
     bpy.ops.wm.save_as_mainfile(filepath=path)
@@ -118,16 +118,16 @@ def _check_operator_list_follows_tree(addon_key, scene):
             sync._sync_ui_dummy_tree(bpy.context)
             return [("  " * item.depth) + item.name for item in src.ui_nodes]
 
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness", mode="lufs")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness", mode="lufs")
         root = source.label or source.name
         _assert(rows() == [root], f"An unconnected operator is listed: {rows()}")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         _assert(rows() == [f"{root}{sep}Loudness (LUFS)"], f"A connected chain is not one row: {rows()}")
 
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
-        rms = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness", mode="rms")
-        stereo = _add_ace_node(addon_key, tree, "stream", "stereo", "Stereo")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
+        rms = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness", mode="rms")
+        stereo = _add_ace_node(addon_key, tree, "audio", "stereo", "Stereo")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         tree.links.new(split.outputs[0], rms.inputs["Audio"])
         tree.links.new(split.outputs[1], stereo.inputs["Audio"])
@@ -175,7 +175,7 @@ def _check_operator_list_follows_tree(addon_key, scene):
         split.label = "Drums"
         _assert(f"  Drums {low}{sep}Kick Level" in rows(), f"Named splitter: {rows()}")
         split.label = "Splitter (2 Bands)"
-        modes.apply_node_mode(rms, "stream", "loudness", "peak")
+        modes.apply_node_mode(rms, "audio", "loudness", "peak")
         _assert(rms.label == "Kick Level", "A mode switch replaced the custom name")
         rename_rms("")
         _assert(rms.label == "Loudness (Peak)", f"Empty name gave {rms.label!r}")
@@ -216,18 +216,18 @@ def _check_operator_list_follows_tree(addon_key, scene):
 def _check_every_splitter_lists_its_bands(addon_key, scene):
     """Every band splitter shows as "Split <band>"; a name the user gave replaces "Split"."""
     sync = importlib.import_module(f"{addon_key}.ui.panel.sync")
-    nodes = importlib.import_module(f"{addon_key}.vars").ACE_NODES["delta"]["nodes"]
+    nodes = importlib.import_module(f"{addon_key}.vars").ACE_NODES["audio"]["nodes"]
     original_tree = sync._find_active_node_tree
     for node_type, definition in nodes.items():
-        if node_type == "frequency_splitter":
-            continue  # covered with the folded tree
+        if definition.get("role") != "splitter" or node_type == "frequency_splitter":
+            continue  # the Frequency Splitter is covered with the folded tree
         obj, tree = _new_gn_tree(scene, "ACE_Smoke_Split")
         try:
-            source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-            split = _add_ace_node(addon_key, tree, "delta", node_type, definition["label"])
+            source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+            split = _add_ace_node(addon_key, tree, "audio", node_type, definition["label"])
             tree.links.new(source.outputs["Audio"], split.inputs[0])
             for output in list(split.outputs)[:2]:
-                loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+                loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
                 tree.links.new(output, loud.inputs["Audio"])
             sync._find_active_node_tree = lambda _context, **_kw: tree
             first, second = split.outputs[0].name, split.outputs[1].name
@@ -248,9 +248,9 @@ def _check_viewer_previews_audio(addon_key, scene, engine):
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Viewer")
     original_tree = sync._find_active_node_tree
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         tree.links.new(split.outputs[1], loud.inputs["Audio"])
         viewer = tree.nodes.new("GeometryNodeViewer")
@@ -457,10 +457,10 @@ def _check_driven_splits(addon_key, scene, engine):
     dynamic = importlib.import_module(f"{addon_key}.nodes.dynamic_audio_operators")
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_DrivenSplit")
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
         dynamic.ACESplitterManager.apply_variant_to_node(split, 3)
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         tree.links.new(split.outputs[1], loud.inputs["Audio"])
         split.inputs[1].default_value, split.inputs[2].default_value = 200.0, 5000.0
@@ -536,8 +536,8 @@ def _check_selection_follows_sources(addon_key, scene):
         pairs = []
         for index in (a_index, b_index):
             ace.active_audio_source_index = index
-            source = _add_ace_node(addon_key, tree, "source_mngmt", "src", f"Source {index}")
-            loud = _add_ace_node(addon_key, tree, "stream", "loudness", f"Loud {index}")
+            source = _add_ace_node(addon_key, tree, "input", "src", f"Source {index}")
+            loud = _add_ace_node(addon_key, tree, "audio", "loudness", f"Loud {index}")
             tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
             pairs.append((source, loud))
         sync._find_active_node_tree = lambda _context, **_kw: tree
@@ -602,7 +602,7 @@ def _check_new_source_takes_input_name(addon_key, scene):
 
         bpy.ops.audiocore.add_audio_source()
         source = ace.audio_sources[-1]
-        placed = _add_ace_node(addon_key, tree, "source_mngmt", "src", source.name)
+        placed = _add_ace_node(addon_key, tree, "input", "src", source.name)
         source.filepath = paths[0]
         _assert(source.name == "Jump stance", f"Name from the file: {source.name!r}")
         _assert(placed.label == "Jump stance", f"Placed Source node keeps {placed.label!r}")
@@ -682,16 +682,16 @@ def _check_compile_writes_nothing(addon_key, scene, engine):
     try:
         bpy.ops.audiocore.add_audio_source()
         ace.active_audio_source_index = count
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
-        acc = _add_ace_node(addon_key, tree, "utilities", "stream_accumulator", "Accumulator")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
+        acc = _add_ace_node(addon_key, tree, "controllers", "stream_accumulator", "Accumulator")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         tree.links.new(split.outputs[1], loud.inputs["Audio"])
         tree.links.new(loud.outputs[0], acc.inputs["Value"])
         shader_tree = material.node_tree
-        s_source = _add_ace_node(addon_key, shader_tree, "source_mngmt", "src", "Source")
-        s_loud = _add_ace_node(addon_key, shader_tree, "stream", "loudness", "Loudness")
+        s_source = _add_ace_node(addon_key, shader_tree, "input", "src", "Source")
+        s_loud = _add_ace_node(addon_key, shader_tree, "audio", "loudness", "Loudness")
         shader_tree.links.new(s_source.outputs["Audio"], s_loud.inputs["Audio"])
         _assert(_sid(s_source) == ace.audio_sources[count].stable_id, "The shader Source node does not read the active input")
         before = _user_tree_snapshot()
@@ -719,13 +719,13 @@ def _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine):
     material = bpy.data.materials.new("ACE_Smoke_Collisions_Mat")
     obj.data.materials.append(material)
     try:
-        first = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
-        copy = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness Copy")
-        unnamed = _add_ace_node(addon_key, tree, "stream", "pitch", "Pitch")
+        first = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
+        copy = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness Copy")
+        unnamed = _add_ace_node(addon_key, tree, "audio", "pitch", "Pitch")
         kept = blender_helpers.sink_names(addon_key, first)[0]
         copy.inputs["Attribute ID"].default_value = kept  # what Shift+D gives
         unnamed.inputs["Attribute ID"].default_value = "ACE_undefined"  # a group added outside the menu
-        s_first = _add_ace_node(addon_key, material.node_tree, "stream", "loudness", "Loudness")
+        s_first = _add_ace_node(addon_key, material.node_tree, "audio", "loudness", "Loudness")
         s_copy = material.node_tree.nodes.new("ShaderNodeGroup")
         s_copy.node_tree = s_first.node_tree
         s_copy.name = "Loudness Copy"
@@ -757,8 +757,8 @@ def _check_shader_values_reach_scene(addon_key, scene, engine, src):
     obj.data.materials.append(material)
     tree = material.node_tree
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness", mode="rms")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness", mode="rms")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         name = blender_helpers.sink_names(addon_key, loud)[0]
         readers = [n for n in loud.node_tree.nodes if n.bl_idname == "ShaderNodeAttribute"]
@@ -793,8 +793,8 @@ def _check_linked_tree_compiles(addon_key, scene, engine):
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Library")
     path = os.path.join(tempfile.mkdtemp(prefix="ace_smoke_lib_"), "library.blend")
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         tree.use_fake_user = True
         bpy.data.libraries.write(path, {tree}, fake_user=True)
@@ -878,12 +878,12 @@ def _check_instances_through_groups(addon_key, scene, engine):
         bpy.ops.audiocore.add_audio_source()
         first, second = ace.audio_sources[count], ace.audio_sources[count + 1]
         ace.active_audio_source_index = count
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
 
         # A group taking the audio and the LUFS window from outside, used twice with two windows.
         window_group, gi = _user_group("ACE_Smoke_WindowGroup", [("Audio", "NodeSocketBundle"), ("Window", "NodeSocketFloat")])
         made.append(window_group)
-        loud = _add_ace_node(addon_key, window_group, "stream", "loudness", "Loudness", mode="lufs")
+        loud = _add_ace_node(addon_key, window_group, "audio", "loudness", "Loudness", mode="lufs")
         window_idx = [s.name for s in loud.inputs].index("Window (s)")
         window_group.links.new(gi.outputs["Audio"], loud.inputs["Audio"])
         window_group.links.new(gi.outputs["Window"], loud.inputs[window_idx])
@@ -896,11 +896,11 @@ def _check_instances_through_groups(addon_key, scene, engine):
         # A group with its own Source node, reading the proxy each use gives it.
         source_group, gi2 = _user_group("ACE_Smoke_SourceGroup", [("Proxy", "NodeSocketObject")])
         made.append(source_group)
-        inner_source = _add_ace_node(addon_key, source_group, "source_mngmt", "src", "Inner Source")
+        inner_source = _add_ace_node(addon_key, source_group, "input", "src", "Inner Source")
         source_group.links.new(gi2.outputs["Proxy"], inner_source.inputs["Proxy Object"])
-        inner_loud = _add_ace_node(addon_key, source_group, "stream", "loudness", "Inner Loudness", mode="rms")
+        inner_loud = _add_ace_node(addon_key, source_group, "audio", "loudness", "Inner Loudness", mode="rms")
         source_group.links.new(inner_source.outputs["Audio"], inner_loud.inputs["Audio"])
-        inner_acc = _add_ace_node(addon_key, source_group, "utilities", "stream_accumulator", "Inner Accumulator")
+        inner_acc = _add_ace_node(addon_key, source_group, "controllers", "stream_accumulator", "Inner Accumulator")
         source_group.links.new(inner_loud.outputs[0], inner_acc.inputs["Value"])
         proxy_mod = importlib.import_module(f"{addon_key}.core.proxy.manager").ACEProxyManager
         for src in (first, second):
@@ -940,7 +940,7 @@ def _check_instances_through_groups(addon_key, scene, engine):
         # Definitions are cached: an edit inside one group parses that group again, nothing else.
         definitions = importlib.import_module(f"{addon_key}.nodes.definitions")
         kept = {name: definitions.definition(t) for name, t in (("tree", tree), ("source", source_group), ("window", window_group))}
-        importlib.import_module(f"{addon_key}.nodes.modes").apply_node_mode(loud, "stream", "loudness", "peak")
+        importlib.import_module(f"{addon_key}.nodes.modes").apply_node_mode(loud, "audio", "loudness", "peak")
         engine.compiler.compile_scene_frontends(scene)
         now = {name: definitions.definition(t) for name, t in (("tree", tree), ("source", source_group), ("window", window_group))}
         _assert(now["tree"] is kept["tree"] and now["source"] is kept["source"], "Unchanged trees were parsed again")
@@ -983,8 +983,8 @@ def _check_world_and_instanced_trees_are_found(addon_key, scene, engine):
     scene.collection.objects.link(empty)
     try:
         scene.world = world
-        _add_ace_node(addon_key, world.node_tree, "stream", "loudness", "World Loudness")
-        _add_ace_node(addon_key, inner_tree, "stream", "loudness", "Instanced Loudness")
+        _add_ace_node(addon_key, world.node_tree, "audio", "loudness", "World Loudness")
+        _add_ace_node(addon_key, inner_tree, "audio", "loudness", "Instanced Loudness")
         bpy.context.view_layer.update()
         found = {rec.frontend_ref.tree_name: rec.frontend_ref.owner_keys
                  for rec in engine.frontends.discover_scene_frontends(scene)}
@@ -1021,12 +1021,12 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         src.filepath = wav_path
         sources, uses = [], []
         for tree in (tree_a, tree_b):
-            source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-            rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
+            source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+            rms = _add_ace_node(addon_key, tree, "audio", "loudness", "RMS", mode="rms")
             tree.links.new(source.outputs["Audio"], rms.inputs["Audio"])
             sources.append(source)
             uses.append(rms)
-        acc = _add_ace_node(addon_key, tree_a, "utilities", "stream_accumulator", "Accumulator")
+        acc = _add_ace_node(addon_key, tree_a, "controllers", "stream_accumulator", "Accumulator")
         tree_a.links.new(uses[0].outputs[0], acc.inputs["Value"])
         # A proxy made by an earlier version carries no source id: the first compile still reads it.
         del bpy.data.objects[src.proxy_object_name]["ace_source_id"]
@@ -1036,9 +1036,9 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
         _assert(len(signals) == 1 and "" not in signals, f"The two RMS nodes are not one signal: {signals}")
         rms_signal = signals.pop()
         graph = engine.graphs[src.stable_id]
-        loudness_tasks = [t for t in graph.tasks if t.startswith("S_stream_loudness_")]
+        loudness_tasks = [t for t in graph.tasks if t.startswith("S_audio_loudness_")]
         _assert(loudness_tasks == [rms_signal], f"Loudness tasks: {loudness_tasks}")
-        _assert(len([t for t in graph.tasks if t.startswith("S_source_mngmt_src_")]) == 1, "The source is read twice")
+        _assert(len([t for t in graph.tasks if t.startswith("S_input_src_")]) == 1, "The source is read twice")
         names = [blender_helpers.sink_names(addon_key, rms)[0] for rms in uses]
         for frame in (1, 2, 3, 4, 5):
             scene.frame_set(frame)
@@ -1087,7 +1087,7 @@ def _check_signals_are_shared_and_kept(addon_key, scene, engine):
                 f"The proxy attributes did not follow the rename: {sorted(attrs)}")
 
         # A new signal keeps the others running.
-        peak = _add_ace_node(addon_key, tree_b, "stream", "loudness", "Peak", mode="peak")
+        peak = _add_ace_node(addon_key, tree_b, "audio", "loudness", "Peak", mode="peak")
         tree_b.links.new(sources[1].outputs["Audio"], peak.inputs["Audio"])
         engine.compiler.compile_scene_frontends(scene)
         graph = engine.graphs[src.stable_id]
@@ -1122,8 +1122,8 @@ def _check_source_nodes(addon_key, scene, engine):
         ace.active_audio_source_index = count
         _assert(not first.proxy_object_name and not second.proxy_object_name, "An unused input has a proxy")
 
-        node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        node = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(node.outputs["Audio"], loud.inputs["Audio"])
         _assert(_sid(node) == first.stable_id and node.label == first.name,
                 f"A new Source node does not read the active input: {node.label!r}")
@@ -1134,14 +1134,14 @@ def _check_source_nodes(addon_key, scene, engine):
         _assert(not second.proxy_object_name, "The unread input got a proxy")
 
         # Two Source nodes may read the same input; their identities stay put across compiles.
-        twin = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+        twin = _add_ace_node(addon_key, tree, "input", "src", "Source")
         engine.compiler.compile_scene_frontends(scene)
         ids = (_nid(node), _nid(twin))
         engine.compiler.compile_scene_frontends(scene)
         _assert((_nid(node), _nid(twin)) == ids and ids[0] != ids[1], f"Source node ids moved: {ids}")
         tree.nodes.remove(twin)
 
-        parsed = {"category": "source_mngmt", "type": "src"}
+        parsed = {"category": "input", "type": "src"}
         _assert(selection._parsed_node_has_operator_settings(parsed), "No source menu with several inputs")
         ops._resolve_panel_selected_node = lambda _context: (node, parsed)
         _assert(bpy.ops.ace.set_node_source(source=second.stable_id) == {'FINISHED'}, "Choosing a source failed")
@@ -1171,8 +1171,8 @@ def _check_source_node_outputs_tempo(addon_key, scene, engine):
         source = ace.audio_sources[count]
         ace.active_audio_source_index = count
         group_in, group_out = tree.nodes["Group Input"], tree.nodes["Group Output"]
-        node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        node = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(node.outputs["Audio"], loud.inputs["Audio"])
         geometry = group_in.outputs["Geometry"]
         for output, data_type, name in (("BPM", "FLOAT", "bpm_probe"), ("Beats per Bar", "INT", "meter_probe")):
@@ -1301,7 +1301,7 @@ def _check_titles_units_and_info(addon_key, scene):
         _assert("Duration: 2 min 5 s" in labels and span in labels, f"Info: {labels}")
 
         # A new Rolling Average takes its window as a time.
-        node = _add_ace_node(addon_key, tree, "utilities", "util_rolling_avg", "Rolling")
+        node = _add_ace_node(addon_key, tree, "controllers", "util_rolling_avg", "Rolling")
         item = next(i for i in node.node_tree.interface.items_tree if i.name == "Window")
         _assert(abs(node.inputs["Window"].default_value - 0.25) < 1e-6 and item.subtype == "TIME_ABSOLUTE",
                 f"New Rolling Average window: {node.inputs['Window'].default_value}")
@@ -1323,7 +1323,7 @@ def _check_splitter_sliders(addon_key, scene):
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Splitter")
     original_selected = ops._resolve_panel_selected_node
     try:
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
         dynamic.ACESplitterManager.apply_variant_to_node(split, 4)
 
         def sockets():
@@ -1367,7 +1367,7 @@ def _check_splitter_sliders(addon_key, scene):
         _assert([sockets()[0], sockets()[2]] == [9000, 12000], f"Sort around a link: {sockets()}")
         tree.nodes.remove(value_node)
 
-        ops._resolve_panel_selected_node = lambda _context: (split, {"category": "delta", "type": "frequency_splitter"})
+        ops._resolve_panel_selected_node = lambda _context: (split, {"category": "audio", "type": "frequency_splitter"})
         for direction, count in (("UP", 4), ("UP", 5), ("DOWN", 4)):
             bpy.ops.ace.update_splitter_bands(direction=direction)
             _assert(len(sockets()) == count and sockets() == sorted(sockets()), f"{direction}: {sockets()}")
@@ -1404,13 +1404,13 @@ def _check_cosmetic_edits_do_not_recompile(addon_key, scene, engine):
         return len(compiles) - before
 
     def switch_mode():
-        modes.apply_node_mode(loud, "stream", "loudness", "lufs")
+        modes.apply_node_mode(loud, "audio", "loudness", "lufs")
         tree.update_tag()
 
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         tree.links.new(split.outputs[0], loud.inputs["Audio"])
         window(2.5)
@@ -1454,8 +1454,8 @@ def _check_source_list_instances(addon_key, scene, engine):
         return ace.audio_sources[ace.active_audio_source_index].stable_id
 
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         engine.compiler.compile_scene_frontends(scene)
         sync._sync_source_rows(scene)
@@ -1556,8 +1556,8 @@ def _check_panels_draw(addon_key, scene):
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Panels")
     original_tree = sync._find_active_node_tree
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
         tree.links.new(source.outputs["Audio"], split.inputs[0])
         sync._find_active_node_tree = lambda _context, **_kw: tree
         sync._sync_ui_dummy_tree(bpy.context, force=True)
@@ -1608,8 +1608,8 @@ def _check_manual_engine_reset(addon_key, scene):
     spectral = importlib.import_module(f"{addon_key}.core.tasks.spectral")
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Reset")
     try:
-        source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
         before = engine_cls.ensure_instance(scene)
         before.compiler.compile_scene_frontends(scene)
@@ -1631,7 +1631,7 @@ def _check_group_rebuild_keeps_input_values(addon_key, scene):
     frontend = importlib.import_module(f"{addon_key}.nodes.frontend")
     obj, tree = _new_gn_tree(scene, "ACE_Smoke_Rebuild")
     try:
-        loud = _add_ace_node(addon_key, tree, "stream", "loudness", "Loudness")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness")
         loud.inputs["Window (s)"].default_value = 1.5
         loud.inputs["Attribute ID"].default_value = "ACE_smoke_kept"
         group = loud.node_tree
@@ -1785,8 +1785,8 @@ def _check_bake_renders_without_ace(addon_key, engine, scene, src, tmp_dir):
     tree.is_modifier = True
     group_in, group_out = blender_helpers.add_geometry_passthrough(tree)
     probe.modifiers.new("ACE Probe", "NODES").node_group = tree
-    source_node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-    rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
+    source_node = _add_ace_node(addon_key, tree, "input", "src", "Source")
+    rms = _add_ace_node(addon_key, tree, "audio", "loudness", "RMS", mode="rms")
     tree.links.new(source_node.outputs["Audio"], rms.inputs["Audio"])
     store = tree.nodes.new("GeometryNodeStoreNamedAttribute")
     store.data_type = "FLOAT"
@@ -1798,8 +1798,8 @@ def _check_bake_renders_without_ace(addon_key, engine, scene, src, tmp_dir):
     material = bpy.data.materials.new("ACE_Smoke_Probe_Material")
     material.use_nodes = True
     probe.data.materials.append(material)
-    s_source = _add_ace_node(addon_key, material.node_tree, "source_mngmt", "src", "Source")
-    s_rms = _add_ace_node(addon_key, material.node_tree, "stream", "loudness", "RMS", mode="rms")
+    s_source = _add_ace_node(addon_key, material.node_tree, "input", "src", "Source")
+    s_rms = _add_ace_node(addon_key, material.node_tree, "audio", "loudness", "RMS", mode="rms")
     material.node_tree.links.new(s_source.outputs["Audio"], s_rms.inputs["Audio"])
 
     engine.compiler.compile_scene_frontends(scene)
@@ -1883,9 +1883,9 @@ def _check_downstream_bake_node(addon_key, engine, scene, src):
     group_in, group_out = blender_helpers.add_geometry_passthrough(tree)
     modifier = obj.modifiers.new("ACE Baked", "NODES")
     modifier.node_group = tree
-    source_node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-    rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
-    peak = _add_ace_node(addon_key, tree, "stream", "loudness", "Peak", mode="peak")
+    source_node = _add_ace_node(addon_key, tree, "input", "src", "Source")
+    rms = _add_ace_node(addon_key, tree, "audio", "loudness", "RMS", mode="rms")
+    peak = _add_ace_node(addon_key, tree, "audio", "loudness", "Peak", mode="peak")
     tree.links.new(source_node.outputs["Audio"], rms.inputs["Audio"])
     tree.links.new(source_node.outputs["Audio"], peak.inputs["Audio"])
     geometry = group_in.outputs["Geometry"]
@@ -2022,11 +2022,11 @@ def _check_file_source_drives_proxy(addon_key, engine, scene, src, parallel_mode
     blender_helpers.add_geometry_passthrough(tree)
     obj.modifiers.new("ACE Smoke Audio", "NODES").node_group = tree
 
-    source_node = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
-    rms = _add_ace_node(addon_key, tree, "stream", "loudness", "RMS", mode="rms")
-    lufs = _add_ace_node(addon_key, tree, "stream", "loudness", "LUFS", mode="lufs")
-    split = _add_ace_node(addon_key, tree, "delta", "frequency_splitter", "Splitter")
-    band_rms = _add_ace_node(addon_key, tree, "stream", "loudness", "Band RMS", mode="rms")
+    source_node = _add_ace_node(addon_key, tree, "input", "src", "Source")
+    rms = _add_ace_node(addon_key, tree, "audio", "loudness", "RMS", mode="rms")
+    lufs = _add_ace_node(addon_key, tree, "audio", "loudness", "LUFS", mode="lufs")
+    split = _add_ace_node(addon_key, tree, "audio", "frequency_splitter", "Splitter")
+    band_rms = _add_ace_node(addon_key, tree, "audio", "loudness", "Band RMS", mode="rms")
     audio_out = source_node.outputs["Audio"]
     tree.links.new(audio_out, rms.inputs["Audio"])
     tree.links.new(audio_out, lufs.inputs["Audio"])
@@ -2241,7 +2241,7 @@ def main():
 
         frontend_gn_tree = bpy.data.node_groups.new("ACE_Smoke_GN", "GeometryNodeTree")
         blender_helpers.add_geometry_passthrough(frontend_gn_tree)
-        _add_ace_node(addon_key, frontend_gn_tree, "stream", "loudness", "Loudness")
+        _add_ace_node(addon_key, frontend_gn_tree, "audio", "loudness", "Loudness")
         try:
             frontend_gn_tree.is_modifier = True
         except Exception:
@@ -2252,7 +2252,7 @@ def main():
         frontend_mat = bpy.data.materials.new("ACE_Smoke_Material")
         frontend_shader_tree = frontend_mat.node_tree
         _assert(frontend_shader_tree is not None, "Material node tree was not created")
-        _add_ace_node(addon_key, frontend_shader_tree, "stream", "loudness", "Loudness")
+        _add_ace_node(addon_key, frontend_shader_tree, "audio", "loudness", "Loudness")
         frontend_obj.data.materials.append(frontend_mat)
 
         _check_object_and_material_edits_queue_recompile(

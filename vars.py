@@ -12,7 +12,7 @@ ACE_LOGO_FILENAME = "ACE_Logo.png"
 
 # Hierarchy of the available audio nodes
 class Meta(TypedDict):
-    """format of a category"""
+    """format of a category: a submenu of the add menu"""
     label: str
     icon: str
     description: str
@@ -22,59 +22,80 @@ class NodeType(TypedDict):
     label: str
     icon: str
     description: str
+    role: str
     inputs: list[tuple[str, str]]
     outputs: list[tuple[str, str]]
-    # Optional keys: "modes", "default_mode", and "stateful" (True, or the list of modes that are):
-    # a stateful node's value depends on the frames before, so it runs on the main thread and
-    # settles after a seek (FUTURE.md 1.2).
+    # Optional keys: "modes", "default_mode", "mode_inputs" ({input name: the mode that uses
+    # it}), "native" (True: the node computes in Blender and has no task), and "stateful" (True,
+    # or the list of modes that are): a stateful node's value depends on the frames before, so
+    # it runs on the main thread and settles after a seek.
 
 class Category(TypedDict):
     """category container"""
     meta: Meta
     nodes: dict[str, NodeType]
 
+
+# What a node is, whatever its category: the code asks for roles, never for categories.
+ROLE_SOURCE = "source"  # audio enters the tree
+ROLE_SPLITTER = "splitter"  # audio to audio: the bands of its input
+ROLE_MEASURE = "measure"  # audio to values, written where the source's proxy carries them
+ROLE_CONTROLLER = "controller"  # a value to a value
+ROLE_PREVIEW = "preview"  # audio leaves the tree, to be heard
+
+# The categories are the submenus of the add menu, in this order.
 ACE_NODES: dict[str, Category] = {
-    "source_mngmt": {
+    "input": {
         "meta": {
-            "label": "Source Management",
+            "label": "Input",
             "icon": "",
-            "description": "Particular nodes"
+            "description": "Where audio enters the tree."
         },
         "nodes": {
             "src": {
             "label": "Source",
             "icon": "",
             "description": "Reference to an audio source, with its tempo.",
+            "role": ROLE_SOURCE,
             "inputs": [],
             "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketFloat', 'BPM'), ('NodeSocketInt', 'Beats per Bar')],
             },
         },
     },
 
-    "delta": {
+    "output": {
         "meta": {
-            "label": "Delta",
+            "label": "Output",
             "icon": "",
-            "description": "Nodes performing audio to audio operations."
+            "description": "Where audio leaves the tree, to be heard."
+        },
+        "nodes": {
+            "preview_sink": {
+            "label": "Audio Preview",
+            "icon": "PLAY_SOUND",
+            "description": "Branch audio monitor sink used for in-editor preview playback.",
+            "role": ROLE_PREVIEW,
+            "inputs": [('NodeSocketBundle', 'Audio')],
+            "outputs": [],
+            },
+        },
+    },
+
+    "audio": {
+        "meta": {
+            "label": "Audio",
+            "icon": "GRAPH",
+            "description": "Nodes with an Audio input: its bands, and measurements of it."
         },
         "nodes": {
             "frequency_splitter": {
             "label": "Frequency Splitter",
             "icon": "",
             "description": "Splits the incoming audio into multiple audios, each corresponding to a band of frequencies.",
+            "role": ROLE_SPLITTER,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketBundle', 'Audio'), ('NodeSocketBundle', 'Audio')], # template sockets, runtime variants are dynamic
             },
-        },
-    },
-
-    "stream": {
-        "meta": {
-            "label": "Stream",
-            "icon": "",
-            "description": "Nodes performing audio to float/vector operations."
-        },
-        "nodes": {
             "loudness": {
             "label": "Loudness",
             "icon": "DRIVER_DISTANCE",
@@ -83,6 +104,7 @@ ACE_NODES: dict[str, Category] = {
                 "in between. Method: RMS (signal energy), LUFS (perceived loudness, "
                 "averaged over Window) or Peak (highest sample)."
             ),
+            "role": ROLE_MEASURE,
             "inputs": [
                 ('NodeSocketBundle', 'Audio'),
                 ('NodeSocketFloat', 'Window (s)'),
@@ -94,12 +116,14 @@ ACE_NODES: dict[str, Category] = {
                 ("peak", "Peak", "Highest K-weighted sample of the frame."),
             ],
             "default_mode": "rms",
+            "mode_inputs": {"Window (s)": "lufs"},
             "stateful": ["lufs", "peak"],
             },
             "stereo": {
             "label": "Stereo",
             "icon": "ORIENTATION_GIMBAL",
             "description": "Stereo image. Width: side-to-mid energy (0 = mono, 1 = very wide). Balance: -1 = left, 0 = center, 1 = right.",
+            "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Stereo')],
             "modes": [
@@ -112,6 +136,7 @@ ACE_NODES: dict[str, Category] = {
             "label": "Stereo Vector",
             "icon": "ORIENTATION_GIMBAL",
             "description": "Time-domain stereo descriptor packed as vector (L RMS, R RMS, Balance).",
+            "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketVector', 'Stereo Vector')],
             },
@@ -119,6 +144,7 @@ ACE_NODES: dict[str, Category] = {
             "label": "Brightness",
             "icon": "SEQ_HISTOGRAM",
             "description": "Spectral centroid in Hz: where the energy of the frame sits, from dark to bright. Behind a Frequency Splitter, within the band.",
+            "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Brightness')],
             },
@@ -126,6 +152,7 @@ ACE_NODES: dict[str, Category] = {
             "label": "Pitch",
             "icon": "",
             "description": "Detected root note pitch in Hz.",
+            "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Pitch')],
             },
@@ -133,6 +160,7 @@ ACE_NODES: dict[str, Category] = {
             "label": "Transient",
             "icon": "",
             "description": "Sharp attacks in the audio (0 = smooth, 1 = sharp transient).",
+            "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Transient')],
             "stateful": True,
@@ -140,24 +168,18 @@ ACE_NODES: dict[str, Category] = {
         },
     },
 
-    "utilities": {
+    "controllers": {
         "meta": {
-            "label": "Utilities",
-            "icon": "",
-            "description": "Helper nodes for graph monitoring and utility operations."
+            "label": "Controllers",
+            "icon": "DRIVER",
+            "description": "Nodes that take a value and turn it into motion or events."
         },
         "nodes": {
-            "preview_sink": {
-            "label": "Audio Preview",
-            "icon": "PLAY_SOUND",
-            "description": "Branch audio monitor sink used for in-editor preview playback.",
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [],
-            },
             "util_rolling_avg": {
             "label": "Rolling Average",
             "icon": "",
             "description": "Smooths a scalar attribute stream over a time window.",
+            "role": ROLE_CONTROLLER,
             "inputs": [('NodeSocketFloat', 'Value'), ('NodeSocketFloat', 'Window')],
             "outputs": [('NodeSocketFloat', 'Rolling Avg')],
             "stateful": True,
@@ -166,6 +188,7 @@ ACE_NODES: dict[str, Category] = {
             "label": "Stream Accumulator",
             "icon": "",
             "description": "Maintains a running sum of the input stream values.",
+            "role": ROLE_CONTROLLER,
             "inputs": [('NodeSocketFloat', 'Value')],
             "outputs": [('NodeSocketFloat', 'Accumulated')],
             "stateful": True,
@@ -174,6 +197,70 @@ ACE_NODES: dict[str, Category] = {
     },
 }
 
+# The add menu draws a separator after this submenu.
+MENU_SEPARATOR_AFTER = "output"
+
+
+def node_def(category: str, node_type: str) -> dict:
+    """The registry entry of a node kind, {} for an unknown one."""
+    return ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(str(node_type or ""), {})  # type: ignore[return-value]
+
+
+def node_role(category: str, node_type: str) -> str:
+    """The role of a node kind (one of the ROLE_* values), "" for an unknown one."""
+    return str(node_def(category, node_type).get("role", "") or "")
+
+
+def node_is_native(category: str, node_type: str) -> bool:
+    """True for a node that computes in Blender: it has no task, no sinks and no signal."""
+    return bool(node_def(category, node_type).get("native", False))
+
+
+def kinds_with_role(role: str) -> tuple[tuple[str, str], ...]:
+    """(category, type) of every node kind with this role, in registry order."""
+    return tuple(
+        (category, node_type)
+        for category, cat_def in ACE_NODES.items()
+        for node_type, nd in cat_def.get("nodes", {}).items()
+        if nd.get("role") == role
+    )
+
+
+def kind_of_role(role: str) -> tuple[str, str]:
+    """The one node kind with this role: the source, the splitter or the preview."""
+    kinds = kinds_with_role(role)
+    if len(kinds) != 1:
+        raise LookupError(f"{len(kinds)} node kinds have the role {role!r}")
+    return kinds[0]
+
+
+def writes_values(category: str, node_type: str) -> bool:
+    """True for a node whose values ACE computes and writes for Blender to read."""
+    return node_role(category, node_type) in (ROLE_MEASURE, ROLE_CONTROLLER) and not node_is_native(category, node_type)
+
+
+def reads_values_object(category: str, node_type: str) -> bool:
+    """True for a node fed a value, not audio: no bundle carries a proxy to it, so its group reads ACE_Values."""
+    return node_role(category, node_type) == ROLE_CONTROLLER and not node_is_native(category, node_type)
+
+
+def value_outputs(category: str, node_type: str) -> list[tuple[int, str]]:
+    """(output index, output name) of each value a node writes."""
+    if not writes_values(category, node_type):
+        return []
+    outputs = node_def(category, node_type).get("outputs", [])
+    return [(idx, str(name)) for idx, (sock_type, name) in enumerate(outputs) if "Bundle" not in str(sock_type)]
+
+
+def mode_inputs(category: str, node_type: str) -> dict[str, str]:
+    """{input name: the mode that uses it}: such an input is hidden in the other modes."""
+    return dict(node_def(category, node_type).get("mode_inputs", {}) or {})
+
+
+SOURCE_KIND = kind_of_role(ROLE_SOURCE)
+SPLITTER_KIND = kind_of_role(ROLE_SPLITTER)
+PREVIEW_KIND = kind_of_role(ROLE_PREVIEW)
+
 
 # Silence floor of every Loudness method: 0 at this level and below. Not user-editable.
 LOUDNESS_FLOOR_DB = -70.0
@@ -181,32 +268,37 @@ LOUDNESS_FLOOR_DB = -70.0
 
 def node_modes(category: str, node_type: str) -> list[tuple[str, str, str]]:
     """Return the (id, label, description) modes of a node type, or [] if it has none."""
-    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(str(node_type or ""), {})
-    return [tuple(m) for m in (node_def.get("modes") or [])]  # type: ignore[misc]
+    return [tuple(m) for m in (node_def(category, node_type).get("modes") or [])]  # type: ignore[misc]
 
 
 def resolve_node_mode(category: str, node_type: str, raw_mode=None) -> str:
     """Return a valid mode id for a node type: *raw_mode* if known, else the default, else ""."""
-    typ = str(node_type or "")
-    modes = node_modes(category, typ)
+    modes = node_modes(category, node_type)
     if not modes:
         return ""
     ids = [m[0] for m in modes]
     mode = str(raw_mode or "").strip().lower()
     if mode in ids:
         return mode
-    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(typ, {})
-    default = str(node_def.get("default_mode", "") or "")
+    default = str(node_def(category, node_type).get("default_mode", "") or "")
     return default if default in ids else ids[0]
 
 
 def node_is_stateful(category: str, node_type: str, raw_mode=None) -> bool:
     """True when the node's value depends on earlier frames (its "stateful" entry, for its mode)."""
-    node_def = ACE_NODES.get(str(category or ""), {}).get("nodes", {}).get(str(node_type or ""), {})
-    flag = node_def.get("stateful", False)
+    flag = node_def(category, node_type).get("stateful", False)
     if isinstance(flag, (list, tuple)):
         return resolve_node_mode(category, node_type, raw_mode) in flag
     return bool(flag)
+
+
+def is_offload_candidate(category: str, node_type: str, raw_mode=None) -> bool:
+    """True for a node whose values can be computed in worker processes.
+
+    Only measurements are, and only stateless ones: each worker keeps its own copy of a task,
+    so a stateful task's state would be split across them.
+    """
+    return node_role(category, node_type) == ROLE_MEASURE and not node_is_stateful(category, node_type, raw_mode)
 
 
 def node_mode_label(category: str, node_type: str, mode: str) -> str:
@@ -218,17 +310,17 @@ def node_mode_label(category: str, node_type: str, mode: str) -> str:
 
 # Interface defaults and ranges for numeric controls: (default, min, max).
 SOCKET_RANGES: dict[tuple[str, str], dict[str, tuple[float, float, float]]] = {
-    ("stream", "loudness"): {
+    ("audio", "loudness"): {
         "Window (s)": (0.4, 0.05, 3.0),
     },
-    ("utilities", "util_rolling_avg"): {
+    ("controllers", "util_rolling_avg"): {
         "Window": (0.25, 0.001, 60.0),
     },
 }
 
 # Sockets whose field shows a unit: a time in seconds reads "250 ms".
 SOCKET_SUBTYPES: dict[tuple[str, str], dict[str, str]] = {
-    ("utilities", "util_rolling_avg"): {"Window": "TIME_ABSOLUTE"},
+    ("controllers", "util_rolling_avg"): {"Window": "TIME_ABSOLUTE"},
 }
 
 

@@ -4,6 +4,7 @@ import bpy # type: ignore
 import numpy as np
 from typing import Dict, Set, Any
 from ..id_management import ACEIdManager
+from ...vars import writes_values
 from ... import utils
 
 
@@ -46,10 +47,7 @@ class AttributeSinks:
             return
 
         for node in self.abstract_tree.nodes.values():
-            is_stream = node.category == 'stream'
-            is_rolling_avg = node.type == 'util_rolling_avg' and node.category == 'utilities'
-            is_stream_accumulator = node.type == 'stream_accumulator' and node.category == 'utilities'
-            if not (is_stream or is_rolling_avg or is_stream_accumulator):
+            if not writes_values(node.category, node.type):
                 continue
 
             for sock in node.outputs:

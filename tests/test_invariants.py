@@ -180,11 +180,11 @@ class TestAmbiguousCompilePruning(unittest.TestCase):
         node = self.abs_mod.ACEAbstractNode
         link = self.abs_mod.ACEAbstractLink
         nodes = {
-            "src_a": node("src_a", "A", "source_mngmt", "src", root_sources={"a"}),
-            "src_b": node("src_b", "B", "source_mngmt", "src", root_sources={"b"}),
-            "rms_a": node("rms_a", "RMS A", "stream", "rms", root_sources={"a"}),
-            "mix": node("mix", "Mix", "delta", "frequency_splitter", root_sources={"a", "b"}),
-            "rms_mix": node("rms_mix", "RMS Mix", "stream", "rms", root_sources={"a", "b"}),
+            "src_a": node("src_a", "A", "input", "src", root_sources={"a"}),
+            "src_b": node("src_b", "B", "input", "src", root_sources={"b"}),
+            "rms_a": node("rms_a", "RMS A", "audio", "rms", root_sources={"a"}),
+            "mix": node("mix", "Mix", "audio", "frequency_splitter", root_sources={"a", "b"}),
+            "rms_mix": node("rms_mix", "RMS Mix", "audio", "rms", root_sources={"a", "b"}),
         }
         links = [
             link("src_a", "rms_a", 0, 0),
@@ -263,11 +263,11 @@ class TestNodeIdentity(unittest.TestCase):
     def test_kind_comes_from_the_group_name_and_variants(self):
         tree = _Tree(1)
         cases = {
-            ".ACE_stream_loudness": ("stream", "loudness"),
-            ".ACE_SHADER_stream_stereo": ("stream", "stereo"),
-            ".ACE_stream_stereo_vector": ("stream", "stereo_vector"),
-            ".ACE_delta_frequency_splitter_4": ("delta", "frequency_splitter"),
-            ".ACE_stream_loudness.001": ("stream", "loudness"),
+            ".ACE_audio_loudness": ("audio", "loudness"),
+            ".ACE_SHADER_audio_stereo": ("audio", "stereo"),
+            ".ACE_audio_stereo_vector": ("audio", "stereo_vector"),
+            ".ACE_audio_frequency_splitter_4": ("audio", "frequency_splitter"),
+            ".ACE_audio_loudness.001": ("audio", "loudness"),
             "My Group": ("", ""),
         }
         for group_name, kind in cases.items():
@@ -275,10 +275,10 @@ class TestNodeIdentity(unittest.TestCase):
 
     def test_id_follows_tree_and_name_and_nothing_is_written(self):
         tree_a, tree_b = _Tree(1), _Tree(2)
-        node = self._node("Loudness", ".ACE_stream_loudness", tree_a)
-        twin = self._node("Loudness", ".ACE_stream_loudness", tree_b)
+        node = self._node("Loudness", ".ACE_audio_loudness", tree_a)
+        twin = self._node("Loudness", ".ACE_audio_loudness", tree_b)
         node_id = self.identity.node_id(node)
-        self.assertTrue(node_id.startswith("ACE_stream_loudness_"))
+        self.assertTrue(node_id.startswith("ACE_audio_loudness_"))
         self.assertEqual(node_id, self.identity.node_id(node))
         self.assertNotEqual(node_id, self.identity.node_id(twin))
         self.assertIs(self.identity.find_node(tree_a, node_id), node)

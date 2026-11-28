@@ -27,6 +27,7 @@ from ... import utils
 from ..definitions import GROUP_INPUT, definition
 from ..frontend import FRONTEND_KIND_GEOMETRY, FRONTEND_KIND_SHADER, _tree_pointer
 from ..identity import SOURCE_ID_KEY, instance_node_id, tree_key
+from ...vars import PREVIEW_KIND, SOURCE_KIND, SPLITTER_KIND, writes_values
 
 _MAX_DEPTH = 32
 UNBOUND = object()
@@ -157,7 +158,7 @@ class ACEDummyTreeReader:
                 existing.root_sources.add(root_id)
             return existing
         params = dict(entry.params)
-        is_splitter = (entry.category, entry.node_type) == ("delta", "frequency_splitter")
+        is_splitter = (entry.category, entry.node_type) == SPLITTER_KIND
         for idx in entry.linked_inputs:
             if is_splitter and idx > 0:
                 continue  # a linked split frequency keeps its per-frame driven value
@@ -196,7 +197,7 @@ class ACEDummyTreeReader:
             root_sources={root_id} if root_id else set(),
             frontend_uid=self.frontend_uid,
             frontend_kind=self.frontend_kind,
-            source_binding_id=root_id if (entry.category, entry.node_type) == ("source_mngmt", "src") else "",
+            source_binding_id=root_id if (entry.category, entry.node_type) == SOURCE_KIND else "",
             definition_ptr=_tree_pointer(scope.tree),
             definition_tree=str(getattr(scope.tree, "name_full", "") or getattr(scope.tree, "name", "") or ""),
             use_chain=tuple(scope.chain),
@@ -210,11 +211,11 @@ class ACEDummyTreeReader:
         queue: deque = deque()
         for scope in self._scopes:
             for entry in scope.definition.ace.values():
-                if (entry.category, entry.node_type) != ("source_mngmt", "src"):
+                if (entry.category, entry.node_type) != SOURCE_KIND:
                     continue
                 root_id = self._source_of(scope, entry)
                 parsed = ACEIdManager.parse_node_id(root_id)
-                if not (parsed and parsed["category"] == "source_mngmt" and parsed["type"] == "src"):
+                if not (parsed and (parsed["category"], parsed["type"]) == SOURCE_KIND):
                     continue
                 node = self._abstract_node(scope, entry, root_id)
                 for out_idx in range(len(entry.outputs)):
@@ -283,7 +284,7 @@ class ACEDummyTreeReader:
             return
         path = "/".join([*scope.chain, viewer_name])
         digest = hashlib.blake2b(f"{self.frontend_uid}:{path}".encode("utf-8"), digest_size=4).hexdigest()
-        sink_id = f"{ACEIdManager.PREFIX}utilities_preview_sink_viewer{digest}"
+        sink_id = f"{ACEIdManager.PREFIX}{PREVIEW_KIND[0]}_{PREVIEW_KIND[1]}_viewer{digest}"
         roots = {root_id} if root_id else set()
         existing = self.abstract_tree.nodes.get(sink_id)
         if existing is not None:
@@ -293,8 +294,8 @@ class ACEDummyTreeReader:
             self.abstract_tree.add_node(ACEAbstractNode(
                 id=sink_id,
                 name=viewer_name,
-                type="preview_sink",
-                category="utilities",
+                type=PREVIEW_KIND[1],
+                category=PREVIEW_KIND[0],
                 inputs=[ACEAbstractSocket(
                     id=f"{sink_id}_in_0", name="Audio", socket_idx=0, is_output=False,
                     data_type="NodeSocketBundle",
@@ -343,10 +344,7 @@ class ACEDummyTreeReader:
     def _is_writeable_output_node(node: Optional[ACEAbstractNode]) -> bool:
         if node is None:
             return False
-        return str(getattr(node, "category", "")) == "stream" or (
-            str(getattr(node, "category", "")) == "utilities"
-            and str(getattr(node, "type", "")) in ("util_rolling_avg", "stream_accumulator")
-        )
+        return writes_values(str(getattr(node, "category", "")), str(getattr(node, "type", "")))
 
     def _emit_consumer_intents(self):
         sink_kind = "SCENE_PROPERTY" if self.frontend_kind == FRONTEND_KIND_SHADER else "PROXY_ATTRIBUTE"

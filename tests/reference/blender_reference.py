@@ -121,7 +121,7 @@ def _sockets(sockets, kind):
 def build_tree(addon_key, scene, cases):
     """One GN tree: a Source node, and every case's chain hanging off it. Returns {case_id: last node}."""
     _obj, tree = _new_gn_tree(scene, "ACE_Reference")
-    source = _add_ace_node(addon_key, tree, "source_mngmt", "src", "Source")
+    source = _add_ace_node(addon_key, tree, "input", "src", "Source")
     last_nodes = {}
     for case in cases:
         prev = source

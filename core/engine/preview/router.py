@@ -8,6 +8,7 @@ from ...abstract_tree import ACEAbstractNode, ACEAbstractTree
 from ...tasks.block_size import resolve_preview_block_size
 from ...tasks.chunk import AudioChunk, SAMPLE_RATE
 from ..common import engine_settings
+from ....vars import PREVIEW_KIND
 from .monitor import _ACEPreviewAudioMonitor
 
 
@@ -218,9 +219,7 @@ class PreviewRouter:
         if abstract_tree is None:
             return "", candidates
         for node_id, node in (getattr(abstract_tree, "nodes", {}) or {}).items():
-            if str(getattr(node, "category", "") or "") != "utilities":
-                continue
-            if str(getattr(node, "type", "") or "") != "preview_sink":
+            if (str(getattr(node, "category", "") or ""), str(getattr(node, "type", "") or "")) != PREVIEW_KIND:
                 continue
             candidates.append(str(node_id))
         if not candidates:

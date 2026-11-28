@@ -6,12 +6,11 @@ from typing import List, Optional
 from .... import utils
 from ...abstract_tree import ACEAbstractNode, audio_links
 from ...tasks.base import ACEAudioTask
-from ...tasks.delta import FrequencySplitterTask
+from ...tasks.factory import create_task
 from ...tasks.graph import ACEAudioGraph
 from ...tasks.preview import PreviewSinkTask
 from ...tasks.source import SourceTask
-from ...tasks.stream import create_stream_task
-from ...tasks.utility import RollingAvgTask, StreamAccumulatorTask
+from ....vars import SOURCE_KIND
 from .signals import graph_signature
 from ..common import rna_snapshot
 
@@ -174,8 +173,7 @@ class GraphBuild:
                 if (
                     isinstance(upstream_task, SourceTask)
                     and upstream_node is not None
-                    and str(getattr(upstream_node, "category", "")) == "source_mngmt"
-                    and str(getattr(upstream_node, "type", "")) == "src"
+                    and (str(getattr(upstream_node, "category", "")), str(getattr(upstream_node, "type", ""))) == SOURCE_KIND
                 ):
                     auto_preview_passthrough_specs.append((str(upstream_node_id), int(upstream_sock_idx)))
                     continue
@@ -303,28 +301,7 @@ class GraphBuild:
         return copy
 
     def _create_task_for_node(self, node: ACEAbstractNode, block_size: int) -> Optional[ACEAudioTask]:
-        cat = node.category
-        typ = node.type
-
-        if cat == 'source_mngmt':
-            if typ == 'src':
-                return SourceTask(node.id, node.parameters, block_size)
-        elif cat == 'utilities':
-            if typ == 'preview_sink':
-                return PreviewSinkTask(node.id, node.parameters, block_size)
-            if typ == 'util_rolling_avg':
-                return RollingAvgTask(node.id, node.parameters, block_size)
-            if typ == 'stream_accumulator':
-                return StreamAccumulatorTask(node.id, node.parameters, block_size)
-        elif cat == 'delta':
-            if typ == 'frequency_splitter':
-                return FrequencySplitterTask(node.id, node.parameters, block_size)
-        elif cat == 'stream':
-            task = create_stream_task(node.id, typ, node.parameters, block_size)
-            if task is not None:
-                return task
-
-        return ACEAudioTask(node.id, node.parameters, block_size)
+        return create_task(node.id, node.category, node.type, node.parameters, block_size)
 
     def _rebuild_graph_output_slot_specs(self, graph: ACEAudioGraph):
         specs: list[tuple[str, str, int]] = []

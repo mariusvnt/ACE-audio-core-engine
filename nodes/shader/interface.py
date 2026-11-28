@@ -1,9 +1,8 @@
 """Shader group interface: sockets ACE nodes expose and the checks that trigger a rebuild."""
 
-from ...vars import ACE_NODES
+from ...vars import ROLE_MEASURE, SOURCE_KIND, node_def as registry_node_def, node_role, reads_values_object, writes_values
 from ... import utils
 from ..geometry.factory import ACEDummyNodeFactory
-from ..identity import VALUE_NODE_KINDS
 
 
 class ShaderGroupInterface:
@@ -43,10 +42,10 @@ class ShaderGroupInterface:
 
     @staticmethod
     def _numeric_control_names(category: str, node_type: str) -> tuple[str, ...]:
-        """Numeric control inputs of a stream node (e.g. Window), in declaration order."""
-        if str(category or "") != "stream":
+        """Numeric control inputs of a measure node (e.g. Window), in declaration order."""
+        if node_role(category, node_type) != ROLE_MEASURE:
             return ()
-        node_def = ACE_NODES.get("stream", {}).get("nodes", {}).get(str(node_type or ""), {})
+        node_def = registry_node_def(category, node_type)
         names = []
         for idx, (sock_type, sock_name) in enumerate(list(node_def.get("inputs", []) or [])):
             st = str(sock_type or "")
@@ -57,14 +56,8 @@ class ShaderGroupInterface:
 
     @staticmethod
     def _extra_inputs(category: str, node_type: str) -> tuple[tuple[str, str, str], ...]:
-        if category == "stream":
-            stream_nodes = (
-                ACE_NODES.get("stream", {}).get("nodes", {})
-                if isinstance(ACE_NODES.get("stream", {}), dict)
-                else {}
-            )
-            node_def = stream_nodes.get(str(node_type or ""), {}) if isinstance(stream_nodes, dict) else {}
-            outputs = list(node_def.get("outputs", [])) if isinstance(node_def, dict) else []
+        if node_role(category, node_type) == ROLE_MEASURE:
+            outputs = list(registry_node_def(category, node_type).get("outputs", []))
             value_output_count = max(
                 1,
                 sum(1 for sock_type, _sock_name in outputs if "Bundle" not in str(sock_type or "")),
@@ -79,15 +72,15 @@ class ShaderGroupInterface:
                     )
                 )
             return tuple(specs)
-        if category == "source_mngmt" and node_type == "src":
+        if (category, node_type) == SOURCE_KIND:
             return (("NodeSocketString", "Proxy Object", ""),)
-        if (category, node_type) in VALUE_NODE_KINDS:
+        if reads_values_object(category, node_type):
             return (("NodeSocketString", "Attribute ID", "ACE_undefined"),)
         return ()
 
     @classmethod
     def _attr_socket_names(cls, category: str, node_type: str) -> tuple[str, ...]:
-        if category == "stream":
+        if node_role(category, node_type) == ROLE_MEASURE:
             return tuple(
                 str(sock_name)
                 for _sock_type, sock_name, _default in cls._extra_inputs(category, node_type)
@@ -96,12 +89,7 @@ class ShaderGroupInterface:
 
     @staticmethod
     def _is_property_output_node(category: str, node_type: str) -> bool:
-        cat = str(category or "")
-        typ = str(node_type or "")
-        return bool(
-            cat == "stream"
-            or (cat == "utilities" and typ in {"util_rolling_avg", "stream_accumulator"})
-        )
+        return writes_values(category, node_type)
 
     @staticmethod
     def _expected_attribute_output_indices(node_def) -> tuple[int, ...]:
@@ -204,7 +192,7 @@ class ShaderGroupInterface:
             return True
         if not expected_inputs.issubset(set(inputs.keys())) or not expected_outputs.issubset(set(outputs.keys())):
             return True
-        if str(category or "") == "stream" and set(inputs.keys()) - expected_inputs:
+        if node_role(category, node_type) == ROLE_MEASURE and set(inputs.keys()) - expected_inputs:
             # An input the definition no longer declares (e.g. a removed control).
             return True
         for sock_name, expected_type in expected_input_types.items():

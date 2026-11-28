@@ -3,7 +3,7 @@ import re
 from typing import Dict, Optional
 
 from .. import utils
-from ..vars import ACE_PROXY_PREFIX
+from ..vars import ACE_PROXY_PREFIX, SOURCE_KIND
 
 
 class ACEIdManager:
@@ -84,8 +84,7 @@ class ACEIdManager:
             parsed = ACEIdManager.parse_node_id(sid)
             if (
                 parsed
-                and parsed.get("category") == "source_mngmt"
-                and parsed.get("type") == "src"
+                and (parsed.get("category"), parsed.get("type")) == SOURCE_KIND
             ):
                 return sid
 
@@ -102,8 +101,7 @@ class ACEIdManager:
             )
 
         sid = ACEIdManager.generate_node_id(
-            "source_mngmt",
-            "src",
+            *SOURCE_KIND,
             existing_ids=existing,
             deterministic_seed=f"source:{legacy_seed or 'default'}",
         )
