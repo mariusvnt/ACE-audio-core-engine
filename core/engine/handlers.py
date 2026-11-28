@@ -124,6 +124,15 @@ def _render_notes(engine, scene) -> list:
                 notes.append(f"'{name}' is a live input: its values render as 0. Record a take and use it to render it.")
         elif not engine.bake.covers(graph, frame_start, frame_end):
             notes.append(f"'{name}' is not baked: the render streams it, and may not match playback.")
+    with utils.logged_errors("handlers._render_notes#controllers"):
+        from ...nodes.geometry.controllers import controller_bakes
+
+        objects = sorted({obj.name for obj, _modifier, _bake in controller_bakes(scene)})
+        if objects:
+            notes.append(
+                f"Controllers on {', '.join(objects[:3])}{' and more' if len(objects) > 3 else ''} render exactly "
+                "only on frames cached or baked: Bake bakes them, after the sources."
+            )
     return notes
 
 

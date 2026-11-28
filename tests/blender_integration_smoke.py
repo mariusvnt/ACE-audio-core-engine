@@ -964,6 +964,25 @@ def _check_envelope_matches_reference(addon_key, scene, engine):
                 worst = max(abs(a - b) for a, b in zip(seen[mode], expected))
                 _assert(worst < 1e-4, f"Envelope {mode} at {fps} fps is {worst:.2e} off its reference")
             scene.frame_set(1)
+        # Baked, a jump lands on the exact value: no cache, no stepping from the last state.
+        controllers = importlib.import_module(f"{addon_key}.nodes.geometry.controllers")
+        render.fps, scene.frame_end = 24, 72
+        found = controllers.controller_bakes(scene)
+        mine = [entry for entry in found if entry[0] == obj]
+        _assert(len(mine) == 3, f"The tree's three Envelope zones are not listed: {len(mine)}")
+        _assert(controllers.bake_controllers(scene) == len(found), "Not every controller zone was baked")
+        obj.use_simulation_cache = False
+        scene.frame_set(40)
+        attrs = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.attributes
+        times = [frame / 24 for frame in range(1, 73)]
+        expected = ref.run_envelope([1.0 if t > 0.5 else 0.0 for t in times], times, mode="Spring", **settings["Spring"])
+        _assert(abs(float(attrs["env_Spring"].data[0].value) - expected[39]) < 1e-4,
+                f"A jump to a baked frame: {attrs['env_Spring'].data[0].value} vs {expected[39]}")
+        for entry_obj, modifier, bake in mine:
+            with bpy.context.temp_override(object=entry_obj, active_object=entry_obj):
+                bpy.ops.object.geometry_node_bake_delete_single(
+                    session_uid=entry_obj.session_uid, modifier_name=modifier.name, bake_id=bake.bake_id)
+        scene.frame_set(1)
         _assert(not field_link.is_valid, "A field into an Envelope is not flagged invalid")
         engine.compiler.compile_scene_frontends(scene)
         _assert(not any(n.type == "envelope" for n in engine.abstract_tree_ref.nodes.values()),

@@ -230,6 +230,50 @@ def build_internals(ng, node_def: dict, node_type: str) -> None:
             item.default_value = items[0]
 
 
+def controller_bakes(scene):
+    """(object, modifier, bake) for each Simulation Zone of a controller that the scene's objects run.
+
+    A modifier lists one bake per zone it runs, nested groups included; the zone's Simulation
+    Output node is in the controller's group.
+    """
+    from ..identity import group_kind
+    from ...vars import node_is_native
+
+    found = []
+    for obj in getattr(scene, "objects", []) or []:
+        for modifier in getattr(obj, "modifiers", []) or []:
+            if getattr(modifier, "type", "") != "NODES":
+                continue
+            for bake in getattr(modifier, "bakes", []) or []:
+                node = getattr(bake, "node", None)
+                kind = group_kind(getattr(node, "id_data", None)) if node is not None else ("", "")
+                if kind[0] and node_is_native(*kind):
+                    found.append((obj, modifier, bake))
+    return found
+
+
+def bake_controllers(scene) -> int:
+    """Bake every controller's Simulation Zone in *scene*, over its frame range; how many were baked.
+
+    A render reads the viewport's simulation, so a controller renders exactly only on frames
+    that are cached or baked. Each zone is baked on its own: the user's other simulations are left
+    as they are.
+    """
+    import bpy  # type: ignore
+
+    from ... import utils
+
+    baked = 0
+    for obj, modifier, bake in controller_bakes(scene):
+        with utils.logged_errors("controllers.bake_controllers"):
+            with bpy.context.temp_override(scene=scene, object=obj, active_object=obj):
+                bpy.ops.object.geometry_node_bake_single(
+                    session_uid=obj.session_uid, modifier_name=modifier.name, bake_id=bake.bake_id,
+                )
+            baked += 1
+    return baked
+
+
 def prepare_interface(ng, node_def: dict) -> None:
     """Controllers take single values: a field linked to one is drawn as an invalid link by Blender."""
     for item in ng.interface.items_tree:

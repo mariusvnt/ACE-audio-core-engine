@@ -25,6 +25,8 @@ class BakeManager:
         self._bake_result_queue: "queue.Queue[tuple]" = queue.Queue()
         # Bake nodes and simulation zones downstream of ACE nodes (find_downstream_bakes).
         self.downstream_bakes: List[Dict[str, Any]] = []
+        # How many controller Simulation Zones the last bake baked after its sources.
+        self.controllers_baked: int = 0
 
     # -- reading ------------------------------------------------------------
 
@@ -191,6 +193,14 @@ class BakeManager:
             frame_end=frame_end,
             samples=max(frame_end - frame_start + 1, 0),
         )
+        if not self._bake_jobs:
+            # The controllers read the values just baked: their Simulation Zones bake after them.
+            scene = bpy.data.scenes.get(str(job.get("scene_name", "") or "")) or getattr(bpy.context, "scene", None)
+            if scene is not None:
+                with utils.logged_errors("bake.BakeManager._finalise#controllers"):
+                    from ...nodes.geometry.controllers import bake_controllers
+
+                    self.controllers_baked = bake_controllers(scene)
 
     def flush_bake_results(self) -> None:
         """Drain completed async bake events and write results on the main thread."""
