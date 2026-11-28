@@ -80,6 +80,8 @@ class ACEDummyTreeReader:
         self.visited_trees: list = []  # every tree of the walk, root first
         # (node id, input index) of inputs linked to a value the walk cannot bind (a computed field).
         self.unbound_inputs: list[tuple[str, int]] = []
+        # Tree key -> the links into ACE nodes that ACE ignores there (nodes/link_rules.py).
+        self.ignored_links: dict = {}
         if self.frontend_uid:
             self.abstract_tree.add_frontend(
                 ACEFrontendRef(
@@ -111,6 +113,8 @@ class ACEDummyTreeReader:
         self._scopes.append(scope)
         if scope.tree not in self.visited_trees:
             self.visited_trees.append(scope.tree)
+            if scope.definition.ignored:
+                self.ignored_links[tree_key(scope.tree)] = list(scope.definition.ignored)
         if depth >= _MAX_DEPTH:
             return
         for name, entry in scope.definition.groups.items():

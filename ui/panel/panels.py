@@ -6,7 +6,7 @@ import bpy  # type: ignore
 import textwrap
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
-from .helpers import _deal_breakers, _source_display_sample_rate, _source_list_icon, _ui_is_blocked, property_column
+from .helpers import _deal_breakers, _find_active_node_tree, _source_display_sample_rate, _source_list_icon, _ui_is_blocked, property_column
 from .selection import _draw_bake_controls, _draw_selected_node_description, _draw_selected_operator, _selected_node_description
 from . import operator_tree
 from . import sync
@@ -632,8 +632,18 @@ class ACE_PT_active_instances(bpy.types.Panel):
 
     def draw(self, context):
         from .instances import instance_report
+        from .selection import draw_ignored_links
+        from ...nodes.definitions import definition as tree_definition
 
         layout = self.layout
+        tree = _find_active_node_tree(context)
+        ignored = []
+        if tree is not None:
+            with utils.logged_errors("panels.ACE_PT_active_instances.draw#ignored"):
+                ignored = list(tree_definition(tree).ignored)
+        if ignored:
+            layout.label(text=f"Links ACE ignores in {tree.name}", icon="ERROR")
+            draw_ignored_links(layout, context, ignored, show_node=True)
         report = instance_report(ACEAudioEngine.get_instance(context.scene))
         if not report:
             layout.label(text="No ACE node is compiled.", icon='INFO')

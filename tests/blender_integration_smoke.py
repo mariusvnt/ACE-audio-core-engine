@@ -450,6 +450,78 @@ def _check_computed_link_values(addon_key, scene):
         bpy.data.node_groups.remove(tree)
 
 
+def _check_ignored_links(addon_key, scene, engine):
+    """A link ACE ignores is drawn invalid, says why in the N-panel, and stays invalid across edits.
+
+    A constant chain into a control is read as its value; anything else leaves the socket's own value.
+    """
+    import time
+    handlers = importlib.import_module(f"{addon_key}.core.engine.handlers")
+    selection = importlib.import_module(f"{addon_key}.ui.panel.selection")
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Ignored")
+    compiles = []
+    original = engine.compiler.compile_scene_frontends
+    try:
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness", mode="lufs")
+        tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
+        loud.inputs["Window (s)"].default_value = 0.7
+        value = tree.nodes.new("ShaderNodeValue")
+        value.outputs[0].default_value = 0.25
+        double = tree.nodes.new("ShaderNodeMath")
+        double.operation = "MULTIPLY"
+        double.inputs[1].default_value = 2.0
+        tree.links.new(value.outputs[0], double.inputs[0])
+        constant_link = tree.links.new(double.outputs[0], loud.inputs["Window (s)"])
+
+        def window_param():
+            return next(task.parameters for graph in engine.graphs.values() for node_id, task in graph.tasks.items()
+                        if node_id == _signal(engine, loud)).get("in_1")
+
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(window_param() == 0.5, f"A constant chain is read as its value: {window_param()}")
+        _assert(constant_link.is_valid and not selection.ignored_links_into(loud), "A constant chain is not ignored")
+
+        noise = tree.nodes.new("ShaderNodeTexNoise")
+        noise.label = "Grain"
+        tree.links.new(noise.outputs[0], double.inputs[0])
+        name = tree.nodes.new("FunctionNodeInputString")
+        name.string = "ACE_my_name"
+        attr_link = tree.links.new(name.outputs[0], loud.inputs["Attribute ID"])
+        engine.compiler.compile_scene_frontends(scene)
+
+        def window_link():
+            return next(lk for lk in tree.links if lk.to_node == loud and lk.to_socket.name == "Window (s)")
+
+        _assert(abs(window_param() - 0.7) < 1e-6, f"An ignored control uses the socket's own value: {window_param()}")
+        _assert(not window_link().is_valid and not attr_link.is_valid,
+                f"Ignored links are not drawn invalid: {window_link().is_valid}, {attr_link.is_valid}")
+        reasons = {item.input_name: item.reason for item in selection.ignored_links_into(loud)}
+        _assert(set(reasons) == {"Window (s)", "Attribute ID"}, f"Ignored inputs: {reasons}")
+        _assert("Grain" in reasons["Window (s)"] and "0.7" in reasons["Window (s)"], f"Window reason: {reasons}")
+
+        # Blender checks links again when nodes change: the handler marks them again, and the
+        # marking itself is no edit, so nothing recompiles.
+        engine.compiler.compile_scene_frontends = lambda *a, **k: (compiles.append(1), original(*a, **k))[1]
+        tree.nodes.new("ShaderNodeValue")
+        _assert(window_link().is_valid, "Blender kept the flag through a node edit (probe P8 says it resets it)")
+        bpy.context.view_layer.update()
+        _assert(not window_link().is_valid, "The ignored link is valid again after an edit")
+        before = len(compiles)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 1.5:
+            bpy.context.view_layer.update()
+            handlers.auto_compile_timer()
+            time.sleep(0.05)
+        _assert(len(compiles) - before <= 1, f"Marking links recompiled {len(compiles) - before} times")
+        _assert(not window_link().is_valid, "The ignored link is valid again after the compile")
+        print("[ACE smoke] ignored links: drawn invalid, explained, marked again after an edit; a constant chain is read")
+    finally:
+        engine.compiler.compile_scene_frontends = original
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
 def _check_driven_splits(addon_key, scene, engine):
     """A linked split frequency reaches the engine and the strip, and follows without recompiling."""
     split_freqs = importlib.import_module(f"{addon_key}.nodes.split_freqs")
@@ -494,11 +566,12 @@ def _check_driven_splits(addon_key, scene, engine):
         engine.frame.execute_next_frame(scene, force=True)
 
         noise = tree.nodes.new("ShaderNodeTexNoise")
-        tree.links.new(noise.outputs[0], split.inputs[1])
-        _assert(states()[0] == (None, "unreadable"), f"Unreadable link: {states()}")
+        noise_link = tree.links.new(noise.outputs[0], split.inputs[1])
+        _assert(states()[0] == (200, "ignored"), f"A link ACE can't compute is ignored: {states()}")
         engine.compiler.compile_scene_frontends(scene)
-        _assert("in_1" not in task_params() and task_params().get("unknown_inputs") == [1],
-                f"The socket's own value overrode the link: {task_params()}")
+        _assert(task_params().get("in_1") == 200.0 and not task_params().get("unknown_inputs"),
+                f"An ignored link uses the socket's own value: {task_params()}")
+        _assert(not noise_link.is_valid, "The ignored split frequency link is not drawn invalid")
         engine.frame.execute_next_frame(scene, force=True)
         # An audio value through maths: the noodle's value wins over the operator's raw value.
         scale = tree.nodes.new("ShaderNodeMath")
@@ -2293,6 +2366,7 @@ def main():
     _check_every_splitter_lists_its_bands(addon_key, scene)
     _check_computed_link_values(addon_key, scene)
     _check_driven_splits(addon_key, scene, engine)
+    _check_ignored_links(addon_key, scene, engine)
     _check_selection_follows_sources(addon_key, scene)
     _check_new_source_takes_input_name(addon_key, scene)
     _check_viewer_previews_audio(addon_key, scene, engine)

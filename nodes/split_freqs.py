@@ -35,13 +35,17 @@ def set_split_freq(node, index: int, value: float) -> bool:
 def split_freq_states(node, scene=None) -> list[tuple]:
     """(socket, Hz or None, state) per split frequency, as the engine will use it.
 
-    state: "own" (unlinked), "linked" (computed from the link) or "unreadable" (it cannot be
-    computed, so there is no value; the link still wins over the socket's own value).
+    state: "own" (unlinked), "linked" (computed from the link), "ignored" (a node in the chain
+    can't be computed, so the socket's own value is used and the link is drawn invalid) or
+    "unreadable" (an ACE output in the chain has no value yet; the link still wins).
     """
     states = []
     for sock in _split_freq_sockets(node):
         value, state = float(sock.default_value), "own"
         if sock.is_linked:
+            if driven_values.unsupported_node(sock) is not None:
+                states.append((sock, value, "ignored"))
+                continue
             value = driven_values.linked_value(sock, scene)
             state = "linked" if value is not None else "unreadable"
         states.append((sock, value, state))
@@ -54,7 +58,9 @@ def capture_driven_splits(node, params: dict, chain=(), modifier=None, root_key:
     *chain* is the group nodes the walk entered to reach *node* and *modifier* the one at the
     root, so a link from a group's input reads what that use of the group receives.
     """
-    linked = [i for i, sock in enumerate(node.inputs) if i and sock.is_linked]
+    # A chain with a node ACE can't compute is ignored: the socket's own value is used.
+    linked = [i for i, sock in enumerate(node.inputs)
+              if i and sock.is_linked and driven_values.unsupported_node(sock) is None]
     if not linked:
         return
     context = driven_values.WalkContext(chain=tuple(chain or ()), modifier=modifier, root_key=root_key)

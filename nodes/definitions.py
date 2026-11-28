@@ -41,6 +41,7 @@ class AceEntry:
     linked_inputs: tuple = ()
     source_id: str = ""  # a Source node's own source (its proxy or its shader group)
     source_input: str = ""  # a Source node whose Proxy Object comes from this Group Input socket
+    ignored: list = field(default_factory=list)  # link_rules.IgnoredLink per input ACE ignores
 
 
 @dataclass
@@ -63,6 +64,7 @@ class Definition:
     #       | ("viewer", name, identifier)]
     flows: dict = field(default_factory=dict)
     viewers: dict = field(default_factory=dict)  # viewer name -> identifier of the input it plays
+    ignored: list = field(default_factory=list)  # link_rules.IgnoredLink: links into ACE nodes that ACE ignores
 
     @property
     def uses_ace(self) -> bool:
@@ -139,7 +141,8 @@ def tree_content_signature(tree) -> str:
         tokens.append((
             "l", _node_pointer(link.from_node), str(link.from_socket.identifier),
             _node_pointer(link.to_node), str(link.to_socket.identifier),
-            bool(getattr(link, "is_muted", False)), bool(getattr(link, "is_valid", True)),
+            # Not is_valid: ACE marks the links it ignores, and that must not read as an edit.
+            bool(getattr(link, "is_muted", False)),
         ))
     payload = repr(tokens).encode("utf-8", "ignore")
     return hashlib.blake2b(payload, digest_size=16).hexdigest()
@@ -284,6 +287,8 @@ def _parse_ace(node, category: str, node_type: str, order: int) -> AceEntry:
         node_def = ACE_NODES[category]["nodes"][node_type]
         input_defs = node_def.get("inputs", [])
         output_defs = node_def.get("outputs", [])
+    from .link_rules import judge_input
+
     entry = AceEntry(name=str(node.name), category=category, node_type=node_type, order=order)
     linked = []
     for i, sock in enumerate(node.inputs):
@@ -291,6 +296,15 @@ def _parse_ace(node, category: str, node_type: str, order: int) -> AceEntry:
             "NodeSocketString" if "Attribute ID" in str(sock.name) else "NodeSocketFloat")
         value = getattr(sock, "default_value", None)
         entry.inputs.append((str(sock.name), data_type, plain_value(value)))
+        verdict, detail = judge_input(node, category, node_type, i, sock, data_type) if sock.is_linked else ("ok", None)
+        if verdict == "constant":
+            entry.params[f"in_{i}"] = detail  # a constant chain: its value, as if typed in
+            continue
+        if verdict == "ignored":
+            entry.ignored.append(detail)  # read as the socket's own value
+            if value is not None and not hasattr(value, "bl_rna") and "Bundle" not in str(data_type):
+                entry.params[f"in_{i}"] = value.to_tuple() if hasattr(value, "to_tuple") else value
+            continue
         if sock.is_linked:
             linked.append(i)
             ident = _feed(sock)
@@ -332,6 +346,7 @@ def _parse(tree, key: str, signature: str) -> Definition:
         if category:
             with utils.logged_errors("definitions._parse#ace"):
                 parsed.ace[node.name] = _parse_ace(node, category, node_type, order)
+                parsed.ignored.extend(parsed.ace[node.name].ignored)
                 for out_idx, sock in enumerate(node.outputs):
                     if sock.is_linked:
                         parsed.flows[("ace", node.name, out_idx)] = _targets(sock)
@@ -360,4 +375,9 @@ def _parse(tree, key: str, signature: str) -> Definition:
             heard = next((s for s in node.inputs if s.is_linked and str(getattr(s, "type", "")) == "BUNDLE"), None)
             if heard is not None:
                 parsed.viewers[node.name] = str(heard.identifier)
+    # What ACE ignores reaches no node: the reading never follows it.
+    dropped = {("ace", item.node_name, item.input_index) for item in parsed.ignored}
+    if dropped:
+        for port, targets in parsed.flows.items():
+            parsed.flows[port] = [t for t in targets if tuple(t) not in dropped]
     return parsed

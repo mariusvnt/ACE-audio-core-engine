@@ -255,10 +255,35 @@ def _selected_node_description(context) -> str:
 
 
 def _draw_selected_operator(layout, context) -> None:
-    """Settings of the selected operator (it is renamed in the list itself)."""
+    """Settings of the selected operator (it is renamed in the list itself), and the links it ignores."""
     node, parsed = _resolve_ui_list_selected_node(context)
     if node is not None and _parsed_node_has_operator_settings(parsed):
         _draw_selected_node_operator_settings(layout, context)
+    if node is not None:
+        draw_ignored_links(layout, context, ignored_links_into(node))
+
+
+def ignored_links_into(node) -> list:
+    """The links into *node* that ACE ignores, read from its tree's definition."""
+    from ...nodes.definitions import definition
+
+    tree = getattr(node, "id_data", None)
+    if tree is None:
+        return []
+    with utils.logged_errors("selection.ignored_links_into"):
+        return [item for item in definition(tree).ignored if item.node_name == node.name]
+    return []
+
+
+def draw_ignored_links(layout, context, items, show_node: bool = False) -> None:
+    """One box per ignored link: the input, where it comes from, and why ACE ignores it."""
+    for item in items:
+        box = layout.box()
+        head = box.row()
+        head.alert = True
+        title = f"{item.node_name}: {item.input_name}" if show_node else item.input_name
+        head.label(text=f"{title} ← {item.from_node} (link ignored)", icon="ERROR")
+        _draw_selected_node_description(box, context, item.reason)
 
 
 # Gap at each cut, before UI scale. Blender truncates widths to whole pixels: 1 px at scale 1.
@@ -383,7 +408,10 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
                     field.prop(node, f"ace_split_freq_{idx + 1}", text="Hz" if unitless else "", slider=True)
                     continue
                 field.label(text="" if value is None else f"{value:.0f} Hz")
-                field.label(text="Linked", icon="LINKED")
+                if state == "ignored":
+                    field.label(text="Ignored", icon="ERROR")
+                else:
+                    field.label(text="Linked", icon="LINKED")
 
     if (parsed.get("category"), parsed.get("type")) == PREVIEW_KIND:
         drew_settings = True

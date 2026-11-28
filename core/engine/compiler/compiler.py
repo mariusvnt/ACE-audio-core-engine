@@ -299,6 +299,7 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends"):
             self.engine.sinks.repair_sink_names([record.tree for record in frontends], scene)
         merged_tree = ACEAbstractTree()
+        ignored_links: dict = {}
 
         for frontend in frontends:
             tree = frontend.tree
@@ -330,11 +331,18 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 )
 
             partial_tree = reader.build()
+            ignored_links.update(reader.ignored_links)
             self._refresh_consumer_intents_from_nodes(partial_tree)
             partial_tree.frontends[frontend_uid] = frontend.frontend_ref
             merged_tree.merge_from(partial_tree)
 
         self.compile(merged_tree, scene)
+        # The links ACE ignores are drawn as invalid: a flag, not content, so no edit is seen.
+        self.engine.ignored_links = ignored_links
+        with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#ignored"):
+            from ....nodes.link_rules import mark_ignored_links
+
+            mark_ignored_links(ignored_links)
         # compile() clears the runtime refs, this signature included; without it
         # every auto-compile poll sees a membership change and rebuilds.
         self._last_frontend_membership_signature = membership_signature

@@ -18,6 +18,18 @@ class _Unknown(Exception):
     """The chain holds something that cannot be computed here."""
 
 
+class _Unsupported(_Unknown):
+    """The chain holds a node ACE can't compute, so the link is ignored. The argument names the node."""
+
+
+class _NotYet(_Unknown):
+    """An ACE output in the chain has no value yet: the link waits for it."""
+
+
+class _Varies(_Unknown):
+    """The chain holds a value that changes from frame to frame, or per use, where only a constant will do."""
+
+
 class WalkContext:
     """Where a node is used: the group nodes entered from the root, the root's modifier, the root's key.
 
@@ -54,11 +66,14 @@ class WalkContext:
 class _Walk:
     """Where the computation is: the scene, and the node groups entered on the way up."""
 
-    def __init__(self, scene, context: WalkContext | None = None):
+    def __init__(self, scene, context: WalkContext | None = None, mode: str = "value"):
         self.scene = scene
         self.groups: list = list(context.chain) if context is not None else []
         self.modifier = context.modifier if context is not None else None
         self.root_key = context.root_key if context is not None else ""
+        # "value": compute it. "constant": compute it from constants only. "structure": only
+        # check that every node can be computed (values from outside the tree count as 0).
+        self.mode = mode
 
 
 def linked_value(socket, scene=None, context: WalkContext | None = None) -> float | None:
@@ -71,6 +86,42 @@ def linked_value(socket, scene=None, context: WalkContext | None = None) -> floa
         utils.note_swallowed("driven_values.linked_value", exc)
         return None
     return value if math.isfinite(value) else None
+
+
+def _node_label(node) -> str:
+    return str(getattr(node, "label", "") or getattr(node, "name", "") or "a node")
+
+
+def unsupported_node(socket) -> str | None:
+    """The label of the first node feeding *socket* that ACE can't compute, None when it can compute them all."""
+    try:
+        _input_value(socket, _Walk(None, mode="structure"), 0)
+    except _Unsupported as exc:
+        return str(exc.args[0]) if exc.args else "a node"
+    except _Unknown:
+        return None
+    except Exception as exc:  # noqa: BLE001 boundary: a value of another type, a curve not initialised...
+        utils.note_swallowed("driven_values.unsupported_node", exc)
+        return None
+    return None
+
+
+def constant_value(socket) -> tuple[float | None, str]:
+    """(value, "") when the value reaching *socket* depends on constants only, else (None, what it depends on)."""
+    try:
+        value = _input_value(socket, _Walk(None, mode="constant"), 0)
+    except _Unsupported as exc:
+        return None, (str(exc.args[0]) if exc.args else "a node") + ", which ACE can't compute"
+    except _Varies as exc:
+        return None, str(exc.args[0]) if exc.args else "a value that changes"
+    except _Unknown:
+        return None, "a value ACE can't compute"
+    except Exception as exc:  # noqa: BLE001 boundary: a value of another type, a curve not initialised...
+        utils.note_swallowed("driven_values.constant_value", exc)
+        return None, "a value ACE can't compute"
+    if not math.isfinite(value):
+        return None, "a value that isn't a number"
+    return value, ""
 
 
 _EMBEDDED_OWNERS = (("material", "materials"), ("world", "worlds"), ("light", "lights"))
@@ -119,11 +170,15 @@ def _socket(sockets, identifier: str):
 
 def _output_value(node, output, walk: _Walk, depth: int) -> float:
     if is_ace_node(node):
+        if walk.mode == "constant":
+            raise _Varies(f"{_node_label(node)}, which changes every frame")
+        if walk.mode == "structure":
+            return 0.0
         return _audio_value(node, output, walk)
     if node.mute:
         through = next((l for l in node.internal_links if l.to_socket == output), None)
         if through is None:
-            raise _Unknown
+            raise _Unsupported(_node_label(node))
         return _input_value(through.from_socket, walk, depth)
     kind = node.bl_idname
 
@@ -133,7 +188,7 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
 
     if kind == "NodeReroute":
         if not node.inputs[0].is_linked:
-            raise _Unknown
+            raise _Unsupported(_node_label(node))
         return arg(0)
     if kind == "ShaderNodeValue":
         return float(node.outputs[0].default_value)
@@ -152,7 +207,7 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
         return _map_range(node, arg)
     if kind == "ShaderNodeMix":
         if node.data_type != "FLOAT":
-            raise _Unknown
+            raise _Unsupported(_node_label(node))
         factor = arg("Factor_Float")
         if node.clamp_factor:
             factor = min(max(factor, 0.0), 1.0)
@@ -160,7 +215,7 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
         return a + factor * (arg("B_Float") - a)
     if kind == "GeometryNodeSwitch":
         if node.input_type not in {"FLOAT", "INT"}:
-            raise _Unknown
+            raise _Unsupported(_node_label(node))
         return arg("True" if arg("Switch") else "False")
     if kind == "ShaderNodeFloatCurve":
         factor, value = arg("Factor"), arg("Value")
@@ -178,6 +233,10 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
         }
         return float(rounding[node.rounding_mode](value))
     if kind == "GeometryNodeInputSceneTime":
+        if walk.mode == "constant":
+            raise _Varies(f"{_node_label(node)}, which changes every frame")
+        if walk.mode == "structure":
+            return 0.0
         scene = walk.scene or bpy.context.scene
         frame = scene.frame_current + scene.frame_subframe
         if output.identifier == "Frame":
@@ -187,7 +246,7 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
         inner = node.node_tree
         outputs = [n for n in inner.nodes if n.bl_idname == "NodeGroupOutput"] if inner else []
         if not outputs:
-            raise _Unknown
+            raise _Unsupported(_node_label(node))
         group_output = next((n for n in outputs if n.is_active_output), outputs[0])
         walk.groups.append(node)
         try:
@@ -196,13 +255,17 @@ def _output_value(node, output, walk: _Walk, depth: int) -> float:
             walk.groups.pop()
     if kind == "NodeGroupInput":
         if not walk.groups:
+            if walk.mode == "constant":
+                raise _Varies("the group's input, which can differ per use")
+            if walk.mode == "structure":
+                return 0.0
             return _modifier_input(node.id_data, output.identifier, walk.scene, walk.modifier)
         outer = walk.groups.pop()  # the value comes from outside the group entered above
         try:
             return _input_value(_socket(outer.inputs, output.identifier), walk, depth)
         finally:
             walk.groups.append(outer)
-    raise _Unknown
+    raise _Unsupported(_node_label(node))
 
 
 def _audio_value(node, output, walk: _Walk) -> float:
@@ -220,7 +283,7 @@ def _audio_value(node, output, walk: _Walk) -> float:
     signal = engine.signal_id(used) if engine is not None else ""
     value = getattr(engine, "latest_values", {}).get(f"{signal or used}:{index}")
     if value is None:
-        raise _Unknown  # not computed yet
+        raise _NotYet  # not computed yet
     return float(value)
 
 
@@ -332,7 +395,7 @@ _MATH = {
 
 def _map_range(node, arg) -> float:
     if node.data_type != "FLOAT":
-        raise _Unknown
+        raise _Unsupported(_node_label(node))
     value, from_min, from_max, to_min, to_max = (arg(i) for i in range(5))
     if from_max == from_min:
         return 0.0

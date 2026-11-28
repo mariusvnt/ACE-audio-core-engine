@@ -309,6 +309,13 @@ def depsgraph_update_handler(scene, depsgraph):
             continue
         seen_targets.add(key)
         engine.frontends.request_recompile(tree, verify_content=True)
+    ignored_links = getattr(engine, "ignored_links", None)
+    if seen_targets and ignored_links:
+        # Blender checks links again when a tree changes, which makes the ignored ones valid.
+        with utils.logged_errors("handlers.depsgraph_update_handler#ignored"):
+            from ...nodes.link_rules import mark_ignored_links
+
+            mark_ignored_links(ignored_links)
 
 
 def auto_compile_timer():
