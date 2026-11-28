@@ -122,28 +122,21 @@ ACE_NODES: dict[str, Category] = {
             "stereo": {
             "label": "Stereo",
             "icon": "ORIENTATION_GIMBAL",
-            "description": "Stereo image. Width: side-to-mid energy (0 = mono, 1 = very wide). Balance: -1 = left, 0 = center, 1 = right.",
+            "description": (
+                "Where the sound is, whatever its volume. Balance: -1 left, 0 centre, 1 right. "
+                "Width: 0 mono, 1 side only. Behind a Frequency Splitter, within the band."
+            ),
             "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketFloat', 'Stereo')],
-            "modes": [
-                ("width", "Width", "Side-to-mid energy ratio (0 = mono, 1 = very wide)."),
-                ("balance", "Balance", "Left/right energy balance (-1 = left, 0 = center, 1 = right)."),
-            ],
-            "default_mode": "width",
-            },
-            "stereo_vector": {
-            "label": "Stereo Vector",
-            "icon": "ORIENTATION_GIMBAL",
-            "description": "Time-domain stereo descriptor packed as vector (L RMS, R RMS, Balance).",
-            "role": ROLE_MEASURE,
-            "inputs": [('NodeSocketBundle', 'Audio')],
-            "outputs": [('NodeSocketVector', 'Stereo Vector')],
+            "outputs": [('NodeSocketFloat', 'Balance'), ('NodeSocketFloat', 'Width')],
             },
             "brightness": {
             "label": "Brightness",
             "icon": "SEQ_HISTOGRAM",
-            "description": "Spectral centroid in Hz: where the energy of the frame sits, from dark to bright. Behind a Frequency Splitter, within the band.",
+            "description": (
+                "Where the energy of the frame sits, from dark to bright (its spectral centroid), in 0..1: "
+                "0 at 20 Hz and below, 1 at 20 kHz, on a log scale. Behind a Frequency Splitter, within the band."
+            ),
             "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Brightness')],
@@ -151,7 +144,10 @@ ACE_NODES: dict[str, Category] = {
             "pitch": {
             "label": "Pitch",
             "icon": "",
-            "description": "Detected root note pitch in Hz.",
+            "description": (
+                "The pitch of the frame's root note, in 0..1: 0 at 20 Hz or with no pitch, 1 at 5 kHz, "
+                "on a log scale, so equal musical intervals are equal steps."
+            ),
             "role": ROLE_MEASURE,
             "inputs": [('NodeSocketBundle', 'Audio')],
             "outputs": [('NodeSocketFloat', 'Pitch')],

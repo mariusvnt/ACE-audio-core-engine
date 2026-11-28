@@ -342,13 +342,13 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     graph.file_source_task_ids = ["src_node"]
     graph.live_source_task_ids = []
 
+    # Measurement kinds of the registry, so the offload policy treats them as it would in a scene.
     stream_types = (
-        ("rms", atr.RMSTask),
-        ("pitch", atr.PitchTask),
-        ("brightness", atr.BrightnessTask),
-        ("transient", atr.TransientTask),
-        ("stereo_width", atr.StereoWidthTask),
-        ("stereo_balance", atr.StereoBalanceTask),
+        ("loudness", atr.RMSLoudnessTask, {"mode": "rms"}),
+        ("pitch", atr.PitchTask, {}),
+        ("brightness", atr.BrightnessTask, {}),
+        ("transient", atr.TransientTask, {}),
+        ("stereo", atr.StereoTask, {}),
     )
 
     abstract_tree = abs_mod.ACEAbstractTree()
@@ -365,9 +365,9 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
     output_attr_keys: List[str] = []
     output_defs: Dict[str, Dict[str, Any]] = {}
     for idx in range(int(max(operator_count, 1))):
-        stype, cls = stream_types[idx % len(stream_types)]
+        stype, cls, params = stream_types[idx % len(stream_types)]
         node_id = f"{stype}_{idx}"
-        task = cls(node_id, {}, block_size=graph.block_size)
+        task = cls(node_id, dict(params), block_size=graph.block_size)
         task.connect_input(0, source_task, 0)
         graph.tasks[node_id] = task
         attr_key = f"{node_id}:0"
@@ -379,7 +379,7 @@ def _build_engine_graph(ae, atr, abs_mod, operator_count: int, parallel_mode: st
                 name=node_id,
                 category="audio",
                 type=stype,
-                parameters={},
+                parameters=dict(params),
             )
         )
         abstract_tree.add_link(abs_mod.ACEAbstractLink("src_node", node_id, 0, 0))

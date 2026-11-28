@@ -265,7 +265,6 @@ class TestNodeIdentity(unittest.TestCase):
         cases = {
             ".ACE_audio_loudness": ("audio", "loudness"),
             ".ACE_SHADER_audio_stereo": ("audio", "stereo"),
-            ".ACE_audio_stereo_vector": ("audio", "stereo_vector"),
             ".ACE_audio_frequency_splitter_4": ("audio", "frequency_splitter"),
             ".ACE_audio_loudness.001": ("audio", "loudness"),
             "My Group": ("", ""),

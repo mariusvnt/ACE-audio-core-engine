@@ -29,8 +29,6 @@ class TestStreamModes(unittest.TestCase):
             ("loudness", "rms"): stream.RMSLoudnessTask,
             ("loudness", "lufs"): stream.LUFSTask,
             ("loudness", "peak"): stream.PeakTask,
-            ("stereo", "width"): stream.StereoWidthTask,
-            ("stereo", "balance"): stream.StereoBalanceTask,
         }
         for (node_type, mode), task_cls in cases.items():
             task = stream.create_stream_task("n", node_type, {"mode": mode}, 256)
@@ -39,10 +37,10 @@ class TestStreamModes(unittest.TestCase):
     def test_missing_or_unknown_mode_uses_the_default(self):
         self.assertIs(type(stream.create_stream_task("n", "loudness", {}, 256)), stream.RMSLoudnessTask)
         self.assertIs(type(stream.create_stream_task("n", "loudness", {"mode": "bogus"}, 256)), stream.RMSLoudnessTask)
-        self.assertIs(type(stream.create_stream_task("n", "stereo", {}, 256)), stream.StereoWidthTask)
+        self.assertIs(type(stream.create_stream_task("n", "stereo", {}, 256)), stream.StereoTask)
 
     def test_every_mode_node_is_declared_with_its_default(self):
-        for node_type in ("loudness", "stereo"):
+        for node_type in ("loudness",):
             modes = [m[0] for m in ace_vars.node_modes("audio", node_type)]
             self.assertTrue(modes, node_type)
             self.assertIn(ace_vars.resolve_node_mode("audio", node_type, None), modes)

@@ -60,6 +60,16 @@ def _ace_stft(y: np.ndarray, sr: int, fps: int):
     return mags, times
 
 
+# The 0..1 log scales of Pitch and Brightness (core/tasks/stream.py), back to Hz; 0 is no frequency.
+PITCH_RANGE_HZ = (20.0, 5000.0)
+BRIGHTNESS_RANGE_HZ = (20.0, 20000.0)
+
+
+def _hz(curve: np.ndarray, low: float, high: float) -> np.ndarray:
+    curve = np.asarray(curve, dtype=np.float64)
+    return np.where(curve <= 0.0, 0.0, low * (high / low) ** np.clip(curve, 0.0, 1.0))
+
+
 def _pearson(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.corrcoef(a, b)[0, 1])
 
@@ -117,7 +127,7 @@ def check_meter_of_music(fps):
 
 def check_centroid_tracks_sweep(fps):
     """On a pure sweep the centroid is the sweep frequency."""
-    curve = _golden("sine_sweep", fps)["audio.brightness/Brightness"]
+    curve = _hz(_golden("sine_sweep", fps)["audio.brightness/Brightness"], *BRIGHTNESS_RANGE_HZ)
     f = _sweep_frequency(_frame_centres(len(curve), fps))
     band = (f > 200.0) & (f < 8000.0)
     octaves = np.abs(np.log2(np.maximum(curve[band], 1e-9) / f[band]))
@@ -126,7 +136,7 @@ def check_centroid_tracks_sweep(fps):
 
 
 def check_centroid_matches_librosa(fps):
-    curve = _golden("music_synth", fps)["audio.brightness/Brightness"]
+    curve = _hz(_golden("music_synth", fps)["audio.brightness/Brightness"], *BRIGHTNESS_RANGE_HZ)
     y, sr = fixtures.render("music_synth")
     mags, times = _ace_stft(y.mean(axis=1), sr, fps)
     ref = librosa.feature.spectral_centroid(S=mags, sr=sr)[0]
@@ -136,7 +146,7 @@ def check_centroid_matches_librosa(fps):
 
 def check_pitch_tracks_sweep(fps):
     """At least 90% of frames between 80 Hz and 1 kHz within 50 cents of the sweep."""
-    curve = _golden("sine_sweep", fps)["audio.pitch/Pitch"]
+    curve = _hz(_golden("sine_sweep", fps)["audio.pitch/Pitch"], *PITCH_RANGE_HZ)
     f = _sweep_frequency(_frame_centres(len(curve), fps))
     band = (f > 80.0) & (f < 1000.0)
     cents = 1200.0 * np.abs(np.log2(np.maximum(curve[band], 1e-9) / f[band]))

@@ -34,10 +34,11 @@ SPLITTER_BANDS = 2
 # The longest matching prefix wins.
 DEFAULT_TOLERANCE = {"abs": 1e-5, "rel": 1e-4}
 TOLERANCES: Dict[str, Dict[str, float]] = {
-    "audio.pitch": {"abs": 1e-3, "rel": 1e-4},             # Hz
-    "audio.brightness": {"abs": 1e-2, "rel": 1e-4},         # Hz
-    "audio.frequency_splitter.out00.brightness": {"abs": 1e-2, "rel": 1e-4},
-    "audio.frequency_splitter.out01.brightness": {"abs": 1e-2, "rel": 1e-4},
+    # 0..1 on a log scale: 1e-4 is 0.02 Hz at 30 Hz, the drift between platforms.
+    "audio.pitch": {"abs": 1e-5, "rel": 1e-4},
+    "audio.brightness": {"abs": 1e-4, "rel": 1e-4},
+    "audio.frequency_splitter.out00.brightness": {"abs": 1e-4, "rel": 1e-4},
+    "audio.frequency_splitter.out01.brightness": {"abs": 1e-4, "rel": 1e-4},
     SOURCE_CASE: {"abs": 1e-3, "rel": 1e-4},                 # BPM
     "controllers.stream_accumulator": {"abs": 1e-4, "rel": 1e-4},  # a running sum
 }
@@ -119,7 +120,7 @@ def cases() -> List[dict]:
 
     # Measurements that must stay inside a band: one case per band and measurement.
     measure_category = {node_type: category for category, node_type, _d in measures}
-    banded = [("stereo", mode) for mode in ("width", "balance")] + [("stereo_vector", None), ("brightness", None)]
+    banded = [("stereo", None), ("brightness", None)]
     for split_category, split_type, _d in _kinds(nodes, "splitter"):
         for idx in range(SPLITTER_BANDS):
             for node_type, mode in banded:

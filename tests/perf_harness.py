@@ -88,8 +88,7 @@ def _scenario_benchmark(atr, operator_count: int, frames: int = 180) -> Dict[str
     stream_factories = (
         lambda idx: atr.RMSTask(f"rms_node_{idx}", {}, block_size=block_size),
         lambda idx: atr.BrightnessTask(f"brightness_node_{idx}", {}, block_size=block_size),
-        lambda idx: atr.StereoWidthTask(f"width_node_{idx}", {}, block_size=block_size),
-        lambda idx: atr.StereoBalanceTask(f"balance_node_{idx}", {}, block_size=block_size),
+        lambda idx: atr.StereoTask(f"stereo_node_{idx}", {}, block_size=block_size),
     )
     stream_tasks = [stream_factories[idx % len(stream_factories)](idx) for idx in range(op_count)]
     preview_task = atr.PreviewSinkTask("preview_node", {"preview_enabled": True}, block_size=block_size)

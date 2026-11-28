@@ -136,7 +136,7 @@ def _check_operator_list_follows_tree(addon_key, scene):
             root,
             "  Loudness (LUFS)",
             f"  Split {low}{sep}Loudness (RMS)",
-            f"  Split {high}{sep}Stereo (Width)",
+            f"  Split {high}{sep}Stereo",
         ]
         _assert(rows() == expected, f"Folded tree: {rows()}")
 
@@ -857,6 +857,48 @@ def _check_shader_values_reach_scene(addon_key, scene, engine, src):
         _assert(abs(float(scene.get(bpm_name, -1.0)) - float(src.bpm)) < 1e-6, "The source's BPM is not on the scene")
     finally:
         bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.materials.remove(material)
+
+
+def _check_stereo_writes_two_sinks(addon_key, scene, engine, src):
+    """One Stereo node writes Balance and Width: two sinks, in Geometry Nodes and in a shader."""
+    ace = scene.audiocore
+    scene.audiocore.engine_settings.ace_parallel_mode = "threads_io"
+    ace.active_audio_source_index = list(ace.audio_sources).index(src)
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Stereo")
+    material = bpy.data.materials.new("ACE_Smoke_Stereo_Mat")
+    obj.data.materials.append(material)
+    try:
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        stereo = _add_ace_node(addon_key, tree, "audio", "stereo", "Stereo")
+        tree.links.new(source.outputs["Audio"], stereo.inputs["Audio"])
+        s_source = _add_ace_node(addon_key, material.node_tree, "input", "src", "Source")
+        s_stereo = _add_ace_node(addon_key, material.node_tree, "audio", "stereo", "Stereo")
+        material.node_tree.links.new(s_source.outputs["Audio"], s_stereo.inputs["Audio"])
+        _assert([s.name for s in stereo.outputs] == ["Balance", "Width"], f"Stereo outputs: {[s.name for s in stereo.outputs]}")
+        gn_names = blender_helpers.sink_names(addon_key, stereo)
+        shader_names = blender_helpers.sink_names(addon_key, s_stereo)
+        _assert(len(set(gn_names.values())) == 2 and len(set(shader_names.values())) == 2,
+                f"Stereo sink names: {gn_names}, {shader_names}")
+        engine.compiler.compile_scene_frontends(scene)
+        for frame in range(1, 13):
+            scene.frame_set(frame)
+        signal = _signal(engine, stereo)
+        balance, width = (engine.latest_values.get(f"{signal}:{i}") for i in (0, 1))
+        _assert(balance is not None and width is not None, f"Stereo values: {balance}, {width}")
+        _assert(-1.0 <= balance <= 1.0 and 0.0 <= width <= 1.0, f"Stereo ranges: {balance}, {width}")
+        proxy = bpy.data.objects.get(src.proxy_object_name)
+        attrs = proxy.data.attributes if proxy is not None else {}
+        for out_idx, value in ((0, balance), (1, width)):
+            name = gn_names[out_idx]
+            _assert(name in attrs, f"The proxy has no '{name}' attribute")
+            _assert(abs(float(attrs[name].data[0].value) - float(value)) < 1e-6, f"'{name}' on the proxy: {attrs[name].data[0].value} vs {value}")
+            _assert(abs(float(scene.get(shader_names[out_idx], -9.0)) - float(value)) < 1e-6,
+                    f"Shader '{shader_names[out_idx]}': {scene.get(shader_names[out_idx])} vs {value}")
+        print(f"[ACE smoke] Stereo writes two sinks: Balance {balance:.3f}, Width {width:.3f}")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
         bpy.data.materials.remove(material)
 
 
@@ -2354,6 +2396,7 @@ def main():
     _check_live_session(addon_key, engine, scene)
     _check_take_recording(addon_key, engine, scene)
     _check_shader_values_reach_scene(addon_key, scene, engine, src)
+    _check_stereo_writes_two_sinks(addon_key, scene, engine, src)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)

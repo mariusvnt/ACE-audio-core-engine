@@ -47,6 +47,28 @@ class AnalysisHistoryTests(unittest.TestCase):
             history[-before.size:] = before
         return self.chunk.AudioChunk(signal[end - BLOCK:end], None, SR, lineage=("src",), history_mono=history, **kwargs)
 
+    def _pitch_hz(self, chunk) -> float:
+        """The Pitch task's value back in Hz (0 stays 0: no pitch)."""
+        unit = self.stream.PitchTask("p", {}, BLOCK).process({0: chunk})
+        return 0.0 if unit <= 0.0 else self.stream.unit_to_hz(unit, *self.stream.PITCH_RANGE_HZ)
+
+    def _brightness_hz(self, chunk) -> float:
+        """The Brightness task's value back in Hz (0 stays 0: no energy)."""
+        unit = self.stream.BrightnessTask("c", {}, BLOCK).process({0: chunk})
+        return 0.0 if unit <= 0.0 else self.stream.unit_to_hz(unit, *self.stream.BRIGHTNESS_RANGE_HZ)
+
+    def test_frequencies_map_to_0_1_on_a_log_scale(self):
+        to_unit = self.stream.hz_to_unit
+        low, high = self.stream.PITCH_RANGE_HZ
+        self.assertEqual(to_unit(0.0, low, high), 0.0)
+        self.assertEqual(to_unit(low, low, high), 0.0)
+        self.assertEqual(to_unit(high * 2.0, low, high), 1.0)
+        # Equal musical intervals are equal steps: every octave is the same distance.
+        step = to_unit(220.0, low, high) - to_unit(110.0, low, high)
+        self.assertAlmostEqual(to_unit(880.0, low, high) - to_unit(440.0, low, high), step, places=12)
+        self.assertAlmostEqual(self.stream.unit_to_hz(to_unit(440.0, low, high), low, high), 440.0, places=9)
+        self.assertAlmostEqual(to_unit(632.455532, 20.0, 20000.0), 0.5, places=6)  # the geometric middle
+
     def test_file_history_is_the_audio_before_the_next_block(self):
         ramp = np.arange(3000, dtype=np.float32) / 4000.0
         with tempfile.TemporaryDirectory() as folder:
@@ -66,18 +88,18 @@ class AnalysisHistoryTests(unittest.TestCase):
     def test_pitch_reads_tones_from_blocks_shorter_than_their_analysis(self):
         for freq in (30.0, 55.0, 440.0, 3000.0):
             signal = _tone(freq, 8000)
-            value = self.stream.PitchTask("p", {}, BLOCK).process({0: self._chunk(signal, 8000)})
+            value = self._pitch_hz(self._chunk(signal, 8000))
             self.assertAlmostEqual(value / freq, 1.0, delta=0.005, msg=f"{freq} Hz read as {value}")
 
     def test_pitch_of_noise_and_silence_is_zero(self):
         noise = (0.3 * np.random.default_rng(1).standard_normal(8000)).astype(np.float32)
         for signal in (noise, np.zeros(8000, dtype=np.float32)):
-            self.assertEqual(self.stream.PitchTask("p", {}, BLOCK).process({0: self._chunk(signal, 8000)}), 0.0)
+            self.assertEqual(self._pitch_hz(self._chunk(signal, 8000)), 0.0)
 
     def test_pitch_stays_inside_the_band(self):
         signal = _tone(110.0, 8000) + _tone(1500.0, 8000)
         chunk = self._chunk(signal, 8000, band_hz_bounds=(800.0, 4000.0))
-        value = self.stream.PitchTask("p", {}, BLOCK).process({0: chunk})
+        value = self._pitch_hz(chunk)
         self.assertAlmostEqual(value, 1500.0, delta=15.0)
 
     def _stereo_chunk(self, left: np.ndarray, right: np.ndarray, end: int, **kwargs):
@@ -98,14 +120,13 @@ class AnalysisHistoryTests(unittest.TestCase):
         low = self._stereo_chunk(left, right, 8000, band_hz_bounds=(20.0, 1000.0))
         high = self._stereo_chunk(left, right, 8000, band_hz_bounds=(1000.0, 20000.0))
         for chunk, side in ((low, -1.0), (high, 1.0)):
-            balance = self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: chunk})
+            balance, width = self.stream.StereoTask("s", {}, BLOCK).process({0: chunk})
             self.assertAlmostEqual(balance, side, delta=0.02)
-            l_rms, r_rms, vec_balance = self.stream.StereoVectorTask("v", {}, BLOCK).process({0: chunk})
-            self.assertAlmostEqual(vec_balance, balance, places=9)
-            self.assertAlmostEqual(max(l_rms, r_rms), 0.5 / np.sqrt(2.0), delta=0.01)
+            self.assertEqual(balance, self.stream.stereo_balance(chunk))
+            self.assertEqual(width, self.stream.stereo_width(chunk))
         # Without a splitter both tones count (the block holds 1.67 periods of 100 Hz, so not exactly 0).
         full = self._stereo_chunk(left, right, 8000)
-        self.assertAlmostEqual(self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: full}), 0.0, delta=0.05)
+        self.assertAlmostEqual(self.stream.stereo_balance(full), 0.0, delta=0.05)
 
     def test_band_stereo_levels_add_up_and_a_centred_band_has_no_width(self):
         noise = np.random.default_rng(4).standard_normal((2, 8000)).astype(np.float32) * 0.2
@@ -116,12 +137,12 @@ class AnalysisHistoryTests(unittest.TestCase):
         whole = self.spectral._band_stereo_levels(self._stereo_chunk(noise[0], noise[1], 8000, band_hz_bounds=(0.0, 1e9)))
         np.testing.assert_allclose(np.add(parts[0], parts[1]), whole, rtol=1e-9)
         centred = self._stereo_chunk(noise[0], noise[0], 8000, band_hz_bounds=(200.0, 2000.0))
-        self.assertAlmostEqual(self.stream.StereoWidthTask("w", {}, BLOCK).process({0: centred}), 0.0, places=6)
-        self.assertAlmostEqual(self.stream.StereoBalanceTask("b", {}, BLOCK).process({0: centred}), 0.0, places=6)
+        self.assertAlmostEqual(self.stream.stereo_width(centred), 0.0, places=6)
+        self.assertAlmostEqual(self.stream.stereo_balance(centred), 0.0, places=6)
 
     def test_brightness_of_the_full_band_is_the_hann_centroid_of_the_frame(self):
         signal = _tone(300.0, 8000) + 0.5 * _tone(4000.0, 8000)
-        value = self.stream.BrightnessTask("c", {}, BLOCK).process({0: self._chunk(signal, 8000)})
+        value = self._brightness_hz(self._chunk(signal, 8000))
         frame = signal[8000 - 1024:8000].astype(np.float64)  # the 1024-point FFT ends with the block
         mag = np.abs(np.fft.rfft(frame * (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(1024) / 1024))))
         freqs = np.fft.rfftfreq(1024, d=1.0 / SR)
@@ -131,16 +152,16 @@ class AnalysisHistoryTests(unittest.TestCase):
         signal = _tone(300.0, 8000) + _tone(4000.0, 8000)
         for bounds in ((20.0, 1000.0), (1000.0, 20000.0), (2000.0, 8000.0)):
             chunk = self._chunk(signal, 8000, band_hz_bounds=bounds)
-            value = self.stream.BrightnessTask("c", {}, BLOCK).process({0: chunk})
+            value = self._brightness_hz(chunk)
             self.assertGreaterEqual(value, bounds[0], bounds)
             self.assertLess(value, bounds[1], bounds)
 
     def test_brightness_of_a_band_without_a_bin_is_zero_not_the_full_band(self):
         # A 1024-point FFT at 48 kHz has bins every 46.9 Hz: none lies in 100..120 Hz.
         chunk = self._chunk(_tone(110.0, 8000) + _tone(3000.0, 8000), 8000, band_hz_bounds=(100.0, 120.0))
-        self.assertEqual(self.stream.BrightnessTask("c", {}, BLOCK).process({0: chunk}), 0.0)
+        self.assertEqual(self._brightness_hz(chunk), 0.0)
         silent = self._chunk(np.zeros(8000, dtype=np.float32), 8000)
-        self.assertEqual(self.stream.BrightnessTask("c", {}, BLOCK).process({0: silent}), 0.0)
+        self.assertEqual(self._brightness_hz(silent), 0.0)
 
     def test_worker_gets_the_same_history_as_the_main_process(self):
         signal = _tone(55.0, 8000) + _tone(2000.0, 8000)

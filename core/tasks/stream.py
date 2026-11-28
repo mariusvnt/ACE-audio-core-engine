@@ -338,20 +338,41 @@ class PeakTask(LUFSTask):
         return float(self._last_peak)
 
 
+# The frequency ranges that Pitch and Brightness map to 0..1, on a log scale: equal musical
+# intervals are equal steps. The pitch detector searches 20 to 5000 Hz.
+PITCH_RANGE_HZ = (20.0, 5000.0)
+BRIGHTNESS_RANGE_HZ = (20.0, 20000.0)
+
+
+def hz_to_unit(hz: float, low_hz: float, high_hz: float) -> float:
+    """A frequency on 0..1, logarithmic: 0 at *low_hz* and below (and for no frequency), 1 at *high_hz* and above."""
+    value = utils.as_float(hz, 0.0)
+    if not np.isfinite(value) or value <= low_hz:
+        return 0.0
+    if value >= high_hz:
+        return 1.0
+    return float(math.log(value / low_hz) / math.log(high_hz / low_hz))
+
+
+def unit_to_hz(unit: float, low_hz: float, high_hz: float) -> float:
+    """The frequency of a 0..1 value of hz_to_unit (0 gives *low_hz*)."""
+    return float(low_hz * (high_hz / low_hz) ** min(max(float(unit), 0.0), 1.0))
+
+
 class PitchTask(ACEAudioTask):
-    """Estimate the fundamental frequency (pitch) of the audio chunk."""
+    """The fundamental frequency of the chunk, on 0..1 (PITCH_RANGE_HZ, log); 0 without a pitch."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        return chunk.get_feature("pitch", lambda: _chunk_pitch(chunk))
+        return hz_to_unit(chunk.get_feature("pitch", lambda: _chunk_pitch(chunk)), *PITCH_RANGE_HZ)
 
 
 class BrightnessTask(ACEAudioTask):
-    """Spectral centroid in Hz: where the energy of the frame (or of its band) sits, from dark to bright."""
+    """Spectral centroid on 0..1 (BRIGHTNESS_RANGE_HZ, log): where the energy of the frame (or of its band) sits."""
 
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        return chunk.get_feature("brightness", lambda: _band_centroid(chunk))
+        return hz_to_unit(chunk.get_feature("brightness", lambda: _band_centroid(chunk)), *BRIGHTNESS_RANGE_HZ)
 
 
 class TransientTask(ACEAudioTask):
@@ -425,91 +446,64 @@ def _balance(l_rms: float, r_rms: float) -> float:
     return float(np.clip((r_rms - l_rms) / (l_rms + r_rms + 1e-9), -1.0, 1.0))
 
 
-class StereoWidthTask(ACEAudioTask):
-    """Measure the stereo width of the audio chunk."""
-
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        if _chunk_has_mask_constraints(chunk):
-            levels = _chunk_band_stereo_levels(chunk)
-            if levels is None:
-                return 0.0
-            _, _, mid_energy, side_energy = levels
-            total_energy = mid_energy + side_energy
-            if total_energy < 1e-20:
-                return 0.0
-            return float(np.clip(side_energy / total_energy, 0.0, 1.0))
-        _, stereo = _analysis_signals_normalized(chunk)
-        if stereo is None or stereo.shape[0] < 2:
+def stereo_width(chunk: AudioChunk) -> float:
+    """Side-to-total energy of the chunk (or of its band): 0 mono, 1 side only."""
+    if _chunk_has_mask_constraints(chunk):
+        levels = _chunk_band_stereo_levels(chunk)
+        if levels is None:
             return 0.0
-        left = stereo[0]
-        right = stereo[1]
-        mid = 0.5 * (left + right)
-        side = 0.5 * (left - right)
-        mid_energy = float(np.mean(mid * mid))
-        side_energy = float(np.mean(side * side))
+        _, _, mid_energy, side_energy = levels
         total_energy = mid_energy + side_energy
-        # side / (mid + side): 0 = mono, 1 = pure side.
         if total_energy < 1e-20:
             return 0.0
         return float(np.clip(side_energy / total_energy, 0.0, 1.0))
+    _, stereo = _analysis_signals_normalized(chunk)
+    if stereo is None or stereo.shape[0] < 2:
+        return 0.0
+    left = stereo[0]
+    right = stereo[1]
+    mid = 0.5 * (left + right)
+    side = 0.5 * (left - right)
+    mid_energy = float(np.mean(mid * mid))
+    side_energy = float(np.mean(side * side))
+    total_energy = mid_energy + side_energy
+    # side / (mid + side): 0 = mono, 1 = pure side.
+    if total_energy < 1e-20:
+        return 0.0
+    return float(np.clip(side_energy / total_energy, 0.0, 1.0))
 
 
-class StereoBalanceTask(ACEAudioTask):
-    """Measure the left/right energy balance of the audio chunk."""
-
-    def process(self, inputs):
-        chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        if _chunk_has_mask_constraints(chunk):
-            levels = _chunk_band_stereo_levels(chunk)
-            if levels is None:
-                return 0.0
-            return _balance(math.sqrt(levels[0]), math.sqrt(levels[1]))
-        _, stereo = _analysis_signals_normalized(chunk)
-        if stereo is None or stereo.shape[0] < 2:
+def stereo_balance(chunk: AudioChunk) -> float:
+    """Left/right level balance of the chunk (or of its band): -1 left, 0 centre, 1 right."""
+    if _chunk_has_mask_constraints(chunk):
+        levels = _chunk_band_stereo_levels(chunk)
+        if levels is None:
             return 0.0
-        left = stereo[0]
-        right = stereo[1]
-        l_rms = _safe_rms(left)
-        r_rms = _safe_rms(right)
-        denom = l_rms + r_rms + 1e-9
-        return float(np.clip((r_rms - l_rms) / denom, -1.0, 1.0))
+        return _balance(math.sqrt(levels[0]), math.sqrt(levels[1]))
+    _, stereo = _analysis_signals_normalized(chunk)
+    if stereo is None or stereo.shape[0] < 2:
+        return 0.0
+    left = stereo[0]
+    right = stereo[1]
+    l_rms = _safe_rms(left)
+    r_rms = _safe_rms(right)
+    denom = l_rms + r_rms + 1e-9
+    return float(np.clip((r_rms - l_rms) / denom, -1.0, 1.0))
 
 
-class StereoVectorTask(ACEAudioTask):
-    """Time-domain vector summary of stereo energy and balance."""
+class StereoTask(ACEAudioTask):
+    """Where the sound is, whatever its volume: (Balance, Width), the node's two outputs."""
+
     def process(self, inputs):
         chunk = _ensure_audio_chunk(inputs.get(0), self.block_size)
-        if _chunk_has_mask_constraints(chunk):
-            levels = _chunk_band_stereo_levels(chunk)
-            if levels is None:
-                # Mono behind a splitter: both channels are the band's level.
-                level = float(chunk.get_feature("rms", lambda: _band_rms(chunk)))
-                return (level, level, 0.0)
-            l_rms, r_rms = math.sqrt(levels[0]), math.sqrt(levels[1])
-            return (l_rms, r_rms, _balance(l_rms, r_rms))
-        analysis_mono, stereo = _analysis_signals_normalized(chunk)
-        if stereo is not None and stereo.shape[0] >= 2:
-            left = stereo[0]
-            right = stereo[1]
-        else:
-            left = analysis_mono
-            right = analysis_mono
-
-        l_rms = _safe_rms(left)
-        r_rms = _safe_rms(right)
-        denom = l_rms + r_rms + 1e-9
-        balance = float(np.clip((r_rms - l_rms) / denom, -1.0, 1.0))
-        return (l_rms, r_rms, balance)
-
+        return (stereo_balance(chunk), stereo_width(chunk))
 
 
 # Measure node type -> {mode: task class}. Nodes without modes use the "" key.
 _STREAM_TASKS: Dict[str, Dict[str, type]] = {
     "loudness": {"rms": RMSLoudnessTask, "lufs": LUFSTask, "peak": PeakTask},
-    "stereo": {"width": StereoWidthTask, "balance": StereoBalanceTask},
+    "stereo": {"": StereoTask},
     "brightness": {"": BrightnessTask},
-    "stereo_vector": {"": StereoVectorTask},
     "pitch": {"": PitchTask},
     "transient": {"": TransientTask},
 }
