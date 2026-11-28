@@ -132,7 +132,12 @@ Instances* panel. Names per use are FUTURE.md §3.
 - **Controllers** have no sinks: Blender computes them.
 - **Shaders:** one global value per signal, `scene[name]`. View Layer
   Attribute nodes read it inside a `.ACE_sink_<name>` group of the node's
-  own, so nothing is added to the user's material. Each change is followed
+  own, so nothing is added to the user's material. Inside every shader
+  group, each input reaches an output, or Blender greys it out as unused: a
+  value output is its scene property plus 0 x the inputs, an Audio bundle
+  going through a Separate Bundle and a menu through a Menu Switch; a
+  splitter's bands are Combine Bundles of the input and the split
+  frequencies (Cycles and EEVEE render bundle nodes in 5.2, probed). Each change is followed
   by one `scene.update_tag()`: the evaluated scene sees a property write only
   after a tag. The shader Source node reads its source's tempo the same way
   (`ACE_bpm_<uid>`, `ACE_bpb_<uid>`, `ACE_db_<uid>`).
@@ -228,8 +233,31 @@ replaces them instead of stacking a second copy.
 Nothing ACE needs to tell nodes apart is stored on them.
 
 - **Categories** are the add menu's submenus (`input`, `output`, `audio`,
-  `controllers`); ids, group names (`.ACE_<category>_<type>`) and golden keys
-  carry them, but no code branches on one.
+  `controllers`); ids and golden keys carry them, but no code branches on one.
+- **Groups** (`nodes/groups.py`). Each kind has one shared group per tree
+  type, its template, named after the node ("Envelope"; "Envelope (Shader)"
+  in shaders, since groups of both types share one name space). A visible
+  name is what lets Blender's link-drag search and Add › Group offer it. A
+  template is found by its `ace_kind` and `ace_template` properties, never by
+  name, so a user's own group of that name is never taken for it; a file
+  with the old hidden names (`.ACE_<category>_<type>`) has its templates
+  renamed on load. The groups a placed node gets are hidden: a splitter's
+  variant per band count (`.ACE_audio_frequency_splitter_<n>_bands`), a
+  shader node's sink group, a shader Source's source group.
+- **Placing a node** (`nodes/placement.py`). The add menu places what it
+  adds; a node added by Blender's search, Add › Group or a paste is placed
+  when its tree next changes (the depsgraph handler, and again at compile): a
+  splitter gets its band count's variant, a Source the active source, the
+  node its label, mode and preview flag. Its sink names come from the
+  compile's repair. A placed node carries `ace_placed`, so a copy keeps its
+  settings.
+- **Copy and paste across editors** (`ui/clipboard.py`). Blender refuses to
+  paste a group node into a tree of the other type, so Ctrl+C and Ctrl+V in
+  the Node Editor go through ACE: the copy also notes the selected ACE nodes
+  (kind, label, settings, input values, links), and a paste into the other
+  tree type adds them with that type's groups and links them again, to each
+  other and to the nodes Blender pasted. The Edit menu's Copy and Paste stay
+  Blender's own.
 - **Node ids** are computed: `ACE_<category>_<type>_<blake2b(tree key:group
   path/node name)>` (`nodes/identity.py`). The tree key is the tree's
   `session_uid`, which is stable across undo. The first use of a tree keeps the
@@ -238,8 +266,8 @@ Nothing ACE needs to tell nodes apart is stored on them.
   Renaming an ACE node changes its id and recompiles once.
 - **Signal ids** (`S_<category>_<type>_<blake2b>`) leave out sink names,
   Attribute ID values, proxy references and the node's place in the editor.
-- **Node kind** comes from the group's name, or from the group's `ace_kind`
-  for shader sink groups.
+- **Node kind** comes from the group's `ace_kind`, or from its name for a
+  group without one (a splitter variant of an older file).
 - **Sources** are chosen by the user on the Source node. The add menu and the
   node's source menu in the sidebar set its Proxy Object (Geometry Nodes) or
   its source group `.ACE_SHADER_source_<uid>` (shaders). A proxy carries
@@ -334,7 +362,7 @@ covered by local DSP.
   unchanged since the compile does not recompile.
 - **Ignored links** (`nodes/link_rules.py`). A link ACE can't use is drawn
   invalid (`NodeLink.is_valid = False`), and the N-panel says why, on the
-  selected node and in *Active ACE Instances*: a linked Attribute ID, a Proxy
+  selected node: a linked Attribute ID, a Proxy
   Object not fed by a group input, audio through a node other than a
   reroute, a control (a Window) that isn't a constant, a split frequency
   through a node `driven_values` can't compute, a shader controller's chain
@@ -348,13 +376,32 @@ covered by local DSP.
   (`structure_type` `SINGLE`): Blender itself marks a field linked to one.
 - **Undo.** The engine holds no RNA references across undo; an undo bumps the
   undo generation, drops in-flight results and every task, and rebuilds.
+  No thread but the main one reads Blender data: an undo or a delete frees
+  it at any time. The prefetch thread reads what it needs from a snapshot
+  the main thread takes when it asks for the read (`SourceTask._context_view`),
+  and leaves a source that changed to the main thread; the bake reads
+  snapshots of its source and settings. (Blender crashed on an undo while the
+  prefetch thread read a source's type.)
+- **Mode inputs.** A node shows only the inputs its mode uses: Loudness's
+  Window in LUFS, Envelope's Attack, Hold and Release in Follow and Speed and
+  Bounce in Spring (`mode_inputs` in `ACE_NODES`; for Envelope the mode is its
+  Mode menu, followed on each tree update). A linked input always shows.
+  Blender's own greying can't do it: it doesn't trace a Simulation Zone's
+  state.
+- **Internals layout** (`nodes/layout.py`). Every group ACE builds is laid
+  out along its flow of data: one column per step from Group Input to Group
+  Output, nodes in a column ordered by what feeds them, spaced by their
+  estimated size; the controllers' steps are labelled. The smoke test checks
+  that no two nodes overlap and that every link runs left to right.
 - **UI sync.** A timer refreshes the N-panel, throttled and scoped to the
   active source. The *Operators* list shows the compiled use of the tree in
   the Node Editor, so a group's operators appear under the source each use
   gives them. While the tree has edits not compiled yet, the list reads the
-  tree itself, so it follows edits even with auto-compile off. *Audio
-  Inputs* and *Active ACE Instances* read only the compiled model
-  (`ui/panel/instances.py`).
+  tree itself, so it follows edits even with auto-compile off. Controllers
+  aren't in the engine's model: they are listed from the tree, under the ACE
+  node they read through any other nodes, with their inputs and description
+  when selected. *Audio Inputs* and a selected node's sink conflicts read
+  only the compiled model (`ui/panel/instances.py`).
 - **Shared memory.** Completed jobs are drained on a timer only while playback
   is paused; during playback the frame handler drains them, and an extra drain
   would add pipe reads to the frame.
@@ -398,7 +445,7 @@ covered by local DSP.
     equal musical intervals are equal steps; 0 when there is no pitch.
 - **Tempo.** A file source's tempo is detected on its own when the source gets
   a file or the file changes on disk, unless the user typed a BPM, Beats per
-  Bar or Downbeat; *Auto Detect* replaces typed values. One background thread
+  Bar or Downbeat; *Detect Features* replaces typed values. One background thread
   (`TempoService` in `core/tasks/tempo.py`) builds an onset envelope (10 ms
   steps, log-compressed spectral flux) over up to 10 minutes, estimates the
   tempo and meter on its first 15 s, then fits the beat grid over all of it:
@@ -472,8 +519,7 @@ covered by local DSP.
     re-baking on every edit while the Bake node sits idle. A native bake
     steps its frames in order from its first, and ACE computes each one
     locally, so it records what a playback from that frame computes,
-    stateful nodes included. The panel lists these Bake nodes, and whether
-    the sources they read are baked or streamed.
+    stateful nodes included.
 
 ## 9. Error handling
 
@@ -556,7 +602,10 @@ and nothing when its branch has an open pull request, which already tests it.
 3. **A controller** (`"native": True`): add its builder to
    `nodes/geometry/controllers.py`, its maths to
    `tests/controller_reference.py`, and a smoke check comparing the two. It
-   takes single values; a menu input needs a `menus` entry.
+   takes single values; a menu input needs a `menus` entry, and a menu that
+   is its mode a `mode_menu` and `mode_inputs`. Label its steps
+   (`_Builder.named`): the layout puts them in order, the labels say what
+   they compute.
 4. Add UI controls if it has runtime-editable parameters.
 5. Add tests for its output and its topology sync.
 

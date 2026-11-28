@@ -210,7 +210,7 @@ class SourceProbes:
     def request_source_tempo_detection(self, source: Optional[ACEAudioSource], automatic: bool = False) -> tuple[bool, str]:
         """Queue non-blocking BPM / beats-per-bar detection for a FILE source.
 
-        The Auto Detect button asks with automatic=False: its result replaces
+        The Detect Features button asks with automatic=False: its result replaces
         values the user typed. An automatic request leaves those alone.
         """
         utils.assert_main_thread("request_source_tempo_detection")

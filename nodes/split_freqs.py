@@ -113,7 +113,9 @@ def sort_split_freqs(node) -> None:
 
 def sort_all_split_freqs() -> None:
     """Order the split frequencies of every splitter in the open file. Not for use during a drag."""
-    trees = [ng for ng in bpy.data.node_groups if ng.library is None and not ng.name.startswith(".ACE_")]
+    from .identity import is_ace_group
+
+    trees = [ng for ng in bpy.data.node_groups if ng.library is None and not is_ace_group(ng)]
     trees += [m.node_tree for m in bpy.data.materials if m.library is None and m.node_tree is not None]
     for tree in trees:
         for node in list(tree.nodes):

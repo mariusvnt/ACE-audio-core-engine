@@ -473,9 +473,9 @@ class ACE_OT_toggle_operator_branch(bpy.types.Operator):
 
 
 class ACE_OT_detect_source_tempo_meter(bpy.types.Operator):
-    """Queue non-blocking BPM / beats-per-bar detection for the active file source."""
+    """Detect the active file's BPM, beats per bar and first downbeat, in the background, and fill them in"""
     bl_idname = "audiocore.detect_source_tempo_meter"
-    bl_label = "Auto Detect BPM / BPB"
+    bl_label = "Detect Features"
     bl_options = {'INTERNAL'}
 
     @classmethod
@@ -789,6 +789,16 @@ class ACE_OT_live_start(bpy.types.Operator):
     def poll(cls, context):
         engine = ACEAudioEngine.get_instance(context.scene)
         return engine is None or engine.live_session is None
+
+    def invoke(self, context, _event):
+        """From the panel: the options are the ones it shows (the engine settings' live_*)."""
+        settings = getattr(getattr(context.scene, "audiocore", None), "engine_settings", None)
+        if settings is not None:
+            self.from_start = settings.live_from_start
+            self.disable_simulation_cache = settings.live_disable_simulation_cache
+            self.record = settings.live_record
+            self.solid_viewports = settings.live_solid_viewports
+        return self.execute(context)
 
     def execute(self, context):
         from ..core import live

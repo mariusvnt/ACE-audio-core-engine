@@ -18,7 +18,9 @@ Overview
   turn them into events (hits, counts), fed by any node, in Geometry Nodes
   and in shaders.
 - **Integration**: a set of node groups for the Geometry Nodes and shader
-  editors, which also work nested inside your own groups.
+  editors, which also work nested inside your own groups. They are in the
+  Add menu, in the search when you drag a link out of a socket, and copy and
+  paste from one editor to the other.
 - **Preview and bake**: listen to any part of the analysis during playback, or
   bake a file over the frame range into the .blend itself. A baked scene
   renders exactly what playback shows, even on a computer without ACE, and a

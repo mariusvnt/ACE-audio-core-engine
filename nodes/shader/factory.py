@@ -3,8 +3,12 @@
 A shader can't name an attribute at run time, so each shader node that writes
 values uses a group of its own, ``.ACE_sink_<name>``, whose Attribute nodes (View
 Layer mode) read the scene properties ACE writes. A Source node uses its
-source's group, ``.ACE_SHADER_source_<id>``, which reads that source's BPM and
-Beats per Bar the same way. Nothing is added to the user's material.
+source's group, ``.ACE_SHADER_source_<id>``, which reads that source's BPM,
+Beats per Bar and Downbeat the same way. Nothing is added to the user's material.
+
+Every input of a group reaches one of its outputs, or Blender greys it out as unused: a value
+output is its scene property plus 0 x the inputs (an Audio bundle through a Separate Bundle, a
+menu through a Menu Switch). The engine reads the inputs from the node, never from the shader.
 """
 
 import hashlib
@@ -13,8 +17,14 @@ import bpy  # type: ignore
 from ...vars import ACE_NODES, SOURCE_KIND, apply_socket_ranges, node_def as registry_node_def
 from ... import utils
 from ..frontend import remember_group_inputs
+from ..groups import SHADER, find_template, is_template, legacy_name, new_template, tag_template
 from ..identity import KIND_KEY, SINK_NAMES_KEY, SOURCE_ID_KEY, group_kind, node_value_outputs, source_tempo_props
+from ..layout import arrange
 from .interface import ShaderGroupInterface
+
+# Version of what the shader groups hold inside; a group built by another one is rebuilt
+# (internals only). 2: every input reaches an output, laid out along the flow.
+SHADER_INTERNALS_VERSION = 2
 
 
 class ACEShaderNodeFactory(ShaderGroupInterface):
@@ -26,7 +36,20 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
-        return f".ACE_SHADER_{category}_{node_type}"
+        """The hidden name the kind's groups are built from: its splitter variants' prefix.
+
+        The template group itself is named after the node and found by its kind (nodes/groups.py).
+        """
+        return legacy_name(category, node_type, SHADER)
+
+    @classmethod
+    def template_group(cls, category: str, node_type: str):
+        """The kind's shared shader group, built when missing."""
+        ng = find_template(category, node_type, SHADER)
+        if ng is None:
+            cls.rebuild_node_group(category, node_type)
+            ng = find_template(category, node_type, SHADER)
+        return ng
 
     @classmethod
     def sink_group_name(cls, names: list[str]) -> str:
@@ -40,7 +63,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
     def _ace_nodes_hash(cls) -> str:
         try:
             serialized = json.dumps(
-                {"kind": "shader", "nodes": ACE_NODES},
+                {"kind": "shader", "nodes": ACE_NODES, "version": SHADER_INTERNALS_VERSION},
                 sort_keys=True,
                 default=str,
             ).encode("utf-8")
@@ -66,36 +89,12 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
         return outputs[0] if outputs else None
 
     @staticmethod
-    def _new_value_reader(ng, attr_name: str, location):
+    def _new_value_reader(ng, attr_name: str):
         """An Attribute node reading the scene property *attr_name* (View Layer mode)."""
         attr = ng.nodes.new("ShaderNodeAttribute")
         attr.attribute_type = "VIEW_LAYER"
         attr.attribute_name = str(attr_name or "")
-        attr.location = location
         return attr
-
-    @classmethod
-    def _set_socket_default(cls, ng, socket_name: str, default_value: str):
-        if default_value == "":
-            return
-        try:
-            item = next(
-                (
-                    it
-                    for it in getattr(ng.interface, "items_tree", [])
-                    if getattr(it, "in_out", None) == "INPUT" and getattr(it, "name", "") == socket_name
-                ),
-                None,
-            )
-        except Exception as exc:
-            utils.note_swallowed("factory.ACEShaderNodeFactory._set_socket_default", exc)
-            item = None
-        if item is None:
-            return
-        if not hasattr(item, "default_value"):
-            return
-        with utils.logged_errors("factory.ACEShaderNodeFactory._set_socket_default#2"):
-            item.default_value = default_value
 
     @classmethod
     def _ensure_attr_interface_visible(cls, ng, category: str, node_type: str):
@@ -112,44 +111,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
                 with utils.logged_errors("factory.ACEShaderNodeFactory._ensure_attr_interface_visible"):
                     item.hide_value = False
 
-    @staticmethod
-    def _bundle_item_candidates_for_socket(socket_type: str) -> tuple[str, ...]:
-        st = str(socket_type or "")
-        if "Bundle" in st:
-            return ("BUNDLE", "VALUE", "FLOAT")
-        if "String" in st:
-            return ("STRING", "TEXT", "VALUE")
-        if "Vector" in st:
-            return ("VECTOR", "FLOAT_VECTOR", "VALUE")
-        if "Color" in st or "RGBA" in st:
-            return ("RGBA", "COLOR", "FLOAT", "VALUE")
-        if "Int" in st:
-            return ("INT", "FLOAT", "VALUE")
-        if "Float" in st:
-            return ("FLOAT", "VALUE")
-        return ("VALUE", "FLOAT")
-
-    @classmethod
-    def _safe_bundle_item(cls, bundle_node, item_name: str, candidates: tuple[str, ...]):
-        for item_type in candidates:
-            try:
-                return bundle_node.bundle_items.new(item_type, item_name)
-            except Exception as exc:
-                utils.note_swallowed("factory.ACEShaderNodeFactory._safe_bundle_item", exc)
-                continue
-        return None
-
-    @classmethod
-    def _link_or_consume_reroute(cls, ng, source_socket, location_x: int, location_y: int):
-        try:
-            reroute = ng.nodes.new("NodeReroute")
-            reroute.location = (int(location_x), int(location_y))
-            ng.links.new(source_socket, reroute.inputs[0])
-            return True
-        except Exception as exc:
-            utils.note_swallowed("factory.ACEShaderNodeFactory._link_or_consume_reroute", exc)
-            return False
-
     @classmethod
     def _value_names(cls, category: str, node_type: str, sink_names=None, source_id: str = "") -> dict[int, str]:
         """Output index -> the scene property its Attribute node reads ("" reads nothing)."""
@@ -164,179 +125,102 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
 
     @classmethod
     def _build_group_content(cls, ng, node_def, category: str, node_type: str, sink_names=None, source_id: str = ""):
-        base_inputs = list(node_def.get("inputs", []))
-        base_outputs = list(node_def.get("outputs", []))
-        extra_inputs = [spec for spec in cls._extra_inputs(category, node_type) if cls._shader_interface_supports(spec[0])]
-        value_names = cls._value_names(category, node_type, sink_names, source_id)
-
-        for sock_type_str, sock_name in base_inputs:
+        for sock_type_str, sock_name in list(node_def.get("inputs", [])):
             cls._new_socket(ng, str(sock_name), "INPUT", str(sock_type_str))
-        for sock_type_str, sock_name in base_outputs:
+        for sock_type_str, sock_name in list(node_def.get("outputs", [])):
             cls._new_socket(ng, str(sock_name), "OUTPUT", str(sock_type_str))
-
         with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content"):
             apply_socket_ranges(ng, category, node_type)
-        control_names = cls._numeric_control_names(category, node_type)
+        cls._build_internals(ng, node_def, category, node_type, sink_names=sink_names, source_id=source_id)
+        cls._ensure_attr_interface_visible(ng, category, node_type)
 
-        for sock_type_str, sock_name, default_value in extra_inputs:
-            cls._new_socket(ng, sock_name, "INPUT", sock_type_str)
-            cls._set_socket_default(ng, sock_name, default_value)
+    @classmethod
+    def _build_internals(cls, ng, node_def, category: str, node_type: str, sink_names=None, source_id: str = ""):
+        """Group Input to Group Output: bundles pass through, values read their scene properties.
 
-        # No bundle nodes inside shader groups: Cycles' shader inliner crashes on them.
-        # Bundles pass straight through.
-        input_node = ng.nodes.new("NodeGroupInput")
-        output_node = ng.nodes.new("NodeGroupOutput")
-        input_node.location = (-760, 0)
-        output_node.location = (680, 0)
+        Each input reaches an output, so Blender never greys it out (it greys an input that
+        only ends in a Reroute): with no bundle output to pass an Audio input to, the bundle
+        goes through a Separate Bundle; a menu goes through a Menu Switch; then 0 x their sum
+        is added to every value output.
+        """
+        inputs = list(node_def.get("inputs", []))
+        outputs = list(node_def.get("outputs", []))
+        value_names = cls._value_names(category, node_type, sink_names, source_id)
+        group_in = ng.nodes.new("NodeGroupInput")
+        group_out = ng.nodes.new("NodeGroupOutput")
+        in_socks = {str(s.name): s for s in group_in.outputs if s.name}
+        out_socks = list(group_out.inputs)
+        bundle_outputs = [i for i, (t, _n) in enumerate(outputs) if "Bundle" in str(t) and i < len(out_socks)]
+        value_outputs = [(i, str(t)) for i, (t, _n) in enumerate(outputs) if "Bundle" not in str(t) and i < len(out_socks)]
+        menus = dict(node_def.get("menus", {}) or {})
 
-        all_inputs = list(base_inputs) + [
-            (sock_type_str, sock_name)
-            for sock_type_str, sock_name, _default_value in extra_inputs
-        ]
-        bundle_output_indices = [
-            idx for idx, (sock_type, _name) in enumerate(base_outputs) if "Bundle" in str(sock_type or "")
-        ]
-
-        # Shader GroupInput may omit bundle sockets, so sockets are matched by name, not index.
-        input_sock_by_name: dict[str, object] = {}
-        for _s in getattr(input_node, "outputs", []) or []:
-            _sn = str(getattr(_s, "name", "") or "")
-            if _sn and _sn not in input_sock_by_name:
-                input_sock_by_name[_sn] = _s
-
-        # Each value output reads its scene property.
-        helper_source_by_idx: dict[int, object] = {}
-        for out_idx, attr_name in sorted(value_names.items()):
-            if out_idx >= len(base_outputs):
+        consumed = []  # inputs (or what they become) that 0 x their sum keeps in use
+        for sock_type, sock_name in inputs:
+            sock = in_socks.get(str(sock_name))
+            if sock is None:
                 continue
-            reader = cls._new_value_reader(ng, attr_name, (180, 200 - out_idx * 150))
-            helper_source_by_idx[int(out_idx)] = cls._shader_attr_output_socket(reader, str(base_outputs[out_idx][0]))
-
-        # First bundle input name (for passthrough and consume-skip logic)
-        first_bundle_name: str | None = next(
-            (str(_sn) for _st, _sn in all_inputs if "Bundle" in str(_st or "")),
-            None,
-        )
-
-        # Direct bundle passthrough: link first bundle input straight to bundle outputs.
-        if bundle_output_indices and first_bundle_name:
-            _bundle_in = input_sock_by_name.get(first_bundle_name)
-            if _bundle_in is not None:
-                for output_idx in bundle_output_indices:
-                    if output_idx < len(getattr(output_node, "inputs", [])):
-                        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#3"):
-                            ng.links.new(_bundle_in, output_node.inputs[int(output_idx)])
-
-        # Consume every non-helper, non-primary-bundle input via reroute.
-        for _ci, (socket_type, socket_name) in enumerate(all_inputs):
-            _s = input_sock_by_name.get(str(socket_name))
-            if _s is None:
-                continue
-            if "Bundle" in str(socket_type or ""):
-                # Primary bundle already handled above; others get a reroute.
-                if str(socket_name) != first_bundle_name:
-                    cls._link_or_consume_reroute(ng, _s, -120, -160 - (_ci * 90))
-                continue
-            cls._link_or_consume_reroute(ng, _s, -120, -160 - (_ci * 90))
-
-        for output_idx, (socket_type, _socket_name) in enumerate(base_outputs):
-            if "Bundle" in str(socket_type or ""):
-                continue
-            if control_names:
-                continue
-            if output_idx >= len(getattr(output_node, "inputs", [])):
-                continue
-            source_out = helper_source_by_idx.get(int(output_idx))
-            if source_out is None:
-                continue
-            with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#4"):
-                ng.links.new(source_out, output_node.inputs[int(output_idx)])
-
-        # (controls) * 0 + 1 keeps numeric controls consumed without changing the output.
-        if control_names and helper_source_by_idx:
-            # Use name-based lookup — bundle sockets may shift numeric indices.
-            control_socks = [input_sock_by_name.get(name) for name in control_names]
-            control_socks = [sock for sock in control_socks if sock is not None]
-            if control_socks:
-                control_sum = control_socks[0]
-                for extra_idx, extra_sock in enumerate(control_socks[1:], start=1):
-                    add_ctrl = ng.nodes.new("ShaderNodeMath")
-                    add_ctrl.operation = "ADD"
-                    add_ctrl.location = (20, -320 - (extra_idx * 60))
-                    ng.links.new(control_sum, add_ctrl.inputs[0])
-                    ng.links.new(extra_sock, add_ctrl.inputs[1])
-                    control_sum = add_ctrl.outputs[0]
-
-                mul_zero = ng.nodes.new("ShaderNodeMath")
-                mul_zero.operation = "MULTIPLY"
-                mul_zero.inputs[1].default_value = 0.0
-                mul_zero.location = (220, -320)
-                ng.links.new(control_sum, mul_zero.inputs[0])
-
-                add_one = ng.nodes.new("ShaderNodeMath")
-                add_one.operation = "ADD"
-                add_one.inputs[1].default_value = 1.0
-                add_one.location = (420, -320)
-                ng.links.new(mul_zero.outputs[0], add_one.inputs[0])
-
-                for output_idx, source_out in helper_source_by_idx.items():
-                    if output_idx < 0 or output_idx >= len(base_outputs):
-                        continue
-                    if output_idx >= len(getattr(output_node, "inputs", [])):
-                        continue
-
-                    socket_type = str(base_outputs[output_idx][0] or "")
-                    target_input = output_node.inputs[int(output_idx)]
-                    for link in list(getattr(target_input, "links", []) or []):
-                        with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#5"):
-                            ng.links.remove(link)
-                    if source_out is None:
-                        continue
-
-                    if "Vector" in socket_type:
-                        vec_mul = ng.nodes.new("ShaderNodeVectorMath")
-                        vec_mul.operation = "SCALE"
-                        vec_mul.location = (460, 180 - (int(output_idx) * 150))
-                        ng.links.new(source_out, vec_mul.inputs[0])
-                        scale_input = None
-                        try:
-                            scale_input = vec_mul.inputs.get("Scale")
-                        except Exception as exc:
-                            utils.note_swallowed("factory.ACEShaderNodeFactory._build_group_content#6", exc)
-                            scale_input = None
-                        if scale_input is None and len(getattr(vec_mul, "inputs", [])) > 1:
-                            scale_input = vec_mul.inputs[1]
-                        if scale_input is not None:
-                            ng.links.new(add_one.outputs[0], scale_input)
-                        ng.links.new(vec_mul.outputs[0], target_input)
-                    else:
-                        scalar_mul = ng.nodes.new("ShaderNodeMath")
-                        scalar_mul.operation = "MULTIPLY"
-                        scalar_mul.location = (460, 180 - (int(output_idx) * 150))
-                        ng.links.new(source_out, scalar_mul.inputs[0])
-                        ng.links.new(add_one.outputs[0], scalar_mul.inputs[1])
-                        ng.links.new(scalar_mul.outputs[0], target_input)
-
-        # A menu input gets its items from the Menu Switch it feeds; its default is set after the link.
-        for menu_name, items in dict(node_def.get("menus", {}) or {}).items():
-            menu_in = input_sock_by_name.get(str(menu_name))
-            if menu_in is None or not items:
-                continue
-            with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#menu"):
+            if "Bundle" in str(sock_type):
+                if bundle_outputs:
+                    for out_idx in bundle_outputs:
+                        ng.links.new(sock, out_socks[out_idx])
+                    continue
+                separate = ng.nodes.new("NodeSeparateBundle")
+                separate.label = f"{sock_name}: in use"
+                separate.bundle_items.new("FLOAT", "Value")
+                ng.links.new(sock, separate.inputs[0])
+                consumed.append(separate.outputs["Value"])
+            elif "Menu" in str(sock_type):
+                items = [str(i) for i in menus.get(str(sock_name), [])]
+                if not items:
+                    continue
                 switch = ng.nodes.new("GeometryNodeMenuSwitch")
                 switch.data_type = "FLOAT"
-                switch.location = (-120, 260)
+                switch.label = str(sock_name)
                 while len(switch.enum_items) < len(items):
-                    switch.enum_items.new(str(items[len(switch.enum_items)]))
-                for item, item_name in zip(switch.enum_items, items):
-                    item.name = str(item_name)
-                ng.links.new(menu_in, switch.inputs["Menu"])
+                    switch.enum_items.new(items[len(switch.enum_items)])
+                for item, name in zip(switch.enum_items, items):
+                    item.name = name
+                ng.links.new(sock, switch.inputs["Menu"])
+                consumed.append(switch.outputs[0])
+                # A menu input gets its items from the Menu Switch it feeds: its default is set after the link.
                 interface_item = next(
-                    (i for i in ng.interface.items_tree if getattr(i, "name", "") == menu_name and i.in_out == "INPUT"), None)
+                    (i for i in ng.interface.items_tree if getattr(i, "name", "") == sock_name and i.in_out == "INPUT"), None)
                 if interface_item is not None:
-                    interface_item.default_value = str(items[0])
+                    interface_item.default_value = items[0]
+            else:
+                consumed.append(sock)
 
-        cls._ensure_attr_interface_visible(ng, category, node_type)
+        zero = None
+        if consumed and value_outputs:
+            total = consumed[0]
+            for extra in consumed[1:]:
+                add = ng.nodes.new("ShaderNodeMath")
+                add.operation = "ADD"
+                ng.links.new(total, add.inputs[0])
+                ng.links.new(extra, add.inputs[1])
+                total = add.outputs[0]
+            times_zero = ng.nodes.new("ShaderNodeMath")
+            times_zero.operation = "MULTIPLY"
+            times_zero.label = "x 0: inputs in use"
+            times_zero.inputs[1].default_value = 0.0
+            ng.links.new(total, times_zero.inputs[0])
+            zero = times_zero.outputs[0]
+
+        for out_idx, sock_type in value_outputs:
+            reader = cls._new_value_reader(ng, value_names.get(out_idx, ""))
+            value = cls._shader_attr_output_socket(reader, sock_type)
+            if value is None:
+                continue
+            if zero is not None:
+                add = ng.nodes.new("ShaderNodeMath")
+                add.operation = "ADD"
+                add.label = str(outputs[out_idx][1])
+                ng.links.new(value, add.inputs[0])
+                ng.links.new(zero, add.inputs[1])
+                value = add.outputs[0]
+            ng.links.new(value, out_socks[out_idx])
+        arrange(ng)
+        ng["ace_internals"] = SHADER_INTERNALS_VERSION
 
     @classmethod
     def ensure_sink_group(cls, category: str, node_type: str, names: list[str]):
@@ -377,24 +261,36 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
         return ng
 
     @classmethod
-    def _rebuild_owned_group(cls, ng) -> None:
-        """Rebuild a sink or source group in place, keeping its names and its users' input values."""
-        category, node_type = group_kind(ng)
+    def _owned_names(cls, ng) -> dict:
+        return {
+            "sink_names": [str(v) for v in ng.get(SINK_NAMES_KEY, [])],
+            "source_id": str(ng.get(SOURCE_ID_KEY, "") or ""),
+        }
+
+    @classmethod
+    def _refresh_group(cls, ng, category: str, node_type: str) -> None:
+        """Rebuild a group built by another version: all of it when its sockets changed, else only its inside.
+
+        Keeping the interface keeps the links of the nodes that use the group.
+        """
         node_def = ACE_NODES[category]["nodes"][node_type]
-        remember_group_inputs(ng)
-        ng.nodes.clear()
-        ng.interface.clear()
-        cls._build_group_content(
-            ng, node_def, category, node_type,
-            sink_names=[str(v) for v in ng.get(SINK_NAMES_KEY, [])],
-            source_id=str(ng.get(SOURCE_ID_KEY, "") or ""),
-        )
+        names = cls._owned_names(ng)
+        if cls._node_group_needs_refresh(ng, node_def, category, node_type):
+            remember_group_inputs(ng)
+            ng.nodes.clear()
+            ng.interface.clear()
+            cls._build_group_content(ng, node_def, category, node_type, **names)
+        elif ng.get("ace_internals") != SHADER_INTERNALS_VERSION:
+            ng.nodes.clear()
+            cls._build_internals(ng, node_def, category, node_type, **names)
 
     @classmethod
     def owned_groups(cls):
-        """The sink and source groups of the file: ACE groups with names of their own."""
+        """The sink and source groups of the file: the groups placed shader nodes use, named after what they read."""
         for ng in list(bpy.data.node_groups):
-            if str(getattr(ng, "bl_idname", "")) == "ShaderNodeTree" and ng.get(KIND_KEY) and group_kind(ng)[0]:
+            if str(getattr(ng, "bl_idname", "")) != "ShaderNodeTree" or not group_kind(ng)[0] or is_template(ng):
+                continue
+            if ng.get(SINK_NAMES_KEY) is not None or ng.get(SOURCE_ID_KEY):
                 yield ng
 
     @classmethod
@@ -404,20 +300,11 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
             node_def = ACE_NODES[cat_key]["nodes"][type_key]
         except KeyError:
             return
-
-        group_name = cls.get_group_name(cat_key, type_key)
-        ng = bpy.data.node_groups.get(group_name)
-        if ng is not None and getattr(ng, "bl_idname", "") != "ShaderNodeTree":
-            try:
-                bpy.data.node_groups.remove(ng)
-            except Exception as exc:
-                utils.note_swallowed("factory.ACEShaderNodeFactory.rebuild_node_group", exc)
-                ng = None
-            else:
-                ng = None
+        ng = find_template(cat_key, type_key, SHADER)
         if ng is None:
-            ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
+            ng = new_template(cat_key, type_key, SHADER)
         else:
+            tag_template(ng, cat_key, type_key, SHADER)
             remember_group_inputs(ng)
             ng.nodes.clear()
             ng.interface.clear()
@@ -435,42 +322,32 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
             return
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category.get("nodes", {}).items():
-                group_name = cls.get_group_name(cat_key, type_key)
-                ng = bpy.data.node_groups.get(group_name)
-                if ng is not None and getattr(ng, "bl_idname", "") != "ShaderNodeTree":
-                    try:
-                        bpy.data.node_groups.remove(ng)
-                    except Exception as exc:
-                        utils.note_swallowed("factory.ACEShaderNodeFactory.ensure_node_groups_exist", exc)
-                        ng = None
-                    else:
-                        ng = None
+                ng = find_template(cat_key, type_key, SHADER)
                 if ng is None:
-                    ng = bpy.data.node_groups.new(group_name, "ShaderNodeTree")
-                elif cls._node_group_needs_refresh(ng, node_def, cat_key, type_key):
-                    remember_group_inputs(ng)
-                    ng.nodes.clear()
-                    ng.interface.clear()
-                else:
-                    cls._ensure_attr_interface_visible(ng, cat_key, type_key)
+                    ng = new_template(cat_key, type_key, SHADER)
+                    cls._build_group_content(ng, node_def, cat_key, type_key)
                     continue
-                cls._build_group_content(ng, node_def, cat_key, type_key)
+                tag_template(ng, cat_key, type_key, SHADER)
+                cls._refresh_group(ng, cat_key, type_key)
+                cls._ensure_attr_interface_visible(ng, cat_key, type_key)
         for ng in list(cls.owned_groups()):
             if ng.library is not None:
                 continue
-            category, node_type = group_kind(ng)
-            if cls._node_group_needs_refresh(ng, ACE_NODES[category]["nodes"][node_type], category, node_type):
-                cls._rebuild_owned_group(ng)
+            cls._refresh_group(ng, *group_kind(ng))
         with utils.logged_errors("factory.ACEShaderNodeFactory.ensure_node_groups_exist#2"):
             from ..dynamic_audio_operators import ACESplitterManager
 
             ACESplitterManager.refresh_existing_variants("ShaderNodeTree")
         if current_hash:
             cls._NODES_CONTENT_HASH = current_hash
+
+
 def register():
     try:
         ACEShaderNodeFactory.ensure_node_groups_exist()
     except AttributeError:
         utils.log("Skipping shader node group creation due to restricted data access.", "WARNING")
+
+
 def unregister():
     pass

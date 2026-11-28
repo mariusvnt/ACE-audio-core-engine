@@ -26,10 +26,11 @@ class NodeType(TypedDict):
     inputs: list[tuple[str, str]]
     outputs: list[tuple[str, str]]
     # Optional keys: "modes", "default_mode", "mode_inputs" ({input name: the mode that uses
-    # it}), "native" (True: the node computes in Blender and has no task), "menus" ({menu input
-    # name: its items, the first one the default}), and "stateful" (True, or the list of modes
-    # that are): a stateful node's value depends on the frames before, so it runs on the main
-    # thread and settles after a seek.
+    # it}, hidden in the other modes), "native" (True: the node computes in Blender and has no
+    # task), "menus" ({menu input name: its items, the first one the default}), "mode_menu" (the
+    # menu input that is the node's mode, for a node whose mode is a socket rather than
+    # "modes"), and "stateful" (True, or the list of modes that are): a stateful node's value
+    # depends on the frames before, so it runs on the main thread and settles after a seek.
 
 class Category(TypedDict):
     """category container"""
@@ -200,6 +201,10 @@ ACE_NODES: dict[str, Category] = {
             ],
             "outputs": [('NodeSocketFloat', 'Envelope')],
             "menus": {"Mode": ["Follow", "Spring"]},
+            "mode_menu": "Mode",
+            "mode_inputs": {
+                "Attack": "Follow", "Hold": "Follow", "Release": "Follow", "Speed": "Spring", "Bounce": "Spring",
+            },
             },
             "running_total": {
             "label": "Running Total",
@@ -288,6 +293,11 @@ def value_outputs(category: str, node_type: str) -> list[tuple[int, str]]:
         return []
     outputs = node_def(category, node_type).get("outputs", [])
     return [(idx, str(name)) for idx, (sock_type, name) in enumerate(outputs) if "Bundle" not in str(sock_type)]
+
+
+def mode_menu(category: str, node_type: str) -> str:
+    """The menu input that is the node's mode ("" for a node without one)."""
+    return str(node_def(category, node_type).get("mode_menu", "") or "")
 
 
 def mode_inputs(category: str, node_type: str) -> dict[str, str]:

@@ -5,7 +5,7 @@ from ...nodes.identity import node_id as ace_node_id, parsed_node
 from ...nodes.source_nodes import node_source_id
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
-from ...vars import ACE_NODES, PREVIEW_KIND, SOURCE_KIND, SPLITTER_KIND, node_modes, resolve_node_mode
+from ...vars import ACE_NODES, PREVIEW_KIND, SOURCE_KIND, SPLITTER_KIND, node_is_native, node_modes, resolve_node_mode
 from .splitter import _splitter_display_bounds, splitter_band_widths
 from ...nodes.split_freqs import split_freq_states
 from .helpers import _describe_node, _find_active_node_tree, _find_tree_node_by_ace_id, property_column, property_split_row
@@ -231,7 +231,7 @@ def _parsed_node_has_operator_settings(parsed) -> bool:
     key = (str(parsed.get("category", "") or ""), str(parsed.get("type", "") or ""))
     if key == SOURCE_KIND:
         return len(_source_choices()) > 1
-    if node_modes(*key):
+    if node_modes(*key) or node_is_native(*key):
         return True
     return key in {SPLITTER_KIND, PREVIEW_KIND}
 
@@ -260,7 +260,35 @@ def _draw_selected_operator(layout, context) -> None:
     if node is not None and _parsed_node_has_operator_settings(parsed):
         _draw_selected_node_operator_settings(layout, context)
     if node is not None:
+        draw_sink_conflicts(layout, context, node)
         draw_ignored_links(layout, context, ignored_links_into(node))
+
+
+def sink_conflicts_of(node) -> list:
+    """The sink conflicts *node* takes part in: its uses compute different values for one sink name."""
+    from .instances import instance_report
+
+    tree = getattr(node, "id_data", None)
+    with utils.logged_errors("selection.sink_conflicts_of"):
+        for definition in instance_report(ACEAudioEngine.get_instance(bpy_context().scene)):
+            if definition.tree_name == getattr(tree, "name", None) and definition.node_name == node.name:
+                return list(definition.conflicts)
+    return []
+
+
+def draw_sink_conflicts(layout, context, node) -> None:
+    """A warning per sink name the node's uses compute different values for: one use keeps it."""
+    for conflict in sink_conflicts_of(node):
+        box = layout.box()
+        head = box.row()
+        head.alert = True
+        head.label(text=f"'{conflict.get('sink_name', '')}' gets different values", icon="ERROR")
+        _draw_selected_node_description(
+            box, context,
+            "This node is used in several places that compute different values (other parameters, "
+            "or another band), but they write one attribute: only one use reaches it. Give each "
+            "place its own copy of the node.",
+        )
 
 
 def ignored_links_into(node) -> list:
@@ -391,6 +419,10 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
             if sock.name == "Window (s)" and not sock.hide and not sock.is_linked:
                 property_column(box).prop(sock, "default_value", text=sock.name)
 
+    if node_is_native(category, node_type):
+        drew_settings = True
+        _draw_controller_settings(layout, node, category, node_type)
+
     if (parsed.get("category"), parsed.get("type")) == SPLITTER_KIND:
         drew_settings = True
         box = layout.box()
@@ -450,6 +482,22 @@ def _draw_selected_node_operator_settings(layout, context) -> bool:
     return drew_settings
 
 
+def _draw_controller_settings(layout, node, category: str, node_type: str) -> None:
+    """A controller's inputs as the node shows them: its Mode as buttons, then the inputs that mode uses."""
+    box = layout.box()
+    box.label(text=str(ACE_NODES[category]["nodes"][node_type]["label"]), icon="DRIVER")
+    col = property_column(box)
+    for sock in node.inputs:
+        if sock.hide or not sock.enabled or not hasattr(sock, "default_value"):
+            continue
+        if sock.is_linked:
+            property_split_row(col, sock.name).label(text="Linked", icon="LINKED")
+        elif sock.type == "MENU":
+            property_split_row(col, sock.name).prop(sock, "default_value", expand=True)
+        else:
+            col.prop(sock, "default_value", text=sock.name)
+
+
 def _draw_selected_node_description(layout, context, description: str):
     desc = str(description or "").strip()
     if not desc:
@@ -502,32 +550,10 @@ def _draw_bake_state(layout, context, source):
     row.operator("audiocore.clear_source_bake", text="Clear Bake", icon="TRASH")
 
 
-def _draw_downstream_bakes(layout, context):
-    """The Bake nodes downstream of ACE nodes, and whether the sources they read are baked.
-
-    ACE bakes nothing for them: a native bake records what ACE streams on each frame it steps.
-    """
-    engine = ACEAudioEngine.get_instance(context.scene)
-    bakes = list(getattr(getattr(engine, "bake", None), "downstream_bakes", []) or []) if engine is not None else []
-    if not bakes:
-        return
-    box = layout.box()
-    box.label(text="Bake nodes downstream:", icon="NODETREE")
-    for bake in bakes:
-        baked = all(
-            (graph := engine.graphs.get(uid)) is not None
-            and not engine.bake.missing_keys(graph, bake["frame_start"], bake["frame_end"])
-            for uid in bake["sources"]
-        )
-        state = "baked" if baked else "streamed"
-        box.label(text=f"{bake['label']}: ACE input {state}", icon="CHECKMARK" if baked else "PLAY")
-
-
 def _draw_bake_controls(layout, context):
     from ...utils import _get_active_source
 
     _draw_render_notes(layout, context)
-    _draw_downstream_bakes(layout, context)
     _, active_source = _get_active_source(context)
     if not active_source:
         return

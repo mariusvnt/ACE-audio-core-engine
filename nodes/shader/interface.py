@@ -205,35 +205,6 @@ class ShaderGroupInterface:
             has_output = any(getattr(node, "type", "") == "GROUP_OUTPUT" for node in ng.nodes)
             if not has_input or not has_output:
                 return True
-            allow_math_nodes = bool(cls._numeric_control_names(category, node_type))
-            for node in ng.nodes:
-                bl_idname = str(getattr(node, "bl_idname", "") or "")
-                node_type_name = str(getattr(node, "type", "") or "")
-                # Bundle manipulation nodes crash Cycles' ShaderNodesInliner.
-                if bl_idname in {"NodeSeparateBundle", "NodeCombineBundle"}:
-                    return True
-                if node_type_name in {"SEPARATE_BUNDLE", "COMBINE_BUNDLE"}:
-                    return True
-                if (not allow_math_nodes) and bl_idname in {"ShaderNodeMath", "ShaderNodeVectorMath"}:
-                    return True
-                if (not allow_math_nodes) and node_type_name in {"MATH", "VECTOR_MATH"}:
-                    return True
-            # A bundle socket wired to a non-bundle output means a bad build.
-            for node in ng.nodes:
-                if str(getattr(node, "type", "") or "") != "GROUP_OUTPUT":
-                    continue
-                for inp in getattr(node, "inputs", []) or []:
-                    inp_type = str(getattr(inp, "type", "") or "").upper()
-                    if inp_type in ("BUNDLE", "CUSTOM", ""):
-                        continue
-                    for link in getattr(inp, "links", []) or []:
-                        from_sock = getattr(link, "from_socket", None)
-                        if from_sock is None:
-                            continue
-                        from_type = str(getattr(from_sock, "type", "") or "").upper()
-                        if from_type in ("BUNDLE", "CUSTOM"):
-                            return True
-
             # Values come from scene properties: View Layer Attribute nodes reading the group's names.
             readers = sorted(
                 str(getattr(node, "attribute_name", "") or "")
@@ -248,18 +219,6 @@ class ShaderGroupInterface:
                 if str(getattr(node, "bl_idname", "") or "") == "ShaderNodeAttribute"
             ):
                 return True
-            # Every non-bundle output of a property node must be driven by its value.
-            is_property_node = cls._is_property_output_node(category, node_type)
-            if is_property_node:
-                for node in ng.nodes:
-                    if str(getattr(node, "type", "") or "") != "GROUP_OUTPUT":
-                        continue
-                    for inp in getattr(node, "inputs", []) or []:
-                        inp_type = str(getattr(inp, "type", "") or "").upper()
-                        if inp_type in ("BUNDLE", "CUSTOM", ""):
-                            continue
-                        if not list(getattr(inp, "links", []) or []):
-                            return True
         except Exception as exc:
             utils.note_swallowed("interface.ShaderGroupInterface._node_group_needs_refresh#2", exc)
             return True

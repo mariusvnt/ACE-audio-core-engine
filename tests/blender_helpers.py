@@ -47,21 +47,17 @@ def _add_ace_node(addon_key, tree, category, node_type, label, mode=None):
             factory = importlib.import_module(f"{addon_key}.nodes.shader.factory").ACEShaderNodeFactory
         else:
             factory = importlib.import_module(f"{addon_key}.nodes.geometry.factory").ACEDummyNodeFactory
-        if factory.get_group_name(category, node_type) not in bpy.data.node_groups:
-            factory.rebuild_node_group(category, node_type)  # built on first use, as by the menu
-        group = bpy.data.node_groups[factory.get_group_name(category, node_type)]
+        group = factory.template_group(category, node_type)  # built on first use, as by the menu
     node = tree.nodes.new("ShaderNodeGroup" if shader else "GeometryNodeGroup")
     node.node_tree = group
     node.label = node.name = label
     if (category, node_type) == ("audio", "frequency_splitter"):
         node["ace_band_count"] = 2
     op = gn_menu.ACE_OT_add_node_group
-    if (category, node_type) == ("input", "src"):
-        op._initialize_source_binding(node, bpy.context)
-    modes = importlib.import_module(f"{addon_key}.nodes.modes")
-    if importlib.import_module(f"{addon_key}.vars").node_modes(category, node_type):
-        modes.apply_node_mode(node, category, node_type, mode)
-        node.name = label
+    if mode is not None:
+        node["ace_mode"] = mode
+    importlib.import_module(f"{addon_key}.nodes.placement").place_node(node, category, node_type, bpy.context.scene)
+    node.name = label
     op._initialize_sink_names(node, category, node_type, bpy.context)
     op._show_attr_id_socket_values(node)
     return node

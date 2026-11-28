@@ -303,6 +303,7 @@ def depsgraph_update_handler(scene, depsgraph):
     # compile poll; and every proxy write re-evaluates the objects that read it, so their
     # updates are mostly ACE's own.
     seen_targets: set[int] = set()
+    placed_trees: set[int] = set()
     for update in getattr(depsgraph, "updates", []):
         _id = _original_id(update)
         bl_idname = _id_type_name(_id)
@@ -312,14 +313,26 @@ def depsgraph_update_handler(scene, depsgraph):
             tree = getattr(_id, "node_tree", None) if _id is not None else None
         else:
             continue
-        if tree is None or not FrontendTracker._tree_is_ace_managed(tree):
+        if tree is None:
             continue
         try:
             key = int(tree.as_pointer())
         except Exception as exc:
             utils.note_swallowed("handlers.depsgraph_update_handler#pointer", exc)
             key = id(tree)
-        if key in seen_targets:
+        if key in placed_trees:
+            continue
+        placed_trees.add(key)
+        if not getattr(engine, "render_active", False):
+            # A node from Blender's search or Add > Group is placed at once, and a Mode menu's
+            # change shows or hides the inputs it uses: in any tree with an ACE node, a tree
+            # holding only controllers included. Neither writes when nothing changed.
+            with utils.logged_errors("handlers.depsgraph_update_handler#placement"):
+                from ...nodes import placement
+
+                placement.place_new_nodes(tree, scene)
+                placement.sync_tree_mode_sockets(tree)
+        if not FrontendTracker._tree_is_ace_managed(tree):
             continue
         seen_targets.add(key)
         engine.frontends.request_recompile(tree, verify_content=True)

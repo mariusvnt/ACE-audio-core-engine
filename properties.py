@@ -265,7 +265,7 @@ class ACEAudioSource(bpy.types.PropertyGroup):
         name="Type",
         items=[
             ('FILE', "File", "Audio file from disk"),
-            ('LIVE', "Live Flow", "Real-time audio stream identifier (e.g. Loopback, Microphone)"),
+            ('LIVE', "Live", "Real-time audio from an input device or a stream (e.g. Loopback, Microphone)"),
         ],
         default='FILE',
         update=_on_source_type_change,
@@ -492,6 +492,27 @@ class ACEEngineSettings(bpy.types.PropertyGroup):
             ("off", "Off", "Disable parallel offload and keep full DSP on main thread"),
         ],
         default="processes_dsp",
+    )
+    # Options of the next live session (Live panel, audiocore.live_start).
+    live_from_start: bpy.props.BoolProperty(                                                                                      # type: ignore
+        name="From the Start",
+        description="Start at the scene's first frame, where simulations reset; otherwise continue from the current frame",
+        default=True,
+    )
+    live_disable_simulation_cache: bpy.props.BoolProperty(                                                                        # type: ignore
+        name="No Simulation Cache",
+        description="Do not keep simulated frames in memory during the session (restored after)",
+        default=True,
+    )
+    live_record: bpy.props.BoolProperty(                                                                                          # type: ignore
+        name="Record a Take",
+        description="Record the live inputs to WAV files and the values shown on each frame, to render the show later",
+        default=False,
+    )
+    live_solid_viewports: bpy.props.BoolProperty(                                                                                 # type: ignore
+        name="Solid 3D Views",
+        description="Drop the 3D views to solid shading during the session, to leave the GPU to the show (restored after)",
+        default=False,
     )
 
 

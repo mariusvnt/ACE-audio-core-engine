@@ -200,7 +200,13 @@ class _Copy:
             return self.controller(node).outputs[index]
         role = node_role(*kind)
         source = _source_of(node, self.scene)
-        proxy = bpy.data.objects.get(getattr(source, "proxy_object_name", "") or "") if source is not None else None
+        proxy = None
+        if source is not None:
+            from ...core.proxy.manager import ACEProxyManager
+
+            # A source used only in shaders has no proxy yet: the copy reads its values there.
+            with utils.logged_errors("mirror._Copy.ace_output#proxy"):
+                proxy = ACEProxyManager.ensure_proxy_for_source(source, scene=self.scene)
         if proxy is None:
             raise _Ignore(f"{_label(node)} (its source has no proxy yet)")
         if role == ROLE_SOURCE:
@@ -260,11 +266,8 @@ class _Copy:
         if key in self.controllers:
             return self.controllers[key]
         category, node_type = node_kind(node)
-        group_name = ACEDummyNodeFactory.get_group_name(category, node_type)
-        if bpy.data.node_groups.get(group_name) is None:
-            ACEDummyNodeFactory.rebuild_node_group(category, node_type)
         copy = self.new("GeometryNodeGroup")
-        copy.node_tree = bpy.data.node_groups[group_name]
+        copy.node_tree = ACEDummyNodeFactory.template_group(category, node_type)
         copy.label = node.name
         self.controllers[key] = copy
         for index, source_input in enumerate(node.inputs):
@@ -339,8 +342,6 @@ def sync(scene, engine=None) -> dict:
     Also tells the engine which shader measurements the copy reads from proxies
     (``engine.mirror_reads``), so the next compile writes them there.
     """
-    from ...core.proxy.manager import ACEProxyManager
-
     uses = controller_uses(scene)
     if not uses:
         if bpy.data.objects.get(MIRROR_OBJECT) is not None or bpy.data.node_groups.get(MIRROR_TREE) is not None:
@@ -348,10 +349,6 @@ def sync(scene, engine=None) -> dict:
         if engine is not None:
             engine.mirror_reads = set()
         return {}
-    for source in getattr(getattr(scene, "audiocore", None), "audio_sources", []) or []:
-        if any(_source_of(node, scene) is source for _tree, node in uses):
-            with utils.logged_errors("mirror.sync#proxy"):
-                ACEProxyManager.ensure_proxy_for_source(source, scene=scene)
     signature = _signature(uses, scene)
     tree = bpy.data.node_groups.get(MIRROR_TREE)
     if tree is not None and tree.get(SIGNATURE_KEY) == signature and _cache["signature"] == signature:
@@ -386,6 +383,10 @@ def sync(scene, engine=None) -> dict:
             geometry = store.outputs[0]
             names.append(sink)
     tree.links.new(geometry, out.inputs[0])
+    from ..layout import arrange
+
+    arrange(tree)
+    signature = _signature(uses, scene)  # the copy may have given a source its proxy
     tree[SIGNATURE_KEY] = signature
     tree[NAMES_KEY] = names
     _mirror_object(scene, tree)

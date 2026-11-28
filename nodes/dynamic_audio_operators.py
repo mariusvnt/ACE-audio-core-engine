@@ -58,7 +58,7 @@ def _ensure_variant_group(name: str, tree_or_type) -> bpy.types.NodeTree | None:
 
 class ACESplitterManager:
     """Manages independent variants of the Frequency Splitter."""
-    _INTERNAL_VERSION_TAG = "ACE_SPLITTER_INTERNALS_V5"
+    _INTERNAL_VERSION_TAG = "ACE_SPLITTER_INTERNALS_V6"
 
     @staticmethod
     def get_or_create_variant(band_count: int, tree_or_type="GeometryNodeTree") -> bpy.types.NodeTree:
@@ -72,6 +72,11 @@ class ACESplitterManager:
         if variant_name in bpy.data.node_groups:
             ng = bpy.data.node_groups[variant_name]
             if getattr(ng, "bl_idname", "") == tree_type:
+                if int(ng.get("ace_bands", 0) or 0) != band_count:
+                    from .groups import tag_owned
+
+                    tag_owned(ng, *SPLITTER_KIND)
+                    ng["ace_bands"] = band_count
                 ACESplitterManager._ensure_split_socket_limits(ng)
                 ACESplitterManager._ensure_variant_internals(ng, band_count)
                 return ng
@@ -152,10 +157,7 @@ class ACESplitterManager:
 
     @staticmethod
     def _variant_has_current_internals(ng: bpy.types.NodeTree) -> bool:
-        for n in getattr(ng, "nodes", []):
-            if getattr(n, "name", "") == ACESplitterManager._INTERNAL_VERSION_TAG:
-                return True
-        return False
+        return ng.get("ace_internals") == ACESplitterManager._INTERNAL_VERSION_TAG
 
     @staticmethod
     def _ensure_variant_internals(ng: bpy.types.NodeTree, band_count: int):
@@ -167,102 +169,42 @@ class ACESplitterManager:
 
     @staticmethod
     def _build_variant_internals(ng: bpy.types.NodeTree, band_count: int):
-        if str(getattr(ng, "bl_idname", "") or "") == "ShaderNodeTree":
-            ACESplitterManager._build_shader_variant_internals(ng, band_count)
-            return
+        """Each band output is a bundle of the input and the split frequencies.
 
+        A facade: the engine reads the split frequencies from the node, never from the bundle.
+        Packing them in is what makes Blender count them as used, so it doesn't grey them out.
+        In Geometry Nodes the input's Proxy Geometry is carried along; a shader bundle carries
+        nothing, so the input goes in whole.
+        """
+        from .layout import arrange
+
+        is_shader = str(getattr(ng, "bl_idname", "") or "") == "ShaderNodeTree"
         split_count = max(0, int(band_count) - 1)
-
         input_node = ng.nodes.new('NodeGroupInput')
         output_node = ng.nodes.new('NodeGroupOutput')
-        input_node.location = (-700, 0)
-        output_node.location = (700, 0)
-
-        marker = ng.nodes.new('NodeFrame')
-        marker.name = ACESplitterManager._INTERNAL_VERSION_TAG
-        marker.label = "ACE Splitter Internals"
-        marker.location = (-520, 260)
-
-        # Facade only: bundles keep the sockets active; the backend reads split values from the node.
-        sep_bundle = ng.nodes.new('NodeSeparateBundle')
-        sep_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
-        sep_bundle.location = (-500, 0)
-        sep_bundle.parent = marker
-        if len(getattr(input_node, "outputs", [])) > 0:
+        if is_shader:
+            carried, item_type = input_node.outputs[0], 'BUNDLE'
+            item_name = "Audio"
+        else:
+            sep_bundle = ng.nodes.new('NodeSeparateBundle')
+            sep_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
             ng.links.new(input_node.outputs[0], sep_bundle.inputs[0])
-
-        for out_idx in range(band_count):
-            if out_idx >= len(getattr(output_node, "inputs", [])):
-                continue
-
-            combine_bundle = ng.nodes.new('NodeCombineBundle')
-            combine_bundle.location = (120, -120 - out_idx * 120)
-            combine_bundle.parent = marker
-            geo_item = combine_bundle.bundle_items.new('GEOMETRY', "Proxy Geometry")
-            try:
-                ng.links.new(sep_bundle.outputs[0], combine_bundle.inputs[geo_item.name])
-            except Exception as exc:
-                utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._build_variant_internals", exc)
-                ng.links.new(sep_bundle.outputs[0], combine_bundle.inputs[0])
-
+            carried, item_type = sep_bundle.outputs[0], 'GEOMETRY'
+            item_name = "Proxy Geometry"
+        for out_idx in range(min(band_count, len(output_node.inputs))):
+            combine = ng.nodes.new('NodeCombineBundle')
+            combine.label = f"{output_node.inputs[out_idx].name} Band"
+            combine.bundle_items.new(item_type, item_name)
             for split_idx in range(split_count):
-                input_idx = split_idx + 1
-                if input_idx >= len(getattr(input_node, "outputs", [])):
-                    continue
-                freq_item = None
-                for data_kind in ("FLOAT", "VALUE"):
-                    try:
-                        freq_item = combine_bundle.bundle_items.new(data_kind, f"Split Freq {split_idx + 1}")
-                        break
-                    except Exception as exc:
-                        utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._build_variant_internals#2", exc)
-                        freq_item = None
-                if freq_item is None:
-                    continue
-                try:
-                    ng.links.new(input_node.outputs[input_idx], combine_bundle.inputs[freq_item.name])
-                except Exception as exc:
-                    utils.note_swallowed("dynamic_audio_operators.ACESplitterManager._build_variant_internals#3", exc)
-                    with utils.logged_errors("dynamic_audio_operators.ACESplitterManager._build_variant_internals#4"):
-                        last_idx = len(getattr(combine_bundle, "inputs", [])) - 1
-                        if last_idx >= 0:
-                            ng.links.new(input_node.outputs[input_idx], combine_bundle.inputs[last_idx])
-
-            ng.links.new(combine_bundle.outputs[0], output_node.inputs[out_idx])
-
-    @staticmethod
-    def _build_shader_variant_internals(ng: bpy.types.NodeTree, band_count: int):
-        split_count = max(0, int(band_count) - 1)
-
-        input_node = ng.nodes.new('NodeGroupInput')
-        output_node = ng.nodes.new('NodeGroupOutput')
-        input_node.location = (-700, 0)
-        output_node.location = (520, 0)
-
-        marker = ng.nodes.new('NodeFrame')
-        marker.name = ACESplitterManager._INTERNAL_VERSION_TAG
-        marker.label = "ACE Splitter Internals"
-        marker.location = (-520, 260)
-
-        for split_idx in range(split_count):
-            input_idx = split_idx + 1
-            if input_idx >= len(getattr(input_node, "outputs", [])):
-                continue
-            splitter_tap = ng.nodes.new('NodeReroute')
-            splitter_tap.location = (-220, -120 * split_idx)
-            splitter_tap.parent = marker
-            ng.links.new(input_node.outputs[input_idx], splitter_tap.inputs[0])
-
-        if len(getattr(input_node, "outputs", [])) <= 0:
-            return
-        for out_idx in range(band_count):
-            if out_idx >= len(getattr(output_node, "inputs", [])):
-                continue
-            reroute = ng.nodes.new('NodeReroute')
-            reroute.location = (120, -120 * out_idx)
-            reroute.parent = marker
-            ng.links.new(input_node.outputs[0], reroute.inputs[0])
-            ng.links.new(reroute.outputs[0], output_node.inputs[out_idx])
+                combine.bundle_items.new('FLOAT', f"Split Freq {split_idx + 1}")
+            # Sockets by name: an item returned by bundle_items.new is stale after the next new.
+            ng.links.new(carried, combine.inputs[item_name])
+            for split_idx in range(split_count):
+                name = f"Split Freq {split_idx + 1}"
+                ng.links.new(input_node.outputs[name], combine.inputs[name])
+            ng.links.new(combine.outputs[0], output_node.inputs[out_idx])
+        arrange(ng)
+        ng["ace_internals"] = ACESplitterManager._INTERNAL_VERSION_TAG
 
     @staticmethod
     def _build_variant(name: str, band_count: int, tree_or_type="GeometryNodeTree") -> bpy.types.NodeTree:
@@ -270,6 +212,10 @@ class ACESplitterManager:
         ng = _ensure_variant_group(name, tree_or_type)
         if ng is None:
             raise RuntimeError(f"Could not create splitter variant '{name}'")
+        from .groups import tag_owned
+
+        tag_owned(ng, *SPLITTER_KIND)
+        ng["ace_bands"] = int(band_count)
         
         
         # Input 0: Main Audio

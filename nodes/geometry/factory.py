@@ -9,6 +9,8 @@ from ...vars import (
 )
 from ... import utils
 from ..frontend import remember_group_inputs
+from ..groups import GEOMETRY, find_template, legacy_name, new_template, tag_template
+from ..layout import arrange
 
 
 class ACEDummyNodeFactory:
@@ -16,10 +18,20 @@ class ACEDummyNodeFactory:
 
     @staticmethod
     def get_group_name(category: str, node_type: str) -> str:
-        """Return the canonical hidden datablock name for an ACE node group."""
-        # Internal datablocks are hidden (leading ".") so the default Group list
-        # does not duplicate the curated ACE add menu entries.
-        return f".ACE_{category}_{node_type}"
+        """The hidden name the kind's groups are built from: its splitter variants' prefix.
+
+        The template group itself is named after the node and found by its kind (nodes/groups.py).
+        """
+        return legacy_name(category, node_type, GEOMETRY)
+
+    @staticmethod
+    def template_group(category: str, node_type: str):
+        """The kind's shared group, built when missing."""
+        ng = find_template(category, node_type, GEOMETRY)
+        if ng is None:
+            ACEDummyNodeFactory.rebuild_node_group(category, node_type)
+            ng = find_template(category, node_type, GEOMETRY)
+        return ng
 
     _NODES_CONTENT_HASH: str = ""
 
@@ -45,10 +57,10 @@ class ACEDummyNodeFactory:
             return  # Registry unchanged — skip the full O(N) group scan.
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category['nodes'].items():
-                group_name = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
-                ng = bpy.data.node_groups.get(group_name)
+                ng = find_template(cat_key, type_key, GEOMETRY)
 
                 if ng:
+                    tag_template(ng, cat_key, type_key, GEOMETRY)
                     if ACEDummyNodeFactory._node_group_needs_refresh(ng, cat_key, type_key):
                         remember_group_inputs(ng)
                         ng.nodes.clear()
@@ -64,7 +76,7 @@ class ACEDummyNodeFactory:
                     ACEDummyNodeFactory._ensure_attr_interface_visible(ng, cat_key, type_key)
                     continue
                 else:
-                    ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
+                    ng = new_template(cat_key, type_key, GEOMETRY)
                     ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
 
         with utils.logged_errors("factory.ACEDummyNodeFactory.ensure_node_groups_exist"):
@@ -77,28 +89,26 @@ class ACEDummyNodeFactory:
     @staticmethod
     def rebuild_node_group(cat_key: str, type_key: str):
         """Force-rebuild a single node group from the current ACE_NODES definition."""
-        group_name = ACEDummyNodeFactory.get_group_name(cat_key, type_key)
-        
         try:
             node_def = ACE_NODES[cat_key]['nodes'][type_key]
         except KeyError:
             return
 
-        ng = bpy.data.node_groups.get(group_name)
+        ng = find_template(cat_key, type_key, GEOMETRY)
         if ng:
+            tag_template(ng, cat_key, type_key, GEOMETRY)
             remember_group_inputs(ng)
             ng.nodes.clear()
             ng.interface.clear()
         else:
-            ng = bpy.data.node_groups.new(group_name, 'GeometryNodeTree')
-        
+            ng = new_template(cat_key, type_key, GEOMETRY)
+
         ACEDummyNodeFactory._build_group_content(ng, node_def, cat_key, type_key)
 
     @staticmethod
     def _internals_outdated(ng, category: str, node_type: str) -> bool:
-        """True when a group with real internals (a measure's readers, a controller's maths) was built by an older version."""
-        has_internals = node_role(category, node_type) == ROLE_MEASURE or node_is_native(category, node_type)
-        return has_internals and ng.get("ace_internals") != INTERNALS_VERSION
+        """True when the group's internals were built by another version (they are rebuilt, the interface stays)."""
+        return ng.get("ace_internals") != INTERNALS_VERSION
 
     @staticmethod
     def _node_group_needs_refresh(ng, category: str, node_type: str) -> bool:
@@ -188,6 +198,7 @@ class ACEDummyNodeFactory:
             from .controllers import build_internals
 
             build_internals(ng, registry_node_def(category, node_type), node_type)
+            arrange(ng)
             ng["ace_internals"] = INTERNALS_VERSION
             return
         input_node = ng.nodes.new('NodeGroupInput')
@@ -354,13 +365,14 @@ class ACEDummyNodeFactory:
                 ng.links.new(input_node.outputs[i], reroute.inputs[0])
                 if i < len(outputs_def):
                     ng.links.new(reroute.outputs[0], output_node.inputs[i])
+        arrange(ng)
         ng["ace_internals"] = INTERNALS_VERSION
 
 
 # Version of what the groups with real internals hold inside; a group built by another one is
 # rebuilt (internals only). 2: measures sample the frame's point of a baked proxy. 3: the
-# controllers' Simulation Zones.
-INTERNALS_VERSION = 3
+# controllers' Simulation Zones. 4: every group is versioned, and laid out along its flow.
+INTERNALS_VERSION = 4
 
 
 def _frame_index_socket(ng, geometry_socket, driver_socket, location):

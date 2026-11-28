@@ -30,9 +30,13 @@ class _Builder:
         node = self.ng.nodes.new(bl_idname)
         for key, value in props.items():
             setattr(node, key, value)
-        node.location = (-200 + 160 * (self.column // 12), -120 * (self.column % 12))
-        self.column += 1
-        return node
+        return node  # placed by nodes/layout.py once the group is built
+
+    @staticmethod
+    def named(sock, label: str):
+        """Label the node computing *sock*: what the step means, read in the editor."""
+        sock.node.label = label
+        return sock
 
     def feed(self, sock, value) -> None:
         if hasattr(value, "is_output"):
@@ -111,7 +115,7 @@ def _zone(b: _Builder, states: dict, initial: dict):
     b.feed(sim_in.inputs[TIME_STATE], seconds)
     for name, value in initial.items():
         b.feed(sim_in.inputs[name], value)
-    dt = b.max(b.sub(seconds, sim_in.outputs[TIME_STATE]), 0.0)
+    dt = b.named(b.max(b.sub(seconds, sim_in.outputs[TIME_STATE]), 0.0), "Step (s)")
     b.feed(sim_out.inputs[TIME_STATE], seconds)
     return sim_in, sim_out, seconds, dt
 
@@ -127,32 +131,33 @@ def _build_envelope(b: _Builder, gi, go, menus) -> None:
     # Follow: a new peak moves toward the input with Attack and restarts Hold; then, once Hold
     # has run out, toward the input with Release (only for the part of the step past Hold).
     y, hold = sim_in.outputs["Follow"], sim_in.outputs["Hold"]
-    rising = b.greater_equal(x, y)
-    toward = b.sub(x, y)
-    y_rise = b.add(y, b.mul(toward, b.one_pole(dt, gi.outputs["Attack"])))
-    after_hold = b.max(b.sub(dt, hold), 0.0)
-    y_fall = b.add(y, b.mul(toward, b.one_pole(after_hold, gi.outputs["Release"])))
-    b.feed(sim_out.inputs["Follow"], b.switch(rising, y_fall, y_rise))
-    b.feed(sim_out.inputs["Hold"], b.switch(rising, b.max(b.sub(hold, dt), 0.0), gi.outputs["Hold"]))
+    rising = b.named(b.greater_equal(x, y), "Follow: Rising")
+    toward = b.named(b.sub(x, y), "Follow: To Go")
+    y_rise = b.named(b.add(y, b.mul(toward, b.one_pole(dt, gi.outputs["Attack"]))), "Follow: Rise (Attack)")
+    after_hold = b.named(b.max(b.sub(dt, hold), 0.0), "Follow: Step Past Hold")
+    y_fall = b.named(b.add(y, b.mul(toward, b.one_pole(after_hold, gi.outputs["Release"]))), "Follow: Fall (Release)")
+    b.feed(sim_out.inputs["Follow"], b.named(b.switch(rising, y_fall, y_rise), "Follow: Next"))
+    b.feed(sim_out.inputs["Hold"], b.named(
+        b.switch(rising, b.max(b.sub(hold, dt), 0.0), gi.outputs["Hold"]), "Follow: Hold Left"))
 
     # Spring: y'' + 2 zeta w y' + w^2 y = w^2 x, solved exactly over the step (x held), for
     # the offset e = y - x and the velocity v.
-    w = b.mul(b.max(gi.outputs["Speed"], MIN_SPEED_HZ), 2.0 * math.pi)
+    w = b.named(b.mul(b.max(gi.outputs["Speed"], MIN_SPEED_HZ), 2.0 * math.pi), "Spring: ω (2π Speed)")
     bounce = b.min(b.max(gi.outputs["Bounce"], 0.0), 1.0)
-    zeta = b.min(b.sub(1.0, b.mul(bounce, 0.95)), MAX_DAMPING)
-    a = b.mul(zeta, w)  # decay rate
-    wd = b.mul(w, b.math("SQRT", b.sub(1.0, b.mul(zeta, zeta))))  # damped frequency
-    e = b.sub(sim_in.outputs["Spring"], x)
+    zeta = b.named(b.min(b.sub(1.0, b.mul(bounce, 0.95)), MAX_DAMPING), "Spring: Damping ζ")
+    a = b.named(b.mul(zeta, w), "Spring: Decay Rate")
+    wd = b.named(b.mul(w, b.math("SQRT", b.sub(1.0, b.mul(zeta, zeta)))), "Spring: Damped ω")
+    e = b.named(b.sub(sim_in.outputs["Spring"], x), "Spring: Offset")
     v = sim_in.outputs["Velocity"]
-    decay = b.exp(b.mul(b.mul(a, dt), -1.0))
-    phase = b.mul(wd, dt)
+    decay = b.named(b.exp(b.mul(b.mul(a, dt), -1.0)), "Spring: Decay")
+    phase = b.named(b.mul(wd, dt), "Spring: Phase")
     c, s = b.math("COSINE", phase), b.math("SINE", phase)
     e_next = b.mul(decay, b.add(b.mul(e, c), b.mul(b.div(b.add(v, b.mul(a, e)), wd), s)))
     v_next = b.mul(decay, b.sub(b.mul(v, c), b.mul(b.div(b.add(b.mul(b.mul(w, w), e), b.mul(a, v)), wd), s)))
-    b.feed(sim_out.inputs["Spring"], b.add(x, e_next))
-    b.feed(sim_out.inputs["Velocity"], v_next)
+    b.feed(sim_out.inputs["Spring"], b.named(b.add(x, b.named(e_next, "Spring: Next Offset")), "Spring: Next"))
+    b.feed(sim_out.inputs["Velocity"], b.named(v_next, "Spring: Next Velocity"))
 
-    mode = b.node("GeometryNodeMenuSwitch", data_type="FLOAT")
+    mode = b.node("GeometryNodeMenuSwitch", data_type="FLOAT", label="Mode")
     items = list(menus.get("Mode", ["Follow", "Spring"]))
     for item, name in zip(mode.enum_items, items):
         item.name = name
@@ -166,12 +171,12 @@ def _build_running_total(b: _Builder, gi, go, _menus) -> None:
     x, leak = gi.outputs["Value"], gi.outputs["Leak Time"]
     sim_in, sim_out, _seconds, dt = _zone(b, {"Total": "FLOAT"}, {"Total": 0.0})
     total = sim_in.outputs["Total"]
-    plain = b.add(total, b.mul(x, dt))
+    plain = b.named(b.add(total, b.mul(x, dt)), "Total + Value x Step")
     # Leak Time L: dT/dt = x - T/L, solved over the step: T a + x L (1 - a), a = e^(-dt/L).
-    kept = b.exp(b.div(b.mul(dt, -1.0), b.max(leak, EPSILON_S)))
-    leaky = b.add(b.mul(total, kept), b.mul(b.mul(x, leak), b.sub(1.0, kept)))
-    stepped = b.switch(b.compare("GREATER_THAN", leak, 0.0), plain, leaky)
-    b.feed(sim_out.inputs["Total"], b.switch(gi.outputs["Reset"], stepped, 0.0))
+    kept = b.named(b.exp(b.div(b.mul(dt, -1.0), b.max(leak, EPSILON_S))), "Share Kept (e^-Step/Leak)")
+    leaky = b.named(b.add(b.mul(total, kept), b.mul(b.mul(x, leak), b.sub(1.0, kept))), "Leaky Total")
+    stepped = b.named(b.switch(b.named(b.compare("GREATER_THAN", leak, 0.0), "Leaks?"), plain, leaky), "Next")
+    b.feed(sim_out.inputs["Total"], b.named(b.switch(gi.outputs["Reset"], stepped, 0.0), "Reset?"))
     b.feed(go.inputs["Total"], sim_out.outputs["Total"])
 
 
@@ -186,13 +191,13 @@ def _build_gate(b: _Builder, gi, go, _menus) -> None:
         {"Open": False, "Armed": True, "Hit": False, "Since": NEVER_S, "Count": 0.0},
     )
     armed, was_open = sim_in.outputs["Armed"], sim_in.outputs["Open"]
-    since = b.add(sim_in.outputs["Since"], dt)
-    rearm = b.min(gi.outputs["Re-arm Level"], gi.outputs["Threshold"])
-    falls = b.compare("LESS_THAN", x, rearm)
-    crossing = b.logic("AND", armed, b.compare("GREATER_EQUAL", x, gi.outputs["Threshold"]))
+    since = b.named(b.add(sim_in.outputs["Since"], dt), "Since Last Hit")
+    rearm = b.named(b.min(gi.outputs["Re-arm Level"], gi.outputs["Threshold"]), "Re-arm Below")
+    falls = b.named(b.compare("LESS_THAN", x, rearm), "Fell Below Re-arm")
+    crossing = b.named(b.logic("AND", armed, b.compare("GREATER_EQUAL", x, gi.outputs["Threshold"])), "Armed Crossing")
     # A crossing within Min Interval is ignored: the gate disarms without opening, and waits for
     # the input to fall below Re-arm Level, so it never gives a late Hit off the beat.
-    hit = b.logic("AND", crossing, b.compare("GREATER_EQUAL", since, gi.outputs["Min Interval"]))
+    hit = b.named(b.logic("AND", crossing, b.compare("GREATER_EQUAL", since, gi.outputs["Min Interval"])), "Hit")
     b.feed(sim_out.inputs["Armed"], b.switch(falls, b.switch(crossing, armed, False, "BOOLEAN"), True, "BOOLEAN"))
     b.feed(sim_out.inputs["Open"], b.switch(hit, b.switch(falls, was_open, False, "BOOLEAN"), True, "BOOLEAN"))
     b.feed(sim_out.inputs["Hit"], hit)
@@ -220,7 +225,6 @@ def build_internals(ng, node_def: dict, node_type: str) -> None:
     b = _Builder(ng)
     gi = b.node("NodeGroupInput")
     go = b.node("NodeGroupOutput")
-    gi.location, go.location = (-800, 0), (1400, 0)
     menus = dict(node_def.get("menus", {}) or {})
     _BUILDERS[str(node_type)](b, gi, go, menus)
     # A menu socket gets its items from the Menu Switch it feeds: its default is set after the link.

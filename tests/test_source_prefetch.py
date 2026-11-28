@@ -124,7 +124,8 @@ class SourcePrefetchTests(unittest.TestCase):
         """A stop wakes the thread and leaves a target behind; the next thread must not act on either."""
         task = self._task(read_delay_s=0.0)
         reads = []
-        task._read_next_block_sync = lambda track_perf_stage=True, frame_request=None: reads.append(frame_request)
+        task._read_next_block_sync = lambda track_perf_stage=True, frame_request=None, view=None, prefetch=False: reads.append(frame_request)
+        task._prefetch_view = task._context_view()
         task._prefetch_target_frame = 5
         task._start_prefetch_thread()
         task._stop_prefetch_thread()
@@ -142,11 +143,12 @@ class SourcePrefetchTests(unittest.TestCase):
         seen = []
         original = task._read_next_block_sync
 
-        def spy(track_perf_stage=True, frame_request=None):
+        def spy(track_perf_stage=True, frame_request=None, view=None, prefetch=False):
             seen.append(task._current_frame_request)
-            return original(track_perf_stage, frame_request)
+            return original(track_perf_stage, frame_request, view, prefetch)
 
         task._read_next_block_sync = spy
+        task._prefetch_view = task._context_view()
         task._prefetch_target_frame = 4
         task._start_prefetch_thread()
         task._prefetch_trigger.set()
@@ -154,6 +156,41 @@ class SourcePrefetchTests(unittest.TestCase):
         self.assertEqual(seen, [3])
         self.assertEqual(task._prefetch_for_frame, 4)
         self.assertEqual(int(task._prefetch_chunk.mono[0]), 3 * SPF)
+
+    def test_the_thread_never_reads_the_source(self):
+        """An undo frees the source's Blender data while the thread may be reading: it reads a snapshot.
+
+        Blender crashed on undo when the thread read the source type (an EnumProperty) of freed data.
+        """
+        task = self._task(read_delay_s=0.002)
+        values = {"source_type": "FILE", "filepath": "ramp.wav"}
+        off_main = []
+
+        class Guarded:
+            def __getattr__(self, name):
+                if threading.current_thread() is not threading.main_thread():
+                    off_main.append(name)
+                if name in values:
+                    return values[name]
+                raise AttributeError(name)
+
+        task.source_context = Guarded()
+        task._last_config_signature = task._config_signature()
+        starts = self._play(task, range(1, 25), frame_gap_s=0.01)
+        self.assertEqual(starts, {f: (f - 1) * SPF for f in range(1, 25)})
+        self.assertGreater(task._prefetch_for_frame or 0, 1, "the thread read nothing")
+        self.assertEqual(off_main, [], "the prefetch thread read the source's Blender data")
+
+    def test_a_changed_source_is_read_on_the_main_thread(self):
+        """After the source changes, the thread's read is left to the main thread, which reopens it."""
+        task = self._task(read_delay_s=0.0)
+        self._play(task, range(1, 4), frame_gap_s=0.02)
+        reopened = []
+        task._reopen_for_config_change = lambda: reopened.append(threading.current_thread() is threading.main_thread())
+        task.source_context.filepath = "other.wav"
+        task._current_frame_request = 4
+        task._read_next_block()
+        self.assertEqual(reopened, [True])
 
 
 if __name__ == "__main__":

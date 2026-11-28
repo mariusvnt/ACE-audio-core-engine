@@ -13,14 +13,14 @@ from ...core.engine.engine import ACEAudioEngine
 from ...nodes.geometry.reader import ACEDummyTreeReader
 from ...nodes.shader.reader import ACEShaderTreeReader
 from ... import utils
-from ...vars import ROLE_SPLITTER, SOURCE_KIND, node_def, node_role
+from ...vars import ROLE_SPLITTER, SOURCE_KIND, node_def, node_is_native, node_role
 from . import operator_tree
 from . import usage
 from ...nodes.split_freqs import split_freq_states
 from ...nodes.dynamic_audio_operators import is_automatic_count_label
 from .helpers import _find_active_node_tree, _find_tree_node_by_ace_id, _tree_pointer, _ui_is_blocked
 from .instances import compile_marker, compiled_tree_view
-from ...nodes.identity import node_id as ace_node_id
+from ...nodes.identity import node_id as ace_node_id, node_kind
 from ...nodes.source_nodes import node_source_id
 
 
@@ -358,8 +358,53 @@ def _operator_rows(tree, abstract, node_lookup_ids: dict[str, str], source_uid: 
         for l in abstract.links
         if l.target_node_id not in viewers
     ]
+    controllers, controller_links = _controller_rows(tree)
+    graph_nodes.extend(controllers)
+    links.extend(controller_links)
     roots = [node_id for _order, node_id in sorted(bound_roots)]  # none: an empty list
     return operator_tree.build_rows(graph_nodes, links, roots)
+
+
+def _ace_feeds(node, limit: int = 256) -> list:
+    """(ACE node, its output index) of each ACE node *node* reads, through any nodes that aren't ACE's."""
+    found, seen, pending = [], {node.as_pointer()}, [node]
+    while pending and len(seen) < limit:
+        current = pending.pop()
+        for sock in current.inputs:
+            for link in sock.links:
+                if getattr(link, "is_muted", False):
+                    continue
+                src = link.from_node
+                if node_kind(src)[0]:
+                    index = next((i for i, out in enumerate(src.outputs) if out == link.from_socket), 0)
+                    if (src, index) not in found:
+                        found.append((src, index))
+                elif src.as_pointer() not in seen:
+                    seen.add(src.as_pointer())
+                    pending.append(src)
+    return found
+
+
+def _controller_rows(tree) -> tuple[list, list]:
+    """The controllers of *tree* and the links from the ACE nodes they read.
+
+    A controller computes in Blender, so the engine's model doesn't hold it: it is listed from
+    the tree itself, under the measurement (or source) it reads, through Math nodes or others.
+    """
+    nodes, links = [], []
+    for order, bl_node in enumerate(getattr(tree, "nodes", []) or []):
+        category, node_type = node_kind(bl_node)
+        if not category or not node_is_native(category, node_type):
+            continue
+        node_id = ace_node_id(bl_node, tree)
+        if not node_id:
+            continue
+        nodes.append(operator_tree.GraphNode(node_id, str(bl_node.label or bl_node.name), 100000 + order))
+        for src, index in _ace_feeds(bl_node):
+            src_id = ace_node_id(src, tree)
+            if src_id:
+                links.append(operator_tree.GraphLink(src_id, int(index), node_id))
+    return nodes, links
 
 
 def _row_name(row: operator_tree.Row) -> str:

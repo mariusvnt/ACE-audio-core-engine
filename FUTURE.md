@@ -16,7 +16,8 @@ Left from the time model:
 
 Left from the core operator set:
 
-- **To check by hand** (they need a window): the add menu (Input, Output, a separator, Audio, Controllers, with icons on the last two only); Envelope's Mode menu and the inputs it greys out, in Geometry Nodes and shaders; Gate's socket colours (Bool, Bool, Int); the Source panel's First Downbeat row; ignored links drawn red, and their reasons on the selected node and in *Active ACE Instances*; a field into a controller drawn red, with Blender's own tooltip; that the `.ACE_Controllers` object draws nothing in the viewport.
+- **To check by hand** (they need a window): the add menu (Input, Output, a separator, Audio, Controllers, with icons on the last two only); Envelope's Mode menu and the inputs it hides, in Geometry Nodes and shaders; Gate's socket colours (Bool, Bool, Int); the Source panel's First Downbeat row; ignored links drawn red, and their reasons on the selected node; a field into a controller drawn red, with Blender's own tooltip; that the `.ACE_Controllers` object draws nothing in the viewport.
+- **Also to check by hand:** ACE nodes in the link-drag search from an Audio socket and in Add › Group, in both editors; Ctrl+C / Ctrl+V of ACE nodes from Geometry Nodes into a material and back (Blender's own "Cannot add node" warning may still show); that no ACE input is drawn greyed; the internals' layout (Tab into a group); a controller selected in the Node Editor showing its settings and description in the Operators panel.
 - **Controllers in shaders** run only directly in a material's, the World's or a light's tree, not inside shader groups, and need ACE to render: their values reach the shader through Python. Baking their read-back values into the scene's F-curves, as measurements are, would let a .blend render them without ACE.
 - **The meter** finds no bar in a file that starts with silence, or in fewer than 12 beats; the Downbeat is then 0, and the grid isn't fitted.
 
@@ -73,7 +74,7 @@ Each preset is an ordinary user tree built from ACE nodes, so presets also exerc
 
 ## 3. Per-instance parameters
 
-Uses of one ACE node share its sink names (ARCHITECTURE.md §1). Uses that compute different values, such as a group used twice with different band frequencies, are reported as conflicts in *Active ACE Instances*, and only one use reaches the sink. Different sources through the bundle already work in Geometry Nodes.
+Uses of one ACE node share its sink names (ARCHITECTURE.md §1). Uses that compute different values, such as a group used twice with different band frequencies, are reported as conflicts on the node's settings in the Operators panel, and only one use reaches the sink. Different sources through the bundle already work in Geometry Nodes.
 
 - **Geometry Nodes:** the bundle could carry a signal-key string that each ACE node extends with its operation and parameters (Value to String, Join Strings, possibly Hash Value), so Geometry Nodes computes the attribute names itself.
 - **Shaders:** there are no string operations, so this would need generated copies of the groups.

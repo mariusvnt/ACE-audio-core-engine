@@ -6,7 +6,7 @@ import bpy  # type: ignore
 import textwrap
 from ...core.engine.engine import ACEAudioEngine
 from ... import utils
-from .helpers import _deal_breakers, _find_active_node_tree, _source_display_sample_rate, _source_list_icon, _ui_is_blocked, property_column
+from .helpers import _deal_breakers, _source_display_sample_rate, _source_list_icon, _ui_is_blocked, property_column, property_split_row
 from .selection import _draw_bake_controls, _draw_selected_node_description, _draw_selected_operator, _selected_node_description
 from . import operator_tree
 from . import sync
@@ -344,7 +344,7 @@ class ACE_PT_sub_engine_settings(bpy.types.Panel):
         if eng_settings is None:
             return
         layout = self.layout
-        property_column(layout).prop(eng_settings, "ace_file_working_sample_rate", text="Sample Rate", expand=True)
+        property_split_row(layout, "Sample Rate").prop(eng_settings, "ace_file_working_sample_rate", expand=True)
         layout.operator("audiocore.reset_engine", icon="FILE_REFRESH")
 
 
@@ -400,6 +400,8 @@ class ACE_PT_audio_sources(bpy.types.Panel):
                     warn = layout.row()
                     warn.alert = True
                     warn.label(text=live_status, icon="ERROR")
+            _draw_source_tempo(layout, active_source)
+            _draw_source_info(layout, context, active_source)
         else:
             return
 
@@ -438,99 +440,49 @@ def _source_is_configured(source) -> bool:
     return src_type == "LIVE" and (transport == "UDP" or bool(device))
 
 
-class _ACESourceSubPanel:
-    """A closed-by-default sub-panel about the active audio source."""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Audio Core Engine"
-    bl_parent_id = "ACE_PT_audio_sources"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        from ...utils import _get_active_source
-        _, active_source = _get_active_source(context)
-        return active_source is not None and not _ui_is_blocked(context)
-
-
-class ACE_PT_sub_source_info(_ACESourceSubPanel, bpy.types.Panel):
-    """Sample rate and duration of the active source."""
-
-    bl_label = "Info"
-    bl_idname = "ACE_PT_sub_source_info"
-    bl_order = 0
-
-    def draw(self, context):
-        from ...utils import _get_active_source
-        layout = self.layout
-        _, source = _get_active_source(context)
-        if source is None or not _source_is_configured(source):
-            layout.label(text="No audio selected for this source.", icon="INFO")
-            return
-        col = layout.column(align=True)
-        duration = float(getattr(source, "duration", 0.0) or 0.0)
-        rate = _source_display_sample_rate(source)
-        if rate > 0:
-            col.label(text=f"Sample Rate: {rate}Hz")
-        if duration > 0.0:
-            minutes, seconds = divmod(int(round(duration)), 60)
-            col.label(text=f"Duration: {minutes} min {seconds} s")
-            # The audio starts on the scene's first frame and runs at the file's frame rate.
-            render = context.scene.render
-            frames = max(math.ceil(duration * render.fps / render.fps_base - 1e-6), 1)
-            first = context.scene.frame_start
-            col.label(text=f"Frame Span: {first} - {first + frames - 1} ({frames} frames)")
-        if rate <= 0 and duration <= 0.0:
-            col.label(text="Metadata unavailable for the selected source.", icon="INFO")
+def _draw_source_tempo(layout, source) -> None:
+    """BPM, Beats per Bar and the first Downbeat, and the button that detects them in a file."""
+    col = property_column(layout)
+    col.prop(source, "bpm", text="BPM")
+    col.prop(source, "beats_per_bar", text="Beats per Bar")
+    col.prop(source, "downbeat", text="First Downbeat")
+    if str(getattr(source, "source_type", "") or "").upper() != "FILE":
+        return
+    row = layout.row()
+    row.enabled = bool(str(getattr(source, "filepath", "") or "").strip())
+    row.operator("audiocore.detect_source_tempo_meter", icon="VIEWZOOM")
+    try:
+        status = str(source.get("ace_tempo_detect_status", "") or "")
+        message = str(source.get("ace_tempo_detect_message", "") or "")
+    except Exception as exc:
+        utils.note_swallowed("panels._draw_source_tempo", exc)
+        status, message = "", ""
+    # Once found, the values are in the fields above: only a detection under way or failed is said.
+    if status == "pending":
+        layout.label(text=message or "Detecting...", icon="TIME")
+    elif status == "failed":
+        warn = layout.row()
+        warn.alert = True
+        warn.label(text=message or "Detection failed.", icon="ERROR")
 
 
-class ACE_PT_sub_tempo_meter(_ACESourceSubPanel, bpy.types.Panel):
-    """Sub-panel for per-source BPM and beats-per-bar settings."""
-
-    bl_label = "Tempo & Meter"
-    bl_idname = "ACE_PT_sub_tempo_meter"
-    bl_order = 1
-
-    def draw(self, context):
-        from ...utils import _get_active_source
-        layout = self.layout
-        _, src = _get_active_source(context)
-
-        if not src:
-            layout.label(text="No Source Selected")
-            return
-
-        trigger_row = layout.row()
-        trigger_row.enabled = bool(
-            str(getattr(src, "source_type", "") or "").upper() == "FILE"
-            and str(getattr(src, "filepath", "") or "").strip()
-        )
-        trigger_row.operator(
-            "audiocore.detect_source_tempo_meter",
-            text="Auto Detect BPM / BPB",
-            icon="FILE_REFRESH",
-        )
-
-        try:
-            detect_status = str(src.get("ace_tempo_detect_status", "") or "")
-            detect_message = str(src.get("ace_tempo_detect_message", "") or "")
-        except Exception as exc:
-            utils.note_swallowed("panels.ACE_PT_sub_tempo_meter.draw#2", exc)
-            detect_status = ""
-            detect_message = ""
-        if detect_status == "pending":
-            layout.label(text=detect_message or "Tempo detection in progress...", icon="TIME")
-        elif detect_status == "ready":
-            layout.label(text=detect_message or "Tempo detection updated the active source.", icon="CHECKMARK")
-        elif detect_status == "failed":
-            warn = layout.row()
-            warn.alert = True
-            warn.label(text=detect_message or "Tempo detection failed.", icon="ERROR")
-
-        row = layout.row(align=True)
-        row.prop(src, "bpm", text="BPM")
-        row.prop(src, "beats_per_bar", text="Beats/Bar")
-        layout.prop(src, "downbeat", text="First Downbeat")
+def _draw_source_info(layout, context, source) -> None:
+    """Sample rate, duration and frame span of the source's audio."""
+    if not _source_is_configured(source):
+        return
+    col = layout.column(align=True)
+    duration = float(getattr(source, "duration", 0.0) or 0.0)
+    rate = _source_display_sample_rate(source)
+    if rate > 0:
+        col.label(text=f"Sample Rate: {rate} Hz")
+    if duration > 0.0:
+        minutes, seconds = divmod(int(round(duration)), 60)
+        col.label(text=f"Duration: {minutes} min {seconds} s")
+        # The audio starts on the scene's first frame and runs at the file's frame rate.
+        render = context.scene.render
+        frames = max(math.ceil(duration * render.fps / render.fps_base - 1e-6), 1)
+        first = context.scene.frame_start
+        col.label(text=f"Frame Span: {first} - {first + frames - 1} ({frames} frames)")
 
 
 class ACE_PT_information_streams(bpy.types.Panel):
@@ -605,67 +557,6 @@ class ACE_PT_capture_influx(bpy.types.Panel):
         _draw_bake_controls(layout, context)
 
 
-def _use_text(use, source_names: dict) -> str:
-    """"Cube › GeometryNodes › Group: Drums, 2 uses share it"."""
-    owners = list(use.owners or []) or ["no owner"]
-    where = " › ".join([owners[0], *use.chain])
-    if len(owners) > 1:
-        where += f" (+{len(owners) - 1})"
-    sources = ", ".join(source_names.get(s, s) for s in use.sources) or "no source"
-    shared = f", {use.shared_with + 1} uses share it" if use.shared_with else ""
-    return f"{where}: {sources}{shared}"
-
-
-class ACE_PT_active_instances(bpy.types.Panel):
-    """Every compiled ACE node: where it is used, what each use reads, what is shared, what conflicts."""
-
-    bl_label = "Active ACE Instances"
-    bl_idname = "ACE_PT_active_instances"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Audio Core Engine"
-    bl_order = 5
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return hasattr(context.scene, "audiocore") and not _ui_is_blocked(context)
-
-    def draw(self, context):
-        from .instances import instance_report
-        from .selection import draw_ignored_links
-        from ...nodes.definitions import definition as tree_definition
-
-        layout = self.layout
-        tree = _find_active_node_tree(context)
-        ignored = []
-        if tree is not None:
-            with utils.logged_errors("panels.ACE_PT_active_instances.draw#ignored"):
-                ignored = list(tree_definition(tree).ignored)
-        if ignored:
-            layout.label(text=f"Links ACE ignores in {tree.name}", icon="ERROR")
-            draw_ignored_links(layout, context, ignored, show_node=True)
-        report = instance_report(ACEAudioEngine.get_instance(context.scene))
-        if not report:
-            layout.label(text="No ACE node is compiled.", icon='INFO')
-            return
-        source_names = {str(s.stable_id): str(s.name) for s in context.scene.audiocore.audio_sources}
-        for definition in report:
-            box = layout.box()
-            col = box.column(align=True)
-            head = col.row()
-            head.label(text=definition.node_name, icon='ERROR' if definition.conflicts else 'NODE')
-            head.label(text=definition.tree_name)
-            for use in definition.uses:
-                row = col.row()
-                row.separator(factor=2.0)
-                row.label(text=_use_text(use, source_names))
-            for conflict in definition.conflicts:
-                row = col.row()
-                row.alert = True
-                row.label(text=f"'{conflict['sink_name']}' gets different values: one use keeps it", icon='ERROR')
-
-
 class ACE_PT_live_session(bpy.types.Panel):
     """A live session: playback that never drops or wraps a frame (core/live.py), and how it keeps up."""
 
@@ -686,8 +577,19 @@ class ACE_PT_live_session(bpy.types.Panel):
         engine = ACEAudioEngine.get_instance(context.scene)
         session = getattr(engine, "live_session", None) if engine is not None else None
         if session is None:
+            settings = context.scene.audiocore.engine_settings
             layout.operator("audiocore.live_start", icon="PLAY")
-            layout.label(text="Plays every frame, never wraps; stop to restore.", icon="INFO")
+            col = layout.column(align=True)
+            col.prop(settings, "live_from_start")
+            col.prop(settings, "live_record")
+            col.prop(settings, "live_disable_simulation_cache")
+            col.prop(settings, "live_solid_viewports")
+            _draw_selected_node_description(
+                layout, context,
+                "Unlike Play: every frame is shown (a slow frame runs late instead of being skipped), and playback "
+                "never jumps back to the first frame, which would reset controllers and simulations. Stop to "
+                "restore the scene's settings.",
+            )
             return
         layout.operator("audiocore.live_stop", icon="SNAP_FACE")
         col = layout.column(align=True)
@@ -711,12 +613,9 @@ classes = (
     ACE_PT_sub_latency_measures,
     ACE_PT_sub_engine_settings,
     ACE_PT_audio_sources,
-    ACE_PT_sub_source_info,
-    ACE_PT_sub_tempo_meter,
     ACE_PT_information_streams,
     ACE_PT_information_streams_description,
     ACE_PT_capture_influx,
-    ACE_PT_active_instances,
     ACE_PT_live_session,
 )
 

@@ -82,7 +82,9 @@ def source_nodes(trees):
 
 
 def editable_trees():
-    trees = [ng for ng in bpy.data.node_groups if not ng.name.startswith(".ACE_")]
+    from .identity import is_ace_group
+
+    trees = [ng for ng in bpy.data.node_groups if not is_ace_group(ng)]
     trees += [m.node_tree for m in bpy.data.materials if m.node_tree is not None]
     trees += [w.node_tree for w in bpy.data.worlds if w.node_tree is not None]
     return [t for t in trees if getattr(t, "library", None) is None]

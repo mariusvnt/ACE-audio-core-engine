@@ -279,6 +279,11 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
         self._last_frontend_membership_signature = membership_signature
         # Reading writes nothing into the user's trees. The one exception: sink names that
         # are missing or claimed twice are repaired once, before reading.
+        with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#placement"):
+            from ....nodes.placement import place_new_nodes
+
+            for record in frontends:
+                place_new_nodes(record.tree, scene)
         with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends"):
             self.engine.sinks.repair_sink_names([record.tree for record in frontends], scene)
         merged_tree = ACEAbstractTree()

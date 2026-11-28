@@ -94,7 +94,7 @@ class TempoWriteTests(unittest.TestCase):
         self.source["ace_bpm_user_override"] = True
         self._frames()
         self.assertEqual(self.requests, [])
-        # The Auto Detect button still replaces it.
+        # The Detect Features button still replaces it.
         self.probes.request_source_tempo_detection(self.source)
         self._finish()
         self._frames()

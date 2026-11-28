@@ -23,8 +23,6 @@ class BakeManager:
         self.store = BakeStore()
         self._bake_jobs: Dict[str, Dict[str, Any]] = {}
         self._bake_result_queue: "queue.Queue[tuple]" = queue.Queue()
-        # Bake nodes and simulation zones downstream of ACE nodes (find_downstream_bakes).
-        self.downstream_bakes: List[Dict[str, Any]] = []
         # How many controller Simulation Zones the last bake baked after its sources.
         self.controllers_baked: int = 0
 
@@ -54,50 +52,6 @@ class BakeManager:
 
     # -- compile hooks ------------------------------------------------------
 
-    def find_downstream_bakes(self, scene) -> List[Dict[str, Any]]:
-        """The Geometry Nodes bakes (Bake nodes, simulation zones) of modifiers whose trees read ACE.
-
-        Listed for the panel only: ACE bakes nothing for them. A native bake steps its frames
-        from the first, and ACE streams each one; Python can't tell whether a native bake holds
-        data, so keeping ACE's own bake for one would mean re-baking on every edit.
-        """
-        tree = getattr(self.engine, "instance_tree_ref", None)
-        if tree is None or scene is None:
-            return []
-        sources_by_owner: Dict[str, set] = {}
-        for node in tree.nodes.values():
-            frontend = tree.frontends.get(node.frontend_uid)
-            for owner in tuple(getattr(frontend, "owner_keys", ()) or ()):
-                sources_by_owner.setdefault(str(owner), set()).update(str(s) for s in (node.root_sources or ()) if str(s))
-        found: List[Dict[str, Any]] = []
-        for obj in scene.objects:
-            for mod in getattr(obj, "modifiers", []) or []:
-                if getattr(mod, "type", "") != "NODES" or not len(getattr(mod, "bakes", ()) or ()):
-                    continue
-                sources = sources_by_owner.get(f"{obj.name}:{mod.name}")
-                if not sources:
-                    continue
-                for bake in mod.bakes:
-                    node = getattr(bake, "node", None)
-                    if node is None or getattr(node, "mute", False):
-                        continue
-                    if bake.use_custom_simulation_frame_range:
-                        frame_range = (int(bake.frame_start), int(bake.frame_end))
-                    elif scene.use_custom_simulation_range:
-                        frame_range = (int(scene.simulation_frame_start), int(scene.simulation_frame_end))
-                    else:
-                        frame_range = (int(scene.frame_start), int(scene.frame_end))
-                    found.append({
-                        "label": f"{obj.name} › {mod.name} › {node.name}",
-                        "object": obj.name,
-                        "modifier": mod.name,
-                        "bake_id": int(bake.bake_id),
-                        "sources": sorted(sources),
-                        "frame_start": min(frame_range),
-                        "frame_end": max(frame_range),
-                    })
-        return found
-
     def after_compile(self, sources, scene=None) -> None:
         """Drop the stores of files that changed, then lay every store out (main thread)."""
         for source in sources or []:
@@ -111,8 +65,6 @@ class BakeManager:
                 with utils.logged_errors("bake.BakeManager.after_compile"):
                     source["ace_bake_status"] = "stale"
                     source["ace_bake_error"] = "The file changed since the bake."
-        with utils.logged_errors("bake.BakeManager.after_compile#downstream"):
-            self.downstream_bakes = self.find_downstream_bakes(scene or getattr(bpy.context, "scene", None))
         self.layout()
 
     def layout(self) -> None:

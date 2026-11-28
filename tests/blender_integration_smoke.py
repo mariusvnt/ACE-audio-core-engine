@@ -17,6 +17,7 @@ import wave
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from blender_helpers import _add_ace_node, _new_gn_tree, _proxy_values, _write_test_wav, find_addon_key  # noqa: E402
 import blender_helpers  # noqa: E402
+import blender_editor_checks  # noqa: E402
 
 
 def _nid(node):
@@ -72,15 +73,18 @@ def _stale_ace_groups(addon_key):
     dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
     shader_tree = importlib.import_module(f"{addon_key}.nodes.shader.factory")
     ace_nodes = importlib.import_module(f"{addon_key}.vars").ACE_NODES
+    groups = importlib.import_module(f"{addon_key}.nodes.groups")
     gn, sh = dummy_tree.ACEDummyNodeFactory, shader_tree.ACEShaderNodeFactory
     stale = []
     for cat_key, category in ace_nodes.items():
         for type_key, node_def in category["nodes"].items():
-            group = bpy.data.node_groups.get(gn.get_group_name(cat_key, type_key))
-            if group is not None and gn._node_group_needs_refresh(group, cat_key, type_key):
+            group = groups.find_template(cat_key, type_key, "GeometryNodeTree")
+            if group is not None and (gn._node_group_needs_refresh(group, cat_key, type_key)
+                                      or gn._internals_outdated(group, cat_key, type_key)):
                 stale.append(group.name)
-            group = bpy.data.node_groups.get(sh.get_group_name(cat_key, type_key))
-            if group is not None and sh._node_group_needs_refresh(group, node_def, cat_key, type_key):
+            group = groups.find_template(cat_key, type_key, "ShaderNodeTree")
+            if group is not None and (sh._node_group_needs_refresh(group, node_def, cat_key, type_key)
+                                      or group.get("ace_internals") != shader_tree.SHADER_INTERNALS_VERSION):
                 stale.append(group.name)
     return stale
 
@@ -90,7 +94,7 @@ def _check_loaded_files_get_current_node_groups(addon_key):
     stale = _stale_ace_groups(addon_key)
     _assert(not stale, f"Freshly built ACE groups count as stale (rebuilt on every load): {stale}")
     dummy_tree = importlib.import_module(f"{addon_key}.nodes.geometry.factory")
-    lufs_name = dummy_tree.ACEDummyNodeFactory.get_group_name("audio", "loudness")
+    lufs_name = dummy_tree.ACEDummyNodeFactory.template_group("audio", "loudness").name
     bpy.data.node_groups[lufs_name].interface.new_socket("Leftover", in_out="INPUT", socket_type="NodeSocketFloat")
     path = os.path.join(tempfile.mkdtemp(prefix="ace_smoke_"), "outdated_groups.blend")
     bpy.ops.wm.save_as_mainfile(filepath=path)
@@ -728,7 +732,8 @@ def _user_tree_snapshot():
             return tuple(v)
         return v
 
-    trees = [t for t in bpy.data.node_groups if not t.name.startswith(".ACE_")]
+    is_ace_group = importlib.import_module(f"{find_addon_key()}.nodes.identity").is_ace_group
+    trees = [t for t in bpy.data.node_groups if not is_ace_group(t)]
     trees += [m.node_tree for m in bpy.data.materials if m.node_tree is not None]
     snapshot = {}
     for tree in trees:
@@ -1680,7 +1685,7 @@ def _check_titles_units_and_info(addon_key, scene):
         fps = render.fps / render.fps_base
         seen: list = []
         context = types.SimpleNamespace(scene=scene)
-        panels.ACE_PT_sub_source_info.draw(types.SimpleNamespace(layout=_CheckedLayout(seen)), context)
+        panels._draw_source_info(_CheckedLayout(seen), context, source)
         labels = [value for kind, value in seen if kind == "label"]
         frames = int(-(-125.4 * fps // 1))
         span = f"Frame Span: {scene.frame_start} - {scene.frame_start + frames - 1} ({frames} frames)"
@@ -1974,14 +1979,17 @@ def _check_panels_draw(addon_key, scene):
         def props(panel_name):
             return {value for kind, value in drawn[panel_name] if kind == "prop"}
 
-        _assert({"bpm", "beats_per_bar"} <= props("ACE_PT_sub_tempo_meter"), "Tempo panel")
+        _assert({"source_type", "bpm", "beats_per_bar", "downbeat"} <= props("ACE_PT_audio_sources"),
+                f"Tempo fields in Audio Inputs: {props('ACE_PT_audio_sources')}")
+        _assert(("operator", "audiocore.detect_source_tempo_meter") in drawn["ACE_PT_audio_sources"], "No Detect Features")
+        _assert({"live_from_start", "live_record", "live_disable_simulation_cache", "live_solid_viewports"}
+                <= props("ACE_PT_live_session"), f"Live options: {props('ACE_PT_live_session')}")
+        _assert(("prop", "ace_file_working_sample_rate") in drawn["ACE_PT_sub_engine_settings"], "No sample rate row")
         _assert(("operator", "audiocore.reset_engine") in drawn["ACE_PT_sub_engine_settings"], "No reset button")
         _assert({"ace_split_freq_1", "ace_band_fill"} <= props("ACE_PT_information_streams"),
                 f"Splitter settings: {props('ACE_PT_information_streams')}")
-        for name in ("ACE_PT_sub_source_info", "ACE_PT_sub_tempo_meter"):
-            _assert("DEFAULT_CLOSED" in getattr(panels, name).bl_options, f"{name} is not closed by default")
-        order = [panels.ACE_PT_sub_source_info.bl_order, panels.ACE_PT_sub_tempo_meter.bl_order]
-        _assert(order == sorted(order), f"Source sub-panel order: {order}")
+        for name in ("ACE_PT_sub_source_info", "ACE_PT_sub_tempo_meter", "ACE_PT_active_instances"):
+            _assert(not hasattr(panels, name), f"{name} is back")
     finally:
         sync._find_active_node_tree = original_tree
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -2256,8 +2264,8 @@ def _wait_bake(engine, src, timeout_s=60.0):
 
 
 def _check_downstream_bake_node(addon_key, engine, scene, src):
-    """A Bake node downstream of ACE nodes is listed, and ACE bakes nothing for it: the native bake
-    steps the frames from its first and records what ACE streams on each, stateful nodes included."""
+    """ACE bakes nothing for a Bake node downstream of ACE nodes: the native bake steps the frames
+    from its first and records what ACE streams on each, stateful nodes included."""
     uid = str(src.stable_id)
     engine.bake.store.clear(uid)
     mesh = bpy.data.meshes.new("ACE_Smoke_Baked_Mesh")
@@ -2289,8 +2297,6 @@ def _check_downstream_bake_node(addon_key, engine, scene, src):
     modifier.bakes[0].bake_mode = "ANIMATION"
 
     engine.compiler.compile_scene_frontends(scene)
-    listed = [b for b in engine.bake.downstream_bakes if b["object"] == obj.name]
-    _assert(len(listed) == 1 and listed[0]["sources"] == [uid], f"The Bake node is not listed: {engine.bake.downstream_bakes}")
     _assert(not engine.bake._bake_jobs and engine.bake.store.read(uid) is None, "ACE baked for a Bake node downstream")
 
     # Away from the first frame, as a user would be: the native bake jumps back to its start.
@@ -2319,7 +2325,7 @@ def _check_downstream_bake_node(addon_key, engine, scene, src):
         _assert(all(abs(v - e) < 1e-6 for v, e in zip(values, expected)),
                 f"The native bake holds {values} at frame {frame}, playback computes {expected}")
     engine.bake.clear_source(uid)
-    print(f"[ACE smoke] {scene.audiocore.engine_settings.ace_parallel_mode}: a Bake node downstream: listed, nothing baked by ACE, the native bake records the stream exactly")
+    print(f"[ACE smoke] {scene.audiocore.engine_settings.ace_parallel_mode}: a Bake node downstream: nothing baked by ACE, the native bake records the stream exactly")
 
     bpy.ops.object.geometry_node_bake_delete_single(session_uid=obj.session_uid, modifier_name=modifier.name,
                                                     bake_id=modifier.bakes[0].bake_id)
@@ -2671,6 +2677,7 @@ def main():
     _check_envelope_matches_reference(addon_key, scene, engine)
     _check_running_total_and_gate_match_reference(addon_key, scene)
     _check_shader_controllers(addon_key, scene, engine, src)
+    blender_editor_checks.run_all(addon_key, scene, engine, src)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)

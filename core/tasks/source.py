@@ -3,6 +3,7 @@
 import threading
 import time
 from collections import deque
+from types import SimpleNamespace
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
 from ..input.reception import AudioReception, build_live_flow_identifier
@@ -90,6 +91,10 @@ class SourceTask(SourceClock, ACEAudioTask):
         self.prefetch_allowed: bool = True
         # Set while the frame runner replays frames after a seek: those reads bypass the prefetch.
         self.replaying: bool = False
+        # What the prefetch thread's read needs from the source and the settings, read by the
+        # main thread when it asks for the read (_context_view). The thread never reads Blender
+        # data: an undo or a delete can free it while the thread runs.
+        self._prefetch_view: Optional[Any] = None
 
     def _start_prefetch_thread(self):
         if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
@@ -130,7 +135,8 @@ class SourceTask(SourceClock, ACEAudioTask):
                 break
             self._prefetch_trigger.clear()
             target_frame = self._prefetch_target_frame
-            if target_frame is None:
+            view = self._prefetch_view
+            if target_frame is None or view is None:
                 continue
             # Wait for a read on the main thread to finish, unless stopped meanwhile.
             while not self._read_lock.acquire(timeout=0.05):
@@ -140,7 +146,7 @@ class SourceTask(SourceClock, ACEAudioTask):
                 if self._prefetch_stop.is_set():
                     return
                 # The frame goes in as an argument: the main thread owns _current_frame_request.
-                chunk = self._read_next_block_sync(track_perf_stage=False, frame_request=target_frame)
+                chunk = self._read_next_block_sync(track_perf_stage=False, frame_request=target_frame, view=view, prefetch=True)
             except Exception as exc:
                 utils.note_swallowed("source.SourceTask._prefetch_loop", exc)
                 chunk = None
@@ -201,6 +207,16 @@ class SourceTask(SourceClock, ACEAudioTask):
         if mode not in {"fixed", "adaptive"}:
             mode = "fixed"
         return mode
+
+    def _context_view(self) -> SimpleNamespace:
+        """What a block read needs from the source and the settings, read now: on the main thread only."""
+        ctx = self.source_context
+        return SimpleNamespace(
+            signature=self._config_signature(),
+            source_type=str(getattr(ctx, "source_type", "") or "").upper() if ctx else "",
+            timeslice_mode=self._timeslice_mode_hint(),
+            live_latency_ms=float(getattr(ctx, "live_latency_ms", 0.0) or 0.0) if ctx else 0.0,
+        )
 
     def _config_signature(self) -> Tuple[Any, ...]:
         ctx = self.source_context

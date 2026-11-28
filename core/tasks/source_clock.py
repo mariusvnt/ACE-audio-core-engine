@@ -183,44 +183,67 @@ class SourceClock:
 
     def _read_next_block(self) -> Optional["AudioChunk"]:
         """Main-thread entry point for reading the next audio block."""
-        source_type = str(
-            getattr(getattr(self, "source_context", None), "source_type", "") or ""
-        ).upper()
+        view = self._context_view()
         frame_request = getattr(self, "_current_frame_request", None)
 
-        if self._prefetch_enabled and source_type == "FILE" and frame_request is not None and not getattr(self, "replaying", False):
-            if self._prefetch_ready.is_set() and self._prefetch_for_frame == frame_request:
+        if self._prefetch_enabled and view.source_type == "FILE" and frame_request is not None and not getattr(self, "replaying", False):
+            chunk = None
+            if (
+                self._prefetch_ready.is_set()
+                and self._prefetch_for_frame == frame_request
+                and view.signature == self._last_config_signature
+            ):
                 # Cache hit: take pre-read chunk, clear slot, trigger next read.
                 self._prefetch_ready.clear()
                 chunk = self._prefetch_chunk
                 self._prefetch_chunk = None
+            if chunk is not None:
+                self._prefetch_view = view
                 self._prefetch_target_frame = frame_request + 1
                 self._prefetch_trigger.set()
                 return chunk
-            else:
-                # Cache miss (scrub or first frame): stop prefetch, do sync read,
-                # then restart prefetch for next sequential frame.
-                self._stop_prefetch_thread()
-                chunk = self._read_next_block_sync()
-                if chunk is not None:
-                    self._prefetch_target_frame = (
-                        (frame_request + 1) if frame_request is not None else None
-                    )
-                    self._start_prefetch_thread()
-                    self._prefetch_trigger.set()
-                return chunk
+            # Cache miss (scrub, first frame, a changed source, a read the thread left to the
+            # main thread): stop prefetch, do sync read, then restart prefetch for the next frame.
+            self._stop_prefetch_thread()
+            chunk = self._read_next_block_sync(view=view)
+            if chunk is not None:
+                self._prefetch_target_frame = (
+                    (frame_request + 1) if frame_request is not None else None
+                )
+                self._prefetch_view = self._context_view()
+                self._start_prefetch_thread()
+                self._prefetch_trigger.set()
+            return chunk
 
-        return self._read_next_block_sync()
+        return self._read_next_block_sync(view=view)
 
-    def _read_next_block_sync(self, track_perf_stage: bool = True, frame_request: Optional[int] = None) -> Optional["AudioChunk"]:
-        """Synchronous block read for *frame_request* (default: the frame being evaluated), one read at a time."""
+    def _read_next_block_sync(
+        self, track_perf_stage: bool = True, frame_request: Optional[int] = None, view: Optional[Any] = None,
+        prefetch: bool = False,
+    ) -> Optional["AudioChunk"]:
+        """Synchronous block read for *frame_request* (default: the frame being evaluated), one read at a time.
+
+        *view* is what the read needs from the source and the settings (``_context_view``).
+        Without one, the read takes it itself: on the main thread, or on a thread whose
+        source is a snapshot (the bake). The *prefetch* thread's view comes from the main thread,
+        and that thread never opens the source: opening reads and writes Blender data.
+        """
         with self._read_lock:
-            return self._read_block_locked(track_perf_stage, frame_request)
+            return self._read_block_locked(track_perf_stage, frame_request, view, prefetch)
 
-    def _read_block_locked(self, track_perf_stage: bool, requested_frame: Optional[int]) -> Optional["AudioChunk"]:
+    def _read_block_locked(
+        self, track_perf_stage: bool, requested_frame: Optional[int], view: Optional[Any] = None, prefetch: bool = False,
+    ) -> Optional["AudioChunk"]:
         t0 = time.perf_counter()
         try:
-            current_signature = self._config_signature()
+            if view is None:
+                view = self._context_view()
+            current_signature = view.signature
+            if prefetch and (
+                not self.initialized
+                or (self._last_config_signature is not None and current_signature != self._last_config_signature)
+            ):
+                return None  # opening the source reads and writes Blender data: the main thread does it
             if self.initialized and self._last_config_signature is not None and current_signature != self._last_config_signature:
                 # Source IO params changed at runtime: reopen cleanly so readers/analyzers follow.
                 self._reopen_for_config_change()
@@ -229,7 +252,7 @@ class SourceClock:
             if self._last_config_signature is None:
                 self._last_config_signature = current_signature
 
-            source_type = str(getattr(self.source_context, "source_type", "") or "").upper() if self.source_context else ""
+            source_type = view.source_type
             if source_type != "LIVE" and not self.source_ready:
                 return None
 
@@ -243,7 +266,7 @@ class SourceClock:
             except Exception as exc:
                 utils.note_swallowed("source_clock.SourceClock._read_next_block_sync", exc)
                 delta_frames = 1.0
-            timeslice_mode = self._timeslice_mode_hint()
+            timeslice_mode = view.timeslice_mode
             try:
                 target_block = int(
                     resolve_fn(
@@ -357,7 +380,7 @@ class SourceClock:
 
             mono_raw = np.asarray(mono, dtype=np.float32).reshape(-1).astype(np.float32, copy=False)
             stereo_raw = self._coerce_stereo_block(stereo, mono_raw.shape[0])
-            live_latency_ms = float(getattr(self.source_context, "live_latency_ms", 0.0) or 0.0) if source_type == "LIVE" else 0.0
+            live_latency_ms = float(view.live_latency_ms) if source_type == "LIVE" else 0.0
             sr = max(float(self.sample_rate), 1.0)
             block_latency_ms = (float(self.block_size) / sr) * 1000.0
             total_latency_ms = float(max(0.0, live_latency_ms + block_latency_ms))

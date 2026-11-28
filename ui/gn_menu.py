@@ -1,13 +1,12 @@
 import bpy # type: ignore
-from ..vars import ACE_NODES, MENU_SEPARATOR_AFTER, SOURCE_KIND, SPLITTER_KIND, node_is_native, node_modes
-from ..nodes.modes import apply_node_mode
+from ..vars import ACE_NODES, MENU_SEPARATOR_AFTER, SPLITTER_KIND, node_is_native
+from ..nodes.placement import place_node
 from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
 from ..nodes.identity import new_sink_name, node_value_outputs
 from ..core.engine.sinks import write_sink_names
 from ..core.proxy.manager import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager
-from ..nodes.source_nodes import set_node_source
 from .. import utils
 
 def _node_available(category: str, node_type: str, tree_type: str) -> bool:
@@ -80,15 +79,6 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         with utils.logged_errors("gn_menu.ACE_OT_add_node_group._resolve_active_proxy_name"):
             ACEProxyManager.ensure_proxy_for_source(source, scene=getattr(context, "scene", None))
         return getattr(source, "proxy_object_name", "") or ""
-
-    @staticmethod
-    def _initialize_source_binding(node, context):
-        """A new Source node reads the active source."""
-        _, active_source = utils._get_active_source(context)
-        if active_source is None:
-            return
-        with utils.logged_errors("gn_menu.ACE_OT_add_node_group._initialize_source_binding"):
-            set_node_source(node, active_source, getattr(context, "scene", None))
 
     @classmethod
     def _initialize_sink_names(cls, node, category: str, node_type: str, context):
@@ -185,15 +175,11 @@ class ACE_OT_add_node_group(bpy.types.Operator):
             splitter_bands = max(2, min(splitter_bands, 8))
             group = ACESplitterManager.get_or_create_variant(splitter_bands, tree)
         else:
-            group_name = factory_cls.get_group_name(self.category_key, self.node_type_key)
-            existing_group = bpy.data.node_groups.get(group_name)
-            if existing_group is None or str(getattr(existing_group, "bl_idname", "") or "") != tree_type:
-                try:
-                    factory_cls.rebuild_node_group(self.category_key, self.node_type_key)
-                except Exception as e:
-                    self.report({'ERROR'}, f"Could not build node group: {str(e)}")
-                    return {'CANCELLED'}
-            group = bpy.data.node_groups.get(group_name)
+            try:
+                group = factory_cls.template_group(self.category_key, self.node_type_key)
+            except Exception as e:
+                self.report({'ERROR'}, f"Could not build node group: {str(e)}")
+                return {'CANCELLED'}
         if group is None:
             self.report({'ERROR'}, "Could not resolve node group.")
             return {'CANCELLED'}
@@ -205,15 +191,11 @@ class ACE_OT_add_node_group(bpy.types.Operator):
         node.label = ACE_NODES[self.category_key]['nodes'][self.node_type_key]['label']
         node.name = node.label
 
-        if self.node_type_key == 'frequency_splitter':
-            node['ace_band_count'] = max(2, min(int(node.get('ace_band_count', splitter_bands)), 8))
-            node.label = f"{node.label} ({int(node['ace_band_count'])} Bands)"
-        if self.node_type_key == 'preview_sink':
-            node["ace_preview_enabled"] = bool(node.get("ace_preview_enabled", True))
-        if node_modes(self.category_key, self.node_type_key):
-            apply_node_mode(node, self.category_key, self.node_type_key, None)
-        if (self.category_key, self.node_type_key) == SOURCE_KIND:
-            self._initialize_source_binding(node, context)
+        if (self.category_key, self.node_type_key) == SPLITTER_KIND:
+            node['ace_band_count'] = splitter_bands
+            node.label = f"{node.label} ({splitter_bands} Bands)"
+        _, active_source = utils._get_active_source(context)
+        place_node(node, self.category_key, self.node_type_key, getattr(context, "scene", None), source=active_source)
 
         self._initialize_sink_names(node, self.category_key, self.node_type_key, context)
         self._show_attr_id_socket_values(node)
