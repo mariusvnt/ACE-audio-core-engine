@@ -3,7 +3,7 @@ from ..vars import ACE_NODES, MENU_SEPARATOR_AFTER, SOURCE_KIND, SPLITTER_KIND, 
 from ..nodes.modes import apply_node_mode
 from ..nodes.geometry.factory import ACEDummyNodeFactory
 from ..nodes.shader.factory import ACEShaderNodeFactory
-from ..nodes.identity import new_sink_name, value_outputs
+from ..nodes.identity import new_sink_name, node_value_outputs
 from ..core.engine.sinks import write_sink_names
 from ..core.proxy.manager import ACEProxyManager
 from ..nodes.dynamic_audio_operators import ACESplitterManager
@@ -11,8 +11,8 @@ from ..nodes.source_nodes import set_node_source
 from .. import utils
 
 def _node_available(category: str, node_type: str, tree_type: str) -> bool:
-    """Native nodes (the controllers) are Geometry Nodes groups: shader trees have no Simulation Zone."""
-    return tree_type == "GeometryNodeTree" or not node_is_native(category, node_type)
+    """Every node is offered in both editors: a controller in a shader is computed by a Geometry Nodes copy."""
+    return tree_type in ("GeometryNodeTree", "ShaderNodeTree") or not node_is_native(category, node_type)
 
 
 # A category is offered where at least one of its nodes is: an empty submenu is hidden.
@@ -93,7 +93,7 @@ class ACE_OT_add_node_group(bpy.types.Operator):
     @classmethod
     def _initialize_sink_names(cls, node, category: str, node_type: str, context):
         """Name the values a new output node writes; the names stay as they are from then on."""
-        outputs = value_outputs(category, node_type)
+        outputs = node_value_outputs(category, node_type, str(getattr(getattr(node, "id_data", None), "bl_idname", "") or ""))
         if not outputs:
             return
         names: dict[int, str] = {}

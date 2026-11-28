@@ -243,6 +243,9 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                         if str(getattr(binding, "sink_kind", "") or "") == "SCENE_PROPERTY":
                             active.add(str(getattr(binding, "target_data_name", "") or ""))
             keep = {name for s in sources for name in source_tempo_props(str(getattr(s, "stable_id", "") or ""))}
+            from ....nodes.shader.mirror import controller_sink_names
+
+            keep |= controller_sink_names(scene)  # written by mirror.read_back, read by shader controllers
             self.engine.writer.prune_scene_properties(scene, active, keep=keep)
 
     def _block_size_resolver(self, fps, source_sr, source_type, graph):
@@ -280,6 +283,13 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
             self.engine.sinks.repair_sink_names([record.tree for record in frontends], scene)
         merged_tree = ACEAbstractTree()
         ignored_links: dict = {}
+        # Controllers in shaders: their Geometry Nodes copy, before the sinks are bound (it says
+        # which shader measurements it reads from proxies).
+        with utils.logged_errors("compiler.GraphCompiler.compile_scene_frontends#mirror"):
+            from ....nodes.shader import mirror
+
+            for key, items in mirror.sync(scene, self.engine).items():
+                ignored_links.setdefault(key, []).extend(items)
 
         for frontend in frontends:
             tree = frontend.tree
@@ -311,7 +321,8 @@ class GraphCompiler(SampleRates, RequiredNodes, GraphBuild):
                 )
 
             partial_tree = reader.build()
-            ignored_links.update(reader.ignored_links)
+            for key, items in reader.ignored_links.items():
+                ignored_links.setdefault(key, []).extend(items)
             self._refresh_consumer_intents_from_nodes(partial_tree)
             partial_tree.frontends[frontend_uid] = frontend.frontend_ref
             merged_tree.merge_from(partial_tree)

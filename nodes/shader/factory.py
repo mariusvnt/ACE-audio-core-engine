@@ -13,7 +13,7 @@ import bpy  # type: ignore
 from ...vars import ACE_NODES, SOURCE_KIND, apply_socket_ranges, node_def as registry_node_def
 from ... import utils
 from ..frontend import remember_group_inputs
-from ..identity import KIND_KEY, SINK_NAMES_KEY, SOURCE_ID_KEY, group_kind, source_tempo_props, value_outputs
+from ..identity import KIND_KEY, SINK_NAMES_KEY, SOURCE_ID_KEY, group_kind, node_value_outputs, source_tempo_props
 from .interface import ShaderGroupInterface
 
 
@@ -159,7 +159,7 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
         names = list(sink_names or [])
         return {
             out_idx: (names[slot] if slot < len(names) else "")
-            for slot, (out_idx, _name) in enumerate(value_outputs(category, node_type))
+            for slot, (out_idx, _name) in enumerate(node_value_outputs(category, node_type, "ShaderNodeTree"))
         }
 
     @classmethod
@@ -317,6 +317,25 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
                         ng.links.new(add_one.outputs[0], scalar_mul.inputs[1])
                         ng.links.new(scalar_mul.outputs[0], target_input)
 
+        # A menu input gets its items from the Menu Switch it feeds; its default is set after the link.
+        for menu_name, items in dict(node_def.get("menus", {}) or {}).items():
+            menu_in = input_sock_by_name.get(str(menu_name))
+            if menu_in is None or not items:
+                continue
+            with utils.logged_errors("factory.ACEShaderNodeFactory._build_group_content#menu"):
+                switch = ng.nodes.new("GeometryNodeMenuSwitch")
+                switch.data_type = "FLOAT"
+                switch.location = (-120, 260)
+                while len(switch.enum_items) < len(items):
+                    switch.enum_items.new(str(items[len(switch.enum_items)]))
+                for item, item_name in zip(switch.enum_items, items):
+                    item.name = str(item_name)
+                ng.links.new(menu_in, switch.inputs["Menu"])
+                interface_item = next(
+                    (i for i in ng.interface.items_tree if getattr(i, "name", "") == menu_name and i.in_out == "INPUT"), None)
+                if interface_item is not None:
+                    interface_item.default_value = str(items[0])
+
         cls._ensure_attr_interface_visible(ng, category, node_type)
 
     @classmethod
@@ -416,8 +435,6 @@ class ACEShaderNodeFactory(ShaderGroupInterface):
             return
         for cat_key, category in ACE_NODES.items():
             for type_key, node_def in category.get("nodes", {}).items():
-                if node_def.get("native"):
-                    continue  # a controller is a Geometry Nodes group (FUTURE.md: controllers in shaders)
                 group_name = cls.get_group_name(cat_key, type_key)
                 ng = bpy.data.node_groups.get(group_name)
                 if ng is not None and getattr(ng, "bl_idname", "") != "ShaderNodeTree":

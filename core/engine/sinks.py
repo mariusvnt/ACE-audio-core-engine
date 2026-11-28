@@ -95,22 +95,24 @@ class SinkResolver:
             attr_type = str(info.get("type", "FLOAT") or "FLOAT")
             pulse = str(info.get("output_name", "") or "").lower() == "transient"
             seen: set = set()
+            mirror_reads = getattr(self.engine, "mirror_reads", None) or set()
             for instance_id, sink_name, frontend_kind in sinks:
-                if frontend_kind == FRONTEND_KIND_SHADER:
-                    kind, target = "SCENE_PROPERTY", scene_name
-                else:
-                    kind, target = "PROXY_ATTRIBUTE", proxy_name
-                if (kind, target, sink_name) in seen:
-                    continue
-                seen.add((kind, target, sink_name))
-                bindings.append(ACESinkBinding(
-                    sink_kind=kind,
-                    target_object_name=target,
-                    target_data_name=str(sink_name),
-                    attr_type=attr_type,
-                    instance_id=str(instance_id),
-                    pulse=pulse,
-                ))
+                targets = [("SCENE_PROPERTY", scene_name)] if frontend_kind == FRONTEND_KIND_SHADER else [("PROXY_ATTRIBUTE", proxy_name)]
+                if frontend_kind == FRONTEND_KIND_SHADER and sink_name in mirror_reads and proxy_name:
+                    # A shader controller reads it: its Geometry Nodes copy finds it on the proxy.
+                    targets.append(("PROXY_ATTRIBUTE", proxy_name))
+                for kind, target in targets:
+                    if (kind, target, sink_name) in seen:
+                        continue
+                    seen.add((kind, target, sink_name))
+                    bindings.append(ACESinkBinding(
+                        sink_kind=kind,
+                        target_object_name=target,
+                        target_data_name=str(sink_name),
+                        attr_type=attr_type,
+                        instance_id=str(instance_id),
+                        pulse=pulse,
+                    ))
             bindings_by_attr[attr_key] = bindings
         return bindings_by_attr
 
@@ -120,7 +122,7 @@ class SinkResolver:
         Names of trees that can't be edited (linked data) are claimed first, so a local copy
         gives way to them. Within that order, trees go by name and nodes by name.
         """
-        from ...nodes.identity import ace_nodes, is_output_kind, new_sink_name, sink_names, value_outputs
+        from ...nodes.identity import ace_nodes, new_sink_name, node_value_outputs, sink_names
 
         utils.assert_main_thread("repair_sink_names")
         shader_writes = self.engine._structural_tree_writes_allowed(scene, frontend_kind=FRONTEND_KIND_SHADER)
@@ -133,11 +135,12 @@ class SinkResolver:
         for tree in ordered:
             nodes = sorted(ace_nodes(tree), key=lambda item: str(getattr(item[0], "name", "")))
             for node, category, node_type in nodes:
-                if not is_output_kind(category, node_type):
+                slots = node_value_outputs(category, node_type, str(getattr(tree, "bl_idname", "") or ""))
+                if not slots:
                     continue
                 names = sink_names(node)
                 bad = []
-                for out_idx, _output_name in value_outputs(category, node_type):
+                for out_idx, _output_name in slots:
                     name = names.get(out_idx)
                     if name is None or name in claimed:
                         bad.append(out_idx)
@@ -151,7 +154,7 @@ class SinkResolver:
             is_shader = str(getattr(tree, "bl_idname", "") or "") == "ShaderNodeTree"
             if not bool(getattr(tree, "is_editable", True)) or (is_shader and not shader_writes):
                 continue
-            outputs = dict(value_outputs(category, node_type))
+            outputs = dict(node_value_outputs(category, node_type, str(getattr(tree, "bl_idname", "") or "")))
             for out_idx in bad:
                 names[out_idx] = new_sink_name(outputs[out_idx], claimed)
                 claimed.add(names[out_idx])
@@ -168,10 +171,11 @@ def write_sink_names(node, category: str, node_type: str, names: Dict[int, str])
 
     For the add menu, which names a node it creates, and the collision repair: a compile writes nothing else.
     """
-    from ...nodes.identity import attribute_socket_name, value_outputs
+    from ...nodes.identity import attribute_socket_name, node_value_outputs
 
-    slots = value_outputs(category, node_type)
-    if str(getattr(getattr(node, "id_data", None), "bl_idname", "") or "") == "ShaderNodeTree":
+    tree_type = str(getattr(getattr(node, "id_data", None), "bl_idname", "") or "")
+    slots = node_value_outputs(category, node_type, tree_type)
+    if tree_type == "ShaderNodeTree":
         from ...nodes.shader.factory import ACEShaderNodeFactory
 
         ordered = [names.get(out_idx, "") for out_idx, _name in slots]

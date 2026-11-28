@@ -42,6 +42,9 @@ class ACEAudioEngine:
         self.render_notes: list = []
         # Tree key -> links into ACE nodes that ACE ignores (nodes/link_rules.py), from the last compile.
         self.ignored_links: dict = {}
+        # Sink names of shader measurements that a shader controller's Geometry Nodes copy reads
+        # from proxies (nodes/shader/mirror.py): they are written there too.
+        self.mirror_reads: set = set()
         self.live_session = None  # a core.live.LiveSession while one runs (core/clock.py, Clock.LIVE)
         self.current_frame = 0
         self.last_scene_frame = -1

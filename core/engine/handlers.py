@@ -93,8 +93,8 @@ def frame_change_handler(scene):
 
 
 @persistent
-def frame_change_post_handler(scene):
-    """bpy.app.handlers.frame_change_post: secondary frame evaluation during rendering."""
+def frame_change_post_handler(scene, depsgraph=None):
+    """bpy.app.handlers.frame_change_post: shader controllers read back; secondary frame evaluation during rendering."""
     if scene is None:
         scene = getattr(getattr(bpy, "context", None), "scene", None)
     if scene is None:
@@ -102,6 +102,11 @@ def frame_change_post_handler(scene):
     engine = ACEAudioEngine.get_instance(scene)
     if engine is not None and engine._undo_recovery_active():
         return
+    with utils.logged_errors("handlers.frame_change_post_handler#mirror"):
+        # The depsgraph Blender passes: a render's own one during a render (nodes/shader/mirror.py).
+        from ...nodes.shader.mirror import read_back
+
+        read_back(scene, depsgraph)
     is_rendering = ACEAudioEngine._is_rendering_job() or bool(getattr(engine, "render_active", False))
     if not is_rendering:
         return
@@ -318,6 +323,10 @@ def depsgraph_update_handler(scene, depsgraph):
             continue
         seen_targets.add(key)
         engine.frontends.request_recompile(tree, verify_content=True)
+    with utils.logged_errors("handlers.depsgraph_update_handler#mirror"):
+        from ...nodes.shader.mirror import read_back
+
+        read_back(scene, depsgraph)  # an edit can change a shader controller's value: no write when it doesn't
     ignored_links = getattr(engine, "ignored_links", None)
     if seen_targets and ignored_links:
         # Blender checks links again when a tree changes, which makes the ignored ones valid.

@@ -14,7 +14,7 @@
 
 import hashlib
 
-from ..vars import ACE_NODES, value_outputs, writes_values
+from ..vars import ACE_NODES, node_def, node_is_native, value_outputs, writes_values
 from .. import utils
 
 PREFIX = "ACE_"
@@ -141,6 +141,17 @@ def is_output_kind(category: str, node_type: str) -> bool:
     return writes_values(category, node_type)
 
 
+def node_value_outputs(category: str, node_type: str, tree_bl_idname: str = "") -> list[tuple[int, str]]:
+    """(output index, output name) of each value a node writes where its tree reads it.
+
+    A measurement's everywhere; a controller's in a shader tree only, where ACE reads it back
+    from the Geometry Nodes copy that computes it (nodes/shader/mirror.py).
+    """
+    if tree_bl_idname == "ShaderNodeTree" and node_is_native(category, node_type):
+        return [(idx, str(name)) for idx, (_sock_type, name) in enumerate(node_def(category, node_type).get("outputs", []))]
+    return value_outputs(category, node_type)
+
+
 def attribute_socket_name(slot: int) -> str:
     """The Geometry Nodes socket that holds the name of a node's *slot*-th value."""
     return "Attribute ID" if slot == 0 else f"Attribute ID {slot + 1}"
@@ -154,11 +165,11 @@ def usable_sink_name(name) -> bool:
 def sink_names(node) -> dict[int, str]:
     """Output index -> sink name, as the user's tree holds them; placeholders left out."""
     category, node_type = node_kind(node)
-    outputs = value_outputs(category, node_type)
+    group = getattr(node, "node_tree", None)
+    outputs = node_value_outputs(category, node_type, str(getattr(group, "bl_idname", "") or ""))
     if not outputs:
         return {}
     names: dict[int, str] = {}
-    group = getattr(node, "node_tree", None)
     stored = None
     with utils.logged_errors("identity.sink_names"):
         stored = group.get(SINK_NAMES_KEY) if group is not None else None

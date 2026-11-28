@@ -267,11 +267,19 @@ def ignored_links_into(node) -> list:
     """The links into *node* that ACE ignores, read from its tree's definition."""
     from ...nodes.definitions import definition
 
+    from ...nodes.identity import tree_key
+
     tree = getattr(node, "id_data", None)
     if tree is None:
         return []
     with utils.logged_errors("selection.ignored_links_into"):
-        return [item for item in definition(tree).ignored if item.node_name == node.name]
+        items = [item for item in definition(tree).ignored if item.node_name == node.name]
+        # A shader controller's links are judged by its Geometry Nodes copy (nodes/shader/mirror.py).
+        engine = ACEAudioEngine.get_instance(bpy_context().scene)
+        for item in (getattr(engine, "ignored_links", None) or {}).get(tree_key(tree), []):
+            if item.node_name == node.name and item not in items:
+                items.append(item)
+        return items
     return []
 
 

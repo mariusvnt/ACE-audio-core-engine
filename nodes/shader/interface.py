@@ -1,6 +1,6 @@
 """Shader group interface: sockets ACE nodes expose and the checks that trigger a rebuild."""
 
-from ...vars import ROLE_MEASURE, SOURCE_KIND, node_def as registry_node_def, node_role, writes_values
+from ...vars import ROLE_MEASURE, SOURCE_KIND, node_def as registry_node_def, node_is_native, node_role, writes_values
 from ... import utils
 from ..geometry.factory import ACEDummyNodeFactory
 
@@ -87,7 +87,8 @@ class ShaderGroupInterface:
 
     @staticmethod
     def _is_property_output_node(category: str, node_type: str) -> bool:
-        return writes_values(category, node_type)
+        """Its value outputs read scene properties: a measurement's, or a controller's read back from the mirror."""
+        return writes_values(category, node_type) or node_is_native(category, node_type)
 
     @staticmethod
     def _expected_attribute_output_indices(node_def) -> tuple[int, ...]:

@@ -1102,6 +1102,83 @@ def _check_running_total_and_gate_match_reference(addon_key, scene):
         bpy.data.node_groups.remove(tree)
 
 
+def _check_shader_controllers(addon_key, scene, engine, src):
+    """A controller in a material runs in the Geometry Nodes copy ACE makes, and its value reaches the scene.
+
+    Loudness x 2 into an Envelope that follows at once: on each frame, the Envelope's scene property
+    is twice the Loudness's. A Noise Texture into a Gate can't be copied: that link is ignored.
+    """
+    mirror = importlib.import_module(f"{addon_key}.nodes.shader.mirror")
+    selection = importlib.import_module(f"{addon_key}.ui.panel.selection")
+    ace = scene.audiocore
+    scene.audiocore.engine_settings.ace_parallel_mode = "threads_io"
+    ace.active_audio_source_index = list(ace.audio_sources).index(src)
+    mesh = bpy.data.meshes.new("ACE_Smoke_ShaderCtrl_Mesh")
+    obj = bpy.data.objects.new("ACE_Smoke_ShaderCtrl", mesh)
+    scene.collection.objects.link(obj)
+    material = bpy.data.materials.new("ACE_Smoke_ShaderCtrl_Mat")
+    obj.data.materials.append(material)
+    tree = material.node_tree
+    try:
+        source = _add_ace_node(addon_key, tree, "input", "src", "Source")
+        loud = _add_ace_node(addon_key, tree, "audio", "loudness", "Loudness", mode="rms")
+        tree.links.new(source.outputs["Audio"], loud.inputs["Audio"])
+        double = tree.nodes.new("ShaderNodeMath")
+        double.operation = "MULTIPLY"
+        double.inputs[1].default_value = 2.0
+        tree.links.new(loud.outputs[0], double.inputs[0])
+        envelope = _add_ace_node(addon_key, tree, "controllers", "envelope", "Envelope")
+        envelope.inputs["Attack"].default_value = 0.0
+        envelope.inputs["Release"].default_value = 0.0
+        tree.links.new(double.outputs[0], envelope.inputs["Value"])
+        noise = tree.nodes.new("ShaderNodeTexNoise")
+        noise.label = "Grain"
+        gate = _add_ace_node(addon_key, tree, "controllers", "gate", "Gate")
+        noise_link = tree.links.new(noise.outputs[0], gate.inputs["Value"])
+        env_name = blender_helpers.sink_names(addon_key, envelope)[0]
+        loud_name = blender_helpers.sink_names(addon_key, loud)[0]
+        _assert(env_name and env_name != loud_name, f"Shader controller sink names: {env_name}, {loud_name}")
+        readers = [n.attribute_name for n in envelope.node_tree.nodes if n.bl_idname == "ShaderNodeAttribute"]
+        _assert(readers == [env_name], f"The Envelope's shader group reads {readers}")
+        modes = [i.name for n in envelope.node_tree.nodes if n.bl_idname == "GeometryNodeMenuSwitch" for i in n.enum_items]
+        _assert(modes == ["Follow", "Spring"], f"The shader Envelope's Mode items: {modes}")
+
+        engine.compiler.compile_scene_frontends(scene)
+        mirror_obj = bpy.data.objects.get(mirror.MIRROR_OBJECT)
+        _assert(mirror_obj is not None and bpy.data.node_groups.get(mirror.MIRROR_TREE) is not None, "No mirror was made")
+        _assert(not noise_link.is_valid, "The Noise Texture link into the Gate is not drawn invalid")
+        reasons = [item.reason for item in selection.ignored_links_into(gate)]
+        _assert(reasons and "Grain" in reasons[0], f"The Gate's ignored link: {reasons}")
+        checked = 0
+        for frame in range(1, 25):
+            scene.frame_set(frame)
+            loud_value, env_value = scene.get(loud_name), scene.get(env_name)
+            if loud_value is None or env_value is None:
+                continue
+            _assert(abs(float(env_value) - 2.0 * float(loud_value)) < 1e-5,
+                    f"Frame {frame}: the shader Envelope reads {env_value}, twice the Loudness is {2.0 * float(loud_value)}")
+            checked += 1
+        if checked < 20:
+            evaluated = mirror_obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            proxy = bpy.data.objects.get(src.proxy_object_name)
+            detail = {
+                "loud": scene.get(loud_name), "env": scene.get(env_name),
+                "mirror names": list(bpy.data.node_groups[mirror.MIRROR_TREE].get(mirror.NAMES_KEY, [])),
+                "mirror attrs": [a.name for a in getattr(evaluated.data, "attributes", [])],
+                "mirror verts": len(getattr(evaluated.data, "vertices", [])),
+                "mirror_reads": sorted(engine.mirror_reads),
+                "proxy attrs": [a.name for a in proxy.data.attributes] if proxy is not None else None,
+                "collection hidden": [(c.name, c.hide_viewport, c.hide_render) for c in mirror_obj.users_collection],
+            }
+            _assert(False, f"Only {checked} frames were read back: {detail}")
+        print(f"[ACE smoke] shader controllers: an Envelope in a material follows its Geometry Nodes copy on {checked} frames")
+    finally:
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.materials.remove(material)
+        engine.compiler.compile_scene_frontends(scene)
+        _assert(bpy.data.objects.get(mirror.MIRROR_OBJECT) is None, "The mirror stayed without shader controllers")
+
+
 def _check_linked_tree_compiles(addon_key, scene, engine):
     """A tree linked from another file is read; its names are claimed first and never written."""
     import tempfile
@@ -2593,6 +2670,7 @@ def main():
     _check_stereo_writes_two_sinks(addon_key, scene, engine, src)
     _check_envelope_matches_reference(addon_key, scene, engine)
     _check_running_total_and_gate_match_reference(addon_key, scene)
+    _check_shader_controllers(addon_key, scene, engine, src)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)
