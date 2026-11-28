@@ -1,4 +1,4 @@
-"""Which clock decides the frame, and how each source gets its value under it (FUTURE.md 1.1).
+"""Which clock decides the frame, and how each source gets its value under it (ARCHITECTURE.md §3, Time).
 
 This module is the only place that decides how a value is obtained:
 

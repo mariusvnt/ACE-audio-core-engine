@@ -12,7 +12,11 @@ Overview
 - **Input**: audio files in any format Blender reads, or live sound from a
   device or network stream.
 - **Analysis**: loudness, pitch, brightness, transients, stereo image and
-  tempo, over the full spectrum or within chosen frequency bands.
+  tempo (BPM, meter and the first downbeat), over the full spectrum or within
+  chosen frequency bands, every measurement on 0..1.
+- **Controllers**: Envelope, Running Total and Gate give values weight and
+  turn them into events (hits, counts), fed by any node, in Geometry Nodes
+  and in shaders.
 - **Integration**: a set of node groups for the Geometry Nodes and shader
   editors, which also work nested inside your own groups.
 - **Preview and bake**: listen to any part of the analysis during playback, or

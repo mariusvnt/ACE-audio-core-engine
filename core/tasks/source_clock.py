@@ -323,7 +323,7 @@ class SourceClock:
                         # Stay live_ready while the buffer is empty so process() keeps running until audio arrives.
                 else:
                     # The block of a frame is fixed: every frame reads from its own start sample, so
-                    # playing, seeking and baking read the same samples (FUTURE.md 1.2).
+                    # playing, seeking and baking read the same samples (ARCHITECTURE.md §3, Time).
                     desired_sample = self._file_sample_clock_target(frame_request)
                     self._sync_reader_cursor(desired_sample, force=True)
                     history_fn = getattr(self.reception, "history_before", None)

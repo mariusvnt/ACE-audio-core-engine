@@ -36,7 +36,7 @@ class ACEAudioEngine:
         # Latest value of every operator output, by 'node_id:socket' (linked split frequencies read it).
         self.latest_values: dict = {}
         # The render being run: frames it has computed (one graph run per rendered frame), and
-        # what it reported about sources that do not render exactly (FUTURE.md 1.1).
+        # what it reported about sources that do not render exactly (ARCHITECTURE.md §3, Time).
         self.render_active: bool = False
         self.render_frames_done: set = set()
         self.render_notes: list = []

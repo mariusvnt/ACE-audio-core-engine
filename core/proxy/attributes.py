@@ -13,7 +13,7 @@ SOURCE_TEMPO_ATTRS = {"ACE_bpm": "FLOAT", "ACE_beats_per_bar": "INT", "ACE_downb
 
 # The scene frame of point 0 of a baked proxy mesh (one point per frame). The node groups sample
 # point floor(frame) - ACE_frame0, clamped: a live proxy has one point, so they read it whatever
-# the frame (FUTURE.md 1.3).
+# the frame (ARCHITECTURE.md §8, Bake).
 FRAME0_ATTR = "ACE_frame0"
 
 

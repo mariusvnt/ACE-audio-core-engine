@@ -1,4 +1,4 @@
-"""Bakes as Blender data, read with no Python at all (FUTURE.md 1.3).
+"""Bakes as Blender data, read with no Python at all (ARCHITECTURE.md §8, Bake).
 
 **The store.** One hidden mesh per source, `.ACE_bake_<source uid>`, kept with a fake user:
 one point per frame of the baked range and one attribute per signal output (named after its

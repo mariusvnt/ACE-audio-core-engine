@@ -168,7 +168,7 @@ class ACEAudioTask:
         """Frames this task needs to forget what came before: 0 for none, None when it never forgets.
 
         After a seek, the frame runner resets a stateful task and replays that many frames
-        before the target, so the value matches playing up to it (FUTURE.md 1.2).
+        before the target, so the value matches playing up to it (ARCHITECTURE.md §3, Time).
         """
         return 0
 

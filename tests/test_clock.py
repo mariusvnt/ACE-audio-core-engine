@@ -1,4 +1,4 @@
-"""The rule table of core/clock.py: how each source gets its value under each clock (FUTURE.md 1.1)."""
+"""The rule table of core/clock.py: how each source gets its value under each clock (ARCHITECTURE.md §3, Time)."""
 
 import types
 import unittest

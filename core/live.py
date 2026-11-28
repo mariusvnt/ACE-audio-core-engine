@@ -1,4 +1,4 @@
-"""Live sessions: Blender's own playback, set up so frames are never dropped or wrapped (FUTURE.md 1.5).
+"""Live sessions: Blender's own playback, set up so frames are never dropped or wrapped (ARCHITECTURE.md §3, Time).
 
 - Play Every Frame (``sync_mode = 'NONE'``): frames are always consecutive. When the scene can't
   keep up, playback runs late (time stretches) instead of dropping frames; the readout shows how

@@ -1,4 +1,4 @@
-"""Takes: a live session recorded, to be rendered later (FUTURE.md 1.6).
+"""Takes: a live session recorded, to be rendered later (ARCHITECTURE.md §3, Time).
 
 For each live input of a recording session:
 

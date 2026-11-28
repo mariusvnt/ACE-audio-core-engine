@@ -2155,7 +2155,7 @@ print("ACE_PROBE " + json.dumps(out))
 
 
 def _check_bake_renders_without_ace(addon_key, engine, scene, src, tmp_dir):
-    """A baked .blend, opened by a Blender without ACE, reads the baked values (FUTURE.md 1.3).
+    """A baked .blend, opened by a Blender without ACE, reads the baked values (ARCHITECTURE.md §8, Bake).
 
     A Geometry Nodes RMS stored on a probe point, and the scene property its shader twin
     reads, are evaluated frame by frame in another Blender started with factory settings.

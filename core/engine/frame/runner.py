@@ -346,7 +346,7 @@ class FrameRunner(BlockSizing, GraphEvaluation):
     _SETTLE_CAP_S = 4.0
 
     def _settle_after_seek(self, graph, ctx):
-        """After a seek, reset the stateful tasks and replay the frames before this one (FUTURE.md 1.2).
+        """After a seek, reset the stateful tasks and replay the frames before this one (ARCHITECTURE.md §3, Time).
 
         A task "seeks" when the last frame it computed is not the previous one: a jump, a
         rewind, frames dropped in playback, or a new task started mid-timeline. The replay

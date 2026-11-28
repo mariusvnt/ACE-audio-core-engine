@@ -1,6 +1,6 @@
 """Folded tree of an operator graph for the Active Operators list (no bpy).
 
-Chains without branching fold into one row of names (``Low › Loudness (RMS) › Accumulator``);
+Chains without branching fold into one row of names (``Low › Loudness (RMS) › Brightness``);
 branch points start indented rows, so common path parts are shown once. A node reached
 from a second parent is placed once, under the first parent met, and shown as a
 reference everywhere else, so nothing downstream is repeated.
