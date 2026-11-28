@@ -976,6 +976,109 @@ def _check_envelope_matches_reference(addon_key, scene, engine):
         bpy.data.node_groups.remove(tree)
 
 
+def _check_running_total_and_gate_match_reference(addon_key, scene):
+    """Running Total (with and without a leak) and Gate compute what tests/controller_reference.py does.
+
+    The input is |sin(4 pi t)|, whose samples at 24 and 48 fps stay away from the Gate's levels;
+    a Reset pulse just after 2 s clears the Count and the leakless total. Its edges lie between
+    frames, so float32 rounding can't move them.
+    """
+    import math
+    RESET_FROM, RESET_TO = 2.0 + 1.0 / 96.0, 2.0 + 1.0 / 24.0 + 1.0 / 96.0
+    import controller_reference as ref
+    render = scene.render
+    saved = (render.fps, render.fps_base, scene.frame_start, scene.frame_end, scene.frame_current)
+    obj, tree = _new_gn_tree(scene, "ACE_Smoke_Gate")
+    try:
+        out = next(n for n in tree.nodes if n.bl_idname == "NodeGroupOutput")
+        point = tree.nodes.new("GeometryNodeMeshLine")
+        point.inputs["Count"].default_value = 1
+        time = tree.nodes.new("GeometryNodeInputSceneTime")
+        phase = tree.nodes.new("ShaderNodeMath")
+        phase.operation = "MULTIPLY"
+        phase.inputs[1].default_value = 4.0 * math.pi
+        sine = tree.nodes.new("ShaderNodeMath")
+        sine.operation = "SINE"
+        level = tree.nodes.new("ShaderNodeMath")
+        level.operation = "ABSOLUTE"
+        tree.links.new(time.outputs["Seconds"], phase.inputs[0])
+        tree.links.new(phase.outputs[0], sine.inputs[0])
+        tree.links.new(sine.outputs[0], level.inputs[0])
+        after, before = tree.nodes.new("FunctionNodeCompare"), tree.nodes.new("FunctionNodeCompare")
+        after.data_type, after.operation, after.inputs[1].default_value = "FLOAT", "GREATER_THAN", RESET_FROM
+        before.data_type, before.operation, before.inputs[1].default_value = "FLOAT", "LESS_EQUAL", RESET_TO
+        both = tree.nodes.new("FunctionNodeBooleanMath")
+        both.operation = "AND"
+        tree.links.new(time.outputs["Seconds"], after.inputs[0])
+        tree.links.new(time.outputs["Seconds"], before.inputs[0])
+        tree.links.new(after.outputs[0], both.inputs[0])
+        tree.links.new(before.outputs[0], both.inputs[1])
+        reset = both.outputs[0]
+
+        stored = {}
+        geometry = point.outputs[0]
+
+        def store(name, socket):
+            nonlocal geometry
+            node = tree.nodes.new("GeometryNodeStoreNamedAttribute")
+            node.data_type, node.domain = "FLOAT", "POINT"
+            node.inputs["Name"].default_value = name
+            tree.links.new(geometry, node.inputs["Geometry"])
+            tree.links.new(socket, node.inputs["Value"])
+            geometry = node.outputs[0]
+            stored[name] = socket
+
+        for leak in (0.0, 0.5):
+            total = _add_ace_node(addon_key, tree, "controllers", "running_total", f"Total {leak}")
+            total.inputs["Leak Time"].default_value = leak
+            tree.links.new(level.outputs[0], total.inputs["Value"])
+            tree.links.new(reset, total.inputs["Reset"])
+            store(f"total_{leak}", total.outputs["Total"])
+        gate = _add_ace_node(addon_key, tree, "controllers", "gate", "Gate")
+        gate.inputs["Threshold"].default_value = 0.55
+        gate.inputs["Re-arm Level"].default_value = 0.3
+        gate.inputs["Min Interval"].default_value = 0.1
+        tree.links.new(level.outputs[0], gate.inputs["Value"])
+        tree.links.new(reset, gate.inputs["Reset"])
+        _assert([s.type for s in gate.outputs] == ["BOOLEAN", "BOOLEAN", "INT"], f"Gate sockets: {[s.type for s in gate.outputs]}")
+        for name in ("Open", "Hit", "Count"):
+            store(f"gate_{name}", gate.outputs[name])
+        for link in [lk for lk in tree.links if lk.to_node == out]:
+            tree.links.remove(link)
+        tree.links.new(geometry, out.inputs[0])
+
+        for fps in (24, 48):
+            render.fps, render.fps_base = fps, 1.0
+            frames = range(1, 3 * fps + 1)
+            scene.frame_start, scene.frame_end = 1, frames[-1]
+            obj.use_simulation_cache = False
+            seen = {name: [] for name in stored}
+            for frame in frames:
+                scene.frame_set(frame)
+                attrs = obj.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.attributes
+                for name in stored:
+                    seen[name].append(float(attrs[name].data[0].value))
+            times = [frame / fps for frame in frames]
+            inputs = [abs(math.sin(4.0 * math.pi * t)) for t in times]
+            resets = [RESET_FROM < t <= RESET_TO for t in times]
+            for leak in (0.0, 0.5):
+                expected = ref.run_running_total(inputs, times, leak=leak, resets=resets)
+                worst = max(abs(a - b) for a, b in zip(seen[f"total_{leak}"], expected))
+                _assert(worst < 1e-4, f"Running Total (leak {leak}) at {fps} fps is {worst:.2e} off its reference")
+            expected = ref.run_gate(inputs, times, threshold=0.55, rearm=0.3, min_interval=0.1, resets=resets)
+            for idx, name in enumerate(("Open", "Hit", "Count")):
+                want = [float(e[idx]) for e in expected]
+                _assert(seen[f"gate_{name}"] == want, f"Gate {name} at {fps} fps: {seen[f'gate_{name}']} vs {want}")
+            _assert(max(seen["gate_Count"]) >= 4, f"The Gate counted too few hits: {max(seen['gate_Count'])}")
+            scene.frame_set(1)
+        print("[ACE smoke] Running Total and Gate match their reference at 24 and 48 fps")
+    finally:
+        render.fps, render.fps_base, scene.frame_start, scene.frame_end, frame = saved
+        scene.frame_set(frame)
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.node_groups.remove(tree)
+
+
 def _check_linked_tree_compiles(addon_key, scene, engine):
     """A tree linked from another file is read; its names are claimed first and never written."""
     import tempfile
@@ -2454,6 +2557,7 @@ def main():
     _check_shader_values_reach_scene(addon_key, scene, engine, src)
     _check_stereo_writes_two_sinks(addon_key, scene, engine, src)
     _check_envelope_matches_reference(addon_key, scene, engine)
+    _check_running_total_and_gate_match_reference(addon_key, scene)
     _check_compile_writes_nothing(addon_key, scene, engine)
     _check_sink_name_collisions_are_repaired_once(addon_key, scene, engine)
     _check_linked_tree_compiles(addon_key, scene, engine)

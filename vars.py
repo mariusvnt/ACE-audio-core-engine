@@ -194,6 +194,41 @@ ACE_NODES: dict[str, Category] = {
             "outputs": [('NodeSocketFloat', 'Envelope')],
             "menus": {"Mode": ["Follow", "Spring"]},
             },
+            "running_total": {
+            "label": "Running Total",
+            "icon": "",
+            "description": (
+                "Its input summed over time (value x seconds). With a Leak Time it drifts back toward 0 "
+                "when the input goes quiet; at 0 it never leaks. Reset sets it back to 0."
+            ),
+            "role": ROLE_CONTROLLER,
+            "native": True,
+            "inputs": [
+                ('NodeSocketFloat', 'Value'),
+                ('NodeSocketFloat', 'Leak Time'),
+                ('NodeSocketBool', 'Reset'),
+            ],
+            "outputs": [('NodeSocketFloat', 'Total')],
+            },
+            "gate": {
+            "label": "Gate",
+            "icon": "",
+            "description": (
+                "Turns a value into events. Open: from the input crossing Threshold until it falls below "
+                "Re-arm Level. Hit: only on the frame it opens. Count: the hits so far, set back to 0 by "
+                "Reset. No new Hit sooner than Min Interval: a crossing within it is ignored."
+            ),
+            "role": ROLE_CONTROLLER,
+            "native": True,
+            "inputs": [
+                ('NodeSocketFloat', 'Value'),
+                ('NodeSocketFloat', 'Threshold'),
+                ('NodeSocketFloat', 'Re-arm Level'),
+                ('NodeSocketFloat', 'Min Interval'),
+                ('NodeSocketBool', 'Reset'),
+            ],
+            "outputs": [('NodeSocketBool', 'Open'), ('NodeSocketBool', 'Hit'), ('NodeSocketInt', 'Count')],
+            },
         },
     },
 }
@@ -316,6 +351,14 @@ SOCKET_RANGES: dict[tuple[str, str], dict[str, tuple[float, float, float]]] = {
         "Speed": (2.0, 0.01, 50.0),
         "Bounce": (0.3, 0.0, 1.0),
     },
+    ("controllers", "running_total"): {
+        "Leak Time": (0.0, 0.0, 600.0),
+    },
+    ("controllers", "gate"): {
+        "Threshold": (0.5, 0.0, 1.0),
+        "Re-arm Level": (0.4, 0.0, 1.0),
+        "Min Interval": (0.1, 0.0, 10.0),
+    },
 }
 
 # Sockets whose field shows a unit: a time in seconds reads "250 ms".
@@ -324,6 +367,8 @@ SOCKET_SUBTYPES: dict[tuple[str, str], dict[str, str]] = {
         "Attack": "TIME_ABSOLUTE", "Hold": "TIME_ABSOLUTE", "Release": "TIME_ABSOLUTE",
         "Speed": "FREQUENCY", "Bounce": "FACTOR",
     },
+    ("controllers", "running_total"): {"Leak Time": "TIME_ABSOLUTE"},
+    ("controllers", "gate"): {"Min Interval": "TIME_ABSOLUTE"},
 }
 
 

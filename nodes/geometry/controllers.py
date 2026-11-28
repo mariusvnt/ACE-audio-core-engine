@@ -71,10 +71,20 @@ class _Builder:
         """1 - e^(-dt/tau): the share of the way to the input a one-pole filter goes in *dt*."""
         return self.sub(1.0, self.exp(self.div(self.mul(dt, -1.0), self.max(tau, EPSILON_S))))
 
-    def greater_equal(self, a, b):
-        node = self.node("FunctionNodeCompare", data_type="FLOAT", operation="GREATER_EQUAL")
+    def compare(self, operation: str, a, b):
+        node = self.node("FunctionNodeCompare", data_type="FLOAT", operation=operation)
         self.feed(node.inputs[0], a)
         self.feed(node.inputs[1], b)
+        return node.outputs[0]
+
+    def greater_equal(self, a, b):
+        return self.compare("GREATER_EQUAL", a, b)
+
+    def logic(self, operation: str, a, b=None):
+        node = self.node("FunctionNodeBooleanMath", operation=operation)
+        self.feed(node.inputs[0], a)
+        if b is not None:
+            self.feed(node.inputs[1], b)
         return node.outputs[0]
 
     def switch(self, condition, if_false, if_true, input_type: str = "FLOAT"):
@@ -152,8 +162,52 @@ def _build_envelope(b: _Builder, gi, go, menus) -> None:
     b.feed(go.inputs["Envelope"], mode.outputs[0])
 
 
+def _build_running_total(b: _Builder, gi, go, _menus) -> None:
+    x, leak = gi.outputs["Value"], gi.outputs["Leak Time"]
+    sim_in, sim_out, _seconds, dt = _zone(b, {"Total": "FLOAT"}, {"Total": 0.0})
+    total = sim_in.outputs["Total"]
+    plain = b.add(total, b.mul(x, dt))
+    # Leak Time L: dT/dt = x - T/L, solved over the step: T a + x L (1 - a), a = e^(-dt/L).
+    kept = b.exp(b.div(b.mul(dt, -1.0), b.max(leak, EPSILON_S)))
+    leaky = b.add(b.mul(total, kept), b.mul(b.mul(x, leak), b.sub(1.0, kept)))
+    stepped = b.switch(b.compare("GREATER_THAN", leak, 0.0), plain, leaky)
+    b.feed(sim_out.inputs["Total"], b.switch(gi.outputs["Reset"], stepped, 0.0))
+    b.feed(go.inputs["Total"], sim_out.outputs["Total"])
+
+
+NEVER_S = 1e9  # the time since the last Hit before any Hit: the first one is never too soon
+
+
+def _build_gate(b: _Builder, gi, go, _menus) -> None:
+    x = gi.outputs["Value"]
+    sim_in, sim_out, _seconds, dt = _zone(
+        b,
+        {"Open": "BOOLEAN", "Armed": "BOOLEAN", "Hit": "BOOLEAN", "Since": "FLOAT", "Count": "FLOAT"},
+        {"Open": False, "Armed": True, "Hit": False, "Since": NEVER_S, "Count": 0.0},
+    )
+    armed, was_open = sim_in.outputs["Armed"], sim_in.outputs["Open"]
+    since = b.add(sim_in.outputs["Since"], dt)
+    rearm = b.min(gi.outputs["Re-arm Level"], gi.outputs["Threshold"])
+    falls = b.compare("LESS_THAN", x, rearm)
+    crossing = b.logic("AND", armed, b.compare("GREATER_EQUAL", x, gi.outputs["Threshold"]))
+    # A crossing within Min Interval is ignored: the gate disarms without opening, and waits for
+    # the input to fall below Re-arm Level, so it never gives a late Hit off the beat.
+    hit = b.logic("AND", crossing, b.compare("GREATER_EQUAL", since, gi.outputs["Min Interval"]))
+    b.feed(sim_out.inputs["Armed"], b.switch(falls, b.switch(crossing, armed, False, "BOOLEAN"), True, "BOOLEAN"))
+    b.feed(sim_out.inputs["Open"], b.switch(hit, b.switch(falls, was_open, False, "BOOLEAN"), True, "BOOLEAN"))
+    b.feed(sim_out.inputs["Hit"], hit)
+    b.feed(sim_out.inputs["Since"], b.switch(hit, since, 0.0))
+    count = b.switch(gi.outputs["Reset"], sim_in.outputs["Count"], 0.0)  # Reset comes before the frame's Hit
+    b.feed(sim_out.inputs["Count"], b.add(count, b.switch(hit, 0.0, 1.0)))
+    b.feed(go.inputs["Open"], sim_out.outputs["Open"])
+    b.feed(go.inputs["Hit"], sim_out.outputs["Hit"])
+    b.feed(go.inputs["Count"], sim_out.outputs["Count"])  # a whole number, as a float state
+
+
 _BUILDERS = {
     "envelope": _build_envelope,
+    "running_total": _build_running_total,
+    "gate": _build_gate,
 }
 
 

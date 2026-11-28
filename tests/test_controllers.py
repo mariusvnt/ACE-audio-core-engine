@@ -93,5 +93,60 @@ class EnvelopeTests(unittest.TestCase):
         self.assertAlmostEqual(skipped[skip], played[skip + 1], places=9)
 
 
+class RunningTotalTests(unittest.TestCase):
+    def test_without_leak_it_sums_value_times_seconds_at_any_fps(self):
+        for fps in (24, 48):
+            times = _times(fps)
+            out = ref.run_running_total([_step(t) for t in times], times)
+            self.assertAlmostEqual(out[-1], DURATION_S - T0, places=9)
+
+    def test_with_a_leak_it_settles_on_value_times_leak_time(self):
+        times = _times(48)
+        out = ref.run_running_total([0.8] * len(times), times, leak=0.25)
+        self.assertAlmostEqual(out[-1], 0.8 * 0.25, places=5)  # e^-12 of the way is left after 3 s
+
+    def test_leak_does_not_depend_on_fps(self):
+        slow = ref.run_running_total([_step(t) for t in _times(24)], _times(24), leak=0.4)
+        fast = ref.run_running_total([_step(t) for t in _times(48)], _times(48), leak=0.4)
+        for i, value in enumerate(slow):
+            self.assertAlmostEqual(value, fast[2 * i + 1], places=9)
+
+    def test_reset_gives_zero_on_its_frame(self):
+        times = _times(24)
+        resets = [abs(t - 1.0) < 1e-9 for t in times]
+        out = ref.run_running_total([1.0] * len(times), times, resets=resets)
+        at = resets.index(True)
+        self.assertEqual(out[at], 0.0)
+        self.assertAlmostEqual(out[at + 1], 1.0 / 24.0, places=12)
+
+
+class GateTests(unittest.TestCase):
+    def run_gate(self, values, **settings):
+        times = [i / 24.0 for i in range(len(values))]
+        return ref.run_gate(values, times, **settings)
+
+    def test_hysteresis_one_hit_per_crossing(self):
+        out = self.run_gate([0.0, 0.6, 0.45, 0.6, 0.3, 0.6, 0.0], threshold=0.5, rearm=0.4, min_interval=0.0)
+        self.assertEqual([hit for _o, hit, _c in out], [False, True, False, False, False, True, False])
+        self.assertEqual([o for o, _h, _c in out], [False, True, True, True, False, True, False])
+        self.assertEqual(out[-1][2], 2)
+
+    def test_a_crossing_within_min_interval_is_ignored_until_it_re_arms(self):
+        # Crossings at frames 1 and 3 (2/24 s apart, under 0.1 s); the second is ignored, and
+        # the input staying above Threshold after the interval gives no late Hit.
+        out = self.run_gate([0.0, 0.6, 0.3, 0.6, 0.6, 0.6, 0.3, 0.6], min_interval=0.1)
+        self.assertEqual([hit for _o, hit, _c in out], [False, True, False, False, False, False, False, True])
+
+    def test_rearm_above_threshold_counts_as_threshold(self):
+        out = self.run_gate([0.6, 0.55, 0.45, 0.6], threshold=0.5, rearm=0.9, min_interval=0.0)
+        self.assertEqual([hit for _o, hit, _c in out], [True, False, False, True])
+
+    def test_reset_comes_before_the_frames_hit(self):
+        values = [0.0, 0.6, 0.0, 0.6, 0.0]
+        times = [i / 24.0 for i in range(len(values))]
+        out = ref.run_gate(values, times, min_interval=0.0, resets=[False, False, False, True, False])
+        self.assertEqual([c for _o, _h, c in out], [0, 1, 1, 1, 1])
+
+
 if __name__ == "__main__":
     unittest.main()

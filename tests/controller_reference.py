@@ -57,6 +57,67 @@ def envelope_output(state: EnvelopeState, mode: str) -> float:
     return state.spring if mode == "Spring" else state.follow
 
 
+def running_total_step(total: float, x: float, dt: float, leak: float, reset: bool) -> float:
+    """dT/dt = x - T/leak (no leak at 0), solved over the step; Reset gives 0."""
+    if reset:
+        return 0.0
+    dt = max(dt, 0.0)
+    if leak <= 0.0:
+        return total + x * dt
+    kept = math.exp(-dt / max(leak, EPSILON_S))
+    return total * kept + x * leak * (1.0 - kept)
+
+
+NEVER_S = 1e9
+
+
+@dataclass
+class GateState:
+    open: bool = False
+    armed: bool = True
+    hit: bool = False
+    since: float = NEVER_S
+    count: float = 0.0
+
+
+def gate_step(state: GateState, x: float, dt: float, threshold: float, rearm: float, min_interval: float,
+              reset: bool) -> GateState:
+    since = state.since + max(dt, 0.0)
+    falls = x < min(rearm, threshold)
+    crossing = state.armed and x >= threshold
+    hit = crossing and since >= min_interval
+    armed = True if falls else (False if crossing else state.armed)
+    is_open = True if hit else (False if falls else state.open)
+    count = (0.0 if reset else state.count) + (1.0 if hit else 0.0)
+    return GateState(open=is_open, armed=armed, hit=hit, since=0.0 if hit else since, count=count)
+
+
+def _frames(times):
+    last = None
+    for t in times:
+        yield (0.0 if last is None else max(t - last, 0.0)), t
+        last = t
+
+
+def run_running_total(inputs, times, leak=0.0, resets=None):
+    out, total = [], 0.0
+    resets = resets or [False] * len(inputs)
+    for (dt, _t), x, reset in zip(_frames(times), inputs, resets):
+        total = running_total_step(total, x, dt, leak, reset)
+        out.append(total)
+    return out
+
+
+def run_gate(inputs, times, threshold=0.5, rearm=0.4, min_interval=0.1, resets=None):
+    """(open, hit, count) on each frame."""
+    out, state = [], GateState()
+    resets = resets or [False] * len(inputs)
+    for (dt, _t), x, reset in zip(_frames(times), inputs, resets):
+        state = gate_step(state, x, dt, threshold, rearm, min_interval, reset)
+        out.append((state.open, state.hit, int(state.count)))
+    return out
+
+
 def run_envelope(inputs, times, mode="Follow", attack=0.01, hold=0.0, release=0.3, speed=2.0, bounce=0.3):
     """The Envelope output on each frame, for inputs sampled at *times* (seconds)."""
     out = []
